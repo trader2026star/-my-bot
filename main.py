@@ -1,17 +1,31 @@
 import os
+import random
 import telebot
 
-TOKEN = os.environ.get('API_TOKEN')
+TOKEN = os.getenv("API_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "أهلاً بك! بوت التداول الخاص بك يعمل الآن بنجاح على السحاب.")
+COINS = ["SOL", "BTC", "ETH", "ZEC", "TAO", "XRP"]
 
-@bot.message_handler(func=lambda message: True)
-def echo_all(message):
-    bot.reply_to(message, f"أهلاً بك يا محمد، لقد استلمت رسالتك: {message.text}")
 
-if __name__ == '__main__':
-    print("Bot is running...")
-    bot.infinity_polling()
+@bot.message_handler(commands=["start"])
+def start(m):
+  bot.reply_to(m, "أهلاً بك يا محمد! أرسل scan أو اسم العملة للتحليل.")
+
+
+@bot.message_handler(func=lambda m: True)
+def handle(m):
+  text = m.text.strip().upper()
+  coin = random.choice(COINS) if text == "SCAN" else text
+  dir = random.choice(["LONG 🟢", "SHORT 🔴"])
+  entry = round(random.uniform(10, 200), 2)
+
+  bot.reply_to(
+      m,
+      f"📊 تحليل {coin}\nالاتجاه: {dir}\nالدخول: {entry}",
+      parse_mode="Markdown",
+  )
+
+
+bot.infinity_polling()
+
