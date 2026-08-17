@@ -9,22 +9,21 @@ BINANCE_BASE_URL = "https://data-api.binance.vision"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "Binance-Technical-Scanner/1.0",
+    "User-Agent": "Binance-AI-Scanner/2.0",
     "Accept": "application/json",
 })
 
 
 # ============================================================
-# Binance API
+# BINANCE API
 # ============================================================
 
 def binance_get(endpoint: str, params: Optional[dict] = None):
-    url = BINANCE_BASE_URL + endpoint
 
     response = SESSION.get(
-        url,
+        BINANCE_BASE_URL + endpoint,
         params=params or {},
-        timeout=15
+        timeout=15,
     )
 
     response.raise_for_status()
@@ -33,18 +32,28 @@ def binance_get(endpoint: str, params: Optional[dict] = None):
 
     if isinstance(data, dict) and data.get("code"):
         raise RuntimeError(
-            f"Binance API error: {data.get('code')} - {data.get('msg')}"
+            f"Binance API error {data.get('code')}: {data.get('msg')}"
         )
 
     return data
 
 
 def get_usdt_symbols() -> List[str]:
-    """
-    جلب جميع أزواج USDT المتاحة على Binance Spot.
-    """
 
     data = binance_get("/api/v3/exchangeInfo")
+
+    excluded = {
+        "USDCUSDT",
+        "FDUSDUSDT",
+        "TUSDUSDT",
+        "DAIUSDT",
+        "EURUSDT",
+        "TRYUSDT",
+        "BRLUSDT",
+        "GBPUSDT",
+        "AUDUSDT",
+        "USDPUSDT",
+    }
 
     symbols = []
 
@@ -61,24 +70,35 @@ def get_usdt_symbols() -> List[str]:
 
         symbol = item.get("symbol")
 
-        if symbol:
+        if symbol and symbol not in excluded:
             symbols.append(symbol)
 
     return symbols
 
 
-def get_klines(symbol: str, interval: str = "1h", limit: int = 250):
-    """
-    جلب الشموع الحقيقية من Binance.
-    """
+def get_current_price(symbol: str) -> Decimal:
+
+    data = binance_get(
+        "/api/v3/ticker/price",
+        {"symbol": symbol},
+    )
+
+    return Decimal(str(data["price"]))
+
+
+def get_klines(
+    symbol: str,
+    interval: str = "1h",
+    limit: int = 250,
+):
 
     data = binance_get(
         "/api/v3/klines",
         {
             "symbol": symbol,
             "interval": interval,
-            "limit": limit
-        }
+            "limit": limit,
+        },
     )
 
     candles = []
@@ -97,42 +117,14 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 250):
     return candles
 
 
-def get_current_price(symbol: str) -> Decimal:
-    """
-    السعر الفوري من Binance Spot.
-    """
-
-    data = binance_get(
-        "/api/v3/ticker/price",
-        {
-            "symbol": symbol
-        }
-    )
-
-    return Decimal(str(data["price"]))
-
-
 # ============================================================
-# Indicators
+# INDICATORS
 # ============================================================
 
-def sma(values: List[float], period: int) -> List[Optional[float]]:
-
-    result = [None] * len(values)
-
-    if len(values) < period:
-        return result
-
-    for i in range(period - 1, len(values)):
-
-        window = values[i - period + 1:i + 1]
-
-        result[i] = sum(window) / period
-
-    return result
-
-
-def ema(values: List[float], period: int) -> List[Optional[float]]:
+def ema(
+    values: List[float],
+    period: int,
+) -> List[Optional[float]]:
 
     result = [None] * len(values)
 
@@ -141,26 +133,26 @@ def ema(values: List[float], period: int) -> List[Optional[float]]:
 
     multiplier = 2 / (period + 1)
 
-    first = sum(values[:period]) / period
+    previous = sum(values[:period]) / period
 
-    result[period - 1] = first
-
-    previous = first
+    result[period - 1] = previous
 
     for i in range(period, len(values)):
 
-        current = (
+        previous = (
             (values[i] - previous) * multiplier
             + previous
         )
 
-        result[i] = current
-        previous = current
+        result[i] = previous
 
     return result
 
 
-def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
+def rsi(
+    values: List[float],
+    period: int = 14,
+) -> List[Optional[float]]:
 
     result = [None] * len(values)
 
@@ -189,11 +181,13 @@ def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
     for i in range(period, len(gains)):
 
         avg_gain = (
-            (avg_gain * (period - 1)) + gains[i]
+            avg_gain * (period - 1)
+            + gains[i]
         ) / period
 
         avg_loss = (
-            (avg_loss * (period - 1)) + losses[i]
+            avg_loss * (period - 1)
+            + losses[i]
         ) / period
 
         if avg_loss == 0:
@@ -206,9 +200,6 @@ def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
 
 
 def macd(values: List[float]):
-    """
-    MACD 12/26/9
-    """
 
     ema12 = ema(values, 12)
     ema26 = ema(values, 26)
@@ -217,34 +208,40 @@ def macd(values: List[float]):
 
     for i in range(len(values)):
 
-        if ema12[i] is not None and ema26[i] is not None:
+        if (
+            ema12[i] is not None
+            and ema26[i] is not None
+        ):
             line[i] = ema12[i] - ema26[i]
 
-    valid_macd = [
-        x for x in line if x is not None
+    valid = [
+        x for x in line
+        if x is not None
     ]
 
-    signal_values = ema(valid_macd, 9)
+    signal_valid = ema(valid, 9)
 
     signal = [None] * len(values)
 
-    start_index = len(values) - len(valid_macd)
+    start = len(values) - len(valid)
 
-    for i, value in enumerate(signal_values):
+    for i, value in enumerate(signal_valid):
 
         if value is not None:
-            signal[start_index + i] = value
+            signal[start + i] = value
 
     return line, signal
 
 
 def atr(
     candles: List[dict],
-    period: int = 14
+    period: int = 14,
 ) -> List[Optional[float]]:
 
-    if not candles:
-        return []
+    result = [None] * len(candles)
+
+    if len(candles) <= period:
+        return result
 
     true_ranges = [None]
 
@@ -254,48 +251,42 @@ def atr(
         low = candles[i]["low"]
         previous_close = candles[i - 1]["close"]
 
-        tr = max(
+        true_range = max(
             high - low,
             abs(high - previous_close),
-            abs(low - previous_close)
+            abs(low - previous_close),
         )
 
-        true_ranges.append(tr)
+        true_ranges.append(true_range)
 
-    result = [None] * len(candles)
-
-    valid = [
-        x for x in true_ranges
-        if x is not None
-    ]
-
-    if len(valid) < period:
-        return result
-
-    first_atr = sum(valid[:period]) / period
+    first_atr = sum(
+        true_ranges[1:period + 1]
+    ) / period
 
     result[period] = first_atr
 
     previous = first_atr
 
-    for i in range(period, len(valid)):
+    for i in range(period + 1, len(candles)):
 
-        current = (
-            (previous * (period - 1))
-            + valid[i]
+        previous = (
+            previous * (period - 1)
+            + true_ranges[i]
         ) / period
 
-        result[i + 1] = current
-        previous = current
+        result[i] = previous
 
     return result
 
 
 # ============================================================
-# Market structure
+# MARKET STRUCTURE
 # ============================================================
 
-def recent_support(candles: List[dict], lookback: int = 40):
+def get_support(
+    candles: List[dict],
+    lookback: int = 50,
+):
 
     data = candles[-lookback:]
 
@@ -305,7 +296,10 @@ def recent_support(candles: List[dict], lookback: int = 40):
     )
 
 
-def recent_resistance(candles: List[dict], lookback: int = 40):
+def get_resistance(
+    candles: List[dict],
+    lookback: int = 50,
+):
 
     data = candles[-lookback:]
 
@@ -315,58 +309,113 @@ def recent_resistance(candles: List[dict], lookback: int = 40):
     )
 
 
-def detect_higher_highs_lows(candles: List[dict]) -> bool:
+def bullish_structure(
+    candles: List[dict],
+):
 
-    if len(candles) < 30:
+    if len(candles) < 40:
         return False
 
-    recent = candles[-30:]
+    recent = candles[-40:]
 
-    first_half = recent[:15]
-    second_half = recent[15:]
+    first = recent[:20]
+    second = recent[20:]
 
-    high1 = max(x["high"] for x in first_half)
-    high2 = max(x["high"] for x in second_half)
+    high1 = max(x["high"] for x in first)
+    high2 = max(x["high"] for x in second)
 
-    low1 = min(x["low"] for x in first_half)
-    low2 = min(x["low"] for x in second_half)
+    low1 = min(x["low"] for x in first)
+    low2 = min(x["low"] for x in second)
 
-    return high2 > high1 and low2 > low1
+    return (
+        high2 > high1
+        and low2 > low1
+    )
 
 
-def detect_lower_highs_lows(candles: List[dict]) -> bool:
+def bearish_structure(
+    candles: List[dict],
+):
 
-    if len(candles) < 30:
+    if len(candles) < 40:
         return False
 
-    recent = candles[-30:]
+    recent = candles[-40:]
 
-    first_half = recent[:15]
-    second_half = recent[15:]
+    first = recent[:20]
+    second = recent[20:]
 
-    high1 = max(x["high"] for x in first_half)
-    high2 = max(x["high"] for x in second_half)
+    high1 = max(x["high"] for x in first)
+    high2 = max(x["high"] for x in second)
 
-    low1 = min(x["low"] for x in first_half)
-    low2 = min(x["low"] for x in second_half)
+    low1 = min(x["low"] for x in first)
+    low2 = min(x["low"] for x in second)
 
-    return high2 < high1 and low2 < low1
+    return (
+        high2 < high1
+        and low2 < low1
+    )
 
 
-# ============================================================
-# Volume
-# ============================================================
+def bullish_breakout(
+    candles: List[dict],
+    lookback: int = 20,
+):
 
-def volume_ratio(candles: List[dict], period: int = 20):
+    if len(candles) < lookback + 2:
+        return False
+
+    previous = candles[-lookback - 1:-1]
+
+    resistance = max(
+        candle["high"]
+        for candle in previous
+    )
+
+    last = candles[-1]
+
+    return (
+        last["close"] > resistance
+        and last["volume"] > 0
+    )
+
+
+def bearish_breakdown(
+    candles: List[dict],
+    lookback: int = 20,
+):
+
+    if len(candles) < lookback + 2:
+        return False
+
+    previous = candles[-lookback - 1:-1]
+
+    support = min(
+        candle["low"]
+        for candle in previous
+    )
+
+    last = candles[-1]
+
+    return (
+        last["close"] < support
+        and last["volume"] > 0
+    )
+
+
+def volume_ratio(
+    candles: List[dict],
+    period: int = 20,
+):
 
     if len(candles) < period + 1:
         return 0
 
-    current_volume = candles[-1]["volume"]
+    current = candles[-1]["volume"]
 
     previous = [
-        c["volume"]
-        for c in candles[-period - 1:-1]
+        candle["volume"]
+        for candle in candles[-period - 1:-1]
     ]
 
     average = sum(previous) / len(previous)
@@ -374,225 +423,389 @@ def volume_ratio(candles: List[dict], period: int = 20):
     if average == 0:
         return 0
 
-    return current_volume / average
+    return current / average
 
 
 # ============================================================
-# Analyze one symbol
+# ANALYZE ONE SYMBOL
 # ============================================================
 
 def analyze_symbol(symbol: str) -> Optional[Dict]:
+
+    symbol = symbol.upper().strip()
+
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
 
     try:
 
         candles_1h = get_klines(
             symbol,
             "1h",
-            250
+            250,
         )
 
         candles_4h = get_klines(
             symbol,
             "4h",
-            250
+            150,
         )
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            f"Error loading {symbol}: {e}"
+        )
+
         return None
 
-    if len(candles_1h) < 100:
+    if len(candles_1h) < 200:
         return None
 
-    closes = [
-        c["close"]
-        for c in candles_1h
+    if len(candles_4h) < 50:
+        return None
+
+    closes_1h = [
+        candle["close"]
+        for candle in candles_1h
     ]
 
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
-    ema200 = ema(closes, 200)
+    closes_4h = [
+        candle["close"]
+        for candle in candles_4h
+    ]
 
-    rsi_values = rsi(closes, 14)
+    # ========================================================
+    # 1H INDICATORS
+    # ========================================================
 
-    macd_line, signal_line = macd(closes)
+    ema20_1h = ema(
+        closes_1h,
+        20,
+    )[-1]
 
-    atr_values = atr(candles_1h, 14)
+    ema50_1h = ema(
+        closes_1h,
+        50,
+    )[-1]
 
-    price = closes[-1]
+    ema200_1h = ema(
+        closes_1h,
+        200,
+    )[-1]
 
-    e20 = ema20[-1]
-    e50 = ema50[-1]
-    e200 = ema200[-1]
+    rsi_1h = rsi(
+        closes_1h,
+        14,
+    )[-1]
 
-    current_rsi = rsi_values[-1]
-
-    current_macd = macd_line[-1]
-    current_signal = signal_line[-1]
-
-    current_atr = atr_values[-1]
-
-    if None in (
-        e20,
-        e50,
-        e200,
-        current_rsi,
-        current_macd,
-        current_signal,
-        current_atr
-    ):
-        return None
-
-    support = recent_support(
-        candles_1h,
-        40
+    macd_line, signal_line = macd(
+        closes_1h
     )
 
-    resistance = recent_resistance(
+    macd_1h = macd_line[-1]
+    signal_1h = signal_line[-1]
+
+    atr_1h = atr(
         candles_1h,
-        40
+        14,
+    )[-1]
+
+    # ========================================================
+    # 4H TREND
+    # ========================================================
+
+    ema20_4h = ema(
+        closes_4h,
+        20,
+    )[-1]
+
+    ema50_4h = ema(
+        closes_4h,
+        50,
+    )[-1]
+
+    ema200_4h = ema(
+        closes_4h,
+        200,
+    )[-1]
+
+    # EMA200 قد لا تكون متاحة على 150 شمعة
+    # لذلك نعتمد على EMA20/50 في 4H.
+
+    required = [
+        ema20_1h,
+        ema50_1h,
+        ema200_1h,
+        rsi_1h,
+        macd_1h,
+        signal_1h,
+        atr_1h,
+        ema20_4h,
+        ema50_4h,
+    ]
+
+    if any(value is None for value in required):
+        return None
+
+    price = closes_1h[-1]
+
+    support = get_support(
+        candles_1h,
+        50,
+    )
+
+    resistance = get_resistance(
+        candles_1h,
+        50,
     )
 
     vol_ratio = volume_ratio(
         candles_1h,
-        20
+        20,
     )
 
-    bullish_structure = detect_higher_highs_lows(
+    bull_structure = bullish_structure(
         candles_1h
     )
 
-    bearish_structure = detect_lower_highs_lows(
+    bear_structure = bearish_structure(
         candles_1h
+    )
+
+    bull_breakout = bullish_breakout(
+        candles_1h,
+        20,
+    )
+
+    bear_breakdown = bearish_breakdown(
+        candles_1h,
+        20,
     )
 
     # ========================================================
-    # LONG SCORE
+    # SCORE
     # ========================================================
 
     long_score = 0
-    long_reasons = []
-
-    if price > e20:
-        long_score += 10
-        long_reasons.append("السعر فوق EMA20")
-
-    if e20 > e50:
-        long_score += 10
-        long_reasons.append("EMA20 فوق EMA50")
-
-    if e50 > e200:
-        long_score += 10
-        long_reasons.append("EMA50 فوق EMA200")
-
-    if 50 <= current_rsi <= 68:
-        long_score += 10
-        long_reasons.append("RSI داعم للونج")
-
-    if current_macd > current_signal:
-        long_score += 10
-        long_reasons.append("MACD إيجابي")
-
-    if bullish_structure:
-        long_score += 15
-        long_reasons.append("هيكل قمم وقيعان صاعد")
-
-    if vol_ratio >= 1.20:
-        long_score += 10
-        long_reasons.append("حجم تداول مرتفع")
-
-    # ========================================================
-    # SHORT SCORE
-    # ========================================================
-
     short_score = 0
+
+    long_reasons = []
     short_reasons = []
 
-    if price < e20:
-        short_score += 10
-        short_reasons.append("السعر تحت EMA20")
+    # --------------------------------------------------------
+    # LONG
+    # --------------------------------------------------------
 
-    if e20 < e50:
-        short_score += 10
-        short_reasons.append("EMA20 تحت EMA50")
+    if price > ema20_1h:
 
-    if e50 < e200:
-        short_score += 10
-        short_reasons.append("EMA50 تحت EMA200")
+        long_score += 8
+        long_reasons.append(
+            "السعر فوق EMA20 على 1H"
+        )
 
-    if 32 <= current_rsi <= 50:
-        short_score += 10
-        short_reasons.append("RSI داعم للشورت")
+    if ema20_1h > ema50_1h:
 
-    if current_macd < current_signal:
-        short_score += 10
-        short_reasons.append("MACD سلبي")
+        long_score += 8
+        long_reasons.append(
+            "EMA20 فوق EMA50"
+        )
 
-    if bearish_structure:
-        short_score += 15
-        short_reasons.append("هيكل قمم وقيعان هابط")
+    if ema50_1h > ema200_1h:
+
+        long_score += 8
+        long_reasons.append(
+            "EMA50 فوق EMA200"
+        )
+
+    if ema20_4h > ema50_4h:
+
+        long_score += 15
+        long_reasons.append(
+            "اتجاه 4H صاعد"
+        )
+
+    if 50 <= rsi_1h <= 67:
+
+        long_score += 10
+        long_reasons.append(
+            "RSI في منطقة داعمة"
+        )
+
+    if macd_1h > signal_1h:
+
+        long_score += 10
+        long_reasons.append(
+            "MACD إيجابي"
+        )
+
+    if bull_structure:
+
+        long_score += 12
+        long_reasons.append(
+            "هيكل السوق صاعد"
+        )
+
+    if bull_breakout:
+
+        long_score += 14
+        long_reasons.append(
+            "اختراق مقاومة مؤكد"
+        )
 
     if vol_ratio >= 1.20:
+
+        long_score += 10
+        long_reasons.append(
+            "حجم التداول مرتفع"
+        )
+
+    # --------------------------------------------------------
+    # SHORT
+    # --------------------------------------------------------
+
+    if price < ema20_1h:
+
+        short_score += 8
+        short_reasons.append(
+            "السعر تحت EMA20 على 1H"
+        )
+
+    if ema20_1h < ema50_1h:
+
+        short_score += 8
+        short_reasons.append(
+            "EMA20 تحت EMA50"
+        )
+
+    if ema50_1h < ema200_1h:
+
+        short_score += 8
+        short_reasons.append(
+            "EMA50 تحت EMA200"
+        )
+
+    if ema20_4h < ema50_4h:
+
+        short_score += 15
+        short_reasons.append(
+            "اتجاه 4H هابط"
+        )
+
+    if 33 <= rsi_1h <= 50:
+
         short_score += 10
-        short_reasons.append("حجم تداول مرتفع")
+        short_reasons.append(
+            "RSI في منطقة داعمة للشورت"
+        )
+
+    if macd_1h < signal_1h:
+
+        short_score += 10
+        short_reasons.append(
+            "MACD سلبي"
+        )
+
+    if bear_structure:
+
+        short_score += 12
+        short_reasons.append(
+            "هيكل السوق هابط"
+        )
+
+    if bear_breakdown:
+
+        short_score += 14
+        short_reasons.append(
+            "كسر دعم مؤكد"
+        )
+
+    if vol_ratio >= 1.20:
+
+        short_score += 10
+        short_reasons.append(
+            "حجم التداول مرتفع"
+        )
 
     # ========================================================
-    # اختيار الاتجاه
+    # SELECT DIRECTION
     # ========================================================
 
-    if long_score >= short_score:
+    if long_score > short_score:
+
         direction = "LONG"
         score = long_score
         reasons = long_reasons
-    else:
+
+    elif short_score > long_score:
+
         direction = "SHORT"
         score = short_score
         reasons = short_reasons
 
-    # ========================================================
-    # فلتر قوي
-    # ========================================================
+    else:
 
-    if score < 55:
         return None
 
-    # لا نريد الدخول إذا كان السعر قريباً جداً من المقاومة
+    # ========================================================
+    # STRONG SIGNAL FILTER
+    # ========================================================
+
+    if score < 75:
+        return None
+
+    # لا ندخل إذا كانت الإشارة متعارضة بشدة
+    difference = abs(
+        long_score - short_score
+    )
+
+    if difference < 10:
+        return None
+
+    # ========================================================
+    # DISTANCE FROM SUPPORT / RESISTANCE
+    # ========================================================
+
     if direction == "LONG":
 
-        distance_to_resistance = (
+        room = (
             resistance - price
         ) / price
 
-        if distance_to_resistance < 0.012:
+        if room < 0.015:
             return None
 
     else:
 
-        distance_to_support = (
+        room = (
             price - support
         ) / price
 
-        if distance_to_support < 0.012:
+        if room < 0.015:
             return None
 
     # ========================================================
-    # Entry / SL / TP
+    # ENTRY / STOP / TARGETS
     # ========================================================
 
     if direction == "LONG":
 
         entry_low = max(
             support,
-            price - current_atr * 0.35
+            price - atr_1h * 0.35,
         )
 
         entry_high = price
 
         stop = min(
-            support - current_atr * 0.25,
-            price - current_atr * 1.25
+            support - atr_1h * 0.20,
+            price - atr_1h * 1.20,
         )
 
         risk = price - stop
+
+        if risk <= 0:
+            return None
 
         tp1 = price + risk * 1.5
         tp2 = price + risk * 2.5
@@ -600,25 +813,39 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
 
     else:
 
-        entry_high = min(
-            resistance,
-            price + current_atr * 0.35
-        )
-
         entry_low = price
 
+        entry_high = min(
+            resistance,
+            price + atr_1h * 0.35,
+        )
+
         stop = max(
-            resistance + current_atr * 0.25,
-            price + current_atr * 1.25
+            resistance + atr_1h * 0.20,
+            price + atr_1h * 1.20,
         )
 
         risk = stop - price
+
+        if risk <= 0:
+            return None
 
         tp1 = price - risk * 1.5
         tp2 = price - risk * 2.5
         tp3 = price - risk * 3.5
 
+    # ========================================================
+    # RISK / REWARD CHECK
+    # ========================================================
+
+    reward = abs(tp2 - price)
+
     if risk <= 0:
+        return None
+
+    rr = reward / risk
+
+    if rr < 2:
         return None
 
     return {
@@ -632,84 +859,104 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
-        "rsi": current_rsi,
+        "rsi": rsi_1h,
         "volume_ratio": vol_ratio,
         "support": support,
         "resistance": resistance,
-        "atr": current_atr,
+        "atr": atr_1h,
+        "risk_reward": rr,
         "reasons": reasons,
     }
 
 
 # ============================================================
-# Scan market
+# MARKET SCANNER
 # ============================================================
 
-def scan_market(
-    max_symbols: Optional[int] = None
-) -> List[Dict]:
+def scan_market() -> List[Dict]:
 
     symbols = get_usdt_symbols()
 
-    # استبعاد بعض أزواج العملات غير المرغوبة
-    excluded = {
-        "USDCUSDT",
-        "FDUSDUSDT",
-        "TUSDUSDT",
-        "USDTUSDT",
-        "DAIUSDT",
-        "EURUSDT",
-        "TRYUSDT",
-        "BRLUSDT",
-        "GBPUSDT",
-        "AUDUSDT",
-    }
-
-    symbols = [
-        s for s in symbols
-        if s not in excluded
-    ]
-
-    if max_symbols:
-        symbols = symbols[:max_symbols]
-
     results = []
 
-    for index, symbol in enumerate(symbols):
+    print(
+        f"Scanning {len(symbols)} Binance USDT pairs..."
+    )
 
-        result = analyze_symbol(symbol)
+    for index, symbol in enumerate(
+        symbols,
+        start=1,
+    ):
 
-        if result:
-            results.append(result)
+        try:
 
-        # حماية بسيطة من الضغط على API
+            result = analyze_symbol(
+                symbol
+            )
+
+            if result:
+                results.append(result)
+
+        except Exception as e:
+
+            print(
+                f"{symbol}: {e}"
+            )
+
         if index % 10 == 0:
-            time.sleep(0.05)
+
+            print(
+                f"Progress: "
+                f"{index}/{len(symbols)}"
+            )
+
+        time.sleep(0.03)
 
     results.sort(
-        key=lambda x: x["score"],
-        reverse=True
+        key=lambda x: (
+            x["score"],
+            x.get("risk_reward", 0),
+        ),
+        reverse=True,
     )
 
     return results
 
 
 # ============================================================
-# Helpers
+# FORMAT NUMBER
 # ============================================================
 
 def format_number(value: float) -> str:
+
+    value = float(value)
 
     if value >= 1000:
         return f"{value:.2f}"
 
     if value >= 1:
-        return f"{value:.4f}".rstrip("0").rstrip(".")
+        return (
+            f"{value:.4f}"
+            .rstrip("0")
+            .rstrip(".")
+        )
 
     if value >= 0.01:
-        return f"{value:.6f}".rstrip("0").rstrip(".")
+        return (
+            f"{value:.6f}"
+            .rstrip("0")
+            .rstrip(".")
+        )
 
     if value >= 0.0001:
-        return f"{value:.8f}".rstrip("0").rstrip(".")
+        return (
+            f"{value:.8f}"
+            .rstrip("0")
+            .rstrip(".")
+        )
 
-    return f"{value:.10f}".rstrip("0").rstrip(".")
+    return (
+        f"{value:.10f}"
+        .rstrip("0")
+        .rstrip(".")
+    )
