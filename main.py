@@ -184,8 +184,12 @@ app = Flask(__name__)
 def home():
     return "Bot is running 24/7!"
 
+import os
+
 def run_flask():
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
 
 if __name__ == "__main__":
     print("🤖 Binance AI Scanner Started with Web Server...")
