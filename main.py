@@ -174,11 +174,31 @@ def coin_handler(message):
         )
 
 
-if __name__ == "__main__":
-    print("🤖 Binance AI Scanner Started...")
+import threading
+from flask import Flask
 
+# إنشاء تطبيق ويب بسيط عشان UptimeRobot يفضله صاحي وما يقفلش
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running 24/7!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+if __name__ == "__main__":
+    print("🤖 Binance AI Scanner Started with Web Server...")
+
+    # تشغيل سيرفر الويب في مسار منفصل (Background Thread)
+    server_thread = threading.Thread(target=run_flask)
+    server_thread.daemon = True
+    server_thread.start()
+
+    # تشغيل البوت بشكل طبيعي
     bot.infinity_polling(
         skip_pending=True,
         timeout=30,
         long_polling_timeout=30
     )
+
