@@ -38,7 +38,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         "stop": price * 0.97,
         "tp1": price * 1.03,
         "tp2": price * 1.05,
-        "tp3": price * 1.08,
+        "tp3": price * 1.06,
         "reasons": ["🔥 رصد تجميع السيولة ودخول المشترين قبل الانفجار الصاعد"]
     }
 
