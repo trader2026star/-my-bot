@@ -22,22 +22,11 @@ def binance_get(endpoint: str, params: Optional[dict] = None):
 def get_usdt_symbols() -> List[str]:
     data = binance_get("/api/v3/exchangeInfo")
     excluded = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT", "BRLUSDT", "GBPUSDT", "AUDUSDT", "USDPUSDT"}
-    return [item["symbol"] for item in data.get("symbols", []) if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT" and item.get("symbol") not in excluded]
+    return [item["symbol"] for item in data.get("symbols", []) if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT" and item.get("symbol"] not in excluded]
 
 def get_klines(symbol: str, interval: str = "1h", limit: int = 100):
     data = binance_get("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
     return [{"close": float(row[4]), "high": float(row[2]), "low": float(row[3]), "volume": float(row[5])} for row in data]
-
-def ema(values: List[float], period: int) -> List[Optional[float]]:
-    result = [None] * len(values)
-    if len(values) < period: return result
-    multiplier = 2 / (period + 1)
-    prev = sum(values[:period]) / period
-    result[period - 1] = prev
-    for i in range(period, len(values)):
-        prev = (values[i] - prev) * multiplier + prev
-        result[i] = prev
-    return result
 
 def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
     result = [None] * len(values)
@@ -57,7 +46,6 @@ def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
     return result
 
 def is_accumulation_phase(candles: List[dict], lookback: int = 10):
-    """يكشف التجميع قبل الانفجار: سعر محصور + فوليوم يتصاعد + اقتراب من المقاومة"""
     if len(candles) < lookback + 5: return False
     recent = candles[-lookback:]
     highs = [c["high"] for c in recent]
@@ -68,7 +56,7 @@ def is_accumulation_phase(candles: List[dict], lookback: int = 10):
     volume_increasing = volumes[-1] > volumes[-2] > volumes[-3]
     resistance = max(highs)
     price = candles[-1]["close"]
-    near_resistance = (resistance - price) / resistance < 0.015 # قريب جداً للمقاومة
+    near_resistance = (resistance - price) / resistance < 0.015
     
     return price_range < 0.025 and volume_increasing and near_resistance
 
@@ -79,7 +67,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         closes = [c["close"] for c in candles]
         
         rsi_val = rsi(closes, 14)[-1]
-        if rsi_val is None or rsi_val > 60: return None # لسه تحت التشبع
+        if rsi_val is None or rsi_val > 60: return None
         
         if not is_accumulation_phase(candles): return None
         
@@ -103,3 +91,4 @@ def scan_market() -> List[Dict]:
         if res: results.append(res)
         time.sleep(0.02)
     return results
+
