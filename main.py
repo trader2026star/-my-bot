@@ -218,6 +218,7 @@ def health():
     return "OK"
 
 
+# تشغيل سيرفر الـ Flask في الخلفية لضمان بقاء الخدمة شغالة على Render
 def run_flask():
     port = int(os.environ.get("PORT", "10000"))
     app.run(
@@ -231,12 +232,14 @@ def run_flask():
 if __name__ == "__main__":
     print("🤖 Binance AI Scanner Started")
 
+    # تشغيل سيرفر الـ Flask كـ Background Thread
     server_thread = threading.Thread(
         target=run_flask,
         daemon=True,
     )
     server_thread.start()
 
+    # تشغيل البوت الأساسي
     bot.infinity_polling(
         skip_pending=True,
         timeout=30,
