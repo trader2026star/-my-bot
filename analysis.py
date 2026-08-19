@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 import requests
 
@@ -17,85 +18,132 @@ def format_number(val: float) -> str:
         return f"{val:.8f}"
 
 def binance_get(endpoint: str, params: Optional[dict] = None):
-    res = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=15)
-    res.raise_for_status()
-    data = res.json()
-    if isinstance(data, dict) and data.get("code"):
-        raise RuntimeError(f"API Error {data.get('code')}")
-    return data
+    try:
+        res = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        if isinstance(data, dict) and data.get("code"):
+            return None
+        return data
+    except:
+        return None
 
 def get_usdt_symbols() -> List[str]:
     data = binance_get("/api/v3/exchangeInfo")
+    if not data or "symbols" not in data:
+        return []
     exc = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT", "BRLUSDT", "GBPUSDT", "AUDUSDT", "USDPUSDT"}
-    return [s["symbol"] for s in data.get("symbols", []) if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT" and s["symbol"] not in exc]
+    return [s["symbol"] for s in data["symbols"] if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT" and s["symbol"] not in exc]
 
-def get_klines(symbol: str, limit: int = 60):
+def get_klines(symbol: str, limit: int = 50):
     data = binance_get("/api/v3/klines", {"symbol": symbol, "interval": "1h", "limit": limit})
-    return [{"close": float(r[4]), "high": float(r[2]), "low": float(r[3]), "volume": float(r[5])} for r in data]
+    if not data or not isinstance(data, list):
+        return []
+    try:
+        return [{"close": float(r[4]), "high": float(r[2]), "low": float(r[3]), "volume": float(r[5])} for r in data]
+    except:
+        return []
 
-def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
-    res = [None] * len(values)
-    if len(values) <= period: return res
-    gains, losses = [], []
-    for i in range(1, len(values)):
-        diff = values[i] - values[i-1]
-        gains.append(max(diff, 0))
-        losses.append(max(-diff, 0))
-    ag = sum(gains[:period]) / period
-    al = sum(losses[:period]) / period
-    for i in range(period, len(gains)):
-        ag = (ag * (period - 1) + gains[i]) / period
-        al = (al * (period - 1) + losses[i]) / period
-        rs = ag / (al if al != 0 else 0.001)
-        res[i+1] = 100 - (100 / (1 + rs))
-    return res
+def calculate_rsi(closes: List[float], period: int = 14) -> float:
+    if len(closes) <= period:
+        return 50.0
+    gains, losses = 0.0, 0.0
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i-1]
+        if diff >= 0:
+            gains += diff
+        else:
+            losses -= diff
+    avg_gain = gains / period
+    avg_loss = losses / period
+    
+    for i in range(period + 1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        if diff >= 0:
+            avg_gain = (avg_gain * (period - 1) + diff) / period
+            avg_loss = (avg_loss * (period - 1)) / period
+        else:
+            avg_gain = (avg_gain * (period - 1)) / period
+            avg_loss = (avg_loss * (period - 1) - diff) / period
+            
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
 def analyze_symbol(symbol: str) -> Optional[Dict]:
-    try:
-        candles = get_klines(symbol, 60)
-        if len(candles) < 30: return None
-        closes = [c["close"] for c in candles]
+    candles = get_klines(symbol, 40)
+    if len(candles) < 25:
+        return None
+    
+    closes = [c["close"] for c in candles]
+    volumes = [c["volume"] for c in candles]
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
+    
+    price = closes[-1]
+    rsi_val = calculate_rsi(closes, 14)
+    
+    # قياس دخول السيولة (مقارنة فوليوم آخر شمعة بمتوسط آخر 10 شمعات)
+    avg_volume = sum(volumes[-11:-1]) / 10 if len(volumes) >= 11 else volumes[-1]
+    vol_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1.0
+    
+    recent_high = max(highs[-10:])
+    recent_low = min(lows[-10:])
+    price_range = (recent_high - recent_low) / recent_low
+    
+    # شروط الانفجار وتجميع السيولة (فوليوم عالي + تجميع ضيق + RSI مناسب)
+    is_volume_spike = vol_ratio >= 1.6
+    is_tight_range = price_range <= 0.035
+    is_near_resistance = (recent_high - price) / recent_high <= 0.02
+    
+    reasons = []
+    score = 50
+    
+    if is_volume_spike:
+        reasons.append(f"🔥 دخول سيولة ضخمة (الفوليوم {vol_ratio:.1f}x من المتوسط)")
+        score += 20
+    if is_tight_range:
+        reasons.append("🔍 تجميع سعري ضيق يسبق الانفجار")
+        score += 15
+    if is_near_resistance:
+        reasons.append("🎯 تختبر منطقة المقاومة للاختراق")
+        score += 15
         
-        r_list = rsi(closes, 14)
-        r = r_list[-1] if r_list else 50
-        if r is None: r = 50
-        
-        recent = candles[-10:]
-        highs = [c["high"] for c in recent]
-        lows = [c["low"] for c in recent]
-        vols = [c["volume"] for c in recent]
-        
-        price = closes[-1]
-        res_val = max(highs)
-        sup_val = min(lows)
-        
+    # إذا تحققت شروط السيولة والانفجار
+    if is_volume_spike and (is_tight_range or is_near_resistance) and rsi_val < 70:
         return {
             "symbol": symbol,
             "direction": "LONG",
-            "score": 85,
+            "score": min(score, 98),
             "price": price,
-            "rsi": r,
-            "volume_ratio": 1.5,
+            "rsi": rsi_val,
+            "volume_ratio": vol_ratio,
             "entry_low": price * 0.995,
             "entry_high": price * 1.002,
-            "stop": price * 0.97,
-            "tp1": price * 1.03,
-            "tp2": price * 1.06,
-            "tp3": price * 1.10,
-            "support": sup_val,
-            "resistance": res_val,
-            "reasons": ["🔍 رصد تجميع سعري ضيق", "🚀 فوليوم متصاعد قبل الانفجار", "🎯 قريبة جداً من المقاومة"],
+            "stop": recent_low * 0.985,
+            "tp1": recent_high * 1.02,
+            "tp2": recent_high * 1.05,
+            "tp3": recent_high * 1.09,
+            "support": recent_low,
+            "resistance": recent_high,
+            "reasons": reasons,
             "is_ready": True
         }
-    except:
-        pass
     return None
 
 def scan_market() -> List[Dict]:
+    symbols = get_usdt_symbols()
     results = []
-    symbols = get_usdt_symbols()[:20]  # فحص عينة سريعة لتجنب التايم أوت
-    for s in symbols:
-        res = analyze_symbol(s)
-        if res: results.append(res)
-        time.sleep(0.01)
+    
+    # فحص سريع ومتوازي لكل العملات لضمان أعلى أداء
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_symbol = {executor.submit(analyze_symbol, s): s for s in symbols}
+        for future in as_completed(future_to_symbol):
+            res = future.result()
+            if res:
+                results.append(res)
+                
+    # ترتيب العملات حسب أقوى دخول سيولة وسكور
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
     return results
