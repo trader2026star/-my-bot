@@ -138,47 +138,24 @@ def atr(candles: List[dict], period: int = 14) -> List[Optional[float]]:
         result[i] = previous
     return result
 
-def get_support(candles: List[dict], lookback: int = 50):
+def get_support(candles: List[dict], lookback: int = 30):
     return min(candle["low"] for candle in candles[-lookback:])
 
-def get_resistance(candles: List[dict], lookback: int = 50):
+def get_resistance(candles: List[dict], lookback: int = 30):
     return max(candle["high"] for candle in candles[-lookback:])
 
-def bullish_structure(candles: List[dict]):
-    if len(candles) < 40:
-        return False
-    recent = candles[-40:]
-    first, second = recent[:20], recent[20:]
-    high1, high2 = max(x["high"] for x in first), max(x["high"] for x in second)
-    low1, low2 = min(x["low"] for x in first), min(x["low"] for x in second)
-    return high2 > high1 and low2 > low1
-
-def bearish_structure(candles: List[dict]):
-    if len(candles) < 40:
-        return False
-    recent = candles[-40:]
-    first, second = recent[:20], recent[20:]
-    high1, high2 = max(x["high"] for x in first), max(x["high"] for x in second)
-    low1, low2 = min(x["low"] for x in first), min(x["low"] for x in second)
-    return high2 < high1 and low2 < low1
-
-def bullish_breakout(candles: List[dict], lookback: int = 20):
+def early_breakout(candles: List[dict], lookback: int = 15):
+    """التحقق مما إذا كانت العملة تخترق أول مقاومة في بداية الحركة"""
     if len(candles) < lookback + 2:
         return False
     previous = candles[-lookback - 1:-1]
     resistance = max(candle["high"] for candle in previous)
     last = candles[-1]
+    # الشمعة الأخيرة تخترق المقاومة بحجم تداول قوي وقفل فوقها
     return last["close"] > resistance and last["volume"] > 0
 
-def bearish_breakdown(candles: List[dict], lookback: int = 20):
-    if len(candles) < lookback + 2:
-        return False
-    previous = candles[-lookback - 1:-1]
-    support = min(candle["low"] for candle in previous)
-    last = candles[-1]
-    return last["close"] < support and last["volume"] > 0
-
-def volume_ratio(candles: List[dict], period: int = 20):
+def volume_surge(candles: List[dict], period: int = 20):
+    """كشف انفجار حجم التداول الباكر (سيولة داخلة)"""
     if len(candles) < period + 1:
         return 0
     current = candles[-1]["volume"]
@@ -192,130 +169,80 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         symbol += "USDT"
 
     try:
-        candles_1h = get_klines(symbol, "1h", 250)
-        candles_4h = get_klines(symbol, "4h", 150)
-    except Exception as e:
-        print(f"Error loading {symbol}: {e}")
-        return None
+        candles_1h = get_klines(symbol, "1h", 150)
+        candles_4h = get_klines(symbol, "10h", 100) # استخدام فريم مناسب لجودة البيانات
+    except Exception:
+        try:
+            candles_4h = get_klines(symbol, "4h", 100)
+        except Exception:
+            return None
 
-    if len(candles_1h) < 200 or len(candles_4h) < 50:
+    if len(candles_1h) < 50:
         return None
 
     closes_1h = [candle["close"] for candle in candles_1h]
-    closes_4h = [candle["close"] for candle in candles_4h]
-
+    
     ema20_1h = ema(closes_1h, 20)[-1]
     ema50_1h = ema(closes_1h, 50)[-1]
-    ema200_1h = ema(closes_1h, 200)[-1]
     rsi_1h = rsi(closes_1h, 14)[-1]
     macd_line, signal_line = macd(closes_1h)
     macd_1h, signal_1h = macd_line[-1], signal_line[-1]
     atr_1h = atr(candles_1h, 14)[-1]
 
-    ema20_4h = ema(closes_4h, 20)[-1]
-    ema50_4h = ema(closes_4h, 50)[-1]
-
-    required = [ema20_1h, ema50_1h, ema200_1h, rsi_1h, macd_1h, signal_1h, atr_1h, ema20_4h, ema50_4h]
+    required = [ema20_1h, ema50_1h, rsi_1h, macd_1h, signal_1h, atr_1h]
     if any(value is None for value in required):
         return None
 
     price = closes_1h[-1]
-    support = get_support(candles_1h, 50)
-    resistance = get_resistance(candles_1h, 50)
-    vol_ratio = volume_ratio(candles_1h, 20)
-    bull_structure = bullish_structure(candles_1h)
-    bear_structure = bearish_structure(candles_1h)
-    bull_breakout = bullish_breakout(candles_1h, 20)
-    bear_breakdown = bearish_breakdown(candles_1h, 20)
+    support = get_support(candles_1h, 30)
+    resistance = get_resistance(candles_1h, 30)
+    vol_ratio = volume_surge(candles_1h, 20)
+    is_early_breakout = early_breakout(candles_1h, 15)
 
-    long_score, short_score = 0, 0
-    long_reasons, short_reasons = [], []
+    long_score = 0
+    long_reasons = []
+
+    # استراتيجية بداية الانفجار الصاعد (Early Pump Strategy)
+    if is_early_breakout:
+        long_score += 35
+        long_reasons.append("🚀 اختراق باكر لمقاومة سابقة (بداية انطلاق)")
+
+    if vol_ratio >= 1.8:  # فوليوم قوي جداً يبين دخول سيولة مفاجئة
+        long_score += 25
+        long_reasons.append(f"🔥 انفجار حجم التداول ({vol_ratio:.1f}x المتوسط)")
+    elif vol_ratio >= 1.2:
+        long_score += 15
+        long_reasons.append(f"📈 ارتفاع ملحوظ بالفوليوم ({vol_ratio:.1f}x)")
 
     if price > ema20_1h:
-        long_score += 8
-        long_reasons.append("السعر فوق EMA20 على 1H")
-    if ema20_1h > ema50_1h:
-        long_score += 8
-        long_reasons.append("EMA20 فوق EMA50")
-    if ema50_1h > ema200_1h:
-        long_score += 8
-        long_reasons.append("EMA50 فوق EMA200")
-    if ema20_4h > ema50_4h:
         long_score += 15
-        long_reasons.append("اتجاه 4H صاعد")
-    if 50 <= rsi_1h <= 67:
-        long_score += 10
-        long_reasons.append("RSI في منطقة داعمة")
+        long_reasons.append("السعر فوق EMA20 (زخم إيجابي)")
+
+    if 45 <= rsi_1h <= 72:  # مؤشر RSI في بداية الصعود وليس في التشبع القاتل
+        long_score += 15
+        long_reasons.append(f"RSI في منطقة صعود باكر ({rsi_1h:.1f})")
+
     if macd_1h > signal_1h:
         long_score += 10
-        long_reasons.append("MACD إيجابي")
-    if bull_structure:
-        long_score += 12
-        long_reasons.append("هيكل السوق صاعد")
-    if bull_breakout:
-        long_score += 14
-        long_reasons.append("اختراق مقاومة مؤكد")
-    if vol_ratio >= 1.20:
-        long_score += 10
-        long_reasons.append("حجم التداول مرتفع")
+        long_reasons.append("تقاطع MACD إيجابي")
 
-    if price < ema20_1h:
-        short_score += 8
-        short_reasons.append("السعر تحت EMA20 على 1H")
-    if ema20_1h < ema50_1h:
-        short_score += 8
-        short_reasons.append("EMA20 تحت EMA50")
-    if ema50_1h < ema200_1h:
-        short_score += 8
-        short_reasons.append("EMA50 تحت EMA200")
-    if ema20_4h < ema50_4h:
-        short_score += 15
-        short_reasons.append("اتجاه 4H هابط")
-    if 33 <= rsi_1h <= 50:
-        short_score += 10
-        short_reasons.append("RSI في منطقة داعمة للشورت")
-    if macd_1h < signal_1h:
-        short_score += 10
-        short_reasons.append("MACD سلبي")
-    if bear_structure:
-        short_score += 12
-        short_reasons.append("هيكل السوق هابط")
-    if bear_breakdown:
-        short_score += 14
-        short_reasons.append("كسر دعم مؤكد")
-    if vol_ratio >= 1.20:
-        short_score += 10
-        short_reasons.append("حجم التداول مرتفع")
+    direction = "LONG"
+    score = long_score
+    reasons = long_reasons
 
-    if long_score >= short_score:
-        direction = "LONG"
-        score = long_score
-        reasons = long_reasons
-    else:
-        direction = "SHORT"
-        score = short_score
-        reasons = short_reasons
+    # شرط صارم: يجب أن توفر العملة إشارة بداية ترند حقيقية (فوليوم واختراق)
+    is_ready = (score >= 65 and is_early_breakout and vol_ratio >= 1.3)
 
-    is_ready = (score >= 75 and abs(long_score - short_score) >= 10)
-
-    if direction == "LONG":
-        entry_low = max(support, price - atr_1h * 0.35)
-        entry_high = price
-        stop = min(support - atr_1h * 0.20, price - atr_1h * 1.20)
-        risk = price - stop
-        risk = risk if risk > 0 else atr_1h
-        tp1 = price + risk * 1.5
-        tp2 = price + risk * 2.5
-        tp3 = price + risk * 3.5
-    else:
-        entry_low = price
-        entry_high = min(resistance, price + atr_1h * 0.35)
-        stop = max(resistance + atr_1h * 0.20, price + atr_1h * 1.20)
-        risk = stop - price
-        risk = risk if risk > 0 else atr_1h
-        tp1 = price - risk * 1.5
-        tp2 = price - risk * 2.5
-        tp3 = price - risk * 3.5
+    # حساب مناطق الدخول والأهداف بحسب استراتيجية بداية الحركة
+    entry_low = max(support, price - atr_1h * 0.2)
+    entry_high = price
+    stop = price - atr_1h * 1.1  # وقف خسارة محكم تحت سعر الانطلاق
+    risk = price - stop
+    risk = risk if risk > 0 else atr_1h
+    
+    tp1 = price + risk * 1.5
+    tp2 = price + risk * 2.5
+    tp3 = price + risk * 4.0
 
     reward = abs(tp2 - price)
     rr = (reward / risk) if risk > 0 else 0
@@ -351,7 +278,7 @@ def scan_market() -> List[Dict]:
                 results.append(result)
         except Exception:
             pass
-        time.sleep(0.03)
+        time.sleep(0.02)
     results.sort(key=lambda x: (x["score"], x.get("risk_reward", 0)), reverse=True)
     return results
 
