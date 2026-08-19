@@ -2,7 +2,7 @@ import requests
 from typing import Dict, List, Optional
 
 # تعريف رابط بينانس الأساسي بمتغير واضح وصحيح
-BINANCE_API_URL = "https://api.binance.com/api/v3"
+BINANCE_API_URL = "https://binance.com"
 
 def get_usdt_symbols() -> List[str]:
     return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "GPSUSDT"]
