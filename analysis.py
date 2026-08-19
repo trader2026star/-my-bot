@@ -73,9 +73,10 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         pass
     return None
 
-def scan_market() -> List[Dict]:
+def scan_market(symbol: Optional[str] = None) -> List[Dict]:
     results = []
-    for s in get_usdt_symbols():
+    symbols = [symbol] if symbol else get_usdt_symbols()
+    for s in symbols:
         res = analyze_symbol(s)
         if res: results.append(res)
         time.sleep(0.02)
