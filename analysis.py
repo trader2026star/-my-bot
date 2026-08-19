@@ -1,20 +1,21 @@
 import requests
 from typing import Dict, List, Optional
 
-BINANCE_BASE_URL = "https://api.binance.com/api/v3"
+# تعريف رابط بينانس الأساسي بمتغير واضح وصحيح
+BINANCE_API_URL = "https://api.binance.com/api/v3"
 
 def get_usdt_symbols() -> List[str]:
     return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "GPSUSDT"]
 
 def get_klines(symbol: str, limit: int = 30):
     try:
-        res = requests.get(f"{BINANCE_BASE_URL}/klines", params={"symbol": symbol.upper(), "interval": "1h", "limit": limit}, timeout=7)
+        res = requests.get(f"{BINANCE_API_URL}/klines", params={"symbol": symbol.upper(), "interval": "1h", "limit": limit}, timeout=7)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
                 return [{"close": float(r[4]), "volume": float(r[5])} for r in data]
         
-        price_res = requests.get(f"{BINANCE_BASE_URL}/ticker/price", params={"symbol": symbol.upper()}, timeout=5)
+        price_res = requests.get(f"{BINANCE_API_URL}/ticker/price", params={"symbol": symbol.upper()}, timeout=5)
         if price_res.status_code == 200:
             p = float(price_res.json().get("price", 10.0))
             return [{"close": p, "volume": 1000.0} for _ in range(limit)]
