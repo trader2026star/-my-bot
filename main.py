@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+
 from flask import Flask
 import telebot
 
@@ -14,68 +15,78 @@ if not BOT_TOKEN:
         "BOT_TOKEN أو API_TOKEN غير موجود في Environment Variables"
     )
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 
 
 def build_trade_message(result):
-    direction = (
-        "🟢 LONG (صاعد)"
-        if result["direction"] == "LONG"
-        else "🔴 SHORT (هابط)"
+    direction = result.get("direction", "WAIT")
+
+    if direction == "LONG":
+        direction_text = "🟢 LONG"
+    elif direction == "SHORT":
+        direction_text = "🔴 SHORT"
+    else:
+        direction_text = "🟡 WAIT"
+
+    reasons = result.get("reasons", [])
+    reasons_text = "\n".join(f"• {x}" for x in reasons)
+
+    if not reasons_text:
+        reasons_text = "• لا توجد أسباب كافية حالياً."
+
+    state = result.get("state", "NORMAL")
+
+    state_names = {
+        "ACCUMULATION": "🟢 تجميع + مراقبة دخول السيولة",
+        "PRE_BREAKOUT": "🔥 قبل الاختراق",
+        "BREAKOUT": "🚀 اختراق",
+        "DISTRIBUTION": "🔴 تصريف + خروج سيولة",
+        "SELL_PRESSURE": "📉 ضغط بيعي",
+        "NORMAL": "⚪ حركة عادية",
+    }
+
+    state_text = state_names.get(state, state)
+
+    message = (
+        "🤖 **Binance AI Scanner**\n\n"
+        f"💎 العملة: `{result['symbol']}`\n"
+        f"📈 الاتجاه: **{direction_text}**\n"
+        f"⭐ Score: **{result['score']}/100**\n"
+        f"🧠 الحالة: **{state_text}**\n\n"
+        f"💰 السعر: `{format_number(result['price'])}`\n"
+        f"📊 RSI: `{result['rsi']:.1f}`\n"
+        f"📊 Volume: `{result['volume_ratio']:.2f}x`\n"
+        f"💧 Buy Pressure: `{result['buy_pressure']:.1f}%`\n"
+        f"📈 Trend: `{result['trend']}`\n\n"
     )
 
-    reasons = "\n".join(
-        f"• {reason}"
-        for reason in result["reasons"]
-    ) if result["reasons"] else "• لا توجد مؤشرات قوية كافية حالياً."
-
-    # لو الفرصة جاهزة تماماً وتعطى إشارة دخول
-    if result.get("is_ready", True):
-        return (
-            "📊 **تحليل فني متقدم (إشارة مؤكدة)**\n\n"
-            f"💎 العملة: `{result['symbol']}`\n"
-            f"📈 الاتجاه: **{direction}**\n"
-            f"⭐ Score: **{result['score']}/100**\n\n"
-
-            f"💰 السعر الحالي: `{format_number(result['price'])}`\n"
-            f"📊 RSI: `{result['rsi']:.1f}` | Vol: `{result['volume_ratio']:.2f}x`\n\n"
-
-            "📍 **منطقة الدخول:**\n"
-            f"`{format_number(result['entry_low'])}` - `{format_number(result['entry_high'])}`\n\n"
-
-            "🛑 **وقف الخسارة:**\n"
+    if direction in ("LONG", "SHORT"):
+        message += (
+            "📍 **منطقة الدخول**\n"
+            f"`{format_number(result['entry_low'])}` - "
+            f"`{format_number(result['entry_high'])}`\n\n"
+            "🛑 **Stop Loss**\n"
             f"`{format_number(result['stop'])}`\n\n"
-
-            "🎯 **الأهداف:**\n"
+            "🎯 **الأهداف**\n"
             f"TP1: `{format_number(result['tp1'])}`\n"
             f"TP2: `{format_number(result['tp2'])}`\n"
             f"TP3: `{format_number(result['tp3'])}`\n\n"
-
-            f"🛡️ **الدعم والمقاومة:**\n"
-            f"S: `{format_number(result['support'])}` | R: `{format_number(result['resistance'])}`\n\n"
-
-            "🔍 **الإيجابيات:**\n"
-            f"{reasons}\n\n"
-            "✅ **حالة الصفقة:** دخول مؤكد 🟢"
         )
+
+    message += (
+        "🛡️ **الدعم والمقاومة**\n"
+        f"Support: `{format_number(result['support'])}`\n"
+        f"Resistance: `{format_number(result['resistance'])}`\n\n"
+        "🔍 **التحليل**\n"
+        f"{reasons_text}\n\n"
+    )
+
+    if result.get("is_ready"):
+        message += "✅ **الصفقة: جاهزة للمراقبة/الدخول حسب تأكيد السعر**"
     else:
-        # لو الشروط لم تكتمل بالكامل ويحتاج انتظار
-        return (
-            "📊 **تحليل فني (حالة انتظار)**\n\n"
-            f"💎 العملة: `{result['symbol']}`\n"
-            f"📈 الاتجاه العام: **{direction}**\n"
-            f"⭐ Score: **{result['score']}/100**\n\n"
+        message += "🟡 **الحالة: انتظار تأكيد — لا تطارد السعر**"
 
-            f"💰 السعر الحالي: `{format_number(result['price'])}`\n"
-            f"📊 RSI: `{result['rsi']:.1f}` | Vol: `{result['volume_ratio']:.2f}x`\n\n"
-
-            f"🛡️ **الدعم والمقاومة:**\n"
-            f"الدعم: `{format_number(result['support'])}` | المقاومة: `{format_number(result['resistance'])}`\n\n"
-
-            "🟡 **انتظار - لا توجد إشارة دخول قوية مؤكدة**\n"
-            f"المؤشرات الحالية:\n{reasons}\n\n"
-            f"💡 **نصيحة:** استنى تأكيد الاختراق فوق المقاومة أو الارتداد من الدعم."
-        )
+    return message
 
 
 @bot.message_handler(commands=["start", "help"])
@@ -83,10 +94,12 @@ def start(message):
     bot.reply_to(
         message,
         "🤖 **Binance AI Scanner**\n\n"
-        "🔎 أرسل `/scan` أو `SCAN` لفحص السوق بالكامل.\n\n"
-        "💰 أو أرسل رمز أي عملة (مثل `BTC`, `ETH`, `OGN`) "
-        "ليتم تحليلها فوراً وإعطاؤك تقريراً فنياً كاملاً.",
-        parse_mode="Markdown"
+        "🔎 `/scan` = فحص السوق واكتشاف العملات قبل الحركة.\n\n"
+        "💎 أرسل رمز العملة مثل:\n"
+        "`BTC`\n"
+        "`ETH`\n"
+        "`SOL`\n\n"
+        "وسيتم تحليل الاتجاه والسيولة والحجم والتجميع والتصريف.",
     )
 
 
@@ -94,9 +107,14 @@ def start(message):
 def scan_command(message):
     status = bot.reply_to(
         message,
-        "🔎 **جاري فحص سوق Binance...**\n\n"
-        "⏳ انتظر حتى ينتهي الفحص.",
-        parse_mode="Markdown"
+        "🔎 **جاري فحص Binance...**\n\n"
+        "🧠 أبحث عن:\n"
+        "• التجميع\n"
+        "• دخول السيولة\n"
+        "• زيادة الحجم\n"
+        "• بداية الترند\n"
+        "• العملات قبل الاختراق\n\n"
+        "⏳ انتظر...",
     )
 
     try:
@@ -104,40 +122,40 @@ def scan_command(message):
 
         if not results:
             bot.edit_message_text(
-                "🟡 **لا توجد صفقة جاهزة حالياً.**\n\n"
-                "تم فحص السوق ولم توجد عملة تحقق شروط الدخول القوية.",
+                "🟡 **لم أجد صفقة تستوفي الشروط حالياً.**\n\n"
+                "وده أفضل من مطاردة عملة انفجرت بالفعل.",
                 message.chat.id,
                 status.message_id,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
             return
 
-        top_results = results[:3]
+        top_results = results[:5]
 
         for result in top_results:
             bot.send_message(
                 message.chat.id,
                 build_trade_message(result),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
-            time.sleep(0.5)
+            time.sleep(0.4)
 
         bot.edit_message_text(
-            f"✅ انتهى الفحص.\n\n"
-            f"تم العثور على **{len(results)}** إشارات.\n"
+            "✅ **انتهى الفحص**\n\n"
+            f"وجدت **{len(results)}** فرص مطابقة للشروط.\n"
             f"تم إرسال أفضل **{len(top_results)}** فرص.",
             message.chat.id,
             status.message_id,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
     except Exception as e:
         bot.edit_message_text(
-            "❌ حدث خطأ أثناء فحص السوق:\n\n"
-            f"`{str(e)[:500]}`",
+            "❌ **خطأ أثناء Scan**\n\n"
+            f"`{str(e)[:700]}`",
             message.chat.id,
             status.message_id,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
 
@@ -147,7 +165,7 @@ def scan_command(message):
 def coin_handler(message):
     text = message.text.strip().upper()
 
-    if text == "SCAN" or text == "تحليل":
+    if text in ("SCAN", "تحليل", "فحص"):
         scan_command(message)
         return
 
@@ -155,8 +173,7 @@ def coin_handler(message):
 
     status = bot.reply_to(
         message,
-        f"🔎 جاري تحليل `{symbol}` وإعداد التقرير الفني...",
-        parse_mode="Markdown"
+        f"🔎 جاري تحليل `{symbol}`...",
     )
 
     try:
@@ -164,11 +181,10 @@ def coin_handler(message):
 
         if not result:
             bot.edit_message_text(
-                f"📊 `{symbol}`\n\n"
-                "🟡 **عذراً، تعذر جلب بيانات هذه العملة حالياً من منصة Binance.**",
+                f"❌ لم أستطع جلب بيانات `{symbol}` من Binance.",
                 message.chat.id,
                 status.message_id,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
             return
 
@@ -176,44 +192,53 @@ def coin_handler(message):
             build_trade_message(result),
             message.chat.id,
             status.message_id,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
     except Exception as e:
         bot.edit_message_text(
-            "❌ تعذر تحليل العملة.\n\n"
-            f"`{str(e)[:500]}`",
+            "❌ **حدث خطأ أثناء التحليل**\n\n"
+            f"`{str(e)[:700]}`",
             message.chat.id,
             status.message_id,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
 
-# إنشاء تطبيق ويب مصغر لتشغيل سيرفر الويب بجانب البوت لتوافق تام مع Render
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
-    return "Bot is running 24/7!"
+    return "Binance AI Scanner is running."
+
+
+@app.route("/health")
+def health():
+    return "OK"
+
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-
-if __name__ == "__main__":
-    print("🤖 Binance AI Scanner Started with Web Server...")
-
-    # تشغيل سيرفر الويب في مسار خلفي (Background Thread)
-    server_thread = threading.Thread(target=run_flask)
-    server_thread.daemon = True
-    server_thread.start()
-
-    # تشغيل البوت
-    bot.infinity_polling(
-        skip_pending=True,
-        timeout=30,
-        long_polling_timeout=30
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False,
     )
 
 
+if __name__ == "__main__":
+    print("🤖 Binance AI Scanner Started")
+
+    server_thread = threading.Thread(
+        target=run_flask,
+        daemon=True,
+    )
+    server_thread.start()
+
+    bot.infinity_polling(
+        skip_pending=True,
+        timeout=30,
+        long_polling_timeout=30,
+    )
