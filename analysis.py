@@ -1,23 +1,20 @@
 import requests
 from typing import Dict, List, Optional
 
-# استخدام رابط بديل ومضمون لسحب بيانات الأسعار والشموع مباشرة
-BASE_URL = "https://api.binance.com/api/v3"
+BINANCE_BASE_URL = "https://api.binance.com/api/v3"
 
 def get_usdt_symbols() -> List[str]:
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "GPSUSDT"]
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "GPSUSDT"]
 
 def get_klines(symbol: str, limit: int = 30):
     try:
-        # محاولة السحب من بينانس أولاً
-        res = requests.get(f"{BASE_URL}/klines", params={"symbol": symbol.upper(), "interval": "1h", "limit": limit}, timeout=7)
+        res = requests.get(f"{BINANCE_BASE_URL}/klines", params={"symbol": symbol.upper(), "interval": "1h", "limit": limit}, timeout=7)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
                 return [{"close": float(r[4]), "volume": float(r[5])} for r in data]
         
-        # لو بينانس رفضت، بنجيب السعر الحالي افتراضياً عشان البوت ميعطّلش ويجيب نتيجة
-        price_res = requests.get(f"{BASE_URL}/ticker/price", params={"symbol": symbol.upper()}, timeout=5)
+        price_res = requests.get(f"{BINANCE_BASE_URL}/ticker/price", params={"symbol": symbol.upper()}, timeout=5)
         if price_res.status_code == 200:
             p = float(price_res.json().get("price", 10.0))
             return [{"close": p, "volume": 1000.0} for _ in range(limit)]
