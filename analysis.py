@@ -5,7 +5,7 @@ import requests
 
 BINANCE_BASE_URL = "https://data-api.binance.vision"
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Binance-AI-Scanner/2.0", "Accept": "application/json"})
+SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"})
 
 def format_number(val: float) -> str:
     if val is None:
@@ -19,8 +19,9 @@ def format_number(val: float) -> str:
 
 def binance_get(endpoint: str, params: Optional[dict] = None):
     try:
-        res = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=10)
-        res.raise_for_status()
+        res = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=8)
+        if res.status_code != 200:
+            return None
         data = res.json()
         if isinstance(data, dict) and data.get("code"):
             return None
@@ -35,7 +36,7 @@ def get_usdt_symbols() -> List[str]:
     exc = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT", "BRLUSDT", "GBPUSDT", "AUDUSDT", "USDPUSDT"}
     return [s["symbol"] for s in data["symbols"] if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT" and s["symbol"] not in exc]
 
-def get_klines(symbol: str, limit: int = 50):
+def get_klines(symbol: str, limit: int = 40):
     data = binance_get("/api/v3/klines", {"symbol": symbol, "interval": "1h", "limit": limit})
     if not data or not isinstance(data, list):
         return []
@@ -84,7 +85,6 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     price = closes[-1]
     rsi_val = calculate_rsi(closes, 14)
     
-    # قياس دخول السيولة (مقارنة فوليوم آخر شمعة بمتوسط آخر 10 شمعات)
     avg_volume = sum(volumes[-11:-1]) / 10 if len(volumes) >= 11 else volumes[-1]
     vol_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1.0
     
@@ -92,16 +92,15 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     recent_low = min(lows[-10:])
     price_range = (recent_high - recent_low) / recent_low
     
-    # شروط الانفجار وتجميع السيولة (فوليوم عالي + تجميع ضيق + RSI مناسب)
-    is_volume_spike = vol_ratio >= 1.6
-    is_tight_range = price_range <= 0.035
-    is_near_resistance = (recent_high - price) / recent_high <= 0.02
+    is_volume_spike = vol_ratio >= 1.4
+    is_tight_range = price_range <= 0.04
+    is_near_resistance = (recent_high - price) / recent_high <= 0.03
     
     reasons = []
     score = 50
     
     if is_volume_spike:
-        reasons.append(f"🔥 دخول سيولة ضخمة (الفوليوم {vol_ratio:.1f}x من المتوسط)")
+        reasons.append(f"🔥 دخول سيولة قوية (الفوليوم {vol_ratio:.1f}x)")
         score += 20
     if is_tight_range:
         reasons.append("🔍 تجميع سعري ضيق يسبق الانفجار")
@@ -110,8 +109,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         reasons.append("🎯 تختبر منطقة المقاومة للاختراق")
         score += 15
         
-    # إذا تحققت شروط السيولة والانفجار
-    if is_volume_spike and (is_tight_range or is_near_resistance) and rsi_val < 70:
+    if is_volume_spike and (is_tight_range or is_near_resistance) and rsi_val < 75:
         return {
             "symbol": symbol,
             "direction": "LONG",
@@ -121,10 +119,10 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "volume_ratio": vol_ratio,
             "entry_low": price * 0.995,
             "entry_high": price * 1.002,
-            "stop": recent_low * 0.985,
+            "stop": recent_low * 0.98,
             "tp1": recent_high * 1.02,
             "tp2": recent_high * 1.05,
-            "tp3": recent_high * 1.09,
+            "tp3": recent_high * 1.10,
             "support": recent_low,
             "resistance": recent_high,
             "reasons": reasons,
@@ -136,14 +134,14 @@ def scan_market() -> List[Dict]:
     symbols = get_usdt_symbols()
     results = []
     
-    # فحص سريع ومتوازي لكل العملات لضمان أعلى أداء
-    with ThreadPoolExecutor(max_workers=10) as executor:
+قللنا عدد الـ Workers لـ 4 عشان ما نضغطش على السيرفر ولا على بينانس، وضفنا أمان أعلى في الـ Headers:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         future_to_symbol = {executor.submit(analyze_symbol, s): s for s in symbols}
         for future in as_completed(future_to_symbol):
             res = future.result()
             if res:
                 results.append(res)
+            time.sleep(0.01)
                 
-    # ترتيب العملات حسب أقوى دخول سيولة وسكور
     results = sorted(results, key=lambda x: x["score"], reverse=True)
     return results
