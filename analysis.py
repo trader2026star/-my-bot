@@ -3,7 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 import requests
 
-BINANCE_BASE_URL = "https://data-api.binance.vision"
+# استخدام رابط بينانس الرئيسي المباشر لضمان جلب بيانات كل العملات بدقة
+BINANCE_BASE_URL = "https://api.binance.com"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"})
 
@@ -19,7 +20,7 @@ def format_number(val: float) -> str:
 
 def binance_get(endpoint: str, params: Optional[dict] = None):
     try:
-        res = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=8)
+        res = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=10)
         if res.status_code != 200:
             return None
         data = res.json()
@@ -92,9 +93,9 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     recent_low = min(lows[-10:])
     price_range = (recent_high - recent_low) / recent_low
     
-    is_volume_spike = vol_ratio >= 1.4
-    is_tight_range = price_range <= 0.04
-    is_near_resistance = (recent_high - price) / recent_high <= 0.03
+    is_volume_spike = vol_ratio >= 1.3
+    is_tight_range = price_range <= 0.045
+    is_near_resistance = (recent_high - price) / recent_high <= 0.035
     
     reasons = []
     score = 50
@@ -109,37 +110,36 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         reasons.append("🎯 تختبر منطقة المقاومة للاختراق")
         score += 15
         
-    if is_volume_spike and (is_tight_range or is_near_resistance) and rsi_val < 75:
-        return {
-            "symbol": symbol,
-            "direction": "LONG",
-            "score": min(score, 98),
-            "price": price,
-            "rsi": rsi_val,
-            "volume_ratio": vol_ratio,
-            "entry_low": price * 0.995,
-            "entry_high": price * 1.002,
-            "stop": recent_low * 0.98,
-            "tp1": recent_high * 1.02,
-            "tp2": recent_high * 1.05,
-            "tp3": recent_high * 1.10,
-            "support": recent_low,
-            "resistance": recent_high,
-            "reasons": reasons,
-            "is_ready": True
-        }
-    return None
+    # إذا كانت العملة مطلوبة بالاسم، نعيد تحليلها حتى لو لم تكن ضمن شروط الـ Scan القاسية
+    return {
+        "symbol": symbol,
+        "direction": "LONG",
+        "score": min(score, 98),
+        "price": price,
+        "rsi": rsi_val,
+        "volume_ratio": vol_ratio,
+        "entry_low": price * 0.995,
+        "entry_high": price * 1.002,
+        "stop": recent_low * 0.98,
+        "tp1": recent_high * 1.02,
+        "tp2": recent_high * 1.05,
+        "tp3": recent_high * 1.10,
+        "support": recent_low,
+        "resistance": recent_high,
+        "reasons": reasons if reasons else ["📊 تحليل فني مباشر لحركة السعر الحالية"],
+        "is_ready": is_volume_spike or is_near_resistance
+    }
 
 def scan_market() -> List[Dict]:
     symbols = get_usdt_symbols()
     results = []
     
-قللنا عدد الـ Workers لـ 4 عشان ما نضغطش على السيرفر ولا على بينانس، وضفنا أمان أعلى في الـ Headers:
     with ThreadPoolExecutor(max_workers=4) as executor:
         future_to_symbol = {executor.submit(analyze_symbol, s): s for s in symbols}
         for future in as_completed(future_to_symbol):
             res = future.result()
-            if res:
+            # في الفحص العام، نأخذ فقط العملات التي حققت شروط السيولة والانفجار القوية
+            if res and res.get("is_ready") and res.get("score", 0) >= 70:
                 results.append(res)
             time.sleep(0.01)
                 
