@@ -1,5 +1,4 @@
 import time
-from decimal import Decimal
 from typing import Dict, List, Optional
 import requests
 
@@ -73,11 +72,13 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         pass
     return None
 
-def scan_market(symbol: Optional[str] = None) -> List[Dict]:
+def scan_market(*args, **kwargs) -> List[Dict]:
     results = []
+    symbol = args[0] if args else kwargs.get("symbol")
     symbols = [symbol] if symbol else get_usdt_symbols()
     for s in symbols:
-        res = analyze_symbol(s)
-        if res: results.append(res)
-        time.sleep(0.02)
+        if isinstance(s, str):
+            res = analyze_symbol(s)
+            if res: results.append(res)
+            time.sleep(0.02)
     return results
