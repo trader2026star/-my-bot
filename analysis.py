@@ -3,7 +3,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 import requests
 
-# استخدام رابط بينانس الرئيسي المباشر لضمان جلب بيانات كل العملات بدقة
 BINANCE_BASE_URL = "https://api.binance.com"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"})
@@ -75,7 +74,7 @@ def calculate_rsi(closes: List[float], period: int = 14) -> float:
 
 def analyze_symbol(symbol: str) -> Optional[Dict]:
     candles = get_klines(symbol, 40)
-    if len(candles) < 25:
+    if len(candles) < 20:
         return None
     
     closes = [c["close"] for c in candles]
@@ -93,24 +92,22 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     recent_low = min(lows[-10:])
     price_range = (recent_high - recent_low) / recent_low
     
-    is_volume_spike = vol_ratio >= 1.3
-    is_tight_range = price_range <= 0.045
-    is_near_resistance = (recent_high - price) / recent_high <= 0.035
-    
     reasons = []
-    score = 50
+    score = 60
     
-    if is_volume_spike:
+    if vol_ratio >= 1.2:
         reasons.append(f"🔥 دخول سيولة قوية (الفوليوم {vol_ratio:.1f}x)")
-        score += 20
-    if is_tight_range:
-        reasons.append("🔍 تجميع سعري ضيق يسبق الانفجار")
         score += 15
-    if is_near_resistance:
-        reasons.append("🎯 تختبر منطقة المقاومة للاختراق")
+    if price_range <= 0.05:
+        reasons.append("🔍 تجميع سعري هادئ يسبق الانفجار")
         score += 15
+    if (recent_high - price) / recent_high <= 0.04:
+        reasons.append("🎯 قريبة من اختبار المقاومة")
+        score += 10
         
-    # إذا كانت العملة مطلوبة بالاسم، نعيد تحليلها حتى لو لم تكن ضمن شروط الـ Scan القاسية
+    if not reasons:
+        reasons.append("📊 تحليل فني مباشر لحركة السعر ونطاق التداول")
+
     return {
         "symbol": symbol,
         "direction": "LONG",
@@ -126,22 +123,22 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         "tp3": recent_high * 1.10,
         "support": recent_low,
         "resistance": recent_high,
-        "reasons": reasons if reasons else ["📊 تحليل فني مباشر لحركة السعر الحالية"],
-        "is_ready": is_volume_spike or is_near_resistance
+        "reasons": reasons,
+        "is_ready": True
     }
 
 def scan_market() -> List[Dict]:
     symbols = get_usdt_symbols()
     results = []
     
+    # فحص العملات وإرجاع العملات التي تحافظ على نشاط وسكور جيد
     with ThreadPoolExecutor(max_workers=4) as executor:
         future_to_symbol = {executor.submit(analyze_symbol, s): s for s in symbols}
         for future in as_completed(future_to_symbol):
             res = future.result()
-            # في الفحص العام، نأخذ فقط العملات التي حققت شروط السيولة والانفجار القوية
-            if res and res.get("is_ready") and res.get("score", 0) >= 70:
+            if res and res.get("score", 0) >= 65:
                 results.append(res)
             time.sleep(0.01)
                 
     results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results
+    return results[:5]  # إرجاع أفضل 5 فرص جاهزة مباشرة
