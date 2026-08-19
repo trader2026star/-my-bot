@@ -22,7 +22,7 @@ def binance_get(endpoint: str, params: Optional[dict] = None):
 def get_usdt_symbols() -> List[str]:
     data = binance_get("/api/v3/exchangeInfo")
     excluded = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT", "BRLUSDT", "GBPUSDT", "AUDUSDT", "USDPUSDT"}
-    return [item["symbol"] for item in data.get("symbols", []) if item.get("status") == "TRADING" and item.get("quoteAsset"] == "USDT" and item.get("symbol") not in excluded]
+    return [item["symbol"] for item in data.get("symbols", []) if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT" and item.get("symbol") not in excluded]
 
 def get_klines(symbol: str, interval: str = "1h", limit: int = 100):
     data = binance_get("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
