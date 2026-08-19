@@ -4,90 +4,79 @@ from typing import Dict, List, Optional
 import requests
 
 BINANCE_BASE_URL = "https://data-api.binance.vision"
-
 SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Binance-AI-Scanner/2.0",
-    "Accept": "application/json",
-})
+SESSION.headers.update({"User-Agent": "Binance-AI-Scanner/2.0", "Accept": "application/json"})
 
 def binance_get(endpoint: str, params: Optional[dict] = None):
-    response = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=15)
-    response.raise_for_status()
-    data = response.json()
+    res = SESSION.get(BINANCE_BASE_URL + endpoint, params=params or {}, timeout=15)
+    res.raise_for_status()
+    data = res.json()
     if isinstance(data, dict) and data.get("code"):
-        raise RuntimeError(f"Binance API error {data.get('code')}: {data.get('msg')}")
+        raise RuntimeError(f"API Error {data.get('code')}")
     return data
 
 def get_usdt_symbols() -> List[str]:
     data = binance_get("/api/v3/exchangeInfo")
-    excluded = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT", "BRLUSDT", "GBPUSDT", "AUDUSDT", "USDPUSDT"}
-    return [item["symbol"] for item in data.get("symbols", []) if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT" and item.get("symbol") not in excluded]
+    exc = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT", "BRLUSDT", "GBPUSDT", "AUDUSDT", "USDPUSDT"}
+    return [s["symbol"] for s in data.get("symbols", []) if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT" and s["symbol"] not in exc]
 
-def get_klines(symbol: str, interval: str = "1h", limit: int = 100):
-    data = binance_get("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
-    return [{"close": float(row[4]), "high": float(row[2]), "low": float(row[3]), "volume": float(row[5])} for row in data]
+def get_klines(symbol: str, limit: int = 60):
+    data = binance_get("/api/v3/klines", {"symbol": symbol, "interval": "1h", "limit": limit})
+    return [{"close": float(r[4]), "high": float(r[2]), "low": float(r[3]), "volume": float(r[5])} for r in data]
 
 def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
-    result = [None] * len(values)
-    if len(values) <= period: return result
+    res = [None] * len(values)
+    if len(values) <= period: return res
     gains, losses = [], []
     for i in range(1, len(values)):
         diff = values[i] - values[i-1]
         gains.append(max(diff, 0))
         losses.append(max(-diff, 0))
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    ag = sum(gains[:period]) / period
+    al = sum(losses[:period]) / period
     for i in range(period, len(gains)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        rs = avg_gain / (avg_loss if avg_loss != 0 else 0.001)
-        result[i+1] = 100 - (100 / (1 + rs))
-    return result
-
-def is_accumulation_phase(candles: List[dict], lookback: int = 10):
-    if len(candles) < lookback + 5: return False
-    recent = candles[-lookback:]
-    highs = [c["high"] for c in recent]
-    lows = [c["low"] for c in recent]
-    volumes = [c["volume"] for c in recent]
-    
-    price_range = (max(highs) - min(lows)) / min(lows)
-    volume_increasing = volumes[-1] > volumes[-2] > volumes[-3]
-    resistance = max(highs)
-    price = candles[-1]["close"]
-    near_resistance = (resistance - price) / resistance < 0.015
-    
-    return price_range < 0.025 and volume_increasing and near_resistance
+        ag = (ag * (period - 1) + gains[i]) / period
+        al = (al * (period - 1) + losses[i]) / period
+        rs = ag / (al if al != 0 else 0.001)
+        res[i+1] = 100 - (100 / (1 + rs))
+    return res
 
 def analyze_symbol(symbol: str) -> Optional[Dict]:
     try:
-        candles = get_klines(symbol, "1h", 60)
+        candles = get_klines(symbol, 60)
         if len(candles) < 30: return None
         closes = [c["close"] for c in candles]
         
-        rsi_val = rsi(closes, 14)[-1]
-        if rsi_val is None or rsi_val > 60: return None
+        r = rsi(closes, 14)[-1]
+        if r is None or r > 60: return None
         
-        if not is_accumulation_phase(candles): return None
+        recent = candles[-10:]
+        highs = [c["high"] for c in recent]
+        lows = [c["low"] for c in recent]
+        vols = [c["volume"] for c in recent]
         
+        pr_range = (max(highs) - min(lows)) / min(lows)
+        vol_up = vols[-1] > vols[-2] > vols[-3]
+        res_val = max(highs)
         price = closes[-1]
-        resistance = max(c["high"] for c in candles[-20:])
+        near_res = (res_val - price) / res_val < 0.015
         
-        return {
-            "symbol": symbol,
-            "price": price,
-            "resistance": resistance,
-            "reasons": ["🔍 رصد تجميع سعري ضيق", "🚀 فوليوم متصاعد قبل الانفجار", "🎯 قريبة جداً من المقاومة"],
-            "is_ready": True
-        }
-    except: return None
+        if pr_range < 0.025 and vol_up and near_res:
+            return {
+                "symbol": symbol,
+                "price": price,
+                "resistance": res_val,
+                "reasons": ["🔍 رصد تجميع سعري ضيق", "🚀 فوليوم متصاعد قبل الانفجار", "🎯 قريبة جداً من المقاومة"],
+                "is_ready": True
+            }
+    except:
+        pass
+    return None
 
 def scan_market() -> List[Dict]:
-    symbols = get_usdt_symbols()
     results = []
-    for symbol in symbols:
-        res = analyze_symbol(symbol)
+    for s in get_usdt_symbols():
+        res = analyze_symbol(s)
         if res: results.append(res)
         time.sleep(0.02)
     return results
