@@ -1,247 +1,124 @@
 import os
 import time
-import threading
+import requests
+import pandas as pd
+import numpy as np
+from binance.um_futures import UMFutures
 
-from flask import Flask
-import telebot
+# بيانات التيليجرام والمنصة (تأكد إنها متظبطة في الـ Environment Variables على Render)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-from analysis import analyze_symbol, scan_market, format_number
+client = UMFutures()
 
+# قائمة العملات السريعة والمميزة إضافية (التي تتميز بالحركة القوية والسريعة للتداول اليومي)
+SELECTED_WATCHLIST = [
+    "SOLUSDT", "XRPUSDT", "DOGEUSDT", "PEPEUSDT", "SUIUSDT", 
+    "NEARUSDT", "AVAXUSDT", "RENDERUSDT", "FETUSDT", "INJUSDT"
+]
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("API_TOKEN")
-
-if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN أو API_TOKEN غير موجود في Environment Variables"
-    )
-
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-
-
-def build_trade_message(result):
-    direction = result.get("direction", "WAIT")
-
-    if direction == "LONG":
-        direction_text = "🟢 LONG"
-    elif direction == "SHORT":
-        direction_text = "🔴 SHORT"
-    else:
-        direction_text = "🟡 WAIT"
-
-    reasons = result.get("reasons", [])
-    reasons_text = "\n".join(f"• {x}" for x in reasons)
-
-    if not reasons_text:
-        reasons_text = "• لا توجد أسباب كافية حالياً."
-
-    state = result.get("state", "NORMAL")
-
-    state_names = {
-        "ACCUMULATION": "🟢 تجميع + مراقبة دخول السيولة",
-        "PRE_BREAKOUT": "🔥 قبل الاختراق",
-        "BREAKOUT": "🚀 اختراق",
-        "DISTRIBUTION": "🔴 تصريف + خروج سيولة",
-        "SELL_PRESSURE": "📉 ضغط بيعي",
-        "NORMAL": "⚪ حركة عادية",
-    }
-
-    state_text = state_names.get(state, state)
-
-    message = (
-        "🤖 **Binance AI Scanner**\n\n"
-        f"💎 العملة: `{result['symbol']}`\n"
-        f"📈 الاتجاه: **{direction_text}**\n"
-        f"⭐ Score: **{result['score']}/100**\n"
-        f"🧠 الحالة: **{state_text}**\n\n"
-        f"💰 السعر: `{format_number(result['price'])}`\n"
-        f"📊 RSI: `{result['rsi']:.1f}`\n"
-        f"📊 Volume: `{result['volume_ratio']:.2f}x`\n"
-        f"💧 Buy Pressure: `{result['buy_pressure']:.1f}%`\n"
-        f"📈 Trend: `{result['trend']}`\n\n"
-    )
-
-    if direction in ("LONG", "SHORT"):
-        message += (
-            "📍 **منطقة الدخول**\n"
-            f"`{format_number(result['entry_low'])}` - "
-            f"`{format_number(result['entry_high'])}`\n\n"
-            "🛑 **Stop Loss**\n"
-            f"`{format_number(result['stop'])}`\n\n"
-            "🎯 **الأهداف**\n"
-            f"TP1: `{format_number(result['tp1'])}`\n"
-            f"TP2: `{format_number(result['tp2'])}`\n"
-            f"TP3: `{format_number(result['tp3'])}`\n\n"
-        )
-
-    message += (
-        "🛡️ **الدعم والمقاومة**\n"
-        f"Support: `{format_number(result['support'])}`\n"
-        f"Resistance: `{format_number(result['resistance'])}`\n\n"
-        "🔍 **التحليل**\n"
-        f"{reasons_text}\n\n"
-    )
-
-    if result.get("is_ready"):
-        message += "✅ **الصفقة: جاهزة للمراقبة/الدخول حسب تأكيد السعر**"
-    else:
-        message += "🟡 **الحالة: انتظار تأكيد — لا تطارد السعر**"
-
-    return message
-
-
-@bot.message_handler(commands=["start", "help"])
-def start(message):
-    bot.reply_to(
-        message,
-        "🤖 **Binance AI Scanner**\n\n"
-        "🔎 `/scan` = فحص السوق واكتشاف العملات قبل الحركة.\n\n"
-        "💎 أرسل رمز العملة مثل:\n"
-        "`BTC`\n"
-        "`ETH`\n"
-        "`SOL`\n\n"
-        "وسيتم تحليل الاتجاه والسيولة والحجم والتجميع والتصريف.",
-    )
-
-
-@bot.message_handler(commands=["scan"])
-def scan_command(message):
-    status = bot.reply_to(
-        message,
-        "🔎 **جاري فحص Binance...**\n\n"
-        "🧠 أبحث عن:\n"
-        "• التجميع\n"
-        "• دخول السيولة\n"
-        "• زيادة الحجم\n"
-        "• بداية الترند\n"
-        "• العملات قبل الاختراق\n\n"
-        "⏳ انتظر...",
-    )
-
-    try:
-        results = scan_market()
-
-        if not results:
-            bot.edit_message_text(
-                "🟡 **لم أجد صفقة تستوفي الشروط حالياً.**\n\n"
-                "وده أفضل من مطاردة عملة انفجرت بالفعل.",
-                message.chat.id,
-                status.message_id,
-                parse_mode="Markdown",
-            )
-            return
-
-        top_results = results[:5]
-
-        for result in top_results:
-            bot.send_message(
-                message.chat.id,
-                build_trade_message(result),
-                parse_mode="Markdown",
-            )
-            time.sleep(0.4)
-
-        bot.edit_message_text(
-            "✅ **انتهى الفحص**\n\n"
-            f"وجدت **{len(results)}** فرص مطابقة للشروط.\n"
-            f"تم إرسال أفضل **{len(top_results)}** فرص.",
-            message.chat.id,
-            status.message_id,
-            parse_mode="Markdown",
-        )
-
-    except Exception as e:
-        bot.edit_message_text(
-            "❌ **خطأ أثناء Scan**\n\n"
-            f"`{str(e)[:700]}`",
-            message.chat.id,
-            status.message_id,
-            parse_mode="Markdown",
-        )
-
-
-@bot.message_handler(
-    func=lambda message: message.text and not message.text.startswith("/")
-)
-def coin_handler(message):
-    text = message.text.strip().upper()
-
-    if text in ("SCAN", "تحليل", "فحص"):
-        scan_command(message)
+def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials missing!")
         return
-
-    symbol = text if text.endswith("USDT") else text + "USDT"
-
-    status = bot.reply_to(
-        message,
-        f"🔎 جاري تحليل `{symbol}`...",
-    )
-
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        result = analyze_symbol(symbol)
-
-        if not result:
-            bot.edit_message_text(
-                f"❌ لم أستطع جلب بيانات `{symbol}` من Binance.",
-                message.chat.id,
-                status.message_id,
-                parse_mode="Markdown",
-            )
-            return
-
-        bot.edit_message_text(
-            build_trade_message(result),
-            message.chat.id,
-            status.message_id,
-            parse_mode="Markdown",
-        )
-
+        requests.post(url, json=payload)
     except Exception as e:
-        bot.edit_message_text(
-            "❌ **حدث خطأ أثناء التحليل**\n\n"
-            f"`{str(e)[:700]}`",
-            message.chat.id,
-            status.message_id,
-            parse_mode="Markdown",
-        )
+        print(f"Error sending telegram message: {e}")
 
+def get_active_symbols():
+    """دمج العملات الأكثر نشاطاً في السوق اليوم مع القائمة السريعة المحددة"""
+    symbols_set = set(SELECTED_WATCHLIST)
+    try:
+        ticker_info = client.ticker_24hr_price_change()
+        df = pd.DataFrame(ticker_info)
+        df['quoteVolume'] = df['quoteVolume'].astype(float)
+        
+        # اختيار أعلى 15 عملة في الفوليوم اليومي
+        usdt_pairs = df[df['symbol'].str.endswith('USDT')].copy()
+        top_volume_coins = usdt_pairs.sort_values(by='quoteVolume', ascending=False).head(15)['symbol'].tolist()
+        
+        # دمج القائمتين لضمان عدم تفويت أي فرصة سريعة
+        for sym in top_volume_coins:
+            symbols_set.add(sym)
+            
+    except Exception as e:
+        print(f"Error fetching top volume symbols: {e}")
+        
+    return list(symbols_set)
 
-app = Flask(__name__)
+def analyze_market():
+    symbols = get_active_symbols()
+    print(f"Scanning {len(symbols)} active & watchlist symbols...")
+    
+    for symbol in symbols:
+        try:
+            # جلب الشمعات (فريم 1 ساعة للحركة السريعة والمدروسة)
+            klines = client.klines(symbol=symbol, interval='1h', limit=50)
+            df = pd.DataFrame(klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'n_trades',
+                'taker_buy_base', 'taker_buy_quote', 'ignore'
+            ])
+            df['close'] = df['close'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            
+            # حساب مؤشر القوة النسبية RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+            
+            current_price = df['close'].iloc[-1]
+            current_rsi = df['rsi'].iloc[-1]
+            
+            # إشارة شراء (Long): تشبع بيعي RSI < 35 (فرصة ارتداد صاعد)
+            if current_rsi < 35:
+                tp = current_price * 1.015  # هدف سريع 1.5%
+                sl = current_price * 0.990  # ستوب لص 1%
+                msg = (
+                    f"🟢 **فرصة صعود (LONG)** 🟢\n"
+                    f"💎 العملة: `{symbol}`\n"
+                    f"💵 السعر الحالي: `{current_price}`\n"
+                    f"📊 مؤشر RSI: `{current_rsi:.2f}` (تشبع بيعي)\n"
+                    f"🎯 الهدف المقترح: `{tp:.4f}`\n"
+                    f"🛑 وقف الخسارة: `{sl:.4f}`\n"
+                    f"💡 *مخصص برأس مال 3$ وهدف سريع*"
+                )
+                send_telegram_message(msg)
+                time.sleep(2)
 
-
-@app.route("/")
-def home():
-    return "Binance AI Scanner is running."
-
-
-@app.route("/health")
-def health():
-    return "OK"
-
-
-# تشغيل سيرفر الـ Flask في الخلفية لضمان بقاء الخدمة شغالة على Render
-def run_flask():
-    port = int(os.environ.get("PORT", "10000"))
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False,
-    )
-
+            # إشارة بيع (Short): تشبع شرائي RSI > 65 (فرصة هبوط وانعكاس)
+            elif current_rsi > 65:
+                tp = current_price * 0.985  # هدف هبوط سريع 1.5%
+                sl = current_price * 1.010  # ستوب لص 1%
+                msg = (
+                    f"🔴 **فرصة هبوط (SHORT)** 🔴\n"
+                    f"💎 العملة: `{symbol}`\n"
+                    f"💵 السعر الحالي: `{current_price}`\n"
+                    f"📊 مؤشر RSI: `{current_rsi:.2f}` (تشبع شرائي)\n"
+                    f"🎯 الهدف المقترح: `{tp:.4f}`\n"
+                    f"🛑 وقف الخسارة: `{sl:.4f}`\n"
+                    f"💡 *مخصص برأس مال 3$ وهدف سريع*"
+                )
+                send_telegram_message(msg)
+                time.sleep(2)
+                
+        except Exception as e:
+            print(f"Error analyzing {symbol}: {e}")
+            continue
 
 if __name__ == "__main__":
-    print("🤖 Binance AI Scanner Started")
-
-    # تشغيل سيرفر الـ Flask كـ Background Thread
-    server_thread = threading.Thread(
-        target=run_flask,
-        daemon=True,
-    )
-    server_thread.start()
-
-    # تشغيل البوت الأساسي
-    bot.infinity_polling(
-        skip_pending=True,
-        timeout=30,
-        long_polling_timeout=30,
-    )
+    print("Bot started with Enhanced Watchlist & Auto-Scanner for Long/Short...")
+    while True:
+        analyze_market()
+        # فحص السوق كل 15 دقيقة
+        time.sleep(900)
