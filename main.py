@@ -22,8 +22,7 @@ def handle_message(message):
         try:
             bot.reply_to(message, "⚡ جاري مراقبة السيولة وصيد بدايات الترند للعملات السريعة...")
             
-            # جلب البيانات وترتيبها حسب السيولة (Volume) لصيد العملات السريعة
-            url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=50&page=1&sparkline=false"
+            url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=60&page=1&sparkline=false"
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             
             response = requests.get(url, headers=headers, timeout=10)
@@ -37,37 +36,40 @@ def handle_message(message):
             exhaustion_short = []  
             
             for coin in data:
+                # تأكد من جلب البيانات وتفادي القيم الفارغة NoneType
+                price = coin.get('current_price')
+                change = coin.get('price_change_percentage_24h')
+                volume = coin.get('total_volume')
+                
+                if price is None or change is None or volume is None:
+                    continue
+                
                 symbol = coin.get('symbol', '').upper()
-                price = coin.get('current_price', 0)
-                change = coin.get('price_change_percentage_24h', 0)
-                volume = coin.get('total_volume', 0)
                 
-                # 1. صيد الترند الصاعد: عملة هابطة أو في القاع (-10% إلى +2%) ولكن جمعت سيولة ضخمة جداً
-                if -10 <= change <= 2 and volume > 30000000:
-                    accumulation_long.append((symbol, price, change, volume))
+                # 1. صيد الترند الصاعد: عملة هابطة أو في القاع (-10% إلى +2%) ولكن جمعت سيولة ضخمة
+                if -10 <= change <= 2 and volume > 25000000:
+                    accumulation_long.append((symbol, float(price), float(change), float(volume)))
                 
-                # 2. صيد الترند الهابط: عملة سريعة طارت فوق 8% ووصلت لمرحلة التشبع (انعكاس)
-                elif change > 8 and volume > 40000000:
-                    exhaustion_short.append((symbol, price, change, volume))
+                # 2. صيد الترند الهابط: عملة سريعة طارت فوق 8% ووصلت لمرحلة التشبع
+                elif change > 8 and volume > 35000000:
+                    exhaustion_short.append((symbol, float(price), float(change), float(volume)))
             
             reply = "🎯 **تقرير صياد الترند والسيولة السريعة:**\n\n"
             
             reply += "🟢 **صعود من القاع (جمعت سيولة لبدء الترند / LONG):**\n"
             if accumulation_long:
-                # عرض أفضل 3 فرص
                 for sym, p, ch, vol in accumulation_long[:3]:
-                    tp = p * 1.018  # هدف 1.8%
-                    sl = p * 0.988  # وقف خسارة 1.2%
+                    tp = p * 1.018  
+                    sl = p * 0.988  
                     reply += f"💎 `{sym}USDT`\n💵 السعر: `{p}` | التغير: `{ch:.2f}%`\n📊 السيولة: `{vol:,.0f}$`\n🎯 هدف: `{tp:.4f}` | 🛑 وقف: `{sl:.4f}`\n\n"
             else:
-                reply += "لا توجد فرص تجميع واضحة في القاع حالياً.\n\n"
+                reply += "لا توجد فرص تجميع في القاع حالياً.\n\n"
                 
             reply += "🔴 **هبوط من القمة (تشبع شرائي ونهاية الترند / SHORT):**\n"
             if exhaustion_short:
-                # عرض أفضل 3 فرص
                 for sym, p, ch, vol in exhaustion_short[:3]:
-                    tp = p * 0.982  # هدف هبوط 1.8%
-                    sl = p * 1.012  # وقف خسارة 1.2% فوق القمة
+                    tp = p * 0.982  
+                    sl = p * 1.012  
                     reply += f"💎 `{sym}USDT`\n💵 السعر: `{p}` | التغير: `{ch:.2f}%`\n📊 السيولة: `{vol:,.0f}$`\n🎯 هدف: `{tp:.4f}` | 🛑 وقف: `{sl:.4f}`\n\n"
             else:
                 reply += "لا توجد عملات في قمة التشبع حالياً.\n"
@@ -82,12 +84,10 @@ def handle_message(message):
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     
-    # هذا السطر مهم جداً لمنع خطأ 409 Conflict الذي ظهر لك سابقاً
     try:
         bot.remove_webhook()
     except:
         pass
         
-    print("Trend Hunter Bot is running cleanly...")
-    # skip_pending=True تتجاهل أي رسائل قديمة معلقة لتجنب التضارب
+    print("Trend Hunter Bot is running safely...")
     bot.infinity_polling(skip_pending=True)
