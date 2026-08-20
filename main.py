@@ -19,23 +19,20 @@ def handle_message(message):
     text = message.text.lower().strip()
     if text in ["scan", "فحص", "سيولة"]:
         try:
-            bot.reply_to(message, "⚡ جاري فحص السوق بدقة...")
+            bot.reply_to(message, "⚡ جاري فحص السوق...")
             
-            # استخدام API قوي ومجاني بدون حظر
-            url = "https://api.coincap.io/v2/assets?limit=50"
-            response = requests.get(url, timeout=10)
-            result = response.json()
+            # جلب البيانات برابط مباشر وسريع
+            url = "https://api.coincap.io/v2/assets?limit=30"
+            response = requests.get(url, timeout=5)
+            res_json = response.json()
+            data = res_json.get('data', [])
             
-            data = result.get('data', [])
             if not data:
-                bot.reply_to(message, "⚠️ جارٍ تحديث البيانات، حاول بعد ثوانٍ.")
+                bot.reply_to(message, "⚠️ جاري تحديث السوق، حاول بعد ثوانٍ.")
                 return
             
-            long_msg = "🟢 **فرص صيد التجميع (LONG):**\n"
-            short_msg = "🔴 **فرص صيد التشبع والهبوط (SHORT):**\n"
-            
-            long_count = 0
-            short_count = 0
+            long_list = []
+            short_list = []
             
             for coin in data:
                 symbol = coin.get('symbol', '').upper()
@@ -43,32 +40,39 @@ def handle_message(message):
                 change = float(coin.get('changePercent24Hr', 0))
                 vol = float(coin.get('volumeUsd24Hr', 0))
                 
-                # 1. تجميع (LONG): عملة هابطة أو قريبة من الصفر بس عليها سيولة ممتازة
-                if -5 <= change <= 1 and vol > 20000000:
-                    long_msg += f"💎 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`\n"
-                    long_count += 1
+                # تجميع (LONG)
+                if -6 <= change <= 1 and vol > 10000000:
+                    long_list.append(f"💎 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`")
                 
-                # 2. تشبع (SHORT): عملة طارت فوق 6% وهتهبط
-                elif change >= 6 and vol > 30000000:
-                    short_msg += f"💎 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`\n"
-                    short_count += 1
+                # تشبع (SHORT)
+                elif change >= 5 and vol > 15000000:
+                    short_list.append(f"💎 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`")
             
-            final_reply = ""
-            if long_count > 0:
-                final_reply += long_msg + "\n"
+            reply = "🎯 **تقرير صياد الترند:**\n\n🟢 **فرص صيد التجميع (LONG):**\n"
+            if long_list:
+                reply += "\n".join(long_list[:3]) + "\n"
             else:
-                final_reply += "🟢 **فرص LONG:** لا توجد فرص مطابقة حالياً.\n\n"
+                reply += "لا توجد فرص مطابقة حالياً.\n"
                 
-            if short_count > 0:
-                final_reply += short_msg
+            reply += "\n🔴 **فرص صيد التشبع (SHORT):**\n"
+            if short_list:
+                reply += "\n".join(short_list[:3])
             else:
-                final_reply += "🔴 **فرص SHORT:** لا توجد فرص مطابقة حالياً."
+                reply += "لا توجد فرص مطابقة حالياً."
                 
-            bot.reply_to(message, final_reply, parse_mode="Markdown")
+            bot.reply_to(message, reply, parse_mode="Markdown")
             
-        except Exception as e:
-            bot.reply_to(message, f"❌ حدث خطأ مؤقت، جرب مرة أخرى.")
+        except Exception:
+            bot.reply_to(message, "❌ ضغط مؤقت في الاتصال، أرسل scan مرة أخرى.")
 
 if __name__ == "__main__":
     Thread(target=run_flask).start()
+    
+    # إجبار تليجرام على إنهاء أي جلسة قديمة لغلق خطأ 409 نهائياً
+    try:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
+    except:
+        pass
+        
+    print("Bot started cleanly...")
     bot.infinity_polling(skip_pending=True)
