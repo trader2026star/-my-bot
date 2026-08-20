@@ -2,3 +2,4 @@ pandas
 numpy
 requests
 binance-futures-connector
+flask
