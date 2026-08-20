@@ -1,6 +1,4 @@
-pyTelegramBotAPI
-pandas
-numpy
-requests
-binance-futures-connector
+telebot
 flask
+ccxt
+requests
