@@ -1,18 +1,30 @@
 import os
 import telebot
 import requests
-from flask import Flask
-from threading import Thread
-
-app = Flask(__name__)
-@app.route('/')
-def home(): return "Bot is Active"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+from flask import Flask, request
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, threaded=False)
+
+# رابط سيرفرك على رندر (تأكد من وضع رابط خدمتك الصحيح هنا أو اتركه يعمل تلقائياً)
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Webhook Bot is Live!"
+
+# استقبال الرسائل من تليجرام عبر الـ Webhook بدون أخطاء 409
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "!", 200
+    else:
+        return "Internal Error", 403
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -21,7 +33,6 @@ def handle_message(message):
         try:
             bot.reply_to(message, "⚡ جاري فحص السوق...")
             
-            # جلب البيانات برابط مباشر وسريع
             url = "https://api.coincap.io/v2/assets?limit=30"
             response = requests.get(url, timeout=5)
             res_json = response.json()
@@ -40,25 +51,16 @@ def handle_message(message):
                 change = float(coin.get('changePercent24Hr', 0))
                 vol = float(coin.get('volumeUsd24Hr', 0))
                 
-                # تجميع (LONG)
                 if -6 <= change <= 1 and vol > 10000000:
                     long_list.append(f"💎 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`")
-                
-                # تشبع (SHORT)
                 elif change >= 5 and vol > 15000000:
                     short_list.append(f"💎 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`")
             
             reply = "🎯 **تقرير صياد الترند:**\n\n🟢 **فرص صيد التجميع (LONG):**\n"
-            if long_list:
-                reply += "\n".join(long_list[:3]) + "\n"
-            else:
-                reply += "لا توجد فرص مطابقة حالياً.\n"
+            reply += "\n".join(long_list[:3]) + "\n" if long_list else "لا توجد فرص مطابقة حالياً.\n"
                 
             reply += "\n🔴 **فرص صيد التشبع (SHORT):**\n"
-            if short_list:
-                reply += "\n".join(short_list[:3])
-            else:
-                reply += "لا توجد فرص مطابقة حالياً."
+            reply += "\n".join(short_list[:3]) if short_list else "لا توجد فرص مطابقة حالياً."
                 
             bot.reply_to(message, reply, parse_mode="Markdown")
             
@@ -66,13 +68,10 @@ def handle_message(message):
             bot.reply_to(message, "❌ ضغط مؤقت في الاتصال، أرسل scan مرة أخرى.")
 
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
+    # إزالة أي ويب هوك قديم وضبط الجديد
+    bot.remove_webhook()
+    if RENDER_URL:
+        bot.set_webhook(url=f"{RENDER_URL}/{TOKEN}")
     
-    # إجبار تليجرام على إنهاء أي جلسة قديمة لغلق خطأ 409 نهائياً
-    try:
-        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
-    except:
-        pass
-        
-    print("Bot started cleanly...")
-    bot.infinity_polling(skip_pending=True)
+    # تشغيل سيرفر Flask فقط لاستقبال الويب هوك
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
