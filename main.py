@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+
 from flask import Flask, request
 
 from analysis import (
@@ -9,6 +10,7 @@ from analysis import (
     prepare_trade,
     format_price
 )
+
 
 # =========================================================
 # SETTINGS
@@ -19,29 +21,39 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
 
+
 RENDER_URL = os.environ.get(
     "RENDER_URL",
     "https://my-bot-mtyr.onrender.com"
 ).rstrip("/")
 
+
 WEBHOOK_PATH = "/telegram/webhook"
+
 WEBHOOK_URL = RENDER_URL + WEBHOOK_PATH
 
-TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+TELEGRAM_API = (
+    f"https://api.telegram.org/bot{TOKEN}"
+)
+
 
 app = Flask(__name__)
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM API
 # =========================================================
 
 def telegram_request(method, data=None):
+
+    url = f"{TELEGRAM_API}/{method}"
+
     try:
+
         response = requests.post(
-            f"{TELEGRAM_API}/{method}",
+            url,
             json=data or {},
-            timeout=20
+            timeout=30
         )
 
         print(
@@ -54,11 +66,21 @@ def telegram_request(method, data=None):
         return response.json()
 
     except Exception as e:
-        print("Telegram API ERROR:", repr(e))
+
+        print(
+            "Telegram API ERROR:",
+            repr(e)
+        )
+
         return None
 
 
+# =========================================================
+# SEND MESSAGE
+# =========================================================
+
 def send_message(chat_id, text):
+
     return telegram_request(
         "sendMessage",
         {
@@ -69,189 +91,183 @@ def send_message(chat_id, text):
 
 
 # =========================================================
-# HOME / HEALTH
+# FORMAT SCAN RESULT
 # =========================================================
 
-@app.route("/", methods=["GET", "HEAD"])
-def home():
-    return "Crypto Zero Reversal Bot is running.", 200
+def format_scan_result(result):
 
-
-@app.route("/health", methods=["GET"])
-def health():
-    return "OK", 200
-
-
-# =========================================================
-# SCAN FORMAT
-# =========================================================
-
-def format_scan_result(result, number):
-
-    signal = result.get("signal")
-
-    if signal in ("EARLY_LONG", "WATCH_LONG"):
-        emoji = "🟢"
-        side = "LONG"
-        score = result["long_score"]
-        reasons = result.get("long_reasons", [])
-
-    elif signal in ("SHORT", "WATCH_SHORT"):
-        emoji = "🔴"
-        side = "SHORT"
-        score = result["short_score"]
-        reasons = result.get("short_reasons", [])
-
-    else:
-        return ""
-
-    trade = prepare_trade(result)
-
-    if not trade:
-        return ""
-
-    reasons_text = (
-        "، ".join(reasons)
-        if reasons
-        else "تأكيدات محدودة"
+    symbol = result.get(
+        "symbol",
+        "-"
     )
 
-    return (
-        f"{number}️⃣ {emoji} {result['symbol']}\n"
-        f"الاتجاه: {side}\n"
-        f"القوة: {score}/100\n"
-        f"السعر: {format_price(result['price'])}\n"
-        f"RSI: {result['rsi']:.1f}\n"
-        f"Volume: {result['volume_ratio']:.2f}x\n"
-        f"15m: {result['change_15m']:+.2f}%\n"
-        f"30m: {result['change_30m']:+.2f}%\n"
-        f"السبب: {reasons_text}\n\n"
-        f"🎯 دخول: {trade['entry']}\n"
-        f"🛑 SL: {trade['stop']}\n"
-        f"TP1: {trade['tp1']}\n"
-        f"TP2: {trade['tp2']}\n"
-        f"TP3: {trade['tp3']}\n"
+    price = result.get(
+        "price"
     )
 
+    signal = result.get(
+        "signal",
+        "WAIT"
+    )
 
-# =========================================================
-# COIN FORMAT
-# =========================================================
+    long_score = result.get(
+        "long_score",
+        0
+    )
 
-def format_coin_result(result):
+    short_score = result.get(
+        "short_score",
+        0
+    )
 
-    if not result:
-        return (
-            "❌ لم أستطع جلب بيانات العملة من Binance."
-        )
+    volume_ratio = result.get(
+        "volume_ratio",
+        0
+    )
 
-    signal = result["signal"]
+    volume_trend = result.get(
+        "volume_trend",
+        0
+    )
 
-    if signal in ("EARLY_LONG", "WATCH_LONG"):
-        direction = "🟢 LONG"
-        score = result["long_score"]
-        reasons = result["long_reasons"]
+    change_15m = result.get(
+        "change_15m",
+        0
+    )
 
-    elif signal in ("SHORT", "WATCH_SHORT"):
-        direction = "🔴 SHORT"
-        score = result["short_score"]
-        reasons = result["short_reasons"]
+    change_30m = result.get(
+        "change_30m",
+        0
+    )
 
-    else:
-        direction = "⚪ WAIT"
-        score = max(
-            result["long_score"],
-            result["short_score"]
-        )
-        reasons = []
+    change_60m = result.get(
+        "change_60m",
+        0
+    )
+
+    rsi_value = result.get(
+        "rsi"
+    )
 
     text = (
-        f"📊 تحليل {result['symbol']}\n\n"
-        f"السعر: {format_price(result['price'])}\n"
-        f"الاتجاه: {direction}\n"
-        f"القوة: {score}/100\n\n"
-        f"RSI: {result['rsi']:.1f}\n"
-        f"EMA9: {format_price(result['ema9'])}\n"
-        f"EMA20: {format_price(result['ema20'])}\n"
-        f"Volume: {result['volume_ratio']:.2f}x\n"
-        f"Volume Trend: {result['volume_trend']:.2f}x\n"
-        f"15m: {result['change_15m']:+.2f}%\n"
-        f"30m: {result['change_30m']:+.2f}%\n"
-        f"1H: {result['change_60m']:+.2f}%\n\n"
+        f"🪙 {symbol}\n"
+        f"السعر: {format_price(price)}\n"
+        f"الإشارة: {signal}\n"
+        f"🟢 Long: {long_score}/100\n"
+        f"🔴 Short: {short_score}/100\n"
+        f"RSI: {rsi_value:.1f}\n"
+        f"Volume: {volume_ratio:.2f}x\n"
+        f"Volume Trend: {volume_trend:.2f}x\n"
+        f"15m: {change_15m:+.2f}%\n"
+        f"30m: {change_30m:+.2f}%\n"
+        f"1H: {change_60m:+.2f}%"
     )
 
-    if reasons:
-        text += (
-            "🔎 التأكيدات:\n"
-            + "\n".join(
-                f"• {x}" for x in reasons
-            )
-            + "\n\n"
-        )
-
-    if signal == "WAIT":
-        text += (
-            "⏳ لا توجد صفقة قوية حاليًا.\n"
-            "الأفضل الانتظار بدل الدخول بدون تأكيد."
-        )
-        return text
-
-    trade = prepare_trade(result)
-
-    if not trade:
-        return text
-
-    text += (
-        "━━━━━━━━━━━━━━\n"
-        "🎯 الصفقة المحتملة\n"
-        "━━━━━━━━━━━━━━\n\n"
-        f"الدخول: {trade['entry']}\n"
-        f"🛑 SL: {trade['stop']}\n"
-        f"🎯 TP1: {trade['tp1']}\n"
-        f"🎯 TP2: {trade['tp2']}\n"
-        f"🎯 TP3: {trade['tp3']}\n\n"
-        "⚠️ تحليل وليس ضمانًا للربح."
+    trade = prepare_trade(
+        result
     )
+
+    if trade:
+
+        text += (
+            "\n\n"
+            "🎯 الصفقة:\n"
+            f"النوع: {trade['side']}\n"
+            f"Entry: {trade['entry']}\n"
+            f"SL: {trade['stop']}\n"
+            f"TP1: {trade['tp1']}\n"
+            f"TP2: {trade['tp2']}\n"
+            f"TP3: {trade['tp3']}"
+        )
 
     return text
+
+
+# =========================================================
+# HOME
+# =========================================================
+
+@app.route(
+    "/",
+    methods=["GET", "HEAD"]
+)
+def home():
+
+    return (
+        "Crypto Zero Reversal Bot is running.",
+        200
+    )
+
+
+@app.route(
+    "/health",
+    methods=["GET"]
+)
+def health():
+
+    return "OK", 200
 
 
 # =========================================================
 # WEBHOOK
 # =========================================================
 
-@app.route(WEBHOOK_PATH, methods=["POST"])
+@app.route(
+    WEBHOOK_PATH,
+    methods=["POST"]
+)
 def telegram_webhook():
 
+    print("")
     print("==============================")
     print(">>> TELEGRAM UPDATE RECEIVED")
     print("==============================")
 
     try:
 
-        update = request.get_json(silent=True)
+        update = request.get_json(
+            silent=True
+        )
+
+        print(
+            "UPDATE:",
+            update
+        )
 
         if not update:
             return "OK", 200
 
-        message = update.get("message")
+        message = update.get(
+            "message"
+        )
 
         if not message:
             return "OK", 200
 
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
+        chat = message.get(
+            "chat",
+            {}
+        )
+
+        chat_id = chat.get(
+            "id"
+        )
 
         text = message.get(
             "text",
             ""
         ).strip()
 
-        if not chat_id:
-            return "OK", 200
+        print(
+            ">>> CHAT:",
+            chat_id
+        )
 
-        print("CHAT:", chat_id)
-        print("TEXT:", text)
+        print(
+            ">>> TEXT:",
+            text
+        )
+
 
         # =================================================
         # START
@@ -261,17 +277,26 @@ def telegram_webhook():
 
             send_message(
                 chat_id,
-                "🚀 Crypto Zero Reversal Bot\n\n"
+
+                "🚀 Crypto Zero Reversal شغال يا محمد!\n\n"
+
                 "Binance Scanner: ✅\n"
-                "Multi-Timeframe: ✅\n\n"
+                "Multi-Timeframe: ✅\n"
+                "Volume Analysis: ✅\n"
+                "Early Accumulation: ✅\n"
+                "Long / Short Detection: ✅\n\n"
+
                 "الأوامر:\n\n"
+
                 "/scan\n"
-                "🔎 فحص السوق الحقيقي\n\n"
+                "🔎 فحص السوق والبحث عن أفضل الفرص\n\n"
+
                 "/coin AVAXUSDT\n"
-                "📊 تحليل عملة محددة"
+                "📊 تحليل عملة بالتفصيل"
             )
 
             return "OK", 200
+
 
         # =================================================
         # SCAN
@@ -281,78 +306,112 @@ def telegram_webhook():
 
             send_message(
                 chat_id,
-                "🔎 جاري فحص Binance...\n\n"
-                "🟢 البحث عن التجميع قبل الحركة\n"
-                "🟢 Volume تدريجي\n"
-                "🟢 تحسن Momentum\n"
-                "🔴 البحث عن فرص Short\n"
-                "📊 تأكيد 15m + 1H\n\n"
-                "⏳ انتظر النتيجة..."
+
+                "🔎 بدأ فحص السوق الحقيقي...\n\n"
+                "⏳ جاري فحص السيولة والحجم والزخم\n"
+                "📊 15m + 1H\n"
+                "🟢 البحث عن التجميع قبل الـPump\n"
+                "🔴 البحث عن ضعف الترند وفرص Short\n\n"
+                "انتظر النتيجة..."
+            )
+
+            print(
+                ">>> STARTING REAL MARKET SCAN"
             )
 
             try:
 
-                results = scan_market(limit=30)
-
-                if not results:
-
-                    send_message(
-                        chat_id,
-                        "⚪ لا توجد حاليًا فرصة قوية "
-                        "بالشروط المطلوبة.\n\n"
-                        "WAIT أفضل من صفقة ضعيفة."
-                    )
-
-                    return "OK", 200
-
-                output = (
-                    "🔎 نتائج Scanner\n"
-                    "━━━━━━━━━━━━━━\n\n"
-                )
-
-                count = 0
-
-                for result in results[:5]:
-
-                    block = format_scan_result(
-                        result,
-                        count + 1
-                    )
-
-                    if block:
-
-                        output += (
-                            block
-                            + "━━━━━━━━━━━━━━\n"
-                        )
-
-                        count += 1
-
-                if count == 0:
-                    output = (
-                        "⚪ لم يتم العثور على صفقة "
-                        "مطابقة بقوة كافية."
-                    )
-
-                send_message(
-                    chat_id,
-                    output
+                results = scan_market(
+                    limit=30
                 )
 
             except Exception as e:
 
                 print(
-                    "SCAN COMMAND ERROR:",
+                    ">>> SCAN ERROR:",
                     repr(e)
                 )
 
                 send_message(
                     chat_id,
-                    "❌ حدث خطأ أثناء فحص السوق.\n"
-                    "راجع Render Logs."
+
+                    "❌ حدث خطأ أثناء Scanner.\n\n"
+                    "راجع Render Logs لمعرفة السبب."
                 )
 
+                return "OK", 200
+
+            # ---------------------------------------------
+            # NO RESULTS
+            # ---------------------------------------------
+
+            if not results:
+
+                send_message(
+                    chat_id,
+
+                    "🔎 نتيجة Scanner\n\n"
+                    "❌ لم أجد صفقة قوية حاليًا.\n\n"
+                    "البوت لم يدخل صفقة إجبارية، "
+                    "والأفضل الانتظار حتى تظهر سيولة "
+                    "وزخم وتأكيد أقوى."
+                )
+
+                print(
+                    ">>> SCAN: NO STRONG RESULTS"
+                )
+
+                return "OK", 200
+
+
+            # ---------------------------------------------
+            # RESULTS
+            # ---------------------------------------------
+
+            # نأخذ أفضل 8 فقط
+            top_results = results[:8]
+
+            header = (
+                "🔥 Crypto Zero Reversal\n"
+                "📡 نتيجة Scanner\n\n"
+            )
+
+            send_message(
+                chat_id,
+                header
+            )
+
+            for index, result in enumerate(
+                top_results,
+                start=1
+            ):
+
+                text_result = format_scan_result(
+                    result
+                )
+
+                message_text = (
+                    f"#{index}\n"
+                    f"{text_result}"
+                )
+
+                send_message(
+                    chat_id,
+                    message_text
+                )
+
+                time.sleep(
+                    0.20
+                )
+
+            print(
+                ">>> SCAN COMPLETE:",
+                len(results),
+                "signals"
+            )
+
             return "OK", 200
+
 
         # =================================================
         # COIN
@@ -366,63 +425,211 @@ def telegram_webhook():
 
                 send_message(
                     chat_id,
+
                     "اكتب العملة هكذا:\n\n"
                     "/coin AVAXUSDT"
                 )
 
                 return "OK", 200
 
-            symbol = (
-                parts[1]
-                .upper()
-                .replace("/", "")
-            )
+            symbol = parts[1].upper()
 
             if not symbol.endswith("USDT"):
                 symbol += "USDT"
 
-            if not symbol.isalnum():
-
-                send_message(
-                    chat_id,
-                    "❌ رمز العملة غير صحيح."
-                )
-
-                return "OK", 200
-
             send_message(
                 chat_id,
+
                 f"📊 جاري تحليل {symbol}...\n\n"
                 "Binance 15m + 1H"
+            )
+
+            print(
+                ">>> ANALYZING COIN:",
+                symbol
             )
 
             try:
 
                 result = analyze_symbol(
-                    symbol,
-                    "15m"
-                )
-
-                send_message(
-                    chat_id,
-                    format_coin_result(result)
+                    symbol
                 )
 
             except Exception as e:
 
                 print(
-                    "COIN ERROR:",
-                    symbol,
+                    ">>> COIN ANALYSIS ERROR:",
                     repr(e)
                 )
 
                 send_message(
                     chat_id,
-                    f"❌ تعذر تحليل {symbol}.\n\n"
-                    "تأكد أن الرمز موجود في Binance Futures."
+
+                    "❌ حدث خطأ أثناء تحليل "
+                    f"{symbol}.\n\n"
+                    "راجع Render Logs."
                 )
 
+                return "OK", 200
+
+
+            if not result:
+
+                send_message(
+                    chat_id,
+
+                    "❌ لم أستطع جلب بيانات "
+                    f"{symbol} من Binance."
+                )
+
+                return "OK", 200
+
+
+            # ---------------------------------------------
+            # COIN RESULT
+            # ---------------------------------------------
+
+            signal = result.get(
+                "signal",
+                "WAIT"
+            )
+
+            long_score = result.get(
+                "long_score",
+                0
+            )
+
+            short_score = result.get(
+                "short_score",
+                0
+            )
+
+            if signal in (
+                "EARLY_LONG",
+                "WATCH_LONG"
+            ):
+
+                direction = (
+                    f"🟢 LONG\n"
+                    f"القوة: {long_score}/100"
+                )
+
+            elif signal in (
+                "SHORT",
+                "WATCH_SHORT"
+            ):
+
+                direction = (
+                    f"🔴 SHORT\n"
+                    f"القوة: {short_score}/100"
+                )
+
+            else:
+
+                direction = (
+                    "⚪ WAIT\n"
+                    "القوة: "
+                    f"{max(long_score, short_score)}/100"
+                )
+
+
+            rsi_value = result.get(
+                "rsi"
+            )
+
+            if rsi_value is None:
+                rsi_text = "-"
+            else:
+                rsi_text = f"{rsi_value:.1f}"
+
+
+            response = (
+                f"📊 تحليل {symbol}\n\n"
+
+                f"السعر: "
+                f"{format_price(result.get('price'))}\n"
+
+                f"الاتجاه: {direction}\n"
+
+                f"RSI: {rsi_text}\n"
+
+                f"EMA9: "
+                f"{format_price(result.get('ema9'))}\n"
+
+                f"EMA20: "
+                f"{format_price(result.get('ema20'))}\n"
+
+                f"Volume: "
+                f"{result.get('volume_ratio', 0):.2f}x\n"
+
+                f"Volume Trend: "
+                f"{result.get('volume_trend', 0):.2f}x\n"
+
+                f"15m: "
+                f"{result.get('change_15m', 0):+.2f}%\n"
+
+                f"30m: "
+                f"{result.get('change_30m', 0):+.2f}%\n"
+
+                f"1H: "
+                f"{result.get('change_60m', 0):+.2f}%"
+            )
+
+
+            trade = prepare_trade(
+                result
+            )
+
+            if trade:
+
+                response += (
+
+                    "\n\n"
+                    "🎯 الصفقة المقترحة\n"
+
+                    f"النوع: "
+                    f"{trade['side']}\n"
+
+                    f"Entry: "
+                    f"{trade['entry']}\n"
+
+                    f"SL: "
+                    f"{trade['stop']}\n"
+
+                    f"TP1: "
+                    f"{trade['tp1']}\n"
+
+                    f"TP2: "
+                    f"{trade['tp2']}\n"
+
+                    f"TP3: "
+                    f"{trade['tp3']}"
+                )
+
+            else:
+
+                response += (
+
+                    "\n\n"
+                    "⏳ لا توجد صفقة قوية حاليًا.\n"
+                    "الأفضل الانتظار بدل الدخول "
+                    "بدون تأكيد."
+                )
+
+
+            send_message(
+                chat_id,
+                response
+            )
+
+            print(
+                ">>> COIN ANALYSIS SENT:",
+                symbol,
+                signal
+            )
+
             return "OK", 200
+
 
         # =================================================
         # UNKNOWN
@@ -430,7 +637,9 @@ def telegram_webhook():
 
         send_message(
             chat_id,
+
             "👋 البوت متصل.\n\n"
+
             "استخدم:\n"
             "/start\n"
             "/scan\n"
@@ -439,10 +648,11 @@ def telegram_webhook():
 
         return "OK", 200
 
+
     except Exception as e:
 
         print(
-            "WEBHOOK ERROR:",
+            ">>> WEBHOOK ERROR:",
             repr(e)
         )
 
@@ -457,8 +667,12 @@ def setup_webhook():
 
     time.sleep(3)
 
+    print("")
+    print("==============================")
     print("SETTING WEBHOOK:")
     print(WEBHOOK_URL)
+    print("==============================")
+
 
     telegram_request(
         "deleteWebhook",
@@ -468,6 +682,7 @@ def setup_webhook():
     )
 
     time.sleep(2)
+
 
     result = telegram_request(
         "setWebhook",
@@ -481,6 +696,7 @@ def setup_webhook():
         "SET WEBHOOK RESULT:",
         result
     )
+
 
     info = telegram_request(
         "getWebhookInfo"
