@@ -29,18 +29,18 @@ def handle_message(message):
     
     if text in ["scan", "فحص", "سيولة"]:
         try:
-            bot.reply_to(message, "⚡ جاري فحص العملات السريعة، التجميع، والتشبعات...")
+            bot.reply_to(message, "⚡ جاري فحص السوق...")
             
-            response = requests.get("https://api.coincap.io/v2/assets?limit=70", timeout=8)
+            response = requests.get("https://api.coincap.io/v2/assets?limit=50", timeout=5)
             data = response.json().get('data', [])
             
             if not data:
-                bot.reply_to(message, "⚠️ جاري تحديث السوق، حاول بعد لحظات.")
+                bot.reply_to(message, "⚠️ جاري تحديث السوق، حاول لاحقاً.")
                 return
             
-            accumulation_list = []  # 1. تجميع العملات الهابطة قبل الانعكاس (LONG)
-            fast_movers_list = []   # 2. العملات السريعة وذات الزخم العالي جداً
-            exhaustion_list = []    # 3. العملات الصاعدة بقوة المعرضة للهبوط (SHORT)
+            accumulation_list = []
+            fast_movers_list = []
+            exhaustion_list = []
             
             for coin in data:
                 symbol = coin.get('symbol', '').upper()
@@ -48,39 +48,32 @@ def handle_message(message):
                 change = float(coin.get('changePercent24Hr', 0))
                 vol = float(coin.get('volumeUsd24Hr', 0) or 0)
                 
-                # تجميع الهابطة بهدوء قبل الانطلاق
-                if -7 <= change <= -1 and vol > 8000000:
+                if -7 <= change <= -1 and vol > 5000000:
                     accumulation_list.append(f"🟢 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`")
-                
-                # العملات السريعة (زخم صعودي قوي ومشتعل)
-                elif change >= 8 and vol > 15000000:
+                elif change >= 8 and vol > 10000000:
                     fast_movers_list.append(f"🚀 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`")
-                
-                # تشبعات الترند القوية المعرضة للهبوط
-                elif change >= 4 and change < 8 and vol > 10000000:
+                elif 3 <= change < 8 and vol > 8000000:
                     exhaustion_list.append(f"🔴 `{symbol}` | السعر: `{price:.4f}` | التغير: `{change:.2f}%`")
             
             reply = "🎯 **تقرير صياد السوق الشامل:**\n\n"
+            reply += "📦 **1. تجميع العملات الهابطة (LONG):**\n"
+            reply += "\n".join(accumulation_list[:3]) + "\n" if accumulation_list else "لا توجد فرص حالياً.\n"
             
-            reply += "📦 **1. تجميع العملات الهابطة (مراكز LONG بالقاع):**\n"
-            reply += "\n".join(accumulation_list[:3]) + "\n" if accumulation_list else "لا توجد فرص تجميع حالياً.\n"
+            reply += "\n🚀 **2. العملات السريعة والزخم:**\n"
+            reply += "\n".join(fast_movers_list[:3]) + "\n" if fast_movers_list else "لا توجد عملات سريعة حالياً.\n"
             
-            reply += "\n🚀 **2. العملات السريعة (زخم واشتعال لحظي):**\n"
-            reply += "\n".join(fast_movers_list[:3]) + "\n" if fast_movers_list else "لا توجد عملات سريعة نشطة حالياً.\n"
-            
-            reply += "\n⚡ **3. تشبعات الترند (مرشحة للهبوط SHORT):**\n"
-            reply += "\n".join(exhaustion_list[:3]) if exhaustion_list else "لا توجد فرص تشبع واضحة حالياً."
+            reply += "\n⚡ **3. تشبعات الترند (SHORT):**\n"
+            reply += "\n".join(exhaustion_list[:3]) if exhaustion_list else "لا توجد فرص حالياً."
             
             bot.reply_to(message, reply, parse_mode="Markdown")
             
         except Exception:
-            bot.reply_to(message, "❌ حدث ضغط في جلب البيانات، أرسل scan مرة أخرى.")
+            bot.reply_to(message, "❌ حدث خطأ مؤقت، جرب مرة أخرى.")
             
     else:
-        # الرد الفوري المخصص عند إرسال اسم العملة
         try:
             coin_name = text.upper()
-            response = requests.get("https://api.coincap.io/v2/assets?limit=100", timeout=6)
+            response = requests.get("https://api.coincap.io/v2/assets?limit=50", timeout=5)
             data = response.json().get('data', [])
             
             found = None
@@ -93,21 +86,19 @@ def handle_message(message):
                 symbol = found.get('symbol', '').upper()
                 name = found.get('name', '')
                 price = float(found.get('priceUsd', 0))
-                change = float(found.get('changePercent24Hor', found.get('changePercent24Hr', 0)))
-                market_cap = float(found.get('marketCapUsd', 0))
+                change = float(found.get('changePercent24Hr', 0))
                 
                 reply = (
                     f"📊 **مراجعة العملة: {name} ({symbol})**\n\n"
                     f"💵 السعر الحالي: `{price:.4f}$`\n"
-                    f"📈 التغير (24 ساعة): `{change:.2f}%`\n"
-                    f"💰 القيمة السوقية: `{market_cap:,.0f}$`\n\n"
-                    f"🔍 *جاهزة للتحليل الفني وتحديد مناطق الدخول.*"
+                    f"📈 التغير (24 ساعة): `{change:.2f}%`\n\n"
+                    f"🔍 *جاهزة للتحليل الفني.*"
                 )
                 bot.reply_to(message, reply, parse_mode="Markdown")
             else:
-                bot.reply_to(message, f"⚠️ لم يتم العثور على العملة `{text.upper()}`، تأكد من الرمز.")
+                bot.reply_to(message, f"⚠️ لم يتم العثور على العملة `{text.upper()}`.")
         except Exception:
-            bot.reply_to(message, "❌ تعذر جلب البيانات حالياً.")
+            bot.reply_to(message, "❌ تعذر جلب بيانات العملة.")
 
 if __name__ == "__main__":
     bot.remove_webhook()
