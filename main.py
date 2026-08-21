@@ -1,17 +1,29 @@
 import os
 import telebot
+from flask import Flask, request
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# الرابط بتاعك اللي اخدته من Render
+WEBHOOK_URL = "https://my-bot-mtyr.onrender.com/" 
+
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
+
+@app.route('/', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return '!', 403
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "أهلاً يا محمد، البوت شغال دلوقتي وجاهز!")
-
-@bot.message_handler(commands=['hello'])
-def say_hello(message):
-    bot.reply_to(message, "يا هلا بيك يا محمد، أنا سامعك تمام!")
+    bot.reply_to(message, "تم الربط بنجاح! البوت يعمل الآن بنظام Webhook.")
 
 if __name__ == "__main__":
-    # تشغيل مباشر بدون فلاسك وبدون تعقيد السيرفرات
-    bot.infinity_polling()
+    # تنظيف أي Webhook قديم وتعيين الجديد
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
