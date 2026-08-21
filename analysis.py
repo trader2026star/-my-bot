@@ -1,20 +1,21 @@
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 FUTURES_URL = "https://fapi.binance.com"
 DATA_URL = "https://data-api.binance.vision"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal/4.0"
+    "User-Agent": "CryptoZeroReversal/Final-4.0"
 })
 
 
 # =========================================================
-# BINANCE API
+# BINANCE
 # =========================================================
 
-def api_get(base, path, params=None, timeout=12):
+def api_get(base, path, params=None, timeout=10):
     try:
         r = SESSION.get(
             base + path,
@@ -25,22 +26,15 @@ def api_get(base, path, params=None, timeout=12):
         if r.status_code == 200:
             return r.json()
 
-        print(
-            "BINANCE ERROR:",
-            r.status_code,
-            r.text[:300]
-        )
+        print("BINANCE ERROR:", r.status_code, r.text[:200])
 
     except Exception as e:
-        print(
-            "BINANCE REQUEST ERROR:",
-            repr(e)
-        )
+        print("BINANCE REQUEST ERROR:", repr(e))
 
     return None
 
 
-def get_klines(symbol, interval, limit=200):
+def get_klines(symbol, interval, limit=220):
 
     params = {
         "symbol": symbol.upper(),
@@ -83,7 +77,7 @@ def get_tickers():
 
 
 # =========================================================
-# BASIC INDICATORS
+# MATH
 # =========================================================
 
 def average(values):
@@ -92,7 +86,7 @@ def average(values):
 
 def pct(old, new):
 
-    if old == 0:
+    if old in (None, 0):
         return 0
 
     return ((new - old) / old) * 100
@@ -105,9 +99,7 @@ def ema(values, period):
 
     multiplier = 2 / (period + 1)
 
-    result = average(
-        values[:period]
-    )
+    result = average(values[:period])
 
     for value in values[period:]:
         result = (
@@ -128,31 +120,15 @@ def rsi(values, period=14):
 
     for i in range(1, len(values)):
 
-        change = (
-            values[i]
-            - values[i - 1]
-        )
+        change = values[i] - values[i - 1]
 
-        gains.append(
-            max(change, 0)
-        )
+        gains.append(max(change, 0))
+        losses.append(max(-change, 0))
 
-        losses.append(
-            max(-change, 0)
-        )
+    avg_gain = average(gains[:period])
+    avg_loss = average(losses[:period])
 
-    avg_gain = average(
-        gains[:period]
-    )
-
-    avg_loss = average(
-        losses[:period]
-    )
-
-    for i in range(
-        period,
-        len(gains)
-    ):
+    for i in range(period, len(gains)):
 
         avg_gain = (
             avg_gain * (period - 1)
@@ -169,56 +145,34 @@ def rsi(values, period=14):
 
     rs = avg_gain / avg_loss
 
-    return 100 - (
-        100 / (1 + rs)
-    )
+    return 100 - (100 / (1 + rs))
 
 
-def atr(
-    highs,
-    lows,
-    closes,
-    period=14
-):
+def atr(highs, lows, closes, period=14):
 
     if len(closes) <= period:
         return None
 
     trs = []
 
-    for i in range(
-        1,
-        len(closes)
-    ):
+    for i in range(1, len(closes)):
 
         tr = max(
             highs[i] - lows[i],
-            abs(
-                highs[i]
-                - closes[i - 1]
-            ),
-            abs(
-                lows[i]
-                - closes[i - 1]
-            )
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
         )
 
         trs.append(tr)
 
-    return average(
-        trs[-period:]
-    )
+    return average(trs[-period:])
 
 
 # =========================================================
 # TIMEFRAME ANALYSIS
 # =========================================================
 
-def analyze_timeframe(
-    symbol,
-    interval,
-    limit=200
-):
+def analyze_timeframe(symbol, interval, limit=220):
 
     klines = get_klines(
         symbol,
@@ -229,30 +183,11 @@ def analyze_timeframe(
     if not klines or len(klines) < 60:
         return None
 
-    opens = [
-        float(x[1])
-        for x in klines
-    ]
-
-    highs = [
-        float(x[2])
-        for x in klines
-    ]
-
-    lows = [
-        float(x[3])
-        for x in klines
-    ]
-
-    closes = [
-        float(x[4])
-        for x in klines
-    ]
-
-    volumes = [
-        float(x[5])
-        for x in klines
-    ]
+    opens = [float(x[1]) for x in klines]
+    highs = [float(x[2]) for x in klines]
+    lows = [float(x[3]) for x in klines]
+    closes = [float(x[4]) for x in klines]
+    volumes = [float(x[5]) for x in klines]
 
     price = closes[-1]
 
@@ -262,40 +197,30 @@ def analyze_timeframe(
     e200 = ema(closes, 200)
 
     rsi_value = rsi(closes)
-
     atr_value = atr(
         highs,
         lows,
         closes
     )
 
-    avg20 = average(
-        volumes[-20:]
-    )
-
-    avg5 = average(
-        volumes[-5:]
-    )
-
-    previous5 = average(
-        volumes[-10:-5]
-    )
+    avg20 = average(volumes[-20:])
+    avg5 = average(volumes[-5:])
+    previous5 = average(volumes[-10:-5])
 
     volume_ratio = (
         avg5 / avg20
-        if avg20
-        else 0
+        if avg20 else 0
     )
 
     volume_trend = (
         avg5 / previous5
-        if previous5
-        else 1
+        if previous5 else 1
     )
 
     bull = 0
     bear = 0
 
+    # EMA20 / EMA50
     if e20 and e50:
 
         if e20 > e50:
@@ -303,6 +228,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # EMA50 / EMA200
     if e50 and e200:
 
         if e50 > e200:
@@ -310,6 +236,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # Price vs EMA20
     if e20:
 
         if price > e20:
@@ -317,6 +244,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # Price vs EMA50
     if e50:
 
         if price > e50:
@@ -324,6 +252,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # Price vs EMA200
     if e200:
 
         if price > e200:
@@ -336,66 +265,44 @@ def analyze_timeframe(
         "price": price,
 
         "open": opens[-1],
-
         "high": highs[-1],
-
         "low": lows[-1],
 
         "ema9": e9,
-
         "ema20": e20,
-
         "ema50": e50,
-
         "ema200": e200,
 
         "rsi": rsi_value,
-
         "atr": atr_value,
 
-        "volume_ratio":
-            volume_ratio,
-
-        "volume_trend":
-            volume_trend,
+        "volume_ratio": volume_ratio,
+        "volume_trend": volume_trend,
 
         "bull": bull,
-
         "bear": bear,
 
-        "change15":
-            pct(
-                closes[-16],
-                price
-            )
-            if len(closes) >= 16
-            else 0,
+        # IMPORTANT:
+        # حركة الشمعة/الفترة الحالية
+        "change": pct(
+            closes[-2],
+            closes[-1]
+        ) if len(closes) >= 2 else 0,
 
-        "change30":
-            pct(
-                closes[-31],
-                price
-            )
-            if len(closes) >= 31
-            else 0,
+        # حركة آخر 3 فترات
+        "change3": pct(
+            closes[-4],
+            closes[-1]
+        ) if len(closes) >= 4 else 0,
 
-        "change60":
-            pct(
-                closes[-61],
-                price
-            )
-            if len(closes) >= 61
-            else 0,
+        # حركة آخر 6 فترات
+        "change6": pct(
+            closes[-7],
+            closes[-1]
+        ) if len(closes) >= 7 else 0,
 
-        "high20":
-            max(
-                highs[-20:]
-            ),
-
-        "low20":
-            min(
-                lows[-20:]
-            )
+        "high20": max(highs[-20:]),
+        "low20": min(lows[-20:])
     }
 
 
@@ -414,39 +321,59 @@ def analyze_symbol(symbol):
     if not symbol.endswith("USDT"):
         symbol += "USDT"
 
-    # =====================================================
-    # MULTI TIMEFRAME
-    # =====================================================
+    # -----------------------------------------------------
+    # 5 TIMEFRAMES
+    # -----------------------------------------------------
 
-    tf15 = analyze_timeframe(
-        symbol,
-        "15m",
-        180
-    )
+    with ThreadPoolExecutor(max_workers=5) as executor:
 
-    tf30 = analyze_timeframe(
-        symbol,
-        "30m",
-        180
-    )
+        futures = {
+            "15m": executor.submit(
+                analyze_timeframe,
+                symbol,
+                "15m",
+                180
+            ),
 
-    tf1h = analyze_timeframe(
-        symbol,
-        "1h",
-        180
-    )
+            "30m": executor.submit(
+                analyze_timeframe,
+                symbol,
+                "30m",
+                180
+            ),
 
-    tf4h = analyze_timeframe(
-        symbol,
-        "4h",
-        200
-    )
+            "1h": executor.submit(
+                analyze_timeframe,
+                symbol,
+                "1h",
+                180
+            ),
 
-    tf1d = analyze_timeframe(
-        symbol,
-        "1d",
-        200
-    )
+            "4h": executor.submit(
+                analyze_timeframe,
+                symbol,
+                "4h",
+                220
+            ),
+
+            "1d": executor.submit(
+                analyze_timeframe,
+                symbol,
+                "1d",
+                220
+            )
+        }
+
+        data = {
+            key: future.result()
+            for key, future in futures.items()
+        }
+
+    tf15 = data["15m"]
+    tf30 = data["30m"]
+    tf1h = data["1h"]
+    tf4h = data["4h"]
+    tf1d = data["1d"]
 
     if not all([
         tf15,
@@ -455,10 +382,7 @@ def analyze_symbol(symbol):
         tf4h,
         tf1d
     ]):
-        print(
-            "TIMEFRAME DATA MISSING:",
-            symbol
-        )
+        print("TIMEFRAME DATA MISSING:", symbol)
         return None
 
     long_score = 0
@@ -519,10 +443,6 @@ def analyze_symbol(symbol):
 
         long_score += 10
 
-        long_reasons.append(
-            "4H إيجابي"
-        )
-
     if tf4h["bear"] >= 3:
 
         short_score += 20
@@ -534,10 +454,6 @@ def analyze_symbol(symbol):
     elif tf4h["bear"] >= 2:
 
         short_score += 10
-
-        short_reasons.append(
-            "4H ضعيف"
-        )
 
     # =====================================================
     # 1H
@@ -579,10 +495,6 @@ def analyze_symbol(symbol):
             "30M يؤكد الصعود"
         )
 
-    elif tf30["bull"] >= 2:
-
-        long_score += 5
-
     if tf30["bear"] >= 3:
 
         short_score += 10
@@ -590,10 +502,6 @@ def analyze_symbol(symbol):
         short_reasons.append(
             "30M يؤكد الهبوط"
         )
-
-    elif tf30["bear"] >= 2:
-
-        short_score += 5
 
     # =====================================================
     # 15M
@@ -607,10 +515,6 @@ def analyze_symbol(symbol):
             "15M يعطي تأكيد دخول"
         )
 
-    elif tf15["bull"] >= 2:
-
-        long_score += 5
-
     if tf15["bear"] >= 3:
 
         short_score += 10
@@ -619,22 +523,17 @@ def analyze_symbol(symbol):
             "15M يعطي تأكيد هبوط"
         )
 
-    elif tf15["bear"] >= 2:
-
-        short_score += 5
-
     # =====================================================
     # RSI
     # =====================================================
 
-    r15 = tf15["rsi"]
-    r1h = tf1h["rsi"]
-    r4h = tf4h["rsi"]
-    r1d = tf1d["rsi"]
+    rsi15 = tf15["rsi"]
+    rsi4h = tf4h["rsi"]
+    rsi1d = tf1d["rsi"]
 
-    if r15 is not None:
+    if rsi15 is not None:
 
-        if 42 <= r15 <= 62:
+        if 42 <= rsi15 <= 62:
 
             long_score += 5
 
@@ -642,13 +541,9 @@ def analyze_symbol(symbol):
                 "RSI 15m مناسب للشراء"
             )
 
-        elif 30 <= r15 < 42:
+        elif 68 <= rsi15 <= 80:
 
-            long_score += 3
-
-        if 68 <= r15 <= 80:
-
-            short_score += 8
+            short_score += 5
 
             short_reasons.append(
                 "RSI 15m مرتفع"
@@ -663,7 +558,7 @@ def analyze_symbol(symbol):
         long_score += 5
 
         long_reasons.append(
-            "دخول حجم"
+            "حجم تداول داعم"
         )
 
     if tf15["volume_trend"] >= 1.10:
@@ -676,13 +571,13 @@ def analyze_symbol(symbol):
 
     if (
         tf15["volume_trend"] < 0.85
-        and tf15["change15"] < 0
+        and tf15["change"] < 0
     ):
 
         short_score += 5
 
         short_reasons.append(
-            "ضعف الحجم مع هبوط"
+            "ضعف الحجم مع الهبوط"
         )
 
     # =====================================================
@@ -691,17 +586,16 @@ def analyze_symbol(symbol):
 
     accumulation = (
 
-        tf15["change30"] <= 1.5
+        abs(tf15["change3"]) <= 1.5
 
-        and tf15["change60"] <= 5
-
-        and tf15["change15"] > -2
+        and abs(tf15["change6"]) <= 4
 
         and tf15["volume_trend"] >= 1.05
 
-        and r15 is not None
+        and rsi15 is not None
 
-        and 38 <= r15 <= 62
+        and 38 <= rsi15 <= 62
+
     )
 
     if accumulation:
@@ -718,23 +612,16 @@ def analyze_symbol(symbol):
 
     distribution = (
 
-        tf1h["change60"] >= 5
+        tf1h["change6"] >= 4
 
         and (
-            tf15["change15"] < 0
+
+            tf15["change"] < 0
 
             or tf15["volume_trend"] < 0.90
 
-            or (
-                r4h is not None
-                and r4h >= 80
-            )
-
-            or (
-                r1d is not None
-                and r1d >= 80
-            )
         )
+
     )
 
     if distribution:
@@ -746,55 +633,30 @@ def analyze_symbol(symbol):
         )
 
     # =====================================================
-    # LATE PUMP PROTECTION
+    # LATE PUMP
     # =====================================================
 
     late_pump = (
 
-        tf15["change15"] >= 5
+        tf15["change6"] >= 5
 
-        or tf30["change30"] >= 8
+        or tf30["change6"] >= 6
 
-        or tf1h["change60"] >= 15
+        or tf1h["change6"] >= 10
 
-        or tf4h["change60"] >= 20
-
-        or tf1d["change60"] >= 25
     )
 
-    if late_pump:
-
-        long_score -= 20
-
-        long_reasons.append(
-            "الحركة متأخرة - منع مطاردة Pump"
-        )
-
     # =====================================================
-    # EXTREME RSI PROTECTION
+    # OVERHEATED MARKET
     # =====================================================
 
-    extreme_long_risk = (
+    overheated = False
 
-        (
-            r4h is not None
-            and r4h >= 85
-        )
+    if rsi4h is not None and rsi4h >= 78:
+        overheated = True
 
-        or (
-
-            r1d is not None
-            and r1d >= 85
-        )
-    )
-
-    if extreme_long_risk:
-
-        long_score -= 15
-
-        long_reasons.append(
-            "تشبع مرتفع على 4H/1D"
-        )
+    if rsi1d is not None and rsi1d >= 78:
+        overheated = True
 
     # =====================================================
     # STRONG DUMP
@@ -802,10 +664,35 @@ def analyze_symbol(symbol):
 
     strong_dump = (
 
-        tf15["change15"] <= -3
+        tf15["change6"] <= -3
 
-        and tf15["volume_ratio"] >= 1.5
+        and tf15["volume_ratio"] >= 1.30
+
     )
+
+    # =====================================================
+    # PROTECTION
+    # =====================================================
+
+    if late_pump:
+
+        long_score -= 20
+
+        long_reasons.append(
+            "منع مطاردة Pump متأخر"
+        )
+
+    if overheated:
+
+        long_score -= 25
+
+        long_reasons.append(
+            "RSI 4H/1D مرتفع - خطر دخول متأخر"
+        )
+
+    if distribution:
+
+        long_score -= 10
 
     if strong_dump:
 
@@ -819,55 +706,39 @@ def analyze_symbol(symbol):
     # DAILY CONFLICT
     # =====================================================
 
-    daily_bear = (
-        tf1d["bear"] >= 3
-    )
-
-    daily_bull = (
-        tf1d["bull"] >= 3
-    )
+    daily_bear = tf1d["bear"] >= 3
+    daily_bull = tf1d["bull"] >= 3
 
     if daily_bear:
-
         long_score -= 10
 
     if daily_bull:
-
         short_score -= 10
 
     # =====================================================
-    # DISTRIBUTION + OVERBOUGHT
+    # SHORT OVERHEAT BONUS
     # =====================================================
 
-    if (
-        distribution
-        and extreme_long_risk
-    ):
+    if overheated:
 
-        long_score -= 10
+        short_score += 10
 
-        long_reasons.append(
-            "خطر شراء متأخر"
+        short_reasons.append(
+            "تشبع شراء على الفريمات الكبيرة"
         )
 
     # =====================================================
-    # SCORE LIMIT
+    # LIMIT SCORES
     # =====================================================
 
     long_score = max(
         0,
-        min(
-            100,
-            long_score
-        )
+        min(100, int(long_score))
     )
 
     short_score = max(
         0,
-        min(
-            100,
-            short_score
-        )
+        min(100, int(short_score))
     )
 
     # =====================================================
@@ -876,47 +747,39 @@ def analyze_symbol(symbol):
 
     signal = "WAIT"
 
+    # Strong LONG
     if (
         long_score >= 75
-
         and long_score >= short_score + 20
-
         and not late_pump
-
+        and not overheated
         and not strong_dump
-
-        and not (
-            distribution
-            and extreme_long_risk
-        )
+        and not distribution
     ):
 
         signal = "EARLY_LONG"
 
+    # Strong SHORT
     elif (
         short_score >= 75
-
         and short_score >= long_score + 20
     ):
 
         signal = "SHORT"
 
+    # Watch LONG
     elif (
-        long_score >= 60
-
+        long_score >= 55
         and long_score >= short_score + 10
-
-        and not (
-            distribution
-            and extreme_long_risk
-        )
+        and not strong_dump
+        and not overheated
     ):
 
         signal = "WATCH_LONG"
 
+    # Watch SHORT
     elif (
-        short_score >= 60
-
+        short_score >= 55
         and short_score >= long_score + 10
     ):
 
@@ -929,188 +792,77 @@ def analyze_symbol(symbol):
     return {
 
         "symbol": symbol,
-
         "price": tf15["price"],
 
         "signal": signal,
 
         "long_score": long_score,
-
         "short_score": short_score,
 
         "rsi15": tf15["rsi"],
-
         "rsi1h": tf1h["rsi"],
-
         "rsi4h": tf4h["rsi"],
-
         "rsi1d": tf1d["rsi"],
 
         "ema9": tf15["ema9"],
-
         "ema20": tf15["ema20"],
-
         "ema50": tf15["ema50"],
-
         "ema200": tf15["ema200"],
 
-        "volume_ratio":
-            tf15["volume_ratio"],
+        "volume_ratio": tf15["volume_ratio"],
+        "volume_trend": tf15["volume_trend"],
 
-        "volume_trend":
-            tf15["volume_trend"],
+        "change15": tf15["change"],
+        "change30": tf30["change"],
+        "change1h": tf1h["change"],
+        "change4h": tf4h["change"],
+        "change1d": tf1d["change"],
 
-        "change15":
-            tf15["change15"],
+        "atr": tf15["atr"],
 
-        "change30":
-            tf30["change30"],
+        "tf15_bull": tf15["bull"],
+        "tf15_bear": tf15["bear"],
 
-        "change1h":
-            tf1h["change60"],
+        "tf30_bull": tf30["bull"],
+        "tf30_bear": tf30["bear"],
 
-        "change4h":
-            tf4h["change60"],
+        "tf1h_bull": tf1h["bull"],
+        "tf1h_bear": tf1h["bear"],
 
-        "change1d":
-            tf1d["change60"],
+        "tf4h_bull": tf4h["bull"],
+        "tf4h_bear": tf4h["bear"],
 
-        "atr":
-            tf15["atr"],
+        "tf1d_bull": tf1d["bull"],
+        "tf1d_bear": tf1d["bear"],
 
-        "tf15_bull":
-            tf15["bull"],
+        "accumulation": accumulation,
+        "distribution": distribution,
+        "late_pump": late_pump,
+        "overheated": overheated,
 
-        "tf15_bear":
-            tf15["bear"],
-
-        "tf30_bull":
-            tf30["bull"],
-
-        "tf30_bear":
-            tf30["bear"],
-
-        "tf1h_bull":
-            tf1h["bull"],
-
-        "tf1h_bear":
-            tf1h["bear"],
-
-        "tf4h_bull":
-            tf4h["bull"],
-
-        "tf4h_bear":
-            tf4h["bear"],
-
-        "tf1d_bull":
-            tf1d["bull"],
-
-        "tf1d_bear":
-            tf1d["bear"],
-
-        "accumulation":
-            accumulation,
-
-        "distribution":
-            distribution,
-
-        "late_pump":
-            late_pump,
-
-        "extreme_long_risk":
-            extreme_long_risk,
-
-        "long_reasons":
-            long_reasons,
-
-        "short_reasons":
-            short_reasons
+        "long_reasons": long_reasons,
+        "short_reasons": short_reasons
     }
 
 
 # =========================================================
-# SCANNER SCORE
+# SCANNER
 # =========================================================
 
-def scanner_quality(result):
+def scan_one(symbol):
 
-    if not result:
-        return 0
-
-    long_score = result.get(
-        "long_score",
-        0
-    )
-
-    short_score = result.get(
-        "short_score",
-        0
-    )
-
-    strongest = max(
-        long_score,
-        short_score
-    )
-
-    # توافق الفريمات
-    bulls = (
-        result.get("tf15_bull", 0)
-        + result.get("tf30_bull", 0)
-        + result.get("tf1h_bull", 0)
-        + result.get("tf4h_bull", 0)
-        + result.get("tf1d_bull", 0)
-    )
-
-    bears = (
-        result.get("tf15_bear", 0)
-        + result.get("tf30_bear", 0)
-        + result.get("tf1h_bear", 0)
-        + result.get("tf4h_bear", 0)
-        + result.get("tf1d_bear", 0)
-    )
-
-    alignment = max(
-        bulls,
-        bears
-    )
-
-    quality = (
-        strongest
-        + alignment * 2
-    )
-
-    if result.get(
-        "accumulation",
-        False
-    ):
-        quality += 8
-
-    if result.get(
-        "distribution",
-        False
-    ):
-        quality += 5
-
-    if result.get(
-        "late_pump",
-        False
-    ):
-        quality -= 15
-
-    if result.get(
-        "extreme_long_risk",
-        False
-    ):
-        quality -= 12
-
-    return quality
+    try:
+        return analyze_symbol(symbol)
+    except Exception as e:
+        print(
+            "SCAN ERROR:",
+            symbol,
+            repr(e)
+        )
+        return None
 
 
-# =========================================================
-# SCAN MARKET - UPDATED
-# =========================================================
-
-def scan_market(limit=40):
+def scan_market(limit=20):
 
     tickers = get_tickers()
 
@@ -1126,21 +878,15 @@ def scan_market(limit=40):
             ""
         )
 
-        if not symbol.endswith(
-            "USDT"
-        ):
+        if not symbol.endswith("USDT"):
             continue
 
-        # استبعاد الرموز غير المناسبة
-        if any(
-            x in symbol
-            for x in [
-                "UPUSDT",
-                "DOWNUSDT",
-                "BULLUSDT",
-                "BEARUSDT"
-            ]
-        ):
+        if any(x in symbol for x in [
+            "UPUSDT",
+            "DOWNUSDT",
+            "BULLUSDT",
+            "BEARUSDT"
+        ]):
             continue
 
         try:
@@ -1159,24 +905,15 @@ def scan_market(limit=40):
                 )
             )
 
-            last_price = float(
-                ticker.get(
-                    "lastPrice",
-                    0
-                )
-            )
-
         except Exception:
             continue
 
-        if quote_volume < 1_000_000:
+        # سيولة كافية
+        if quote_volume < 2_000_000:
             continue
 
-        if last_price <= 0:
-            continue
-
-        # لا نستبعد العملة لمجرد أن التغير اليومي صغير
-        if abs(daily_change) < 0.20:
+        # لا نريد عملات ميتة
+        if abs(daily_change) < 0.3:
             continue
 
         candidates.append(
@@ -1187,10 +924,7 @@ def scan_market(limit=40):
             )
         )
 
-    # =====================================================
-    # فحص عدد أكبر من العملات
-    # =====================================================
-
+    # نأخذ أعلى العملات من ناحية السيولة
     candidates.sort(
         key=lambda x: x[1],
         reverse=True
@@ -1200,146 +934,97 @@ def scan_market(limit=40):
 
     results = []
 
-    for (
-        symbol,
-        volume,
-        daily_change
-    ) in candidates:
+    # تحليل متوازي حتى /scan لا يطول جدًا
+    with ThreadPoolExecutor(max_workers=5) as executor:
 
-        try:
-
-            result = analyze_symbol(
-                symbol
+        futures = [
+            executor.submit(
+                scan_one,
+                item[0]
             )
+            for item in candidates
+        ]
+
+        for future in as_completed(futures):
+
+            result = future.result()
 
             if result:
+                results.append(result)
 
-                result["quote_volume"] = (
-                    volume
-                )
+    # =====================================================
+    # SCORE FOR SCANNER
+    # =====================================================
 
-                result["daily_change"] = (
-                    daily_change
-                )
+    def ranking(result):
 
-                # =================================================
-                # مهم:
-                # لا نحذف WAIT هنا.
-                # نخزن المرشحين ونختار الأفضل في النهاية.
-                # =================================================
+        signal = result["signal"]
 
-                result["scanner_quality"] = (
-                    scanner_quality(result)
-                )
+        signal_priority = {
+            "EARLY_LONG": 5,
+            "SHORT": 5,
+            "WATCH_LONG": 3,
+            "WATCH_SHORT": 3,
+            "WAIT": 1
+        }
 
-                results.append(
-                    result
-                )
+        return (
+            signal_priority.get(
+                signal,
+                0
+            ),
 
-        except Exception as e:
+            max(
+                result["long_score"],
+                result["short_score"]
+            ),
 
-            print(
-                "SCAN ERROR:",
-                symbol,
-                repr(e)
-            )
-
-        # تقليل ضغط API
-        time.sleep(
-            0.08
+            result["volume_ratio"]
         )
 
-    if not results:
-        return []
-
-    # =====================================================
-    # ترتيب النتائج
-    # =====================================================
-
-    signal_priority = {
-        "EARLY_LONG": 5,
-        "SHORT": 5,
-        "WATCH_LONG": 4,
-        "WATCH_SHORT": 4,
-        "WAIT": 1
-    }
-
     results.sort(
-        key=lambda x: (
-            signal_priority.get(
-                x.get("signal"),
-                0
-            ),
-
-            x.get(
-                "scanner_quality",
-                0
-            ),
-
-            max(
-                x.get(
-                    "long_score",
-                    0
-                ),
-
-                x.get(
-                    "short_score",
-                    0
-                )
-            ),
-
-            x.get(
-                "quote_volume",
-                0
-            )
-        ),
-
+        key=ranking,
         reverse=True
     )
 
     # =====================================================
-    # أولًا: النتائج القابلة للتداول
+    # IMPORTANT:
+    # DO NOT RETURN EMPTY SCAN EASILY
     # =====================================================
 
-    tradable = [
-        x
-        for x in results
-        if x.get("signal") != "WAIT"
+    strong = [
+        r for r in results
+        if r["signal"] in (
+            "EARLY_LONG",
+            "SHORT",
+            "WATCH_LONG",
+            "WATCH_SHORT"
+        )
     ]
 
-    if tradable:
+    if strong:
 
-        return tradable[:8]
+        return strong[:8]
 
-    # =====================================================
-    # لو مفيش صفقة:
-    # رجع أفضل المرشحين بدل رسالة فاضية.
-    # =====================================================
-
-    results.sort(
-        key=lambda x: (
-            x.get(
-                "scanner_quality",
-                0
-            ),
-
-            max(
-                x.get(
-                    "long_score",
-                    0
-                ),
-
-                x.get(
-                    "short_score",
-                    0
-                )
-            )
+    # إذا لم توجد إشارات:
+    # نعرض أفضل 5 مرشحين بدل نتيجة فارغة
+    fallback = sorted(
+        results,
+        key=lambda x: max(
+            x["long_score"],
+            x["short_score"]
         ),
-
         reverse=True
     )
 
-    return results[:8]
+    for item in fallback[:5]:
+
+        if item["long_score"] >= item["short_score"]:
+            item["signal"] = "WATCH_LONG"
+        else:
+            item["signal"] = "WATCH_SHORT"
+
+    return fallback[:5]
 
 
 # =========================================================
@@ -1369,7 +1054,7 @@ def format_price(price):
 
 
 # =========================================================
-# TRADE PREPARATION
+# TRADE
 # =========================================================
 
 def prepare_trade(result):
@@ -1377,25 +1062,17 @@ def prepare_trade(result):
     if not result:
         return None
 
-    signal = result.get(
-        "signal"
-    )
+    signal = result["signal"]
 
-    # WAIT ليس صفقة
     if signal == "WAIT":
         return None
 
-    price = result["price"]
+    price = float(result["price"])
 
-    atr_value = result.get(
-        "atr"
-    )
+    atr_value = result.get("atr")
 
     if not atr_value or atr_value <= 0:
-
-        atr_value = (
-            price * 0.01
-        )
+        atr_value = price * 0.01
 
     # =====================================================
     # LONG
@@ -1406,24 +1083,12 @@ def prepare_trade(result):
         "WATCH_LONG"
     ):
 
-        entry_low = (
-            price
-            - atr_value * 0.20
-        )
+        entry_low = price - atr_value * 0.20
+        entry_high = price + atr_value * 0.10
 
-        entry_high = (
-            price
-            + atr_value * 0.10
-        )
+        stop = price - atr_value * 1.20
 
-        stop = (
-            price
-            - atr_value * 1.20
-        )
-
-        risk = (
-            price - stop
-        )
+        risk = price - stop
 
         return {
 
@@ -1438,20 +1103,17 @@ def prepare_trade(result):
 
             "tp1":
                 format_price(
-                    price
-                    + risk * 1.5
+                    price + risk * 1.5
                 ),
 
             "tp2":
                 format_price(
-                    price
-                    + risk * 2.5
+                    price + risk * 2.5
                 ),
 
             "tp3":
                 format_price(
-                    price
-                    + risk * 4
+                    price + risk * 4
                 )
         }
 
@@ -1464,24 +1126,12 @@ def prepare_trade(result):
         "WATCH_SHORT"
     ):
 
-        entry_low = (
-            price
-            - atr_value * 0.10
-        )
+        entry_low = price - atr_value * 0.10
+        entry_high = price + atr_value * 0.20
 
-        entry_high = (
-            price
-            + atr_value * 0.20
-        )
+        stop = price + atr_value * 1.20
 
-        stop = (
-            price
-            + atr_value * 1.20
-        )
-
-        risk = (
-            stop - price
-        )
+        risk = stop - price
 
         return {
 
@@ -1496,20 +1146,17 @@ def prepare_trade(result):
 
             "tp1":
                 format_price(
-                    price
-                    - risk * 1.5
+                    price - risk * 1.5
                 ),
 
             "tp2":
                 format_price(
-                    price
-                    - risk * 2.5
+                    price - risk * 2.5
                 ),
 
             "tp3":
                 format_price(
-                    price
-                    - risk * 4
+                    price - risk * 4
                 )
         }
 
