@@ -8,71 +8,64 @@ bot = telebot.TeleBot(TOKEN)
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
-        "🚀 **أهلاً بك يا محمد في بوت إدارة السوق الاحترافي**\n\n"
-        "البوت يعمل الآن بكفاءة عالية وبدون أخطاء.\n"
-        "• **لفحص السوق:** اكتب كلمة `scan`\n"
-        "• **للبحث عن أي عملة:** اكتب رمزها مباشرة (مثل: `btc`, `zec`, `tao`, `morpho`, `sol`)\n\n"
-        "جاهز تماماً لاستقبال أوامرك وتتبعاتك اللحظية! 📈"
+        "🚀 **أهلاً بك يا محمد في بوت السوق الاحترافي**\n\n"
+        "• لفحص السوق وجلب الأصول: اكتب `scan`\n"
+        "• للبحث عن سعر أي عملة: اكتب رمزها مباشرة (مثل: `btc`, `zec`, `tao`, `eth`, `sol`)\n"
     )
     bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: True)
-def handle_market_requests(message):
+def handle_messages(message):
     text = message.text.lower().strip()
     
     if text == "scan":
-        bot.reply_to(message, "⚡ **جاري فحص السوق وجلب تفاصيل الأصول النشطة...**", parse_mode="Markdown")
+        bot.reply_to(message, "⚡ **جاري جلب بيانات السوق الحية...**", parse_mode="Markdown")
         try:
-            url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&sparkline=false"
+            url = "https://api.binance.com/api/v3/ticker/24hr"
             res = requests.get(url, timeout=10)
             data = res.json()
             
-            msg = "📊 **تقرير السوق اللحظي:**\n\n"
-            for coin in data:
-                price = coin['current_price']
-                change = coin['price_change_percentage_24h']
-                symbol = coin['symbol'].upper()
-                
-                # إضافة مؤشر اتجاه صاعد أو هابط
-                trend = "🟢" if change >= 0 else "🔴"
-                msg += f"{trend} **{symbol}**: ${price:,.2f} | التغير: {change:.2f}%\n"
+            msg = "📊 **أبرز العملات الرقمية (بينانس):**\n\n"
+            count = 0
+            for ticker in data:
+                symbol = ticker['symbol']
+                if symbol.endswith('USDT') and count < 10:
+                    price = float(ticker['lastPrice'])
+                    change = float(ticker['priceChangePercent'])
+                    trend = "🟢" if change >= 0 else "🔴"
+                    msg += f"{trend} **{symbol.replace('USDT', '')}**: ${price:,.4f} | التغير: {change:.2f}%\n"
+                    count += 1
             
             bot.reply_to(message, msg, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, "❌ حدث خطأ أثناء الاتصال بالخادم لجلب البيانات، حاول مجدداً.")
+            bot.reply_to(message, "❌ حدث خطأ في الاتصال، حاول مجدداً.")
             
     else:
-        query = text.replace("$", "").strip()
+        query = text.upper().replace("$", "").strip() + "USDT"
         try:
-            search_url = f"https://api.coingecko.com/api/v3/search?query={query}"
-            search_res = requests.get(search_url, timeout=5).json()
-            coins = search_res.get('coins', [])
+            url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={query}"
+            res = requests.get(url, timeout=5)
+            data = res.json()
             
-            if coins:
-                coin_id = coins[0]['id']
-                price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true"
-                price_data = requests.get(price_url, timeout=5).json()
+            if 'lastPrice' in data:
+                price = float(data['lastPrice'])
+                change = float(data['priceChangePercent'])
+                high = float(data['highPrice'])
+                low = float(data['lowPrice'])
+                trend = "🟢 صاعد" if change >= 0 else "🔴 هابط"
                 
-                if coin_id in price_data:
-                    price = price_data[coin_id]['usd']
-                    change = price_data[coin_id].get('usd_24h_change', 0)
-                    mcap = price_data[coin_id].get('usd_market_cap', 0)
-                    
-                    trend = "🟢 صاعد" if change >= 0 else "🔴 هابط"
-                    
-                    response_text = (
-                        f"🎯 **تحليل الأصل: {query.upper()}**\n\n"
-                        f"💰 **السعر الحالي:** ${price:,.4f}\n"
-                        f"📈 **حالة 24س:** {trend} ({change:.2f}%)\n"
-                        f"🏦 **القيمة السوقية:** ${mcap:,.0f}\n\n"
-                        f"⚡ *جاهز لأي إعدادات أو أهداف إضافية ترغب في رصدها.*"
-                    )
-                    bot.reply_to(message, response_text, parse_mode="Markdown")
-                else:
-                    bot.reply_to(message, "⚠️ تعذر جلب السعر الدقيق لهذا الأصل، تأكد من الرمز.")
+                response_text = (
+                    f"🎯 **أصل السوق: {query.replace('USDT', '')}**\n\n"
+                    f"💰 **السعر الحالي:** ${price:,.4f}\n"
+                    f"📈 **حالة 24س:** {trend} ({change:.2f}%)\n"
+                    f"⬆️ **أعلى سعر:** ${high:,.4f}\n"
+                    f"⬇️ **أقل سعر:** ${low:,.4f}\n\n"
+                    f"⚡ *جاهز لأي إعدادات أو تحليل قادم.*"
+                )
+                bot.reply_to(message, response_text, parse_mode="Markdown")
             else:
-                bot.reply_to(message, "⚠️ لم يتم العثور على هذا الأصل، تأكد من كتابة الرمز بشكل صحيح (مثل BTC, ZEC, TAO).")
+                bot.reply_to(message, "⚠️ لم يتم العثور على هذا الأصل، تأكد من الرمز (مثل BTC, ETH).")
         except Exception as e:
-            bot.reply_to(message, "⚠️ حدث خطأ في الاتصال بالبيانات.")
+            bot.reply_to(message, "⚠️ حدث خطأ في جلب السعر.")
 
 bot.infinity_polling()
