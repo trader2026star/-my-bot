@@ -12,30 +12,37 @@ from analysis import (
 )
 
 
-# =========================================================
-# SETTINGS
-# =========================================================
-
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 if not TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN is missing"
+    )
+
 
 RENDER_URL = os.environ.get(
     "RENDER_URL",
     "https://my-bot-mtyr.onrender.com"
 ).rstrip("/")
 
-WEBHOOK_PATH = "/telegram/webhook"
-WEBHOOK_URL = RENDER_URL + WEBHOOK_PATH
 
-TELEGRAM_API = "https://api.telegram.org/bot" + TOKEN
+WEBHOOK_PATH = "/telegram/webhook"
+
+WEBHOOK_URL = (
+    RENDER_URL
+    + WEBHOOK_PATH
+)
+
+TELEGRAM_API = (
+    "https://api.telegram.org/bot"
+    + TOKEN
+)
 
 app = Flask(__name__)
 
 
 # =========================================================
-# TELEGRAM API
+# TELEGRAM
 # =========================================================
 
 def telegram_request(method, data=None):
@@ -89,13 +96,12 @@ def send_message(chat_id, text):
         max_length
     ):
 
-        part = text[i:i + max_length]
-
         result = telegram_request(
             "sendMessage",
             {
                 "chat_id": chat_id,
-                "text": part
+                "text":
+                    text[i:i + max_length]
             }
         )
 
@@ -103,7 +109,7 @@ def send_message(chat_id, text):
 
 
 # =========================================================
-# FORMAT HELPERS
+# FORMAT
 # =========================================================
 
 def fmt_price(value):
@@ -119,9 +125,7 @@ def fmt_pct(value):
     if value is None:
         return "-"
 
-    return "{:+.2f}%".format(
-        value
-    )
+    return "{:+.2f}%".format(value)
 
 
 def fmt_rsi(value):
@@ -129,9 +133,7 @@ def fmt_rsi(value):
     if value is None:
         return "-"
 
-    return "{:.1f}".format(
-        value
-    )
+    return "{:.1f}".format(value)
 
 
 def tf_direction(bull, bear):
@@ -168,14 +170,13 @@ def final_direction(result):
 
 
 # =========================================================
-# COIN ANALYSIS MESSAGE
+# COIN MESSAGE
 # =========================================================
 
 def build_coin_message(result):
 
     symbol = result["symbol"]
     price = result["price"]
-
     signal = result["signal"]
 
     long_score = result["long_score"]
@@ -183,7 +184,11 @@ def build_coin_message(result):
 
     message = ""
 
-    message += "📊 تحليل " + symbol + "\n\n"
+    message += (
+        "📊 تحليل "
+        + symbol
+        + "\n\n"
+    )
 
     message += (
         "💰 السعر: "
@@ -213,7 +218,9 @@ def build_coin_message(result):
     # MULTI TIMEFRAME
     # =====================================================
 
-    message += "📊 MULTI TIMEFRAME\n\n"
+    message += (
+        "📊 MULTI TIMEFRAME\n\n"
+    )
 
     message += (
         "15m: "
@@ -341,7 +348,7 @@ def build_coin_message(result):
     )
 
     # =====================================================
-    # PRICE CHANGES
+    # MOVEMENT
     # =====================================================
 
     message += "📉 الحركة\n"
@@ -380,22 +387,36 @@ def build_coin_message(result):
     # MARKET STRUCTURE
     # =====================================================
 
-    message += "🔎 MARKET STRUCTURE\n"
+    message += (
+        "🔎 MARKET STRUCTURE\n"
+    )
 
     if result["accumulation"]:
-        message += "🟢 Accumulation: YES ✅\n"
+        message += (
+            "🟢 Accumulation: YES ✅\n"
+        )
     else:
-        message += "🟢 Accumulation: NO\n"
+        message += (
+            "🟢 Accumulation: NO\n"
+        )
 
     if result["distribution"]:
-        message += "🔴 Distribution: YES ⚠️\n"
+        message += (
+            "🔴 Distribution: YES ⚠️\n"
+        )
     else:
-        message += "🔴 Distribution: NO\n"
+        message += (
+            "🔴 Distribution: NO\n"
+        )
 
     if result["late_pump"]:
-        message += "🚀 Late Pump Risk: HIGH ⚠️\n"
+        message += (
+            "🚀 Late Pump Risk: HIGH ⚠️\n"
+        )
     else:
-        message += "🚀 Late Pump Risk: LOW ✅\n"
+        message += (
+            "🚀 Late Pump Risk: LOW ✅\n"
+        )
 
     # =====================================================
     # TRADE
@@ -405,7 +426,9 @@ def build_coin_message(result):
 
     if trade:
 
-        message += "\n🎯 الصفقة المقترحة\n\n"
+        message += (
+            "\n🎯 الصفقة المقترحة\n\n"
+        )
 
         message += (
             "النوع: "
@@ -446,8 +469,54 @@ def build_coin_message(result):
     else:
 
         message += (
-            "\n⏳ لا توجد صفقة قوية حاليًا.\n"
-            "الأفضل الانتظار بدل الدخول بدون تأكيد.\n"
+            "\n⏳ WAIT — لا توجد صفقة قوية حاليًا.\n"
+        )
+
+        wait_reason = result.get(
+            "wait_reason",
+            "شروط الدخول غير مكتملة"
+        )
+
+        wait_missing = result.get(
+            "wait_missing",
+            []
+        )
+
+        wait_confirmation = result.get(
+            "wait_confirmation",
+            ""
+        )
+
+        message += (
+            "\n⚠️ السبب:\n"
+            + str(wait_reason)
+            + "\n"
+        )
+
+        if wait_missing:
+
+            message += (
+                "\n🔎 الناقص للدخول:\n"
+            )
+
+            for item in wait_missing[:5]:
+
+                message += (
+                    "• "
+                    + str(item)
+                    + "\n"
+                )
+
+        if wait_confirmation:
+
+            message += (
+                "\n🎯 شرط التأكيد:\n"
+                + str(wait_confirmation)
+                + "\n"
+            )
+
+        message += (
+            "\n🛑 لا تدخل قبل اكتمال التأكيد."
         )
 
     # =====================================================
@@ -478,7 +547,9 @@ def build_coin_message(result):
 
     if reasons:
 
-        message += "\n🧠 أسباب الإشارة:\n"
+        message += (
+            "\n\n🧠 أسباب الإشارة:\n"
+        )
 
         for reason in reasons[:6]:
 
@@ -659,7 +730,9 @@ def build_scan_message(results):
 
         if trade:
 
-            message += "\n🎯 الصفقة:\n"
+            message += (
+                "\n🎯 الصفقة:\n"
+            )
 
             message += (
                 "النوع: "
@@ -838,7 +911,8 @@ def telegram_webhook():
                 "🔎 فحص السوق\n\n"
                 "/coin BTCUSDT\n"
                 "📊 تحليل عملة\n\n"
-                "البوت لا يجبر صفقة بدون تأكيد."
+                "عند WAIT سيشرح البوت "
+                "سبب الانتظار وشرط التأكيد."
             )
 
             return "OK", 200
