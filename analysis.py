@@ -1,6 +1,11 @@
 import time
 import requests
 
+
+# =========================================================
+# CONFIG
+# =========================================================
+
 FUTURES_URL = "https://fapi.binance.com"
 DATA_URL = "https://data-api.binance.vision"
 
@@ -10,24 +15,40 @@ SESSION.headers.update({
 })
 
 
-def api_get(base, path, params=None, timeout=12):
+# =========================================================
+# BINANCE REQUEST
+# =========================================================
+
+def api_get(base, path, params=None, timeout=10):
+
     try:
-        r = SESSION.get(
+        response = SESSION.get(
             base + path,
             params=params,
             timeout=timeout
         )
 
-        if r.status_code == 200:
-            return r.json()
+        if response.status_code == 200:
+            return response.json()
 
-        print("BINANCE ERROR:", r.status_code, r.text[:300])
+        print(
+            "BINANCE ERROR:",
+            response.status_code,
+            response.text[:200]
+        )
 
     except Exception as e:
-        print("BINANCE REQUEST ERROR:", repr(e))
+        print(
+            "BINANCE REQUEST ERROR:",
+            repr(e)
+        )
 
     return None
 
+
+# =========================================================
+# KLINES
+# =========================================================
 
 def get_klines(symbol, interval, limit=200):
 
@@ -37,6 +58,7 @@ def get_klines(symbol, interval, limit=200):
         "limit": limit
     }
 
+    # Futures first
     data = api_get(
         FUTURES_URL,
         "/fapi/v1/klines",
@@ -46,6 +68,7 @@ def get_klines(symbol, interval, limit=200):
     if isinstance(data, list) and len(data) >= 60:
         return data
 
+    # Spot fallback
     data = api_get(
         DATA_URL,
         "/api/v3/klines",
@@ -57,6 +80,10 @@ def get_klines(symbol, interval, limit=200):
 
     return None
 
+
+# =========================================================
+# TICKERS
+# =========================================================
 
 def get_tickers():
 
@@ -71,17 +98,29 @@ def get_tickers():
     return []
 
 
+# =========================================================
+# BASIC MATH
+# =========================================================
+
 def average(values):
-    return sum(values) / len(values) if values else 0
+
+    if not values:
+        return 0
+
+    return sum(values) / len(values)
 
 
 def pct(old, new):
 
-    if old == 0:
+    if old in (None, 0):
         return 0
 
     return ((new - old) / old) * 100
 
+
+# =========================================================
+# EMA
+# =========================================================
 
 def ema(values, period):
 
@@ -100,6 +139,10 @@ def ema(values, period):
 
     return result
 
+
+# =========================================================
+# RSI
+# =========================================================
 
 def rsi(values, period=14):
 
@@ -139,6 +182,10 @@ def rsi(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
+# =========================================================
+# ATR
+# =========================================================
+
 def atr(highs, lows, closes, period=14):
 
     if len(closes) <= period:
@@ -158,6 +205,10 @@ def atr(highs, lows, closes, period=14):
 
     return average(trs[-period:])
 
+
+# =========================================================
+# TIMEFRAME ANALYSIS
+# =========================================================
 
 def analyze_timeframe(symbol, interval, limit=200):
 
@@ -191,68 +242,105 @@ def analyze_timeframe(symbol, interval, limit=200):
         closes
     )
 
-    avg20 = average(
-        volumes[-20:]
-    )
+    # -----------------------------------------------------
+    # VOLUME
+    # -----------------------------------------------------
 
-    avg5 = average(
-        volumes[-5:]
-    )
-
-    previous5 = average(
-        volumes[-10:-5]
-    )
+    avg20 = average(volumes[-20:])
+    avg5 = average(volumes[-5:])
+    previous5 = average(volumes[-10:-5])
 
     volume_ratio = (
         avg5 / avg20
-        if avg20 else 0
+        if avg20 > 0
+        else 0
     )
 
     volume_trend = (
         avg5 / previous5
-        if previous5 else 1
+        if previous5 > 0
+        else 1
     )
+
+    # -----------------------------------------------------
+    # TREND SCORE
+    # -----------------------------------------------------
 
     bull = 0
     bear = 0
 
-    if e20 and e50:
+    if e20 is not None and e50 is not None:
 
         if e20 > e50:
             bull += 1
         else:
             bear += 1
 
-    if e50 and e200:
+    if e50 is not None and e200 is not None:
 
         if e50 > e200:
             bull += 1
         else:
             bear += 1
 
-    if e20:
+    if e20 is not None:
 
         if price > e20:
             bull += 1
         else:
             bear += 1
 
-    if e50:
+    if e50 is not None:
 
         if price > e50:
             bull += 1
         else:
             bear += 1
 
-    if e200:
+    if e200 is not None:
 
         if price > e200:
             bull += 1
         else:
             bear += 1
 
+    # -----------------------------------------------------
+    # REAL TIMEFRAME MOVEMENTS
+    #
+    # IMPORTANT:
+    # This is now based on the actual candle interval,
+    # not 60 candles for every timeframe.
+    # -----------------------------------------------------
+
+    change1 = pct(
+        closes[-2],
+        closes[-1]
+    ) if len(closes) >= 2 else 0
+
+    change3 = pct(
+        closes[-4],
+        closes[-1]
+    ) if len(closes) >= 4 else 0
+
+    change5 = pct(
+        closes[-6],
+        closes[-1]
+    ) if len(closes) >= 6 else 0
+
+    change10 = pct(
+        closes[-11],
+        closes[-1]
+    ) if len(closes) >= 11 else 0
+
+    change20 = pct(
+        closes[-21],
+        closes[-1]
+    ) if len(closes) >= 21 else 0
+
     return {
+
         "price": price,
+
         "open": opens[-1],
         "high": highs[-1],
         "low": lows[-1],
@@ -271,25 +359,20 @@ def analyze_timeframe(symbol, interval, limit=200):
         "bull": bull,
         "bear": bear,
 
-        "change15": pct(
-            closes[-16],
-            price
-        ) if len(closes) >= 16 else 0,
-
-        "change30": pct(
-            closes[-31],
-            price
-        ) if len(closes) >= 31 else 0,
-
-        "change60": pct(
-            closes[-61],
-            price
-        ) if len(closes) >= 61 else 0,
+        "change1": change1,
+        "change3": change3,
+        "change5": change5,
+        "change10": change10,
+        "change20": change20,
 
         "high20": max(highs[-20:]),
         "low20": min(lows[-20:])
     }
 
+
+# =========================================================
+# SYMBOL ANALYSIS
+# =========================================================
 
 def analyze_symbol(symbol):
 
@@ -297,27 +380,32 @@ def analyze_symbol(symbol):
         symbol.upper()
         .replace("/", "")
         .replace("-", "")
+        .strip()
     )
 
     if not symbol.endswith("USDT"):
         symbol += "USDT"
 
+    # =====================================================
+    # MULTI TIMEFRAME
+    # =====================================================
+
     tf15 = analyze_timeframe(
         symbol,
         "15m",
-        180
+        200
     )
 
     tf30 = analyze_timeframe(
         symbol,
         "30m",
-        180
+        200
     )
 
     tf1h = analyze_timeframe(
         symbol,
         "1h",
-        180
+        200
     )
 
     tf4h = analyze_timeframe(
@@ -339,10 +427,12 @@ def analyze_symbol(symbol):
         tf4h,
         tf1d
     ]):
+
         print(
             "TIMEFRAME DATA MISSING:",
             symbol
         )
+
         return None
 
     long_score = 0
@@ -355,9 +445,17 @@ def analyze_symbol(symbol):
     # DAILY
     # =====================================================
 
-    if tf1d["bull"] >= 3:
+    if tf1d["bull"] >= 4:
 
-        long_score += 20
+        long_score += 22
+
+        long_reasons.append(
+            "اليومي يدعم الاتجاه الصاعد بقوة"
+        )
+
+    elif tf1d["bull"] >= 3:
+
+        long_score += 15
 
         long_reasons.append(
             "اليومي يدعم الاتجاه الصاعد"
@@ -365,15 +463,19 @@ def analyze_symbol(symbol):
 
     elif tf1d["bull"] >= 2:
 
-        long_score += 10
+        long_score += 8
 
-        long_reasons.append(
-            "اليومي إيجابي جزئيًا"
+    if tf1d["bear"] >= 4:
+
+        short_score += 22
+
+        short_reasons.append(
+            "اليومي يدعم الاتجاه الهابط بقوة"
         )
 
-    if tf1d["bear"] >= 3:
+    elif tf1d["bear"] >= 3:
 
-        short_score += 20
+        short_score += 15
 
         short_reasons.append(
             "اليومي يدعم الاتجاه الهابط"
@@ -381,19 +483,23 @@ def analyze_symbol(symbol):
 
     elif tf1d["bear"] >= 2:
 
-        short_score += 10
-
-        short_reasons.append(
-            "اليومي ضعيف"
-        )
+        short_score += 8
 
     # =====================================================
     # 4H
     # =====================================================
 
-    if tf4h["bull"] >= 3:
+    if tf4h["bull"] >= 4:
 
-        long_score += 20
+        long_score += 22
+
+        long_reasons.append(
+            "4H صاعد بقوة"
+        )
+
+    elif tf4h["bull"] >= 3:
+
+        long_score += 15
 
         long_reasons.append(
             "4H صاعد"
@@ -401,15 +507,19 @@ def analyze_symbol(symbol):
 
     elif tf4h["bull"] >= 2:
 
-        long_score += 10
+        long_score += 8
 
-        long_reasons.append(
-            "4H إيجابي"
+    if tf4h["bear"] >= 4:
+
+        short_score += 22
+
+        short_reasons.append(
+            "4H هابط بقوة"
         )
 
-    if tf4h["bear"] >= 3:
+    elif tf4h["bear"] >= 3:
 
-        short_score += 20
+        short_score += 15
 
         short_reasons.append(
             "4H هابط"
@@ -417,19 +527,23 @@ def analyze_symbol(symbol):
 
     elif tf4h["bear"] >= 2:
 
-        short_score += 10
-
-        short_reasons.append(
-            "4H ضعيف"
-        )
+        short_score += 8
 
     # =====================================================
     # 1H
     # =====================================================
 
-    if tf1h["bull"] >= 3:
+    if tf1h["bull"] >= 4:
 
         long_score += 15
+
+        long_reasons.append(
+            "1H يؤكد الاتجاه الصاعد"
+        )
+
+    elif tf1h["bull"] >= 3:
+
+        long_score += 11
 
         long_reasons.append(
             "1H صاعد"
@@ -437,11 +551,19 @@ def analyze_symbol(symbol):
 
     elif tf1h["bull"] >= 2:
 
-        long_score += 8
+        long_score += 5
 
-    if tf1h["bear"] >= 3:
+    if tf1h["bear"] >= 4:
 
         short_score += 15
+
+        short_reasons.append(
+            "1H يؤكد الاتجاه الهابط"
+        )
+
+    elif tf1h["bear"] >= 3:
+
+        short_score += 11
 
         short_reasons.append(
             "1H هابط"
@@ -449,7 +571,7 @@ def analyze_symbol(symbol):
 
     elif tf1h["bear"] >= 2:
 
-        short_score += 8
+        short_score += 5
 
     # =====================================================
     # 30M
@@ -480,7 +602,7 @@ def analyze_symbol(symbol):
         short_score += 5
 
     # =====================================================
-    # 15M
+    # 15M ENTRY TRIGGER
     # =====================================================
 
     if tf15["bull"] >= 3:
@@ -493,7 +615,7 @@ def analyze_symbol(symbol):
 
     elif tf15["bull"] >= 2:
 
-        long_score += 5
+        long_score += 4
 
     if tf15["bear"] >= 3:
 
@@ -505,48 +627,89 @@ def analyze_symbol(symbol):
 
     elif tf15["bear"] >= 2:
 
-        short_score += 5
+        short_score += 4
 
     # =====================================================
     # RSI
     # =====================================================
 
-    if tf15["rsi"] is not None:
+    rsi15 = tf15["rsi"]
+    rsi1h = tf1h["rsi"]
+    rsi4h = tf4h["rsi"]
+    rsi1d = tf1d["rsi"]
 
-        if 42 <= tf15["rsi"] <= 62:
+    if rsi15 is not None:
+
+        if 45 <= rsi15 <= 62:
 
             long_score += 5
 
             long_reasons.append(
-                "RSI مناسب للشراء"
+                "RSI 15M مناسب للدخول"
             )
 
-        if 68 <= tf15["rsi"] <= 80:
+        elif 35 <= rsi15 < 45:
+
+            long_score += 3
+
+        elif rsi15 >= 72:
+
+            long_score -= 8
+
+            long_reasons.append(
+                "RSI مرتفع - خطر مطاردة الصعود"
+            )
+
+        if 65 <= rsi15 <= 78:
+
+            short_score += 5
+
+        elif rsi15 >= 78:
 
             short_score += 8
 
             short_reasons.append(
-                "RSI مرتفع"
+                "RSI مرتفع واحتمال تصحيح"
             )
 
-        if 30 <= tf15["rsi"] <= 38:
+    # =====================================================
+    # HIGHER TIMEFRAME RSI PROTECTION
+    # =====================================================
 
-            long_score += 3
+    if rsi4h is not None and rsi4h >= 85:
 
-            long_reasons.append(
-                "RSI منخفض وقد يدعم ارتدادًا"
-            )
+        long_score -= 12
+
+        long_reasons.append(
+            "RSI 4H مرتفع جدًا - حذر من التصحيح"
+        )
+
+    if rsi1d is not None and rsi1d >= 80:
+
+        long_score -= 12
+
+        long_reasons.append(
+            "RSI اليومي مرتفع جدًا"
+        )
+
+    if rsi4h is not None and rsi4h <= 25:
+
+        short_score -= 8
+
+    if rsi1d is not None and rsi1d <= 25:
+
+        short_score -= 8
 
     # =====================================================
     # VOLUME
     # =====================================================
 
-    if tf15["volume_ratio"] >= 1.10:
+    if tf15["volume_ratio"] >= 1.15:
 
         long_score += 5
 
         long_reasons.append(
-            "دخول حجم"
+            "الحجم أعلى من المتوسط"
         )
 
     if tf15["volume_trend"] >= 1.10:
@@ -557,9 +720,13 @@ def analyze_symbol(symbol):
             "الحجم يتحسن"
         )
 
+    if tf15["volume_ratio"] >= 1.50:
+
+        short_score += 2
+
     if (
         tf15["volume_trend"] < 0.85
-        and tf15["change15"] < 0
+        and tf15["change1"] < 0
     ):
 
         short_score += 5
@@ -573,11 +740,18 @@ def analyze_symbol(symbol):
     # =====================================================
 
     accumulation = (
-        tf15["change30"] <= 1.5
-        and tf15["change60"] <= 5
-        and tf15["change15"] > -2
-        and tf15["volume_trend"] >= 1.05
-        and 38 <= tf15["rsi"] <= 62
+
+        abs(tf15["change10"]) <= 3.0
+
+        and abs(tf30["change5"]) <= 4.0
+
+        and tf15["volume_trend"] >= 1.03
+
+        and rsi15 is not None
+        and 38 <= rsi15 <= 62
+
+        and tf15["price"] >= tf15["low20"] * 1.01
+
     )
 
     if accumulation:
@@ -593,29 +767,40 @@ def analyze_symbol(symbol):
     # =====================================================
 
     distribution = (
-        tf1h["change60"] >= 5
+
+        tf1h["change20"] >= 5
+
         and (
-            tf15["change15"] < 0
+            tf15["change1"] < 0
             or tf15["volume_trend"] < 0.90
         )
+
     )
 
     if distribution:
 
-        short_score += 15
+        short_score += 12
 
         short_reasons.append(
             "احتمال توزيع وفقد زخم"
         )
 
     # =====================================================
-    # LATE PUMP
+    # LATE PUMP PROTECTION
     # =====================================================
 
     late_pump = (
-        tf15["change15"] >= 5
-        or tf30["change30"] >= 8
-        or tf1h["change60"] >= 15
+
+        tf15["change3"] >= 4
+
+        or tf30["change3"] >= 6
+
+        or tf1h["change5"] >= 8
+
+        or tf4h["change5"] >= 15
+
+        or tf1d["change5"] >= 25
+
     )
 
     if late_pump:
@@ -631,39 +816,87 @@ def analyze_symbol(symbol):
     # =====================================================
 
     strong_dump = (
-        tf15["change15"] <= -3
-        and tf15["volume_ratio"] >= 1.5
+
+        tf15["change1"] <= -3
+
+        and tf15["volume_ratio"] >= 1.30
+
     )
 
     if strong_dump:
 
-        long_score -= 20
+        long_score -= 18
 
         long_reasons.append(
             "ضغط بيع قوي"
         )
 
     # =====================================================
-    # DAILY CONFLICT
+    # HIGHER TIMEFRAME CONFLICT
     # =====================================================
 
-    daily_bear = tf1d["bear"] >= 3
     daily_bull = tf1d["bull"] >= 3
+    daily_bear = tf1d["bear"] >= 3
+
+    four_hour_bull = tf4h["bull"] >= 3
+    four_hour_bear = tf4h["bear"] >= 3
 
     if daily_bear:
+
         long_score -= 10
 
     if daily_bull:
+
         short_score -= 10
+
+    if four_hour_bear:
+
+        long_score -= 8
+
+    if four_hour_bull:
+
+        short_score -= 8
+
+    # =====================================================
+    # PRICE MOMENTUM
+    # =====================================================
+
+    if (
+        tf15["change1"] > 0
+        and tf30["change1"] > 0
+        and tf1h["change1"] > 0
+    ):
+
+        long_score += 5
+
+        long_reasons.append(
+            "الزخم القصير متوافق"
+        )
+
+    if (
+        tf15["change1"] < 0
+        and tf30["change1"] < 0
+        and tf1h["change1"] < 0
+    ):
+
+        short_score += 5
+
+        short_reasons.append(
+            "الزخم القصير سلبي"
+        )
+
+    # =====================================================
+    # LIMIT SCORES
+    # =====================================================
 
     long_score = max(
         0,
-        min(100, long_score)
+        min(100, int(long_score))
     )
 
     short_score = max(
         0,
-        min(100, short_score)
+        min(100, int(short_score))
     )
 
     # =====================================================
@@ -672,148 +905,75 @@ def analyze_symbol(symbol):
 
     signal = "WAIT"
 
+    # Strong Long
     if (
+
         long_score >= 75
+
         and long_score >= short_score + 20
+
         and not late_pump
+
         and not strong_dump
+
+        and not (
+            rsi4h is not None
+            and rsi4h >= 90
+        )
+
     ):
 
         signal = "EARLY_LONG"
 
+    # Strong Short
     elif (
+
         short_score >= 75
+
         and short_score >= long_score + 20
+
     ):
 
         signal = "SHORT"
 
+    # Watch Long
     elif (
+
         long_score >= 60
-        and long_score >= short_score + 10
+
+        and long_score >= short_score + 12
+
+        and not strong_dump
+
     ):
 
         signal = "WATCH_LONG"
 
+    # Watch Short
     elif (
+
         short_score >= 60
-        and short_score >= long_score + 10
+
+        and short_score >= long_score + 12
+
     ):
 
         signal = "WATCH_SHORT"
 
     # =====================================================
-    # WAIT EXPLANATION
+    # RETURN
     # =====================================================
 
-    missing_long = []
-    missing_short = []
-
-    if tf15["bull"] < 3:
-        missing_long.append("تأكيد 15M")
-
-    if tf30["bull"] < 3:
-        missing_long.append("تأكيد 30M")
-
-    if tf1h["bull"] < 3:
-        missing_long.append("تأكيد 1H")
-
-    if tf4h["bull"] < 3:
-        missing_long.append("تأكيد 4H")
-
-    if tf1d["bull"] < 3:
-        missing_long.append("تأكيد الاتجاه اليومي")
-
-    if tf15["volume_ratio"] < 1.10:
-        missing_long.append("ارتفاع Volume")
-
-    if tf15["volume_trend"] < 1.05:
-        missing_long.append("تحسن Volume Trend")
-
-    if not accumulation:
-        missing_long.append("تجميع مؤكد")
-
-    if tf15["bear"] < 3:
-        missing_short.append("تأكيد هبوط 15M")
-
-    if tf30["bear"] < 3:
-        missing_short.append("تأكيد هبوط 30M")
-
-    if tf1h["bear"] < 3:
-        missing_short.append("تأكيد هبوط 1H")
-
-    if tf4h["bear"] < 3:
-        missing_short.append("تأكيد هبوط 4H")
-
-    if tf1d["bear"] < 3:
-        missing_short.append("تأكيد الاتجاه اليومي")
-
-    if tf15["volume_ratio"] < 1.10:
-        missing_short.append("زيادة Volume")
-
-    if tf15["volume_trend"] < 1.05:
-        missing_short.append("تحسن Volume Trend")
-
-    if signal == "WAIT":
-
-        if long_score > short_score:
-
-            wait_reason = (
-                "الاتجاه يميل للصعود "
-                "لكن شروط الدخول غير مكتملة"
-            )
-
-            wait_missing = missing_long[:5]
-
-            wait_confirmation = (
-                "LONG فوق "
-                + format_price(tf15["high20"])
-                + " مع تأكيد الحجم والزخم"
-            )
-
-        elif short_score > long_score:
-
-            wait_reason = (
-                "الاتجاه يميل للهبوط "
-                "لكن شروط الدخول غير مكتملة"
-            )
-
-            wait_missing = missing_short[:5]
-
-            wait_confirmation = (
-                "SHORT تحت "
-                + format_price(tf15["low20"])
-                + " مع تأكيد الحجم والزخم"
-            )
-
-        else:
-
-            wait_reason = (
-                "السوق غير حاسم حاليًا"
-            )
-
-            wait_missing = (
-                missing_long[:3]
-                + missing_short[:2]
-            )
-
-            wait_confirmation = (
-                "انتظر كسر واضح مع Volume"
-            )
-
-    else:
-
-        wait_reason = ""
-        wait_missing = []
-        wait_confirmation = ""
-
     return {
+
         "symbol": symbol,
+
         "price": tf15["price"],
 
         "signal": signal,
 
         "long_score": long_score,
+
         "short_score": short_score,
 
         "rsi15": tf15["rsi"],
@@ -829,11 +989,12 @@ def analyze_symbol(symbol):
         "volume_ratio": tf15["volume_ratio"],
         "volume_trend": tf15["volume_trend"],
 
-        "change15": tf15["change15"],
-        "change30": tf30["change30"],
-        "change1h": tf1h["change60"],
-        "change4h": tf4h["change60"],
-        "change1d": tf1d["change60"],
+        # REAL timeframe movements
+        "change15": tf15["change1"],
+        "change30": tf30["change1"],
+        "change1h": tf1h["change1"],
+        "change4h": tf4h["change1"],
+        "change1d": tf1d["change1"],
 
         "atr": tf15["atr"],
 
@@ -853,26 +1014,31 @@ def analyze_symbol(symbol):
         "tf1d_bear": tf1d["bear"],
 
         "accumulation": accumulation,
+
         "distribution": distribution,
+
         "late_pump": late_pump,
 
+        "strong_dump": strong_dump,
+
         "long_reasons": long_reasons,
-        "short_reasons": short_reasons,
 
-        "wait_reason": wait_reason,
-        "wait_missing": wait_missing,
-        "wait_confirmation": wait_confirmation,
-
-        "long_confirmation": tf15["high20"],
-        "short_confirmation": tf15["low20"]
+        "short_reasons": short_reasons
     }
 
 
-def scan_market(limit=20):
+# =========================================================
+# SCANNER
+# =========================================================
+
+def scan_market(limit=30):
 
     tickers = get_tickers()
 
     if not tickers:
+
+        print("SCAN: NO TICKERS")
+
         return []
 
     candidates = []
@@ -885,6 +1051,18 @@ def scan_market(limit=20):
         )
 
         if not symbol.endswith("USDT"):
+            continue
+
+        # Ignore leveraged tokens
+        if any(
+            x in symbol
+            for x in [
+                "UPUSDT",
+                "DOWNUSDT",
+                "BULLUSDT",
+                "BEARUSDT"
+            ]
+        ):
             continue
 
         try:
@@ -904,44 +1082,91 @@ def scan_market(limit=20):
             )
 
         except Exception:
+
             continue
 
-        if quote_volume < 2_000_000:
+        # -------------------------------------------------
+        # LIQUIDITY
+        # -------------------------------------------------
+
+        if quote_volume < 1_000_000:
             continue
 
-        if abs(daily_change) < 0.5:
-            continue
+        # -------------------------------------------------
+        # Don't require positive daily movement.
+        # This allows early accumulation and shorts.
+        # -------------------------------------------------
 
-        candidates.append(
-            (
-                symbol,
-                quote_volume,
-                daily_change
-            )
-        )
+        if abs(daily_change) < 0.20:
+
+            # still allow liquid coins
+            if quote_volume < 5_000_000:
+                continue
+
+        candidates.append({
+
+            "symbol": symbol,
+
+            "quote_volume": quote_volume,
+
+            "daily_change": daily_change
+
+        })
+
+    # =====================================================
+    # LIQUIDITY FIRST
+    # =====================================================
 
     candidates.sort(
-        key=lambda x: x[1],
+        key=lambda x: x["quote_volume"],
         reverse=True
     )
 
+    # Keep enough candidates without making Render slow
     candidates = candidates[:limit]
+
+    print(
+        "SCAN CANDIDATES:",
+        len(candidates)
+    )
 
     results = []
 
-    for symbol, volume, daily_change in candidates:
+    for candidate in candidates:
+
+        symbol = candidate["symbol"]
 
         try:
 
-            result = analyze_symbol(symbol)
+            result = analyze_symbol(
+                symbol
+            )
 
             if result:
 
-                result["quote_volume"] = volume
-                result["daily_change"] = daily_change
+                result["quote_volume"] = (
+                    candidate["quote_volume"]
+                )
+
+                result["daily_change"] = (
+                    candidate["daily_change"]
+                )
+
+                # -------------------------------------------------
+                # Keep strong and watch opportunities
+                # -------------------------------------------------
 
                 if result["signal"] != "WAIT":
+
                     results.append(result)
+
+                    print(
+                        "SCAN FOUND:",
+                        symbol,
+                        result["signal"],
+                        result["long_score"],
+                        result["short_score"]
+                    )
 
         except Exception as e:
 
@@ -951,31 +1176,57 @@ def scan_market(limit=20):
                 repr(e)
             )
 
-        time.sleep(0.10)
+        # Small delay to avoid hammering Binance
+        time.sleep(0.05)
+
+    # =====================================================
+    # PRIORITY
+    # =====================================================
 
     priority = {
-        "EARLY_LONG": 4,
-        "SHORT": 4,
-        "WATCH_LONG": 2,
-        "WATCH_SHORT": 2
+
+        "EARLY_LONG": 5,
+
+        "SHORT": 5,
+
+        "WATCH_LONG": 3,
+
+        "WATCH_SHORT": 3
+
     }
 
     results.sort(
+
         key=lambda x: (
+
             priority.get(
                 x["signal"],
                 0
             ),
+
             max(
                 x["long_score"],
                 x["short_score"]
+            ),
+
+            x.get(
+                "quote_volume",
+                0
             )
+
         ),
+
         reverse=True
+
     )
 
-    return results
+    # Maximum useful results
+    return results[:10]
 
+
+# =========================================================
+# PRICE FORMAT
+# =========================================================
 
 def format_price(price):
 
@@ -999,22 +1250,36 @@ def format_price(price):
     return f"{price:.10f}"
 
 
+# =========================================================
+# TRADE PREPARATION
+# =========================================================
+
 def prepare_trade(result):
 
     if not result:
         return None
 
-    signal = result["signal"]
+    signal = result.get(
+        "signal",
+        "WAIT"
+    )
 
     if signal == "WAIT":
         return None
 
     price = result["price"]
 
-    atr_value = result.get("atr")
+    atr_value = result.get(
+        "atr"
+    )
 
     if not atr_value or atr_value <= 0:
+
         atr_value = price * 0.01
+
+    # =====================================================
+    # LONG
+    # =====================================================
 
     if signal in (
         "EARLY_LONG",
@@ -1036,6 +1301,7 @@ def prepare_trade(result):
         risk = price - stop
 
         return {
+
             "side": "LONG",
 
             "entry":
@@ -1059,7 +1325,12 @@ def prepare_trade(result):
                 format_price(
                     price + risk * 4
                 )
+
         }
+
+    # =====================================================
+    # SHORT
+    # =====================================================
 
     if signal in (
         "SHORT",
@@ -1081,6 +1352,7 @@ def prepare_trade(result):
         risk = stop - price
 
         return {
+
             "side": "SHORT",
 
             "entry":
@@ -1104,6 +1376,7 @@ def prepare_trade(result):
                 format_price(
                     price - risk * 4
                 )
+
         }
 
     return None
