@@ -1,12 +1,12 @@
 import os
-import time
-import requests
-
+import threading
 from flask import Flask, request
 
+import requests
+
 from analysis import (
-    scan_market,
     analyze_symbol,
+    scan_market,
     prepare_trade,
     format_price
 )
@@ -21,176 +21,463 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
 
-
 RENDER_URL = os.environ.get(
     "RENDER_URL",
     "https://my-bot-mtyr.onrender.com"
 ).rstrip("/")
 
-
 WEBHOOK_PATH = "/telegram/webhook"
-
 WEBHOOK_URL = RENDER_URL + WEBHOOK_PATH
 
-TELEGRAM_API = (
-    f"https://api.telegram.org/bot{TOKEN}"
-)
-
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 app = Flask(__name__)
 
 
 # =========================================================
-# TELEGRAM API
+# TELEGRAM
 # =========================================================
 
 def telegram_request(method, data=None):
 
-    url = f"{TELEGRAM_API}/{method}"
-
     try:
 
-        response = requests.post(
-            url,
+        r = requests.post(
+            f"{TELEGRAM_API}/{method}",
             json=data or {},
-            timeout=30
+            timeout=20
         )
 
         print(
             "Telegram:",
             method,
-            response.status_code,
-            response.text[:500]
+            r.status_code,
+            r.text[:500]
         )
 
-        return response.json()
+        return r.json()
 
     except Exception as e:
 
         print(
-            "Telegram API ERROR:",
+            "Telegram ERROR:",
             repr(e)
         )
 
         return None
 
 
-# =========================================================
-# SEND MESSAGE
-# =========================================================
-
 def send_message(chat_id, text):
 
-    return telegram_request(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text
-        }
-    )
+    # Telegram message limit protection
+    max_len = 3900
+
+    if len(text) <= max_len:
+
+        return telegram_request(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": text
+            }
+        )
+
+    parts = [
+        text[i:i + max_len]
+        for i in range(
+            0,
+            len(text),
+            max_len
+        )
+    ]
+
+    result = None
+
+    for part in parts:
+
+        result = telegram_request(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": part
+            }
+        )
+
+    return result
 
 
 # =========================================================
-# FORMAT SCAN RESULT
+# FORMAT ANALYSIS
 # =========================================================
 
-def format_scan_result(result):
+def fmt_pct(value):
 
-    symbol = result.get(
-        "symbol",
-        "-"
-    )
+    if value is None:
+        return "-"
 
-    price = result.get(
-        "price"
-    )
+    return f"{value:+.2f}%"
 
-    signal = result.get(
-        "signal",
-        "WAIT"
-    )
 
-    long_score = result.get(
-        "long_score",
-        0
-    )
+def fmt_rsi(value):
 
-    short_score = result.get(
-        "short_score",
-        0
-    )
+    if value is None:
+        return "-"
 
-    volume_ratio = result.get(
-        "volume_ratio",
-        0
-    )
+    return f"{value:.1f}"
 
-    volume_trend = result.get(
-        "volume_trend",
-        0
-    )
 
-    change_15m = result.get(
-        "change_15m",
-        0
-    )
+def direction_text(result):
 
-    change_30m = result.get(
-        "change_30m",
-        0
-    )
+    signal = result["signal"]
 
-    change_60m = result.get(
-        "change_60m",
-        0
-    )
+    if signal in (
+        "EARLY_LONG",
+        "WATCH_LONG"
+    ):
+        return "🟢 LONG"
 
-    rsi_value = result.get(
-        "rsi"
-    )
+    if signal in (
+        "SHORT",
+        "WATCH_SHORT"
+    ):
+        return "🔴 SHORT"
+
+    return "⚪ WAIT"
+
+
+def timeframe_direction(bull, bear):
+
+    if bull > bear:
+        return "🟢 صاعد"
+
+    if bear > bull:
+        return "🔴 هابط"
+
+    return "⚪ محايد"
+
+
+def format_coin_analysis(result):
+
+    symbol = result["symbol"]
+    price = result["price"]
+
+    signal = result["signal"]
+
+    long_score = result["long_score"]
+    short_score = result["short_score"]
+
+    trade = prepare_trade(result)
 
     text = (
-        f"🪙 {symbol}\n"
-        f"السعر: {format_price(price)}\n"
-        f"الإشارة: {signal}\n"
+        f"📊 تحليل {symbol}\n\n"
+
+        f"💰 السعر: {format_price(price)}\n\n"
+
+        f"🎯 الاتجاه النهائي: "
+        f"{direction_text(result)}\n"
+
         f"🟢 Long: {long_score}/100\n"
-        f"🔴 Short: {short_score}/100\n"
-        f"RSI: {rsi_value:.1f}\n"
-        f"Volume: {volume_ratio:.2f}x\n"
-        f"Volume Trend: {volume_trend:.2f}x\n"
-        f"15m: {change_15m:+.2f}%\n"
-        f"30m: {change_30m:+.2f}%\n"
-        f"1H: {change_60m:+.2f}%"
+        f"🔴 Short: {short_score}/100\n\n"
+
+        f"📊 MULTI TIMEFRAME\n\n"
+
+        f"15m: "
+        f"{timeframe_direction("
+            f"result['tf15_bull'], "
+            f"result['tf15_bear']"
+        )}\n"
+
+        f"30m: "
+        f"{timeframe_direction("
+            f"result['tf30_bull'], "
+            f"result['tf30_bear']"
+        )}\n"
+
+        f"1H: "
+        f"{timeframe_direction("
+            f"result['tf1h_bull'], "
+            f"result['tf1h_bear']"
+        )}\n"
+
+        f"4H: "
+        f"{timeframe_direction("
+            f"result['tf4h_bull'], "
+            f"result['tf4h_bear']"
+        )}\n"
+
+        f"1D: "
+        f"{timeframe_direction("
+            f"result['tf1d_bull'], "
+            f"result['tf1d_bear']"
+        )}\n\n"
+
+        f"📈 RSI\n"
+        f"15m: {fmt_rsi(result['rsi15'])}\n"
+        f"1H: {fmt_rsi(result['rsi1h'])}\n"
+        f"4H: {fmt_rsi(result['rsi4h'])}\n"
+        f"1D: {fmt_rsi(result['rsi1d'])}\n\n"
+
+        f"📊 EMA\n"
+        f"EMA9: {format_price(result['ema9'])}\n"
+        f"EMA20: {format_price(result['ema20'])}\n"
+        f"EMA50: {format_price(result['ema50'])}\n"
+        f"EMA200: {format_price(result['ema200'])}\n\n"
+
+        f"📦 Volume: "
+        f"{result['volume_ratio']:.2f}x\n"
+
+        f"📈 Volume Trend: "
+        f"{result['volume_trend']:.2f}x\n\n"
+
+        f"📉 الحركة\n"
+        f"15m: {fmt_pct(result['change15'])}\n"
+        f"30m: {fmt_pct(result['change30'])}\n"
+        f"1H: {fmt_pct(result['change1h'])}\n"
+        f"4H: {fmt_pct(result['change4h'])}\n"
+        f"1D: {fmt_pct(result['change1d'])}\n\n"
+
+        f"🔎 MARKET STRUCTURE\n"
+        f"🟢 Accumulation: "
+        f"{'YES ✅' if result['accumulation'] else 'NO'}\n"
+
+        f"🔴 Distribution: "
+        f"{'YES ⚠️' if result['distribution'] else 'NO'}\n"
+
+        f"🚀 Late Pump Risk: "
+        f"{'HIGH ⚠️' if result['late_pump'] else 'LOW ✅'}\n"
     )
 
-    trade = prepare_trade(
-        result
-    )
+    # =====================================================
+    # TRADE
+    # =====================================================
 
     if trade:
 
         text += (
             "\n\n"
-            "🎯 الصفقة:\n"
+            "🎯 الصفقة المقترحة\n\n"
+
             f"النوع: {trade['side']}\n"
             f"Entry: {trade['entry']}\n"
             f"SL: {trade['stop']}\n"
             f"TP1: {trade['tp1']}\n"
             f"TP2: {trade['tp2']}\n"
-            f"TP3: {trade['tp3']}"
+            f"TP3: {trade['tp3']}\n"
         )
+
+    else:
+
+        text += (
+            "\n\n"
+            "⏳ لا توجد صفقة قوية حاليًا.\n"
+            "الأفضل الانتظار بدل الدخول بدون تأكيد."
+        )
+
+    # =====================================================
+    # REASONS
+    # =====================================================
+
+    reasons = []
+
+    if signal in (
+        "EARLY_LONG",
+        "WATCH_LONG"
+    ):
+
+        reasons = result.get(
+            "long_reasons",
+            []
+        )
+
+    elif signal in (
+        "SHORT",
+        "WATCH_SHORT"
+    ):
+
+        reasons = result.get(
+            "short_reasons",
+            []
+        )
+
+    if reasons:
+
+        text += "\n\n🧠 أسباب الإشارة:\n"
+
+        for reason in reasons[:6]:
+
+            text += f"• {reason}\n"
 
     return text
 
 
 # =========================================================
-# HOME
+# SCAN FORMAT
 # =========================================================
 
-@app.route(
-    "/",
-    methods=["GET", "HEAD"]
-)
+def format_scan_result(results):
+
+    if not results:
+
+        return (
+            "🔎 Scanner\n\n"
+            "⚪ لم توجد عملات تحقق شروط الإشارة "
+            "حاليًا.\n\n"
+            "وده أفضل من إجبار البوت على صفقة ضعيفة."
+        )
+
+    text = (
+        "🔥 Crypto Zero Reversal\n"
+        "📡 Multi-Timeframe Scanner\n\n"
+        "15m + 30m + 1H + 4H + 1D\n\n"
+    )
+
+    for index, result in enumerate(
+        results[:8],
+        1
+    ):
+
+        trade = prepare_trade(result)
+
+        text += (
+            f"#{index}\n"
+            f"🪙 {result['symbol']}\n"
+            f"💰 السعر: "
+            f"{format_price(result['price'])}\n"
+
+            f"📌 الإشارة: "
+            f"{result['signal']}\n"
+
+            f"🟢 Long: "
+            f"{result['long_score']}/100\n"
+
+            f"🔴 Short: "
+            f"{result['short_score']}/100\n\n"
+
+            f"📊 الاتجاهات:\n"
+            f"15m: "
+            f"{timeframe_direction("
+                f"result['tf15_bull'], "
+                f"result['tf15_bear']"
+            )}\n"
+
+            f"30m: "
+            f"{timeframe_direction("
+                f"result['tf30_bull'], "
+                f"result['tf30_bear']"
+            )}\n"
+
+            f"1H: "
+            f"{timeframe_direction("
+                f"result['tf1h_bull'], "
+                f"result['tf1h_bear']"
+            )}\n"
+
+            f"4H: "
+            f"{timeframe_direction("
+                f"result['tf4h_bull'], "
+                f"result['tf4h_bear']"
+            )}\n"
+
+            f"1D: "
+            f"{timeframe_direction("
+                f"result['tf1d_bull'], "
+                f"result['tf1d_bear']"
+            )}\n\n"
+
+            f"RSI 15m: "
+            f"{fmt_rsi(result['rsi15'])}\n"
+
+            f"Volume: "
+            f"{result['volume_ratio']:.2f}x\n"
+
+            f"Volume Trend: "
+            f"{result['volume_trend']:.2f}x\n"
+
+            f"15m: "
+            f"{fmt_pct(result['change15'])}\n"
+
+            f"30m: "
+            f"{fmt_pct(result['change30'])}\n"
+
+            f"1H: "
+            f"{fmt_pct(result['change1h'])}\n"
+
+            f"4H: "
+            f"{fmt_pct(result['change4h'])}\n"
+
+            f"1D: "
+            f"{fmt_pct(result['change1d'])}\n"
+        )
+
+        if trade:
+
+            text += (
+                "\n🎯 الصفقة:\n"
+                f"النوع: {trade['side']}\n"
+                f"Entry: {trade['entry']}\n"
+                f"SL: {trade['stop']}\n"
+                f"TP1: {trade['tp1']}\n"
+                f"TP2: {trade['tp2']}\n"
+                f"TP3: {trade['tp3']}\n"
+            )
+
+        text += "\n"
+        text += "━━━━━━━━━━━━━━\n\n"
+
+    return text
+
+
+# =========================================================
+# BACKGROUND SCAN
+# =========================================================
+
+def run_scan(chat_id):
+
+    try:
+
+        send_message(
+            chat_id,
+            "🔎 بدأ فحص السوق الحقيقي...\n\n"
+            "⏳ جاري تحليل:\n"
+            "15m + 30m + 1H + 4H + 1D\n\n"
+            "🟢 البحث عن التجميع قبل الـPump\n"
+            "🔴 البحث عن ضعف الترند والتوزيع\n"
+            "📊 فحص السيولة والحجم والزخم\n\n"
+            "انتظر النتيجة..."
+        )
+
+        results = scan_market(
+            limit=20
+        )
+
+        message = format_scan_result(
+            results
+        )
+
+        send_message(
+            chat_id,
+            message
+        )
+
+    except Exception as e:
+
+        print(
+            "SCAN BACKGROUND ERROR:",
+            repr(e)
+        )
+
+        send_message(
+            chat_id,
+            "❌ حدث خطأ أثناء فحص السوق.\n\n"
+            f"{repr(e)}"
+        )
+
+
+# =========================================================
+# ROUTES
+# =========================================================
+
+@app.route("/", methods=["GET", "HEAD"])
 def home():
 
     return (
@@ -199,29 +486,17 @@ def home():
     )
 
 
-@app.route(
-    "/health",
-    methods=["GET"]
-)
+@app.route("/health", methods=["GET"])
 def health():
 
     return "OK", 200
 
-
-# =========================================================
-# WEBHOOK
-# =========================================================
 
 @app.route(
     WEBHOOK_PATH,
     methods=["POST"]
 )
 def telegram_webhook():
-
-    print("")
-    print("==============================")
-    print(">>> TELEGRAM UPDATE RECEIVED")
-    print("==============================")
 
     try:
 
@@ -258,16 +533,15 @@ def telegram_webhook():
             ""
         ).strip()
 
-        print(
-            ">>> CHAT:",
-            chat_id
-        )
+        if not chat_id:
+            return "OK", 200
 
         print(
-            ">>> TEXT:",
+            "CHAT:",
+            chat_id,
+            "TEXT:",
             text
         )
-
 
         # =================================================
         # START
@@ -278,146 +552,50 @@ def telegram_webhook():
             send_message(
                 chat_id,
 
-                "🚀 Crypto Zero Reversal شغال يا محمد!\n\n"
+                "🚀 Crypto Zero Reversal شغال!\n\n"
 
-                "Binance Scanner: ✅\n"
-                "Multi-Timeframe: ✅\n"
-                "Volume Analysis: ✅\n"
-                "Early Accumulation: ✅\n"
-                "Long / Short Detection: ✅\n\n"
+                "📊 Multi-Timeframe Analysis\n"
+                "15m + 30m + 1H + 4H + 1D\n\n"
 
                 "الأوامر:\n\n"
 
                 "/scan\n"
-                "🔎 فحص السوق والبحث عن أفضل الفرص\n\n"
+                "🔎 فحص السوق الحقيقي\n\n"
 
-                "/coin AVAXUSDT\n"
-                "📊 تحليل عملة بالتفصيل"
+                "/coin BTCUSDT\n"
+                "📊 تحليل عملة\n\n"
+
+                "البوت لا يجبر صفقة إذا لم توجد "
+                "تأكيدات كافية."
             )
 
             return "OK", 200
-
 
         # =================================================
         # SCAN
         # =================================================
 
-        if text.startswith("/scan"):
+        if text.lower().startswith(
+            "/scan"
+        ):
 
-            send_message(
-                chat_id,
-
-                "🔎 بدأ فحص السوق الحقيقي...\n\n"
-                "⏳ جاري فحص السيولة والحجم والزخم\n"
-                "📊 15m + 1H\n"
-                "🟢 البحث عن التجميع قبل الـPump\n"
-                "🔴 البحث عن ضعف الترند وفرص Short\n\n"
-                "انتظر النتيجة..."
+            thread = threading.Thread(
+                target=run_scan,
+                args=(chat_id,),
+                daemon=True
             )
 
-            print(
-                ">>> STARTING REAL MARKET SCAN"
-            )
-
-            try:
-
-                results = scan_market(
-                    limit=30
-                )
-
-            except Exception as e:
-
-                print(
-                    ">>> SCAN ERROR:",
-                    repr(e)
-                )
-
-                send_message(
-                    chat_id,
-
-                    "❌ حدث خطأ أثناء Scanner.\n\n"
-                    "راجع Render Logs لمعرفة السبب."
-                )
-
-                return "OK", 200
-
-            # ---------------------------------------------
-            # NO RESULTS
-            # ---------------------------------------------
-
-            if not results:
-
-                send_message(
-                    chat_id,
-
-                    "🔎 نتيجة Scanner\n\n"
-                    "❌ لم أجد صفقة قوية حاليًا.\n\n"
-                    "البوت لم يدخل صفقة إجبارية، "
-                    "والأفضل الانتظار حتى تظهر سيولة "
-                    "وزخم وتأكيد أقوى."
-                )
-
-                print(
-                    ">>> SCAN: NO STRONG RESULTS"
-                )
-
-                return "OK", 200
-
-
-            # ---------------------------------------------
-            # RESULTS
-            # ---------------------------------------------
-
-            # نأخذ أفضل 8 فقط
-            top_results = results[:8]
-
-            header = (
-                "🔥 Crypto Zero Reversal\n"
-                "📡 نتيجة Scanner\n\n"
-            )
-
-            send_message(
-                chat_id,
-                header
-            )
-
-            for index, result in enumerate(
-                top_results,
-                start=1
-            ):
-
-                text_result = format_scan_result(
-                    result
-                )
-
-                message_text = (
-                    f"#{index}\n"
-                    f"{text_result}"
-                )
-
-                send_message(
-                    chat_id,
-                    message_text
-                )
-
-                time.sleep(
-                    0.20
-                )
-
-            print(
-                ">>> SCAN COMPLETE:",
-                len(results),
-                "signals"
-            )
+            thread.start()
 
             return "OK", 200
-
 
         # =================================================
         # COIN
         # =================================================
 
-        if text.startswith("/coin"):
+        if text.lower().startswith(
+            "/coin"
+        ):
 
             parts = text.split()
 
@@ -425,28 +603,25 @@ def telegram_webhook():
 
                 send_message(
                     chat_id,
-
                     "اكتب العملة هكذا:\n\n"
-                    "/coin AVAXUSDT"
+                    "/coin BTCUSDT"
                 )
 
                 return "OK", 200
 
             symbol = parts[1].upper()
 
-            if not symbol.endswith("USDT"):
+            if not symbol.endswith(
+                "USDT"
+            ):
+
                 symbol += "USDT"
 
             send_message(
                 chat_id,
-
                 f"📊 جاري تحليل {symbol}...\n\n"
-                "Binance 15m + 1H"
-            )
-
-            print(
-                ">>> ANALYZING COIN:",
-                symbol
+                "⏳ 15m + 30m + 1H + 4H + 1D\n"
+                "⏳ جاري فحص الاتجاه والحجم والزخم..."
             )
 
             try:
@@ -455,181 +630,39 @@ def telegram_webhook():
                     symbol
                 )
 
+                if not result:
+
+                    send_message(
+                        chat_id,
+                        f"❌ لم أستطع جلب بيانات "
+                        f"{symbol} من Binance."
+                    )
+
+                    return "OK", 200
+
+                message = format_coin_analysis(
+                    result
+                )
+
+                send_message(
+                    chat_id,
+                    message
+                )
+
             except Exception as e:
 
                 print(
-                    ">>> COIN ANALYSIS ERROR:",
+                    "COIN ERROR:",
                     repr(e)
                 )
 
                 send_message(
                     chat_id,
-
-                    "❌ حدث خطأ أثناء تحليل "
-                    f"{symbol}.\n\n"
-                    "راجع Render Logs."
+                    "❌ حدث خطأ أثناء التحليل:\n\n"
+                    f"{repr(e)}"
                 )
-
-                return "OK", 200
-
-
-            if not result:
-
-                send_message(
-                    chat_id,
-
-                    "❌ لم أستطع جلب بيانات "
-                    f"{symbol} من Binance."
-                )
-
-                return "OK", 200
-
-
-            # ---------------------------------------------
-            # COIN RESULT
-            # ---------------------------------------------
-
-            signal = result.get(
-                "signal",
-                "WAIT"
-            )
-
-            long_score = result.get(
-                "long_score",
-                0
-            )
-
-            short_score = result.get(
-                "short_score",
-                0
-            )
-
-            if signal in (
-                "EARLY_LONG",
-                "WATCH_LONG"
-            ):
-
-                direction = (
-                    f"🟢 LONG\n"
-                    f"القوة: {long_score}/100"
-                )
-
-            elif signal in (
-                "SHORT",
-                "WATCH_SHORT"
-            ):
-
-                direction = (
-                    f"🔴 SHORT\n"
-                    f"القوة: {short_score}/100"
-                )
-
-            else:
-
-                direction = (
-                    "⚪ WAIT\n"
-                    "القوة: "
-                    f"{max(long_score, short_score)}/100"
-                )
-
-
-            rsi_value = result.get(
-                "rsi"
-            )
-
-            if rsi_value is None:
-                rsi_text = "-"
-            else:
-                rsi_text = f"{rsi_value:.1f}"
-
-
-            response = (
-                f"📊 تحليل {symbol}\n\n"
-
-                f"السعر: "
-                f"{format_price(result.get('price'))}\n"
-
-                f"الاتجاه: {direction}\n"
-
-                f"RSI: {rsi_text}\n"
-
-                f"EMA9: "
-                f"{format_price(result.get('ema9'))}\n"
-
-                f"EMA20: "
-                f"{format_price(result.get('ema20'))}\n"
-
-                f"Volume: "
-                f"{result.get('volume_ratio', 0):.2f}x\n"
-
-                f"Volume Trend: "
-                f"{result.get('volume_trend', 0):.2f}x\n"
-
-                f"15m: "
-                f"{result.get('change_15m', 0):+.2f}%\n"
-
-                f"30m: "
-                f"{result.get('change_30m', 0):+.2f}%\n"
-
-                f"1H: "
-                f"{result.get('change_60m', 0):+.2f}%"
-            )
-
-
-            trade = prepare_trade(
-                result
-            )
-
-            if trade:
-
-                response += (
-
-                    "\n\n"
-                    "🎯 الصفقة المقترحة\n"
-
-                    f"النوع: "
-                    f"{trade['side']}\n"
-
-                    f"Entry: "
-                    f"{trade['entry']}\n"
-
-                    f"SL: "
-                    f"{trade['stop']}\n"
-
-                    f"TP1: "
-                    f"{trade['tp1']}\n"
-
-                    f"TP2: "
-                    f"{trade['tp2']}\n"
-
-                    f"TP3: "
-                    f"{trade['tp3']}"
-                )
-
-            else:
-
-                response += (
-
-                    "\n\n"
-                    "⏳ لا توجد صفقة قوية حاليًا.\n"
-                    "الأفضل الانتظار بدل الدخول "
-                    "بدون تأكيد."
-                )
-
-
-            send_message(
-                chat_id,
-                response
-            )
-
-            print(
-                ">>> COIN ANALYSIS SENT:",
-                symbol,
-                signal
-            )
 
             return "OK", 200
-
 
         # =================================================
         # UNKNOWN
@@ -643,69 +676,67 @@ def telegram_webhook():
             "استخدم:\n"
             "/start\n"
             "/scan\n"
-            "/coin AVAXUSDT"
+            "/coin BTCUSDT"
+        )
+
+        return "OK", 200
+
+    except Exception as e:
+
+        print(
+            "WEBHOOK ERROR:",
+            repr(e)
         )
 
         return "OK", 200
 
 
-    except Exception as e:
-
-        print(
-            ">>> WEBHOOK ERROR:",
-            repr(e)
-        )
-
-        return "ERROR", 500
-
-
 # =========================================================
-# WEBHOOK SETUP
+# WEBHOOK
 # =========================================================
 
 def setup_webhook():
 
-    time.sleep(3)
-
-    print("")
-    print("==============================")
-    print("SETTING WEBHOOK:")
-    print(WEBHOOK_URL)
-    print("==============================")
-
-
-    telegram_request(
-        "deleteWebhook",
-        {
-            "drop_pending_updates": True
-        }
-    )
-
-    time.sleep(2)
-
-
-    result = telegram_request(
-        "setWebhook",
-        {
-            "url": WEBHOOK_URL,
-            "drop_pending_updates": True
-        }
-    )
-
     print(
-        "SET WEBHOOK RESULT:",
-        result
+        "SETTING WEBHOOK:",
+        WEBHOOK_URL
     )
 
+    try:
 
-    info = telegram_request(
-        "getWebhookInfo"
-    )
+        requests.post(
+            f"{TELEGRAM_API}/deleteWebhook",
+            json={
+                "drop_pending_updates": True
+            },
+            timeout=20
+        )
 
-    print(
-        "WEBHOOK INFO:",
-        info
-    )
+        requests.post(
+            f"{TELEGRAM_API}/setWebhook",
+            json={
+                "url": WEBHOOK_URL,
+                "drop_pending_updates": True
+            },
+            timeout=20
+        )
+
+        info = requests.get(
+            f"{TELEGRAM_API}/getWebhookInfo",
+            timeout=20
+        )
+
+        print(
+            "WEBHOOK INFO:",
+            info.text[:1000]
+        )
+
+    except Exception as e:
+
+        print(
+            "WEBHOOK SETUP ERROR:",
+            repr(e)
+        )
 
 
 # =========================================================
