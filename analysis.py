@@ -68,7 +68,7 @@ def get_klines(symbol, interval="15m", limit=120):
         "limit": limit
     }
 
-    # Futures أولًا
+    # Futures
     data = request_json(
         FUTURES_URL,
         "/fapi/v1/klines",
@@ -78,7 +78,7 @@ def get_klines(symbol, interval="15m", limit=120):
     if data and isinstance(data, list):
         return data
 
-    # Fallback إلى Binance market-data
+    # Fallback
     data = request_json(
         DATA_URL,
         "/api/v3/klines",
@@ -108,7 +108,6 @@ def get_price(symbol):
     )
 
     if data:
-
         try:
             return float(data["price"])
         except:
@@ -121,7 +120,6 @@ def get_price(symbol):
     )
 
     if data:
-
         try:
             return float(data["price"])
         except:
@@ -156,7 +154,7 @@ def get_tickers():
 
 
 # =========================================================
-# SYMBOLS
+# FUTURES SYMBOLS
 # =========================================================
 
 def get_futures_symbols():
@@ -178,7 +176,6 @@ def get_futures_symbols():
             and item.get("status") == "TRADING"
             and item.get("contractType") == "PERPETUAL"
         ):
-
             symbols.append(
                 item.get("symbol")
             )
@@ -203,9 +200,7 @@ def pct_change(old, new):
     if old == 0:
         return 0
 
-    return (
-        (new - old) / old
-    ) * 100
+    return ((new - old) / old) * 100
 
 
 # =========================================================
@@ -260,9 +255,7 @@ def rsi(values, period=14):
         else:
 
             gains.append(0)
-            losses.append(
-                abs(change)
-            )
+            losses.append(abs(change))
 
     avg_gain = average(
         gains[:period]
@@ -341,7 +334,7 @@ def atr(
 
 
 # =========================================================
-# TIMEFRAME
+# TIMEFRAME ANALYSIS
 # =========================================================
 
 def analyze_timeframe(
@@ -376,11 +369,6 @@ def analyze_timeframe(
         return None
 
     try:
-
-        opens = [
-            float(x[1])
-            for x in klines
-        ]
 
         highs = [
             float(x[2])
@@ -562,7 +550,7 @@ def analyze_timeframe(
 
 
 # =========================================================
-# COIN ANALYSIS
+# FULL COIN ANALYSIS
 # =========================================================
 
 def analyze_symbol(
@@ -622,7 +610,7 @@ def analyze_symbol(
     short_reasons = []
 
     # =====================================================
-    # EARLY LONG
+    # EARLY LONG BASE SCORE
     # =====================================================
 
     if tf15["change30"] < -1:
@@ -722,7 +710,7 @@ def analyze_symbol(
             )
 
     # =====================================================
-    # SHORT
+    # SHORT BASE SCORE
     # =====================================================
 
     if tf15["change30"] > 3:
@@ -814,14 +802,115 @@ def analyze_symbol(
         )
 
     # =====================================================
-    # PUMP FILTER
+    # EARLY PUMP FILTER
     # =====================================================
 
-    if tf15["change15"] >= 7:
+    one_hour_move = tf15["change60"]
+    fifteen_move = tf15["change15"]
+    thirty_move = tf15["change30"]
+
+    # كلما زادت الحركة، تقل صلاحية الدخول المبكر.
+    if one_hour_move >= 4:
+        long_score -= 10
+
+    if one_hour_move >= 6:
+        long_score -= 20
+
+    if one_hour_move >= 8:
+        long_score -= 35
+
+    if fifteen_move >= 2:
+        long_score -= 10
+
+    if fifteen_move >= 3:
+        long_score -= 20
+
+    if fifteen_move >= 5:
+        long_score -= 35
+
+    if thirty_move >= 4:
+        long_score -= 15
+
+    if thirty_move >= 6:
         long_score -= 25
 
-    if tf15["change15"] <= -7:
-        short_score -= 20
+    # منع مطاردة الانفجار
+    if (
+        one_hour_move >= 8
+        or fifteen_move >= 5
+        or thirty_move >= 6
+    ):
+
+        long_score = min(
+            long_score,
+            49
+        )
+
+    # =====================================================
+    # ACCUMULATION BONUS
+    # =====================================================
+
+    if (
+        tf15["change30"] < 0
+        and one_hour_move < 4
+        and fifteen_move < 1.5
+        and tf15["volume_trend"] >= 1.10
+    ):
+
+        long_score += 10
+        long_reasons.append(
+            "تجميع مبكر"
+        )
+
+    if (
+        tf15["change30"] < -1
+        and one_hour_move < 4
+        and 0.8 <= tf15["volume_ratio"] <= 1.8
+        and tf15["volume_trend"] >= 1.15
+    ):
+
+        long_score += 10
+        long_reasons.append(
+            "حجم يتزايد قبل الحركة"
+        )
+
+    # =====================================================
+    # SHORT LATE-TREND FILTER
+    # =====================================================
+
+    if (
+        one_hour_move >= 6
+        and tf15["volume_trend"] < 1
+    ):
+
+        short_score += 10
+        short_reasons.append(
+            "ضعف بعد صعود"
+        )
+
+    if (
+        one_hour_move >= 8
+        and fifteen_move < 0
+    ):
+
+        short_score += 15
+        short_reasons.append(
+            "رفض بعد Pump"
+        )
+
+    # =====================================================
+    # SCORE LIMIT
+    # =====================================================
+
+    long_score = max(
+        0,
+        min(100, long_score)
+    )
+
+    short_score = max(
+        0,
+        min(100, short_score)
+    )
 
     # =====================================================
     # SIGNAL
@@ -829,9 +918,14 @@ def analyze_symbol(
 
     signal = "WAIT"
 
+    # Early Long حقيقي:
+    # لا نريد عملة تحركت بالفعل.
     if (
         long_score >= 70
         and long_score > short_score + 10
+        and one_hour_move < 6
+        and fifteen_move < 3
+        and thirty_move < 5
     ):
 
         signal = "EARLY_LONG"
@@ -846,6 +940,8 @@ def analyze_symbol(
     elif (
         long_score >= 55
         and long_score > short_score + 5
+        and one_hour_move < 8
+        and fifteen_move < 4
     ):
 
         signal = "WATCH_LONG"
@@ -856,6 +952,21 @@ def analyze_symbol(
     ):
 
         signal = "WATCH_SHORT"
+
+    # =====================================================
+    # FINAL LATE-PUMP PROTECTION
+    # =====================================================
+
+    if (
+        signal == "EARLY_LONG"
+        and (
+            one_hour_move >= 8
+            or fifteen_move >= 5
+            or thirty_move >= 6
+        )
+    ):
+
+        signal = "WAIT"
 
     return {
 
@@ -888,16 +999,10 @@ def analyze_symbol(
             tf15["range_pct"],
 
         "long_score":
-            max(
-                0,
-                min(100, long_score)
-            ),
+            long_score,
 
         "short_score":
-            max(
-                0,
-                min(100, short_score)
-            ),
+            short_score,
 
         "long_reasons":
             long_reasons,
@@ -920,7 +1025,7 @@ def analyze_symbol(
 
 
 # =========================================================
-# SCANNER
+# MARKET SCANNER
 # =========================================================
 
 def scan_market(limit=30):
@@ -961,12 +1066,15 @@ def scan_market(limit=30):
         except:
             continue
 
+        # سيولة أساسية
         if quote_volume < 2_000_000:
             continue
 
+        # عملات شبه ميتة
         if abs(daily_change) < 0.5:
             continue
 
+        # Pump يومي مبالغ فيه
         if daily_change > 30:
             continue
 
@@ -978,6 +1086,7 @@ def scan_market(limit=30):
             )
         )
 
+    # الأعلى سيولة أولًا
     candidates.sort(
         key=lambda x: x[1],
         reverse=True
@@ -1002,13 +1111,13 @@ def scan_market(limit=30):
             if not result:
                 continue
 
-            result[
-                "quote_volume"
-            ] = quote_volume
+            result["quote_volume"] = (
+                quote_volume
+            )
 
-            result[
-                "daily_change"
-            ] = daily_change
+            result["daily_change"] = (
+                daily_change
+            )
 
             if result["signal"] != "WAIT":
 
@@ -1024,13 +1133,42 @@ def scan_market(limit=30):
                 repr(e)
             )
 
+        # تخفيف الضغط على Binance
         time.sleep(0.10)
 
+    # =====================================================
+    # ترتيب خاص
+    # =====================================================
+
+    def ranking(item):
+
+        signal = item.get(
+            "signal",
+            "WAIT"
+        )
+
+        score = max(
+            item.get("long_score", 0),
+            item.get("short_score", 0)
+        )
+
+        # أولوية Early Long
+        if signal == "EARLY_LONG":
+            priority = 3
+
+        elif signal == "SHORT":
+            priority = 2
+
+        else:
+            priority = 1
+
+        return (
+            priority,
+            score
+        )
+
     results.sort(
-        key=lambda x: max(
-            x["long_score"],
-            x["short_score"]
-        ),
+        key=ranking,
         reverse=True
     )
 
@@ -1067,7 +1205,7 @@ def format_price(price):
 
 
 # =========================================================
-# TRADE
+# PREPARE TRADE
 # =========================================================
 
 def prepare_trade(result):
@@ -1075,11 +1213,17 @@ def prepare_trade(result):
     if not result:
         return None
 
-    price = result.get("price")
+    price = result.get(
+        "price"
+    )
 
-    signal = result.get("signal")
+    signal = result.get(
+        "signal"
+    )
 
-    atr_value = result.get("atr")
+    atr_value = result.get(
+        "atr"
+    )
 
     if not price:
         return None
