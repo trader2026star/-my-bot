@@ -36,3 +36,4 @@ if __name__ == "__main__":
     t.start()
     # تشغيل البوت
     bot.polling()
+
