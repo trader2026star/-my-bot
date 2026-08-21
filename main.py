@@ -1,10 +1,9 @@
 import os
-import time
 import threading
+import time
 
 import telebot
-
-from flask import Flask
+from flask import Flask, request
 
 from analysis import (
     scan_market,
@@ -18,16 +17,21 @@ from analysis import (
 # CONFIG
 # =========================================================
 
-TOKEN = (
-    os.environ.get("TELEGRAM_BOT_TOKEN")
-    or os.environ.get("BOT_TOKEN")
-)
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 if not TOKEN:
     raise RuntimeError(
-        "BOT TOKEN NOT FOUND. Add TELEGRAM_BOT_TOKEN or BOT_TOKEN in Render Environment."
+        "TELEGRAM_BOT_TOKEN is missing in Render Environment Variables."
     )
 
+# رابط Render الحالي
+RENDER_URL = os.environ.get(
+    "RENDER_URL",
+    "https://my-bot-mtyr.onrender.com"
+).rstrip("/")
+
+WEBHOOK_PATH = f"/telegram/{TOKEN}"
+WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -35,47 +39,74 @@ app = Flask(__name__)
 
 
 # =========================================================
-# RENDER WEB SERVER
+# HEALTH CHECK
 # =========================================================
 
-@app.route("/")
+@app.route("/", methods=["GET", "HEAD"])
 def home():
-    return "Trading Bot is running.", 200
+    return "Crypto Zero Reversal Bot is running.", 200
 
 
-@app.route("/health")
+@app.route("/health", methods=["GET"])
 def health():
     return "OK", 200
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM WEBHOOK
+# =========================================================
+
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def telegram_webhook():
+
+    try:
+        json_string = request.get_data().decode("utf-8")
+
+        update = telebot.types.Update.de_json(
+            json_string
+        )
+
+        bot.process_new_updates([update])
+
+        return "OK", 200
+
+    except Exception as e:
+
+        print("WEBHOOK ERROR:", repr(e))
+
+        return "ERROR", 500
+
+
+# =========================================================
+# START
 # =========================================================
 
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
 
-    text = (
-        "🚀 البوت شغال يا محمد\n\n"
-        "الأوامر:\n\n"
+    bot.reply_to(
+        message,
+        "🚀 Crypto Zero Reversal شغال يا محمد!\n\n"
         "🔎 /scan\n"
-        "فحص السوق والبحث عن فرص مبكرة.\n\n"
-        "📊 /coin BTCUSDT\n"
-        "تحليل عملة وتجهيز الصفقة.\n\n"
-        "مثال:\n"
-        "/coin AVAXUSDT"
+        "لفحص السوق والبحث عن فرص مبكرة.\n\n"
+        "📊 /coin AVAXUSDT\n"
+        "لتحليل عملة وتجهيز الصفقة."
     )
 
-    bot.reply_to(message, text)
 
+# =========================================================
+# SCAN
+# =========================================================
 
 @bot.message_handler(commands=["scan"])
 def scan_command(message):
 
     bot.reply_to(
         message,
-        "🔎 جاري فحص السوق...\n"
-        "أبحث عن التجميع المبكر + دخول السيولة + ضعف الترند."
+        "🔎 جاري فحص السوق...\n\n"
+        "أبحث عن:\n"
+        "🟢 تجميع + دخول سيولة + بداية حركة\n"
+        "🔴 ترند متأخر + ضعف + خروج سيولة"
     )
 
     try:
@@ -87,58 +118,75 @@ def scan_command(message):
             bot.send_message(
                 message.chat.id,
                 "❌ لم أجد حاليًا فرصة قوية بالشروط المطلوبة.\n\n"
-                "وده أفضل من إعطاء صفقة ضعيفة."
+                "أفضل الانتظار بدل إعطاء صفقة ضعيفة."
             )
 
             return
 
         early = [
             x for x in results
-            if x["signal"] in ("EARLY_LONG", "WATCH_LONG")
+            if x["signal"] in (
+                "EARLY_LONG",
+                "WATCH_LONG"
+            )
         ]
 
         shorts = [
             x for x in results
-            if x["signal"] in ("SHORT", "WATCH_SHORT")
+            if x["signal"] in (
+                "SHORT",
+                "WATCH_SHORT"
+            )
         ]
 
-        output = "📡 نتائج فحص السوق\n\n"
+        output = "📡 Crypto Zero Reversal\n"
+        output += "نتائج فحص السوق\n\n"
+
+        # -------------------------------------------------
+        # LONG
+        # -------------------------------------------------
 
         if early:
 
-            output += "🟢 عملات تحت المراقبة للونج:\n\n"
+            output += "🟢 فرص التجميع / Long:\n\n"
 
             for r in early[:5]:
 
                 output += (
                     f"• {r['symbol']}\n"
                     f"السعر: {format_price(r['price'])}\n"
-                    f"Long Score: {r['long_score']}/100\n"
+                    f"Score: {r['long_score']}/100\n"
                     f"RSI: {r['rsi']:.1f}\n"
-                    f"الحجم: {r['volume_ratio']:.2f}x\n"
-                    f"تغير 15m: {r['change_15m']:.2f}%\n"
-                    f"تغير 30m: {r['change_30m']:.2f}%\n\n"
+                    f"السيولة/الحجم: "
+                    f"{r['volume_ratio']:.2f}x\n"
+                    f"15m: {r['change_15m']:.2f}%\n"
+                    f"30m: {r['change_30m']:.2f}%\n\n"
                 )
+
+        # -------------------------------------------------
+        # SHORT
+        # -------------------------------------------------
 
         if shorts:
 
-            output += "🔴 عملات تحت المراقبة للشورت:\n\n"
+            output += "🔴 ضعف الترند / Short:\n\n"
 
             for r in shorts[:5]:
 
                 output += (
                     f"• {r['symbol']}\n"
                     f"السعر: {format_price(r['price'])}\n"
-                    f"Short Score: {r['short_score']}/100\n"
+                    f"Score: {r['short_score']}/100\n"
                     f"RSI: {r['rsi']:.1f}\n"
-                    f"الحجم: {r['volume_ratio']:.2f}x\n"
-                    f"تغير 15m: {r['change_15m']:.2f}%\n"
-                    f"تغير 30m: {r['change_30m']:.2f}%\n\n"
+                    f"السيولة/الحجم: "
+                    f"{r['volume_ratio']:.2f}x\n"
+                    f"15m: {r['change_15m']:.2f}%\n"
+                    f"30m: {r['change_30m']:.2f}%\n\n"
                 )
 
         output += (
-            "⚠️ النتائج مراقبة وليست ضمانًا للاتجاه.\n"
-            "لا يتم اعتبار الصفقة جاهزة لمجرد وجود ارتفاع/هبوط."
+            "⚠️ الإشارة ليست ضمانًا للحركة.\n"
+            "الدخول يحتاج تأكيد السعر والسيولة."
         )
 
         bot.send_message(
@@ -148,14 +196,17 @@ def scan_command(message):
 
     except Exception as e:
 
-        print("SCAN ERROR:", e)
+        print("SCAN ERROR:", repr(e))
 
         bot.send_message(
             message.chat.id,
-            "❌ حصل خطأ أثناء فحص السوق.\n"
-            "راجع Logs في Render."
+            "❌ حدث خطأ أثناء فحص السوق."
         )
 
+
+# =========================================================
+# COIN ANALYSIS
+# =========================================================
 
 @bot.message_handler(commands=["coin"])
 def coin_command(message):
@@ -168,7 +219,8 @@ def coin_command(message):
 
             bot.reply_to(
                 message,
-                "اكتب العملة هكذا:\n/coin AVAXUSDT"
+                "اكتب العملة بهذا الشكل:\n\n"
+                "/coin AVAXUSDT"
             )
 
             return
@@ -202,33 +254,35 @@ def coin_command(message):
         text = (
             f"📊 تحليل {symbol}\n\n"
             f"السعر: {format_price(result['price'])}\n"
-            f"الاتجاه: {result['signal']}\n"
+            f"الحالة: {result['signal']}\n\n"
+            f"🟢 Long Score: "
+            f"{result['long_score']}/100\n"
+            f"🔴 Short Score: "
+            f"{result['short_score']}/100\n"
             f"RSI: {result['rsi']:.1f}\n"
             f"الحجم: {result['volume_ratio']:.2f}x\n"
             f"15m: {result['change_15m']:.2f}%\n"
-            f"30m: {result['change_30m']:.2f}%\n\n"
-            f"🟢 Long Score: {result['long_score']}/100\n"
-            f"🔴 Short Score: {result['short_score']}/100\n"
+            f"30m: {result['change_30m']:.2f}%\n"
         )
 
         if trade:
 
             text += (
                 "\n\n"
-                f"🎯 الصفقة المقترحة: {trade['side']}\n"
+                f"🎯 الاتجاه: {trade['side']}\n"
                 f"Entry: {trade['entry']}\n"
-                f"SL: {trade['stop']}\n"
-                f"TP1: {trade['tp1']}\n"
-                f"TP2: {trade['tp2']}\n"
-                f"TP3: {trade['tp3']}\n"
+                f"🛑 SL: {trade['stop']}\n"
+                f"🎯 TP1: {trade['tp1']}\n"
+                f"🎯 TP2: {trade['tp2']}\n"
+                f"🎯 TP3: {trade['tp3']}\n"
             )
 
         else:
 
             text += (
                 "\n\n"
-                "⏳ لا توجد صفقة مؤكدة حاليًا.\n"
-                "الأفضل الانتظار بدل الدخول العشوائي."
+                "⏳ لا توجد صفقة جاهزة الآن.\n"
+                "الأفضل انتظار تأكيد أقوى."
             )
 
         bot.send_message(
@@ -238,65 +292,92 @@ def coin_command(message):
 
     except Exception as e:
 
-        print("COIN ERROR:", e)
+        print("COIN ERROR:", repr(e))
 
         bot.send_message(
             message.chat.id,
-            "❌ حصل خطأ أثناء تحليل العملة."
+            "❌ حدث خطأ أثناء تحليل العملة."
         )
 
 
 # =========================================================
-# TELEGRAM POLLING
+# SET WEBHOOK
 # =========================================================
 
-def telegram_worker():
+def setup_webhook():
 
     while True:
 
         try:
 
-            print("Removing Telegram webhook...")
+            print("Setting Telegram webhook...")
+            print("Webhook URL:", WEBHOOK_URL)
 
+            # حذف أي webhook قديم أولًا
             bot.delete_webhook(
                 drop_pending_updates=True
             )
 
-            print("Starting Telegram polling...")
+            time.sleep(2)
 
-            bot.infinity_polling(
-                timeout=30,
-                long_polling_timeout=30,
-                skip_pending=True
+            # وضع webhook الجديد
+            result = bot.set_webhook(
+                url=WEBHOOK_URL,
+                drop_pending_updates=True
             )
+
+            print(
+                "Webhook set result:",
+                result
+            )
+
+            info = bot.get_webhook_info()
+
+            print(
+                "Webhook active:",
+                info.url
+            )
+
+            print(
+                "Pending updates:",
+                info.pending_update_count
+            )
+
+            print("Telegram webhook is READY.")
+
+            break
 
         except Exception as e:
 
-            print("TELEGRAM ERROR:", repr(e))
+            print(
+                "WEBHOOK SETUP ERROR:",
+                repr(e)
+            )
 
             time.sleep(10)
 
 
 # =========================================================
-# START
+# RUN
 # =========================================================
 
 if __name__ == "__main__":
 
+    # إعداد webhook في Thread حتى لا يمنع Flask
     threading.Thread(
-        target=telegram_worker,
+        target=setup_webhook,
         daemon=True
     ).start()
 
     port = int(
         os.environ.get(
             "PORT",
-            10000
+            "10000"
         )
     )
 
     print(
-        f"Starting Flask server on port {port}"
+        f"Starting Flask on 0.0.0.0:{port}"
     )
 
     app.run(
