@@ -1,28 +1,979 @@
-import time
 import requests
-from typing import Dict, List, Optional
-
+import time
+import math
+from statistics import mean
 
 # =========================================================
-# BINANCE PUBLIC API
+# BINANCE CONFIG
 # =========================================================
 
-BINANCE_API_URL = "https://data-api.binance.vision"
+BINANCE_URL = "https://fapi.binance.com"
 
 SESSION = requests.Session()
-
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 Binance-AI-Scanner/1.0"
+    "User-Agent": "Mozilla/5.0"
 })
+
+REQUEST_TIMEOUT = 15
 
 
 # =========================================================
-# BASIC HELPERS
+# HTTP
+# =========================================================
+
+def binance_get(endpoint, params=None):
+    try:
+        url = BINANCE_URL + endpoint
+
+        r = SESSION.get(
+            url,
+            params=params,
+            timeout=REQUEST_TIMEOUT
+        )
+
+        r.raise_for_status()
+
+        return r.json()
+
+    except Exception as e:
+        print("Binance API error:", e)
+        return None
+
+
+# =========================================================
+# SYMBOLS
+# =========================================================
+
+def get_usdt_symbols():
+    """
+    Get active USDT perpetual futures symbols.
+    """
+
+    data = binance_get("/fapi/v1/exchangeInfo")
+
+    if not data:
+        return []
+
+    symbols = []
+
+    for item in data.get("symbols", []):
+
+        if (
+            item.get("quoteAsset") == "USDT"
+            and item.get("contractType") == "PERPETUAL"
+            and item.get("status") == "TRADING"
+        ):
+            symbols.append(item["symbol"])
+
+    return symbols
+
+
+# =========================================================
+# 24H MARKET DATA
+# =========================================================
+
+def get_24h_tickers():
+
+    data = binance_get("/fapi/v1/ticker/24hr")
+
+    if not data:
+        return []
+
+    result = []
+
+    for x in data:
+
+        symbol = x.get("symbol")
+
+        if not symbol or not symbol.endswith("USDT"):
+            continue
+
+        try:
+            result.append({
+                "symbol": symbol,
+                "price": float(x["lastPrice"]),
+                "quote_volume": float(x["quoteVolume"]),
+                "change": float(x["priceChangePercent"]),
+                "high": float(x["highPrice"]),
+                "low": float(x["lowPrice"])
+            })
+
+        except Exception:
+            continue
+
+    return result
+
+
+# =========================================================
+# KLINES
+# =========================================================
+
+def get_klines(symbol, interval="15m", limit=150):
+
+    data = binance_get(
+        "/fapi/v1/klines",
+        {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
+    )
+
+    if not data:
+        return []
+
+    candles = []
+
+    for x in data:
+
+        try:
+            candles.append({
+                "open_time": int(x[0]),
+                "open": float(x[1]),
+                "high": float(x[2]),
+                "low": float(x[3]),
+                "close": float(x[4]),
+                "volume": float(x[5]),
+                "close_time": int(x[6]),
+                "quote_volume": float(x[7])
+            })
+
+        except Exception:
+            continue
+
+    return candles
+
+
+# =========================================================
+# EMA
+# =========================================================
+
+def calculate_ema(values, period):
+
+    if len(values) < period:
+        return None
+
+    multiplier = 2 / (period + 1)
+
+    ema_value = sum(values[:period]) / period
+
+    for price in values[period:]:
+        ema_value = (
+            (price - ema_value) * multiplier
+        ) + ema_value
+
+    return ema_value
+
+
+# =========================================================
+# RSI
+# =========================================================
+
+def calculate_rsi(values, period=14):
+
+    if len(values) < period + 1:
+        return None
+
+    gains = []
+    losses = []
+
+    for i in range(1, len(values)):
+
+        change = values[i] - values[i - 1]
+
+        if change > 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
+
+    avg_gain = mean(gains[:period])
+    avg_loss = mean(losses[:period])
+
+    for i in range(period, len(gains)):
+
+        avg_gain = (
+            ((avg_gain * (period - 1)) + gains[i])
+            / period
+        )
+
+        avg_loss = (
+            ((avg_loss * (period - 1)) + losses[i])
+            / period
+        )
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+
+    return 100 - (100 / (1 + rs))
+
+
+# =========================================================
+# ATR
+# =========================================================
+
+def calculate_atr(candles, period=14):
+
+    if len(candles) < period + 1:
+        return None
+
+    trs = []
+
+    for i in range(1, len(candles)):
+
+        high = candles[i]["high"]
+        low = candles[i]["low"]
+        previous_close = candles[i - 1]["close"]
+
+        tr = max(
+            high - low,
+            abs(high - previous_close),
+            abs(low - previous_close)
+        )
+
+        trs.append(tr)
+
+    return mean(trs[-period:])
+
+
+# =========================================================
+# PRICE CHANGE
+# =========================================================
+
+def percentage_change(old, new):
+
+    if old == 0:
+        return 0
+
+    return ((new - old) / old) * 100
+
+
+# =========================================================
+# RANGE / CONSOLIDATION
+# =========================================================
+
+def calculate_range(candles):
+
+    if not candles:
+        return None
+
+    highs = [x["high"] for x in candles]
+    lows = [x["low"] for x in candles]
+
+    highest = max(highs)
+    lowest = min(lows)
+
+    if lowest == 0:
+        return None
+
+    return ((highest - lowest) / lowest) * 100
+
+
+# =========================================================
+# SUPPORT / RESISTANCE
+# =========================================================
+
+def calculate_levels(candles):
+
+    recent = candles[-40:]
+
+    highs = [x["high"] for x in recent]
+    lows = [x["low"] for x in recent]
+
+    resistance = max(highs)
+    support = min(lows)
+
+    return support, resistance
+
+
+# =========================================================
+# VOLUME ANALYSIS
+# =========================================================
+
+def volume_analysis(candles):
+
+    if len(candles) < 40:
+        return None
+
+    current_volume = candles[-1]["volume"]
+
+    previous_volumes = [
+        x["volume"]
+        for x in candles[-21:-1]
+    ]
+
+    average_volume = mean(previous_volumes)
+
+    if average_volume <= 0:
+        return None
+
+    ratio = current_volume / average_volume
+
+    recent_5 = mean(
+        x["volume"]
+        for x in candles[-5:]
+    )
+
+    previous_20 = mean(
+        x["volume"]
+        for x in candles[-25:-5]
+    )
+
+    if previous_20 > 0:
+        liquidity_growth = (
+            (recent_5 / previous_20) - 1
+        ) * 100
+    else:
+        liquidity_growth = 0
+
+    return {
+        "current": current_volume,
+        "average": average_volume,
+        "ratio": ratio,
+        "growth": liquidity_growth
+    }
+
+
+# =========================================================
+# PUMP FILTER
+# =========================================================
+
+def already_pumped(candles):
+
+    if len(candles) < 25:
+        return False
+
+    current = candles[-1]["close"]
+
+    price_1h = candles[-5]["close"]
+    price_4h = candles[-17]["close"]
+
+    change_1h = percentage_change(
+        price_1h,
+        current
+    )
+
+    change_4h = percentage_change(
+        price_4h,
+        current
+    )
+
+    # Do not chase a coin that already exploded.
+    if change_1h >= 8:
+        return True
+
+    if change_4h >= 15:
+        return True
+
+    return False
+
+
+# =========================================================
+# ACCUMULATION DETECTION
+# =========================================================
+
+def detect_accumulation(candles):
+
+    if len(candles) < 60:
+        return {
+            "score": 0,
+            "signals": []
+        }
+
+    closes = [x["close"] for x in candles]
+
+    recent = candles[-24:]
+
+    range_percent = calculate_range(recent)
+
+    volume = volume_analysis(candles)
+
+    if volume is None:
+        return {
+            "score": 0,
+            "signals": []
+        }
+
+    score = 0
+    signals = []
+
+    # Tight range = possible accumulation
+    if range_percent <= 5:
+        score += 20
+        signals.append("نطاق سعري ضيق")
+
+    elif range_percent <= 8:
+        score += 10
+        signals.append("تجميع متوسط")
+
+    # Volume increasing without huge price explosion
+    if volume["ratio"] >= 1.20:
+        score += 15
+        signals.append("ارتفاع الحجم")
+
+    if volume["growth"] >= 15:
+        score += 15
+        signals.append("السيولة تتحسن")
+
+    # Higher lows
+    lows_1 = min(
+        x["low"]
+        for x in candles[-20:-10]
+    )
+
+    lows_2 = min(
+        x["low"]
+        for x in candles[-10:]
+    )
+
+    if lows_2 > lows_1:
+        score += 15
+        signals.append("Higher Low")
+
+    # Price close to resistance
+    support, resistance = calculate_levels(candles)
+
+    current = closes[-1]
+
+    distance_to_resistance = (
+        (resistance - current) / current
+    ) * 100
+
+    if 0 < distance_to_resistance <= 3:
+        score += 15
+        signals.append("قرب المقاومة")
+
+    # EMA structure
+    ema20 = calculate_ema(closes, 20)
+    ema50 = calculate_ema(closes, 50)
+
+    if ema20 and ema50 and ema20 >= ema50:
+        score += 10
+        signals.append("EMA إيجابي")
+
+    # Avoid already pumped coins
+    if already_pumped(candles):
+        score -= 35
+        signals.append("⚠️ العملة انفجرت بالفعل")
+
+    score = max(0, min(100, score))
+
+    return {
+        "score": score,
+        "signals": signals
+    }
+
+
+# =========================================================
+# LONG ANALYSIS
+# =========================================================
+
+def analyze_long(candles):
+
+    closes = [x["close"] for x in candles]
+
+    current = closes[-1]
+
+    ema20 = calculate_ema(closes, 20)
+    ema50 = calculate_ema(closes, 50)
+
+    rsi = calculate_rsi(closes)
+
+    atr = calculate_atr(candles)
+
+    volume = volume_analysis(candles)
+
+    support, resistance = calculate_levels(candles)
+
+    score = 0
+    signals = []
+
+    if ema20 and current > ema20:
+        score += 15
+        signals.append("السعر فوق EMA20")
+
+    if ema20 and ema50 and ema20 > ema50:
+        score += 20
+        signals.append("EMA20 > EMA50")
+
+    if rsi and 50 <= rsi <= 68:
+        score += 15
+        signals.append("RSI مناسب للصعود")
+
+    if volume:
+
+        if volume["ratio"] >= 1.15:
+            score += 15
+            signals.append("حجم مرتفع")
+
+        if volume["growth"] >= 10:
+            score += 10
+            signals.append("السيولة في تحسن")
+
+    # Higher lows
+    if candles[-1]["low"] > candles[-10]["low"]:
+        score += 10
+        signals.append("Higher Low")
+
+    # Breakout proximity
+    distance = (
+        (resistance - current) / current
+    ) * 100
+
+    if 0 <= distance <= 2.5:
+        score += 15
+        signals.append("قريب من الاختراق")
+
+    return {
+        "score": max(0, min(100, score)),
+        "signals": signals,
+        "price": current,
+        "ema20": ema20,
+        "ema50": ema50,
+        "rsi": rsi,
+        "atr": atr,
+        "support": support,
+        "resistance": resistance
+    }
+
+
+# =========================================================
+# SHORT ANALYSIS
+# =========================================================
+
+def analyze_short(candles):
+
+    closes = [x["close"] for x in candles]
+
+    current = closes[-1]
+
+    ema20 = calculate_ema(closes, 20)
+    ema50 = calculate_ema(closes, 50)
+
+    rsi = calculate_rsi(closes)
+
+    atr = calculate_atr(candles)
+
+    volume = volume_analysis(candles)
+
+    support, resistance = calculate_levels(candles)
+
+    score = 0
+    signals = []
+
+    if ema20 and current < ema20:
+        score += 20
+        signals.append("السعر تحت EMA20")
+
+    if ema20 and ema50 and ema20 < ema50:
+        score += 20
+        signals.append("EMA20 < EMA50")
+
+    if rsi and 32 <= rsi <= 50:
+        score += 15
+        signals.append("RSI يدعم الهبوط")
+
+    if volume:
+
+        if volume["ratio"] >= 1.15:
+            score += 15
+            signals.append("حجم مرتفع")
+
+        if volume["growth"] >= 10:
+            score += 10
+            signals.append("السيولة مرتفعة")
+
+    # Lower High
+    if candles[-1]["high"] < candles[-10]["high"]:
+        score += 10
+        signals.append("Lower High")
+
+    # Near support
+    distance = (
+        (current - support) / current
+    ) * 100
+
+    if 0 <= distance <= 2.5:
+        score += 10
+        signals.append("قريب من كسر الدعم")
+
+    return {
+        "score": max(0, min(100, score)),
+        "signals": signals,
+        "price": current,
+        "ema20": ema20,
+        "ema50": ema50,
+        "rsi": rsi,
+        "atr": atr,
+        "support": support,
+        "resistance": resistance
+    }
+
+
+# =========================================================
+# FULL ANALYSIS
+# =========================================================
+
+def analyze_symbol(symbol):
+
+    symbol = symbol.upper()
+
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+
+    candles_15m = get_klines(
+        symbol,
+        "15m",
+        150
+    )
+
+    candles_1h = get_klines(
+        symbol,
+        "1h",
+        100
+    )
+
+    if len(candles_15m) < 60:
+        return None
+
+    long_result = analyze_long(
+        candles_15m
+    )
+
+    short_result = analyze_short(
+        candles_15m
+    )
+
+    accumulation = detect_accumulation(
+        candles_15m
+    )
+
+    current = candles_15m[-1]["close"]
+
+    # 1H trend confirmation
+    trend_1h = "NEUTRAL"
+
+    if len(candles_1h) >= 50:
+
+        closes_1h = [
+            x["close"]
+            for x in candles_1h
+        ]
+
+        ema20_1h = calculate_ema(
+            closes_1h,
+            20
+        )
+
+        ema50_1h = calculate_ema(
+            closes_1h,
+            50
+        )
+
+        if (
+            ema20_1h
+            and ema50_1h
+            and ema20_1h > ema50_1h
+        ):
+            trend_1h = "UP"
+
+        elif (
+            ema20_1h
+            and ema50_1h
+            and ema20_1h < ema50_1h
+        ):
+            trend_1h = "DOWN"
+
+    # Final classification
+    long_score = long_result["score"]
+    short_score = short_result["score"]
+
+    if accumulation["score"] >= 65:
+        status = "PRE_PUMP"
+
+    elif long_score >= 70:
+        status = "LONG"
+
+    elif short_score >= 70:
+        status = "SHORT"
+
+    else:
+        status = "WAIT"
+
+    return {
+        "symbol": symbol,
+        "price": current,
+        "status": status,
+        "long": long_result,
+        "short": short_result,
+        "accumulation": accumulation,
+        "trend_1h": trend_1h
+    }
+
+
+# =========================================================
+# SCANNER
+# =========================================================
+
+def scan_market(mode="all", max_symbols=80):
+
+    tickers = get_24h_tickers()
+
+    if not tickers:
+        return []
+
+    # Remove extremely low liquidity coins
+    tickers = [
+        x for x in tickers
+        if x["quote_volume"] >= 5_000_000
+    ]
+
+    # Sort by 24h quote volume
+    tickers.sort(
+        key=lambda x: x["quote_volume"],
+        reverse=True
+    )
+
+    # Analyze highest liquidity candidates first
+    candidates = tickers[:max_symbols]
+
+    results = []
+
+    for item in candidates:
+
+        symbol = item["symbol"]
+
+        try:
+
+            result = analyze_symbol(symbol)
+
+            if not result:
+                continue
+
+            if mode == "long":
+
+                score = max(
+                    result["long"]["score"],
+                    result["accumulation"]["score"]
+                )
+
+                if score < 55:
+                    continue
+
+            elif mode == "short":
+
+                if result["short"]["score"] < 55:
+                    continue
+
+            else:
+
+                best = max(
+                    result["long"]["score"],
+                    result["short"]["score"],
+                    result["accumulation"]["score"]
+                )
+
+                if best < 55:
+                    continue
+
+            result["volume_24h"] = item["quote_volume"]
+
+            result["change_24h"] = item["change"]
+
+            results.append(result)
+
+            # Small delay to avoid API pressure
+            time.sleep(0.08)
+
+        except Exception as e:
+            print(
+                "Scan error",
+                symbol,
+                e
+            )
+
+    def ranking(x):
+
+        return max(
+            x["long"]["score"],
+            x["short"]["score"],
+            x["accumulation"]["score"]
+        )
+
+    results.sort(
+        key=ranking,
+        reverse=True
+    )
+
+    return results[:15]
+
+
+# =========================================================
+# TRADE PREPARATION
+# =========================================================
+
+def prepare_trade(symbol):
+
+    result = analyze_symbol(symbol)
+
+    if not result:
+        return None
+
+    price = result["price"]
+
+    long_data = result["long"]
+    short_data = result["short"]
+
+    accumulation_score = result[
+        "accumulation"
+    ]["score"]
+
+    # =====================================================
+    # LONG
+    # =====================================================
+
+    if (
+        long_data["score"] >= 70
+        and long_data["score"] > short_data["score"]
+    ):
+
+        atr = long_data["atr"]
+
+        if not atr:
+            return None
+
+        # Entry around current market
+        entry = price
+
+        stop = entry - (
+            atr * 1.5
+        )
+
+        risk = entry - stop
+
+        tp1 = entry + risk
+        tp2 = entry + (risk * 2)
+        tp3 = entry + (risk * 3)
+
+        return {
+            "symbol": symbol.upper(),
+            "direction": "LONG",
+            "status": result["status"],
+            "score": long_data["score"],
+            "entry": entry,
+            "stop": stop,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "rsi": long_data["rsi"],
+            "support": long_data["support"],
+            "resistance": long_data["resistance"],
+            "trend_1h": result["trend_1h"],
+            "accumulation": accumulation_score,
+            "signals": long_data["signals"]
+        }
+
+    # =====================================================
+    # SHORT
+    # =====================================================
+
+    if (
+        short_data["score"] >= 70
+        and short_data["score"] > long_data["score"]
+    ):
+
+        atr = short_data["atr"]
+
+        if not atr:
+            return None
+
+        entry = price
+
+        stop = entry + (
+            atr * 1.5
+        )
+
+        risk = stop - entry
+
+        tp1 = entry - risk
+        tp2 = entry - (risk * 2)
+        tp3 = entry - (risk * 3)
+
+        return {
+            "symbol": symbol.upper(),
+            "direction": "SHORT",
+            "status": result["status"],
+            "score": short_data["score"],
+            "entry": entry,
+            "stop": stop,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "rsi": short_data["rsi"],
+            "support": short_data["support"],
+            "resistance": short_data["resistance"],
+            "trend_1h": result["trend_1h"],
+            "accumulation": accumulation_score,
+            "signals": short_data["signals"]
+        }
+
+    # =====================================================
+    # PRE-PUMP WATCH
+    # =====================================================
+
+    if accumulation_score >= 65:
+
+        return {
+            "symbol": symbol.upper(),
+            "direction": "WATCH",
+            "status": "PRE_PUMP",
+            "score": accumulation_score,
+            "entry": price,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "tp3": None,
+            "rsi": long_data["rsi"],
+            "support": long_data["support"],
+            "resistance": long_data["resistance"],
+            "trend_1h": result["trend_1h"],
+            "accumulation": accumulation_score,
+            "signals": result["accumulation"]["signals"]
+        }
+
+    return {
+        "symbol": symbol.upper(),
+        "direction": "WAIT",
+        "status": "WAIT",
+        "score": max(
+            long_data["score"],
+            short_data["score"]
+        ),
+        "entry": price,
+        "stop": None,
+        "tp1": None,
+        "tp2": None,
+        "tp3": None,
+        "rsi": long_data["rsi"],
+        "support": long_data["support"],
+        "resistance": long_data["resistance"],
+        "trend_1h": result["trend_1h"],
+        "accumulation": accumulation_score,
+        "signals": []
+    }
+
+
+# =========================================================
+# FORMAT PRICE
 # =========================================================
 
 def format_number(value):
+
     if value is None:
-        return "N/A"
+        return "-"
 
     value = float(value)
 
@@ -35,1050 +986,7 @@ def format_number(value):
     if value >= 0.01:
         return f"{value:.6f}"
 
+    if value >= 0.0001:
+        return f"{value:.8f}"
+
     return f"{value:.10f}"
-
-
-def safe_get(path, params=None, timeout=10):
-    try:
-        response = SESSION.get(
-            BINANCE_API_URL + path,
-            params=params,
-            timeout=timeout,
-        )
-
-        response.raise_for_status()
-        return response.json()
-
-    except Exception as e:
-        print(f"Binance API error: {path} -> {e}")
-        return None
-
-
-# =========================================================
-# SYMBOLS
-# =========================================================
-
-def get_usdt_symbols() -> List[str]:
-    """
-    جلب كل عملات USDT المتاحة في Binance Spot.
-    """
-
-    data = safe_get(
-        "/api/v3/exchangeInfo",
-        timeout=15,
-    )
-
-    if not data:
-        return []
-
-    symbols = []
-
-    for item in data.get("symbols", []):
-        try:
-            if (
-                item.get("status") == "TRADING"
-                and item.get("quoteAsset") == "USDT"
-                and item.get("isSpotTradingAllowed", True)
-            ):
-                symbol = item.get("symbol")
-
-                if symbol:
-                    symbols.append(symbol)
-
-        except Exception:
-            continue
-
-    return symbols
-
-
-# =========================================================
-# 24H MARKET DATA
-# =========================================================
-
-def get_24h_tickers():
-    data = safe_get(
-        "/api/v3/ticker/24hr",
-        timeout=15,
-    )
-
-    if not isinstance(data, list):
-        return []
-
-    return data
-
-
-# =========================================================
-# KLINES
-# =========================================================
-
-def get_klines(
-    symbol: str,
-    interval: str = "1h",
-    limit: int = 100,
-):
-    data = safe_get(
-        "/api/v3/klines",
-        params={
-            "symbol": symbol.upper(),
-            "interval": interval,
-            "limit": limit,
-        },
-        timeout=10,
-    )
-
-    if not isinstance(data, list):
-        return []
-
-    candles = []
-
-    for row in data:
-        try:
-            candles.append({
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": float(row[5]),
-                "quote_volume": float(row[7]),
-                "trades": int(row[8]),
-                "taker_buy_base": float(row[9]),
-                "taker_buy_quote": float(row[10]),
-            })
-        except Exception:
-            continue
-
-    return candles
-
-
-# =========================================================
-# INDICATORS
-# =========================================================
-
-def ema(values: List[float], period: int):
-    if not values:
-        return 0.0
-
-    if len(values) < period:
-        return sum(values) / len(values)
-
-    multiplier = 2 / (period + 1)
-
-    result = sum(values[:period]) / period
-
-    for price in values[period:]:
-        result = (
-            price - result
-        ) * multiplier + result
-
-    return result
-
-
-def rsi(values: List[float], period: int = 14):
-    if len(values) <= period:
-        return 50.0
-
-    gains = []
-    losses = []
-
-    for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
-
-        if change > 0:
-            gains.append(change)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(change))
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    for i in range(period, len(gains)):
-        avg_gain = (
-            (avg_gain * (period - 1)) + gains[i]
-        ) / period
-
-        avg_loss = (
-            (avg_loss * (period - 1)) + losses[i]
-        ) / period
-
-    if avg_loss == 0:
-        return 100.0
-
-    rs = avg_gain / avg_loss
-
-    return 100 - (100 / (1 + rs))
-
-
-def atr(candles, period=14):
-    if len(candles) < period + 1:
-        return 0.0
-
-    trs = []
-
-    for i in range(1, len(candles)):
-        high = candles[i]["high"]
-        low = candles[i]["low"]
-        prev_close = candles[i - 1]["close"]
-
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close),
-        )
-
-        trs.append(tr)
-
-    return sum(trs[-period:]) / period
-
-
-# =========================================================
-# MARKET STRUCTURE
-# =========================================================
-
-def get_support_resistance(candles, lookback=30):
-    recent = candles[-lookback:]
-
-    support = min(x["low"] for x in recent)
-    resistance = max(x["high"] for x in recent)
-
-    return support, resistance
-
-
-def trend_analysis(closes):
-    e9 = ema(closes, 9)
-    e20 = ema(closes, 20)
-    e50 = ema(closes, 50)
-
-    price = closes[-1]
-
-    if price > e9 > e20 > e50:
-        return "STRONG_UP"
-
-    if price > e20 and e20 > e50:
-        return "UP"
-
-    if price < e9 < e20 < e50:
-        return "STRONG_DOWN"
-
-    if price < e20 and e20 < e50:
-        return "DOWN"
-
-    return "SIDEWAYS"
-
-
-# =========================================================
-# VOLUME / LIQUIDITY
-# =========================================================
-
-def volume_analysis(candles):
-    volumes = [x["quote_volume"] for x in candles]
-
-    current = volumes[-1]
-
-    base = volumes[-21:-1]
-
-    average = (
-        sum(base) / len(base)
-        if base
-        else current
-    )
-
-    if average <= 0:
-        ratio = 1.0
-    else:
-        ratio = current / average
-
-    return ratio
-
-
-def buy_pressure_analysis(candles, period=10):
-    recent = candles[-period:]
-
-    total_quote = sum(
-        x["quote_volume"]
-        for x in recent
-    )
-
-    buy_quote = sum(
-        x["taker_buy_quote"]
-        for x in recent
-    )
-
-    if total_quote <= 0:
-        return 50.0
-
-    return (
-        buy_quote / total_quote
-    ) * 100
-
-
-def liquidity_flow(candles):
-    """
-    تقدير تدفق السيولة اعتماداً على:
-    - حجم التداول
-    - ضغط الشراء
-    - اتجاه إغلاق الشموع
-    """
-
-    recent = candles[-10:]
-
-    score = 0
-
-    for candle in recent:
-        if candle["close"] > candle["open"]:
-            score += candle["quote_volume"]
-        else:
-            score -= candle["quote_volume"]
-
-    total = sum(
-        x["quote_volume"]
-        for x in recent
-    )
-
-    if total <= 0:
-        return 0
-
-    return score / total
-
-
-# =========================================================
-# ACCUMULATION / DISTRIBUTION
-# =========================================================
-
-def detect_accumulation(candles):
-    """
-    البحث عن تجميع قبل الانفجار.
-
-    الشروط ليست مجرد ارتفاع السعر.
-    نبحث عن:
-    - نطاق سعري متماسك
-    - حجم يبدأ في الارتفاع
-    - ضغط شراء أعلى
-    - السعر قريب من متوسطاته
-    """
-
-    if len(candles) < 40:
-        return False, 0
-
-    recent = candles[-20:]
-
-    highs = [x["high"] for x in recent]
-    lows = [x["low"] for x in recent]
-
-    highest = max(highs)
-    lowest = min(lows)
-
-    current = candles[-1]["close"]
-
-    if current <= 0:
-        return False, 0
-
-    range_pct = (
-        (highest - lowest) / current
-    ) * 100
-
-    volume_ratio = volume_analysis(candles)
-    buy_pressure = buy_pressure_analysis(candles)
-
-    e20 = ema(
-        [x["close"] for x in candles],
-        20,
-    )
-
-    distance_ema = (
-        abs(current - e20) / current
-    ) * 100
-
-    points = 0
-
-    # نطاق ضيق = تجميع محتمل
-    if range_pct <= 10:
-        points += 25
-
-    if range_pct <= 6:
-        points += 10
-
-    # الحجم بدأ يزيد
-    if volume_ratio >= 1.15:
-        points += 15
-
-    if volume_ratio >= 1.5:
-        points += 10
-
-    # ضغط شراء
-    if buy_pressure >= 52:
-        points += 15
-
-    if buy_pressure >= 55:
-        points += 10
-
-    # قريب من EMA20
-    if distance_ema <= 4:
-        points += 10
-
-    return points >= 55, min(points, 100)
-
-
-def detect_distribution(candles):
-    """
-    اكتشاف احتمال التصريف / خروج السيولة.
-    """
-
-    if len(candles) < 40:
-        return False, 0
-
-    closes = [x["close"] for x in candles]
-
-    price = closes[-1]
-
-    highest_20 = max(
-        closes[-20:]
-    )
-
-    volume_ratio = volume_analysis(candles)
-    buy_pressure = buy_pressure_analysis(candles)
-
-    points = 0
-
-    # السعر قريب من قمة حديثة
-    if highest_20 > 0:
-        distance = (
-            (highest_20 - price)
-            / highest_20
-        ) * 100
-
-        if distance <= 3:
-            points += 20
-
-    # الحجم مرتفع
-    if volume_ratio >= 1.3:
-        points += 20
-
-    # ضغط الشراء ضعيف
-    if buy_pressure <= 48:
-        points += 20
-
-    if buy_pressure <= 45:
-        points += 15
-
-    # شموع هابطة
-    red = sum(
-        1
-        for x in candles[-8:]
-        if x["close"] < x["open"]
-    )
-
-    if red >= 5:
-        points += 20
-
-    return points >= 55, min(points, 100)
-
-
-# =========================================================
-# OVEREXTENSION
-# =========================================================
-
-def is_overextended(candles):
-    closes = [x["close"] for x in candles]
-
-    price = closes[-1]
-
-    e20 = ema(closes, 20)
-
-    if e20 <= 0:
-        return False
-
-    distance = (
-        (price - e20) / e20
-    ) * 100
-
-    # لا نطارد العملة بعد ارتفاع كبير
-    return distance >= 8
-
-
-# =========================================================
-# PRE-BREAKOUT
-# =========================================================
-
-def detect_pre_breakout(candles):
-    if len(candles) < 30:
-        return False
-
-    support, resistance = get_support_resistance(
-        candles,
-        25,
-    )
-
-    price = candles[-1]["close"]
-
-    if resistance <= 0:
-        return False
-
-    distance = (
-        (resistance - price)
-        / resistance
-    ) * 100
-
-    volume_ratio = volume_analysis(candles)
-    buy_pressure = buy_pressure_analysis(candles)
-
-    return (
-        0 <= distance <= 4
-        and volume_ratio >= 1.15
-        and buy_pressure >= 52
-    )
-
-
-# =========================================================
-# TRADE CALCULATION
-# =========================================================
-
-def build_long_trade(
-    symbol,
-    candles,
-    score,
-    reasons,
-):
-    price = candles[-1]["close"]
-
-    support, resistance = get_support_resistance(
-        candles,
-        30,
-    )
-
-    current_atr = atr(candles)
-
-    if current_atr <= 0:
-        current_atr = price * 0.02
-
-    entry_low = max(
-        support,
-        price - current_atr * 0.5,
-    )
-
-    entry_high = price
-
-    stop = min(
-        support - current_atr * 0.5,
-        price - current_atr * 1.5,
-    )
-
-    risk = price - stop
-
-    if risk <= 0:
-        risk = current_atr
-
-    tp1 = price + risk * 1.5
-    tp2 = price + risk * 2.5
-    tp3 = price + risk * 4.0
-
-    return {
-        "symbol": symbol,
-        "direction": "LONG",
-        "score": int(score),
-        "price": price,
-        "entry_low": entry_low,
-        "entry_high": entry_high,
-        "stop": stop,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-        "support": support,
-        "resistance": resistance,
-        "reasons": reasons,
-        "is_ready": score >= 75,
-    }
-
-
-def build_short_trade(
-    symbol,
-    candles,
-    score,
-    reasons,
-):
-    price = candles[-1]["close"]
-
-    support, resistance = get_support_resistance(
-        candles,
-        30,
-    )
-
-    current_atr = atr(candles)
-
-    if current_atr <= 0:
-        current_atr = price * 0.02
-
-    entry_low = price
-
-    entry_high = min(
-        resistance,
-        price + current_atr * 0.5,
-    )
-
-    stop = max(
-        resistance + current_atr * 0.5,
-        price + current_atr * 1.5,
-    )
-
-    risk = stop - price
-
-    if risk <= 0:
-        risk = current_atr
-
-    tp1 = price - risk * 1.5
-    tp2 = price - risk * 2.5
-    tp3 = price - risk * 4.0
-
-    return {
-        "symbol": symbol,
-        "direction": "SHORT",
-        "score": int(score),
-        "price": price,
-        "entry_low": entry_low,
-        "entry_high": entry_high,
-        "stop": stop,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-        "support": support,
-        "resistance": resistance,
-        "reasons": reasons,
-        "is_ready": score >= 75,
-    }
-
-
-# =========================================================
-# FULL ANALYSIS
-# =========================================================
-
-def analyze_symbol(symbol: str) -> Optional[Dict]:
-    symbol = symbol.upper().strip()
-
-    candles = get_klines(
-        symbol,
-        interval="1h",
-        limit=100,
-    )
-
-    if len(candles) < 60:
-        return None
-
-    closes = [
-        x["close"]
-        for x in candles
-    ]
-
-    price = closes[-1]
-
-    trend = trend_analysis(closes)
-
-    rsi_value = rsi(closes)
-
-    volume_ratio = volume_analysis(candles)
-
-    buy_pressure = buy_pressure_analysis(candles)
-
-    flow = liquidity_flow(candles)
-
-    support, resistance = get_support_resistance(
-        candles,
-        30,
-    )
-
-    accumulation, accumulation_score = detect_accumulation(
-        candles
-    )
-
-    distribution, distribution_score = detect_distribution(
-        candles
-    )
-
-    pre_breakout = detect_pre_breakout(
-        candles
-    )
-
-    overextended = is_overextended(
-        candles
-    )
-
-    score_long = 0
-    score_short = 0
-
-    long_reasons = []
-    short_reasons = []
-
-    # =====================================================
-    # LONG
-    # =====================================================
-
-    if trend == "STRONG_UP":
-        score_long += 20
-        long_reasons.append(
-            "الترند صاعد بقوة: EMA9 > EMA20 > EMA50"
-        )
-
-    elif trend == "UP":
-        score_long += 15
-        long_reasons.append(
-            "الترند العام صاعد"
-        )
-
-    if accumulation:
-        score_long += 25
-        long_reasons.append(
-            f"تجميع محتمل قبل الحركة — قوة التجميع {accumulation_score}/100"
-        )
-
-    if pre_breakout:
-        score_long += 15
-        long_reasons.append(
-            "السعر قريب من مقاومة مع تحسن الحجم والسيولة"
-        )
-
-    if buy_pressure >= 55:
-        score_long += 20
-        long_reasons.append(
-            "ضغط شراء قوي ودخول سيولة"
-        )
-
-    elif buy_pressure >= 52:
-        score_long += 10
-        long_reasons.append(
-            "ضغط شراء أعلى من المتوسط"
-        )
-
-    if volume_ratio >= 1.5:
-        score_long += 15
-        long_reasons.append(
-            f"الحجم أعلى من متوسطه بحوالي {volume_ratio:.2f}x"
-        )
-
-    elif volume_ratio >= 1.2:
-        score_long += 8
-        long_reasons.append(
-            "الحجم بدأ في الارتفاع"
-        )
-
-    if 50 <= rsi_value <= 68:
-        score_long += 10
-        long_reasons.append(
-            "RSI في منطقة تسمح باستمرار الحركة بدون تشبع شديد"
-        )
-
-    if flow > 0.10:
-        score_long += 10
-        long_reasons.append(
-            "تدفق السيولة يميل للمشترين"
-        )
-
-    # لا ندخل بعد انفجار متأخر
-    if overextended:
-        score_long -= 30
-        long_reasons.append(
-            "⚠️ السعر ممتد عن EMA20 — تجنب مطاردة الصعود"
-        )
-
-    # التصريف يلغي جزء كبير من إشارة LONG
-    if distribution:
-        score_long -= 30
-        long_reasons.append(
-            "⚠️ توجد علامات تصريف / خروج سيولة"
-        )
-
-    # =====================================================
-    # SHORT
-    # =====================================================
-
-    if trend == "STRONG_DOWN":
-        score_short += 20
-        short_reasons.append(
-            "الترند هابط بقوة: EMA9 < EMA20 < EMA50"
-        )
-
-    elif trend == "DOWN":
-        score_short += 15
-        short_reasons.append(
-            "الترند العام هابط"
-        )
-
-    if distribution:
-        score_short += 25
-        short_reasons.append(
-            f"علامات تصريف وخروج سيولة — قوة {distribution_score}/100"
-        )
-
-    if buy_pressure <= 45:
-        score_short += 20
-        short_reasons.append(
-            "ضغط البيع أعلى من ضغط الشراء"
-        )
-
-    elif buy_pressure <= 48:
-        score_short += 10
-        short_reasons.append(
-            "ضعف واضح في ضغط الشراء"
-        )
-
-    if volume_ratio >= 1.5:
-        score_short += 15
-        short_reasons.append(
-            f"الحجم مرتفع {volume_ratio:.2f}x مع ضغط بيعي"
-        )
-
-    if rsi_value <= 45:
-        score_short += 10
-        short_reasons.append(
-            "RSI يميل للضعف"
-        )
-
-    if flow < -0.10:
-        score_short += 10
-        short_reasons.append(
-            "تدفق السيولة يميل للبائعين"
-        )
-
-    # لا نبيع عملة منهارة بالفعل
-    if rsi_value < 25:
-        score_short -= 20
-        short_reasons.append(
-            "⚠️ العملة منهارة وممتدة هبوطياً — لا نطارد الهبوط"
-        )
-
-    # =====================================================
-    # FINAL DECISION
-    # =====================================================
-
-    score_long = max(0, min(100, score_long))
-    score_short = max(0, min(100, score_short))
-
-    if score_long >= score_short:
-        final_score = score_long
-        direction = "LONG"
-        reasons = long_reasons
-    else:
-        final_score = score_short
-        direction = "SHORT"
-        reasons = short_reasons
-
-    # لا تعتبر الصفقة جاهزة إلا إذا كانت قوية فعلاً
-    if final_score < 68:
-        direction = "WAIT"
-
-    if direction == "LONG":
-        result = build_long_trade(
-            symbol,
-            candles,
-            final_score,
-            reasons,
-        )
-
-    elif direction == "SHORT":
-        result = build_short_trade(
-            symbol,
-            candles,
-            final_score,
-            reasons,
-        )
-
-    else:
-        result = {
-            "symbol": symbol,
-            "direction": "WAIT",
-            "score": final_score,
-            "price": price,
-            "entry_low": price,
-            "entry_high": price,
-            "stop": price,
-            "tp1": price,
-            "tp2": price,
-            "tp3": price,
-            "support": support,
-            "resistance": resistance,
-            "reasons": reasons,
-            "is_ready": False,
-        }
-
-    # الحالة
-    if distribution:
-        state = "DISTRIBUTION"
-
-    elif accumulation and pre_breakout:
-        state = "PRE_BREAKOUT"
-
-    elif accumulation:
-        state = "ACCUMULATION"
-
-    elif distribution_score >= 45:
-        state = "SELL_PRESSURE"
-
-    else:
-        state = "NORMAL"
-
-    result.update({
-        "rsi": rsi_value,
-        "volume_ratio": volume_ratio,
-        "buy_pressure": buy_pressure,
-        "liquidity_flow": flow,
-        "trend": trend,
-        "state": state,
-    })
-
-    return result
-
-
-# =========================================================
-# MARKET SCANNER
-# =========================================================
-
-def scan_market() -> List[Dict]:
-    """
-    Scanner حقيقي:
-
-    1. يجلب العملات المتاحة.
-    2. يجلب 24h volume.
-    3. يختار العملات ذات السيولة والنشاط.
-    4. يحللها واحدة واحدة.
-    5. يمنع مطاردة العملات المنفجرة.
-    6. يرجع أفضل الفرص.
-    """
-
-    print("🔎 Starting Binance market scan...")
-
-    tickers = get_24h_tickers()
-
-    if not tickers:
-        print("❌ Unable to get Binance 24h tickers")
-        return []
-
-    candidates = []
-
-    excluded = (
-        "USDC",
-        "FDUSD",
-        "TUSD",
-        "USDP",
-        "DAI",
-        "EUR",
-        "TRY",
-        "BRL",
-        "GBP",
-        "AUD",
-        "JPY",
-        "RUB",
-        "BUSD",
-    )
-
-    for ticker in tickers:
-        try:
-            symbol = ticker.get("symbol", "")
-
-            if not symbol.endswith("USDT"):
-                continue
-
-            if any(x in symbol for x in excluded):
-                continue
-
-            quote_volume = float(
-                ticker.get("quoteVolume", 0)
-            )
-
-            price_change = float(
-                ticker.get("priceChangePercent", 0)
-            )
-
-            last_price = float(
-                ticker.get("lastPrice", 0)
-            )
-
-            if quote_volume < 1_000_000:
-                continue
-
-            if last_price <= 0:
-                continue
-
-            # نركز على العملات النشطة لكن لا نبحث عن انفجار +50%
-            if abs(price_change) > 35:
-                continue
-
-            candidates.append({
-                "symbol": symbol,
-                "quote_volume": quote_volume,
-                "change": price_change,
-            })
-
-        except Exception:
-            continue
-
-    # الأعلى سيولة أولاً
-    candidates.sort(
-        key=lambda x: x["quote_volume"],
-        reverse=True,
-    )
-
-    # حتى لا نضرب Binance بطلبات ضخمة
-    candidates = candidates[:120]
-
-    print(
-        f"📊 Candidates selected: {len(candidates)}"
-    )
-
-    results = []
-
-    for index, candidate in enumerate(candidates):
-        symbol = candidate["symbol"]
-
-        try:
-            result = analyze_symbol(symbol)
-
-            if not result:
-                continue
-
-            # نريد فرصاً حقيقية وليس مجرد WAIT
-            if result["direction"] == "WAIT":
-                continue
-
-            if result["score"] < 68:
-                continue
-
-            # منع مطاردة العملات الممتدة
-            if result["direction"] == "LONG":
-                if result["state"] == "DISTRIBUTION":
-                    continue
-
-            if result["direction"] == "SHORT":
-                if result["rsi"] < 25:
-                    continue
-
-            results.append(result)
-
-            print(
-                f"{index + 1}/{len(candidates)} "
-                f"{symbol} -> "
-                f"{result['direction']} "
-                f"{result['score']}"
-            )
-
-        except Exception as e:
-            print(
-                f"Analysis error {symbol}: {e}"
-            )
-
-        # تهدئة الطلبات
-        time.sleep(0.08)
-
-    # ترتيب حسب قوة الإشارة
-    results.sort(
-        key=lambda x: (
-            x["score"],
-            x["volume_ratio"],
-            x["buy_pressure"],
-        ),
-        reverse=True,
-    )
-
-    print(
-        f"✅ Scan finished. Signals: {len(results)}"
-    )
-
-    return results
