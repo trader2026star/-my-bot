@@ -16,21 +16,17 @@ from analysis import (
 # SETTINGS
 # =========================================================
 
-TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN"
-)
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 if not TOKEN:
     raise RuntimeError(
         "TELEGRAM_BOT_TOKEN is missing"
     )
 
-
 RENDER_URL = os.environ.get(
     "RENDER_URL",
     "https://my-bot-mtyr.onrender.com"
 ).rstrip("/")
-
 
 WEBHOOK_PATH = "/telegram/webhook"
 
@@ -44,7 +40,6 @@ TELEGRAM_API = (
     + TOKEN
 )
 
-
 app = Flask(__name__)
 
 
@@ -52,23 +47,21 @@ app = Flask(__name__)
 # TELEGRAM
 # =========================================================
 
-def telegram_request(
-    method,
-    data=None
-):
+def telegram_request(method, data=None):
 
     try:
 
         response = requests.post(
             TELEGRAM_API + "/" + method,
             json=data or {},
-            timeout=20
+            timeout=25
         )
 
         print(
             "Telegram:",
             method,
-            response.status_code
+            response.status_code,
+            response.text[:500]
         )
 
         return response.json()
@@ -76,17 +69,14 @@ def telegram_request(
     except Exception as e:
 
         print(
-            "Telegram ERROR:",
+            "Telegram API ERROR:",
             repr(e)
         )
 
         return None
 
 
-def send_message(
-    chat_id,
-    text
-):
+def send_message(chat_id, text):
 
     max_length = 3900
 
@@ -108,14 +98,15 @@ def send_message(
         max_length
     ):
 
+        part = text[
+            i:i + max_length
+        ]
+
         result = telegram_request(
             "sendMessage",
             {
                 "chat_id": chat_id,
-                "text":
-                    text[
-                        i:i + max_length
-                    ]
+                "text": part
             }
         )
 
@@ -154,10 +145,7 @@ def fmt_rsi(value):
     )
 
 
-def tf_direction(
-    bull,
-    bear
-):
+def tf_direction(bull, bear):
 
     if bull > bear:
         return "🟢 صاعد"
@@ -179,12 +167,14 @@ def final_direction(result):
         "EARLY_LONG",
         "WATCH_LONG"
     ):
+
         return "🟢 LONG"
 
     if signal in (
         "SHORT",
         "WATCH_SHORT"
     ):
+
         return "🔴 SHORT"
 
     return "⚪ WAIT"
@@ -194,9 +184,7 @@ def final_direction(result):
 # COIN MESSAGE
 # =========================================================
 
-def build_coin_message(
-    result
-):
+def build_coin_message(result):
 
     symbol = result["symbol"]
 
@@ -210,9 +198,7 @@ def build_coin_message(
 
     message += (
         "💰 السعر: "
-        + fmt_price(
-            result["price"]
-        )
+        + fmt_price(result["price"])
         + "\n\n"
     )
 
@@ -235,93 +221,81 @@ def build_coin_message(
     )
 
     # =====================================================
-    # TIMEFRAMES
+    # MULTI TF
     # =====================================================
 
     message += (
         "📊 MULTI TIMEFRAME\n\n"
     )
 
-    message += (
-        "15m: "
-        + tf_direction(
+    for name, bull, bear in [
+
+        (
+            "15m",
             result["tf15_bull"],
             result["tf15_bear"]
-        )
-        + "\n"
-    )
+        ),
 
-    message += (
-        "30m: "
-        + tf_direction(
+        (
+            "30m",
             result["tf30_bull"],
             result["tf30_bear"]
-        )
-        + "\n"
-    )
+        ),
 
-    message += (
-        "1H: "
-        + tf_direction(
+        (
+            "1H",
             result["tf1h_bull"],
             result["tf1h_bear"]
-        )
-        + "\n"
-    )
+        ),
 
-    message += (
-        "4H: "
-        + tf_direction(
+        (
+            "4H",
             result["tf4h_bull"],
             result["tf4h_bear"]
-        )
-        + "\n"
-    )
+        ),
 
-    message += (
-        "1D: "
-        + tf_direction(
+        (
+            "1D",
             result["tf1d_bull"],
             result["tf1d_bear"]
         )
-        + "\n\n"
-    )
+
+    ]:
+
+        message += (
+            name
+            + ": "
+            + tf_direction(bull, bear)
+            + "\n"
+        )
 
     # =====================================================
     # RSI
     # =====================================================
 
-    message += "📈 RSI\n"
+    message += "\n📈 RSI\n"
 
     message += (
         "15m: "
-        + fmt_rsi(
-            result["rsi15"]
-        )
+        + fmt_rsi(result["rsi15"])
         + "\n"
     )
 
     message += (
         "1H: "
-        + fmt_rsi(
-            result["rsi1h"]
-        )
+        + fmt_rsi(result["rsi1h"])
         + "\n"
     )
 
     message += (
         "4H: "
-        + fmt_rsi(
-            result["rsi4h"]
-        )
+        + fmt_rsi(result["rsi4h"])
         + "\n"
     )
 
     message += (
         "1D: "
-        + fmt_rsi(
-            result["rsi1d"]
-        )
+        + fmt_rsi(result["rsi1d"])
         + "\n\n"
     )
 
@@ -333,33 +307,25 @@ def build_coin_message(
 
     message += (
         "EMA9: "
-        + fmt_price(
-            result["ema9"]
-        )
+        + fmt_price(result["ema9"])
         + "\n"
     )
 
     message += (
         "EMA20: "
-        + fmt_price(
-            result["ema20"]
-        )
+        + fmt_price(result["ema20"])
         + "\n"
     )
 
     message += (
         "EMA50: "
-        + fmt_price(
-            result["ema50"]
-        )
+        + fmt_price(result["ema50"])
         + "\n"
     )
 
     message += (
         "EMA200: "
-        + fmt_price(
-            result["ema200"]
-        )
+        + fmt_price(result["ema200"])
         + "\n\n"
     )
 
@@ -391,41 +357,31 @@ def build_coin_message(
 
     message += (
         "15m: "
-        + fmt_pct(
-            result["change15"]
-        )
+        + fmt_pct(result["change15"])
         + "\n"
     )
 
     message += (
         "30m: "
-        + fmt_pct(
-            result["change30"]
-        )
+        + fmt_pct(result["change30"])
         + "\n"
     )
 
     message += (
         "1H: "
-        + fmt_pct(
-            result["change1h"]
-        )
+        + fmt_pct(result["change1h"])
         + "\n"
     )
 
     message += (
         "4H: "
-        + fmt_pct(
-            result["change4h"]
-        )
+        + fmt_pct(result["change4h"])
         + "\n"
     )
 
     message += (
         "1D: "
-        + fmt_pct(
-            result["change1d"]
-        )
+        + fmt_pct(result["change1d"])
         + "\n\n"
     )
 
@@ -437,61 +393,51 @@ def build_coin_message(
         "🔎 MARKET STRUCTURE\n"
     )
 
-    if result["accumulation"]:
-
-        message += (
-            "🟢 Accumulation: YES ✅\n"
+    message += (
+        "🟢 Accumulation: "
+        + (
+            "YES ✅"
+            if result["accumulation"]
+            else "NO"
         )
+        + "\n"
+    )
 
-    else:
-
-        message += (
-            "🟢 Accumulation: NO\n"
+    message += (
+        "🔴 Distribution: "
+        + (
+            "YES ⚠️"
+            if result["distribution"]
+            else "NO"
         )
+        + "\n"
+    )
 
-    if result["distribution"]:
-
-        message += (
-            "🔴 Distribution: YES ⚠️\n"
+    message += (
+        "🚀 Late Pump Risk: "
+        + (
+            "HIGH ⚠️"
+            if result["late_pump"]
+            else "LOW ✅"
         )
+        + "\n"
+    )
 
-    else:
-
-        message += (
-            "🔴 Distribution: NO\n"
+    message += (
+        "🔥 Overheated 4H/1D: "
+        + (
+            "YES ⚠️"
+            if result["overheated"]
+            else "NO"
         )
-
-    if result["late_pump"]:
-
-        message += (
-            "🚀 Late Pump Risk: HIGH ⚠️\n"
-        )
-
-    else:
-
-        message += (
-            "🚀 Late Pump Risk: LOW ✅\n"
-        )
-
-    if result.get("overheated"):
-
-        message += (
-            "🔥 Overheated 4H/1D: YES ⚠️\n"
-        )
-
-    else:
-
-        message += (
-            "🔥 Overheated 4H/1D: NO\n"
-        )
+        + "\n"
+    )
 
     # =====================================================
     # TRADE
     # =====================================================
 
-    trade = prepare_trade(
-        result
-    )
+    trade = prepare_trade(result)
 
     if trade:
 
@@ -538,8 +484,7 @@ def build_coin_message(
     else:
 
         message += (
-            "\n⏳ لا توجد صفقة مؤكدة حاليًا.\n"
-            "الأفضل انتظار تأكيد أقوى.\n"
+            "\n⏳ لا توجد صفقة مناسبة حاليًا.\n"
         )
 
     # =====================================================
@@ -558,19 +503,12 @@ def build_coin_message(
             []
         )
 
-    elif signal in (
-        "SHORT",
-        "WATCH_SHORT"
-    ):
+    else:
 
         reasons = result.get(
             "short_reasons",
             []
         )
-
-    else:
-
-        reasons = []
 
     if reasons:
 
@@ -593,22 +531,25 @@ def build_coin_message(
 # SCAN MESSAGE
 # =========================================================
 
-def build_scan_message(
-    results
-):
-
-    message = (
-        "🔥 Crypto Zero Reversal\n"
-        "📡 Multi-Timeframe Scanner\n\n"
-        "15m + 30m + 1H + 4H + 1D\n\n"
-    )
+def build_scan_message(results):
 
     if not results:
 
         return (
-            message
-            + "⚠️ تعذر الحصول على بيانات السوق."
+            "🔥 Crypto Zero Reversal\n\n"
+            "⚠️ Binance لم يرجع بيانات كافية "
+            "للفحص حاليًا.\n\n"
+            "جرب /scan مرة أخرى."
         )
+
+    message = (
+        "🔥 Crypto Zero Reversal\n"
+        "📡 SCANNER\n\n"
+        "15m + 30m + 1H + 4H + 1D\n"
+        "💧 السيولة + الحجم + الزخم\n"
+        "🟢 التجميع المبكر\n"
+        "🔴 التوزيع والضعف\n\n"
+    )
 
     for index, result in enumerate(
         results[:8],
@@ -618,239 +559,89 @@ def build_scan_message(
         message += (
             "#"
             + str(index)
-            + "\n"
-        )
-
-        message += (
-            "🪙 "
+            + " 🪙 "
             + result["symbol"]
             + "\n"
         )
 
         message += (
-            "💰 السعر: "
-            + fmt_price(
-                result["price"]
-            )
+            "💰 "
+            + fmt_price(result["price"])
             + "\n"
         )
 
         message += (
-            "📌 الإشارة: "
+            "🎯 "
+            + final_direction(result)
+            + " | "
             + result["signal"]
             + "\n"
         )
 
         message += (
-            "🟢 Long: "
+            "🟢 Long "
             + str(result["long_score"])
-            + "/100\n"
-        )
-
-        message += (
-            "🔴 Short: "
+            + " | "
+            "🔴 Short "
             + str(result["short_score"])
-            + "/100\n\n"
+            + "\n"
         )
 
-        message += "📊 الاتجاهات:\n"
-
         message += (
-            "15m: "
+            "TF: "
             + tf_direction(
                 result["tf15_bull"],
                 result["tf15_bear"]
             )
-            + "\n"
-        )
-
-        message += (
-            "30m: "
-            + tf_direction(
-                result["tf30_bull"],
-                result["tf30_bear"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "1H: "
+            + " / "
             + tf_direction(
                 result["tf1h_bull"],
                 result["tf1h_bear"]
             )
-            + "\n"
-        )
-
-        message += (
-            "4H: "
+            + " / "
             + tf_direction(
                 result["tf4h_bull"],
                 result["tf4h_bear"]
             )
-            + "\n"
-        )
-
-        message += (
-            "1D: "
+            + " / "
             + tf_direction(
                 result["tf1d_bull"],
                 result["tf1d_bear"]
             )
-            + "\n\n"
-        )
-
-        message += (
-            "RSI 15m: "
-            + fmt_rsi(
-                result["rsi15"]
-            )
             + "\n"
         )
 
         message += (
-            "RSI 4H: "
-            + fmt_rsi(
-                result["rsi4h"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "RSI 1D: "
-            + fmt_rsi(
-                result["rsi1d"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "Volume: "
+            "RSI15: "
+            + fmt_rsi(result["rsi15"])
+            + " | Vol: "
             + "{:.2f}".format(
                 result["volume_ratio"]
             )
             + "x\n"
         )
 
-        message += (
-            "Volume Trend: "
-            + "{:.2f}".format(
-                result["volume_trend"]
-            )
-            + "x\n"
-        )
-
-        message += (
-            "15m: "
-            + fmt_pct(
-                result["change15"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "30m: "
-            + fmt_pct(
-                result["change30"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "1H: "
-            + fmt_pct(
-                result["change1h"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "4H: "
-            + fmt_pct(
-                result["change4h"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "1D: "
-            + fmt_pct(
-                result["change1d"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "Accumulation: "
-            + (
-                "YES 🟢"
-                if result["accumulation"]
-                else "NO"
-            )
-            + "\n"
-        )
-
-        message += (
-            "Distribution: "
-            + (
-                "YES ⚠️"
-                if result["distribution"]
-                else "NO"
-            )
-            + "\n"
-        )
-
-        message += (
-            "Late Pump: "
-            + (
-                "HIGH ⚠️"
-                if result["late_pump"]
-                else "LOW ✅"
-            )
-            + "\n"
-        )
-
-        trade = prepare_trade(
-            result
-        )
+        trade = prepare_trade(result)
 
         if trade:
 
             message += (
-                "\n🎯 الصفقة:\n"
-            )
-
-            message += (
+                "\n🎯 الصفقة\n"
                 "النوع: "
                 + trade["side"]
                 + "\n"
-            )
-
-            message += (
                 "Entry: "
                 + trade["entry"]
                 + "\n"
-            )
-
-            message += (
                 "SL: "
                 + trade["stop"]
                 + "\n"
-            )
-
-            message += (
                 "TP1: "
                 + trade["tp1"]
                 + "\n"
-            )
-
-            message += (
                 "TP2: "
                 + trade["tp2"]
                 + "\n"
-            )
-
-            message += (
                 "TP3: "
                 + trade["tp3"]
                 + "\n"
@@ -872,14 +663,16 @@ def run_scan(chat_id):
     try:
 
         results = scan_market(
-            limit=20
+            limit=40
+        )
+
+        message = build_scan_message(
+            results
         )
 
         send_message(
             chat_id,
-            build_scan_message(
-                results
-            )
+            message
         )
 
     except Exception as e:
@@ -891,7 +684,7 @@ def run_scan(chat_id):
 
         send_message(
             chat_id,
-            "❌ خطأ في Scanner:\n"
+            "❌ خطأ في Scanner:\n\n"
             + repr(e)
         )
 
@@ -985,12 +778,12 @@ def telegram_webhook():
                 "15m + 30m + 1H + 4H + 1D\n\n"
                 "الأوامر:\n\n"
                 "/scan\n"
-                "🔎 فحص السوق\n\n"
-                "/coin BTCUSDT\n"
-                "📊 تحليل أي عملة\n\n"
-                "🟢 يبحث عن التجميع المبكر\n"
-                "🔴 يبحث عن التوزيع والضعف\n"
-                "🛑 يمنع مطاردة الـPump المتأخر"
+                "🔎 فحص السوق وتجهيز أفضل الصفقات\n\n"
+                "/coin BTC\n"
+                "📊 تحليل وتجهيز صفقة العملة\n\n"
+                "🟢 Long\n"
+                "🔴 Short\n"
+                "🎯 Entry / SL / TP1 / TP2 / TP3"
             )
 
             return "OK", 200
@@ -1009,9 +802,9 @@ def telegram_webhook():
                 "🔎 بدأ فحص السوق الحقيقي...\n\n"
                 "📊 15m + 30m + 1H + 4H + 1D\n"
                 "💧 فحص السيولة والحجم\n"
-                "🟢 فحص التجميع قبل الـPump\n"
-                "🔴 فحص التوزيع وضعف الترند\n"
-                "🛑 فحص Late Pump\n"
+                "🟢 البحث عن التجميع قبل Pump\n"
+                "🔴 البحث عن فرص Short\n"
+                "🎯 تجهيز Entry / SL / TP\n"
                 "⏳ جاري التحليل..."
             )
 
@@ -1040,6 +833,8 @@ def telegram_webhook():
                 send_message(
                     chat_id,
                     "اكتب:\n\n"
+                    "/coin BTC\n\n"
+                    "أو:\n"
                     "/coin BTCUSDT"
                 )
 
@@ -1047,9 +842,7 @@ def telegram_webhook():
 
             symbol = parts[1].upper()
 
-            if not symbol.endswith(
-                "USDT"
-            ):
+            if not symbol.endswith("USDT"):
 
                 symbol += "USDT"
 
@@ -1060,7 +853,8 @@ def telegram_webhook():
                 + symbol
                 + "...\n\n"
                 "⏳ 15m + 30m + 1H + 4H + 1D\n"
-                "⏳ الاتجاه + السيولة + الحجم + الزخم..."
+                "💧 السيولة + الحجم + الزخم\n"
+                "🎯 تجهيز الصفقة..."
             )
 
             try:
@@ -1082,9 +876,7 @@ def telegram_webhook():
 
                 send_message(
                     chat_id,
-                    build_coin_message(
-                        result
-                    )
+                    build_coin_message(result)
                 )
 
             except Exception as e:
@@ -1096,7 +888,10 @@ def telegram_webhook():
 
                 send_message(
                     chat_id,
-                    "❌ حدث خطأ:\n"
+
+                    "❌ خطأ أثناء تحليل "
+                    + symbol
+                    + ":\n\n"
                     + repr(e)
                 )
 
@@ -1109,11 +904,11 @@ def telegram_webhook():
         send_message(
             chat_id,
 
-            "👋 البوت متصل.\n\n"
+            "👋 البوت شغال.\n\n"
             "استخدم:\n"
-            "/start\n"
             "/scan\n"
-            "/coin BTCUSDT"
+            "/coin BTC\n"
+            "/coin ETHUSDT"
         )
 
         return "OK", 200
@@ -1141,19 +936,14 @@ def setup_webhook():
 
     try:
 
-        delete_result = telegram_request(
+        telegram_request(
             "deleteWebhook",
             {
                 "drop_pending_updates": True
             }
         )
 
-        print(
-            "DELETE WEBHOOK:",
-            delete_result
-        )
-
-        set_result = telegram_request(
+        result = telegram_request(
             "setWebhook",
             {
                 "url": WEBHOOK_URL,
@@ -1163,7 +953,7 @@ def setup_webhook():
 
         print(
             "SET WEBHOOK:",
-            set_result
+            result
         )
 
         info = telegram_request(
@@ -1178,7 +968,7 @@ def setup_webhook():
     except Exception as e:
 
         print(
-            "WEBHOOK SETUP ERROR:",
+            "WEBHOOK ERROR:",
             repr(e)
         )
 
