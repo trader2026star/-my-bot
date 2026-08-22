@@ -1,4 +1,5 @@
 import time
+import math
 import requests
 
 FUTURES_URL = "https://fapi.binance.com"
@@ -11,13 +12,11 @@ SESSION.headers.update({
 
 
 # =========================================================
-# BINANCE
+# BINANCE API
 # =========================================================
 
-def api_get(base, path, params=None, timeout=8):
-
+def api_get(base, path, params=None, timeout=10):
     try:
-
         r = SESSION.get(
             base + path,
             params=params,
@@ -30,11 +29,10 @@ def api_get(base, path, params=None, timeout=8):
         print(
             "BINANCE ERROR:",
             r.status_code,
-            r.text[:200]
+            r.text[:250]
         )
 
     except Exception as e:
-
         print(
             "BINANCE REQUEST ERROR:",
             repr(e)
@@ -43,7 +41,7 @@ def api_get(base, path, params=None, timeout=8):
     return None
 
 
-def get_klines(symbol, interval, limit=180):
+def get_klines(symbol, interval, limit=220):
 
     params = {
         "symbol": symbol.upper(),
@@ -94,11 +92,10 @@ def get_tickers():
 
 
 # =========================================================
-# MATH
+# BASIC MATH
 # =========================================================
 
 def average(values):
-
     return (
         sum(values) / len(values)
         if values else 0
@@ -113,6 +110,25 @@ def pct(old, new):
     return ((new - old) / old) * 100
 
 
+def stddev(values):
+
+    if len(values) < 2:
+        return 0
+
+    avg = average(values)
+
+    variance = average([
+        (x - avg) ** 2
+        for x in values
+    ])
+
+    return math.sqrt(variance)
+
+
+# =========================================================
+# EMA
+# =========================================================
+
 def ema(values, period):
 
     if len(values) < period:
@@ -120,10 +136,11 @@ def ema(values, period):
 
     multiplier = 2 / (period + 1)
 
-    result = average(values[:period])
+    result = average(
+        values[:period]
+    )
 
     for value in values[period:]:
-
         result = (
             value * multiplier
             + result * (1 - multiplier)
@@ -131,6 +148,10 @@ def ema(values, period):
 
     return result
 
+
+# =========================================================
+# RSI
+# =========================================================
 
 def rsi(values, period=14):
 
@@ -142,7 +163,10 @@ def rsi(values, period=14):
 
     for i in range(1, len(values)):
 
-        change = values[i] - values[i - 1]
+        change = (
+            values[i]
+            - values[i - 1]
+        )
 
         gains.append(
             max(change, 0)
@@ -185,6 +209,10 @@ def rsi(values, period=14):
     )
 
 
+# =========================================================
+# ATR
+# =========================================================
+
 def atr(
     highs,
     lows,
@@ -197,10 +225,7 @@ def atr(
 
     trs = []
 
-    for i in range(
-        1,
-        len(closes)
-    ):
+    for i in range(1, len(closes)):
 
         tr = max(
             highs[i] - lows[i],
@@ -222,205 +247,65 @@ def atr(
 
 
 # =========================================================
-# QUANTITATIVE RANGE
+# MACD
 # =========================================================
 
-def quantitative_range(
-    highs,
-    lows,
-    closes,
-    volumes,
-    period=20
-):
+def macd(values):
 
-    """
-    قياس النطاق الكمي:
-
-    range_pct:
-        عرض النطاق كنسبة من السعر.
-
-    position:
-        مكان السعر الحالي داخل النطاق.
-        0   = القاع
-        0.5 = المنتصف
-        1   = القمة
-
-    compression:
-        هل النطاق الحالي مضغوط مقارنة
-        بالنطاق السابق؟
-
-    breakout_up:
-        اختراق لأعلى.
-
-    breakout_down:
-        كسر لأسفل.
-
-    score:
-        قوة النطاق الكمي من 0 إلى 100.
-    """
-
-    if len(closes) < period + 5:
+    if len(values) < 35:
         return {
-            "range_high": None,
-            "range_low": None,
-            "range_pct": 0,
-            "range_position": 0.5,
-            "range_compression": False,
-            "range_compression_ratio": 1.0,
-            "range_breakout_up": False,
-            "range_breakout_down": False,
-            "range_score": 0
+            "macd": None,
+            "signal": None,
+            "hist": None
         }
 
-    current_price = closes[-1]
+    fast_values = []
+    slow_values = []
 
-    recent_high = max(
-        highs[-period:]
-    )
+    for i in range(
+        25,
+        len(values)
+    ):
 
-    recent_low = min(
-        lows[-period:]
-    )
-
-    previous_high = max(
-        highs[-period * 2:-period]
-    )
-
-    previous_low = min(
-        lows[-period * 2:-period]
-    )
-
-    current_width = (
-        recent_high - recent_low
-    )
-
-    previous_width = (
-        previous_high - previous_low
-    )
-
-    if current_price > 0:
-
-        range_pct = (
-            current_width
-            / current_price
-        ) * 100
-
-    else:
-
-        range_pct = 0
-
-    if current_width > 0:
-
-        position = (
-            current_price
-            - recent_low
-        ) / current_width
-
-    else:
-
-        position = 0.5
-
-    if previous_width > 0:
-
-        compression_ratio = (
-            current_width
-            / previous_width
+        fast = ema(
+            values[:i + 1],
+            12
         )
 
-    else:
+        slow = ema(
+            values[:i + 1],
+            26
+        )
 
-        compression_ratio = 1.0
+        if fast is not None and slow is not None:
+            fast_values.append(
+                fast - slow
+            )
 
-    compression = (
-        compression_ratio <= 0.75
+    if not fast_values:
+        return {
+            "macd": None,
+            "signal": None,
+            "hist": None
+        }
+
+    macd_line = fast_values[-1]
+
+    signal_line = ema(
+        fast_values,
+        9
     )
 
-    previous_close = closes[-2]
-
-    breakout_up = (
-        previous_close <= recent_high
-        and current_price > recent_high
-    )
-
-    breakout_down = (
-        previous_close >= recent_low
-        and current_price < recent_low
-    )
-
-    avg_volume = average(
-        volumes[-period:]
-    )
-
-    recent_volume = average(
-        volumes[-5:]
-    )
-
-    volume_ratio = (
-        recent_volume / avg_volume
-        if avg_volume > 0
-        else 1
-    )
-
-    score = 0
-
-    # نطاق ضيق
-    if range_pct <= 8:
-        score += 30
-
-    elif range_pct <= 12:
-        score += 20
-
-    elif range_pct <= 18:
-        score += 10
-
-    # ضغط سعري
-    if compression:
-        score += 25
-
-    # قرب القاع
-    if position <= 0.30:
-        score += 20
-
-    elif position <= 0.45:
-        score += 10
-
-    # تحسن الحجم داخل النطاق
-    if volume_ratio >= 1.10:
-        score += 15
-
-    # اختراق
-    if breakout_up:
-        score += 10
-
-    if breakout_down:
-        score -= 10
-
-    score = max(
-        0,
-        min(100, score)
-    )
+    if signal_line is None:
+        signal_line = macd_line
 
     return {
-        "range_high": recent_high,
-        "range_low": recent_low,
-
-        "range_pct": range_pct,
-
-        "range_position": position,
-
-        "range_compression":
-            compression,
-
-        "range_compression_ratio":
-            compression_ratio,
-
-        "range_breakout_up":
-            breakout_up,
-
-        "range_breakout_down":
-            breakout_down,
-
-        "range_score": score
+        "macd": macd_line,
+        "signal": signal_line,
+        "hist": (
+            macd_line
+            - signal_line
+        )
     }
 
 
@@ -431,7 +316,7 @@ def quantitative_range(
 def analyze_timeframe(
     symbol,
     interval,
-    limit=180
+    limit=220
 ):
 
     klines = get_klines(
@@ -441,7 +326,6 @@ def analyze_timeframe(
     )
 
     if not klines or len(klines) < 60:
-
         return None
 
     opens = [
@@ -501,6 +385,10 @@ def analyze_timeframe(
         closes
     )
 
+    macd_data = macd(
+        closes
+    )
+
     avg20 = average(
         volumes[-20:]
     )
@@ -528,6 +416,7 @@ def analyze_timeframe(
     bull = 0
     bear = 0
 
+    # EMA 20 / 50
     if e20 and e50:
 
         if e20 > e50:
@@ -535,6 +424,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # EMA 50 / 200
     if e50 and e200:
 
         if e50 > e200:
@@ -542,6 +432,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # Price / EMA20
     if e20:
 
         if price > e20:
@@ -549,6 +440,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # Price / EMA50
     if e50:
 
         if price > e50:
@@ -556,6 +448,7 @@ def analyze_timeframe(
         else:
             bear += 1
 
+    # Price / EMA200
     if e200:
 
         if price > e200:
@@ -586,16 +479,47 @@ def analyze_timeframe(
         else 0
     )
 
-    qr = quantitative_range(
-        highs,
-        lows,
-        closes,
-        volumes,
-        20
+    high20 = max(
+        highs[-20:]
+    )
+
+    low20 = min(
+        lows[-20:]
+    )
+
+    # Technical support / resistance
+    support = min(
+        lows[-30:]
+    )
+
+    resistance = max(
+        highs[-30:]
+    )
+
+    # Volatility
+    returns = []
+
+    for i in range(
+        max(1, len(closes) - 20),
+        len(closes)
+    ):
+
+        if closes[i - 1] != 0:
+
+            returns.append(
+                (
+                    closes[i]
+                    - closes[i - 1]
+                )
+                / closes[i - 1]
+                * 100
+            )
+
+    volatility_pct = stddev(
+        returns
     )
 
     return {
-
         "price": price,
 
         "open": opens[-1],
@@ -609,13 +533,14 @@ def analyze_timeframe(
 
         "rsi": rsi_value,
 
+        "macd": macd_data["macd"],
+        "macd_signal": macd_data["signal"],
+        "macd_hist": macd_data["hist"],
+
         "atr": atr_value,
 
-        "volume_ratio":
-            volume_ratio,
-
-        "volume_trend":
-            volume_trend,
+        "volume_ratio": volume_ratio,
+        "volume_trend": volume_trend,
 
         "bull": bull,
         "bear": bear,
@@ -624,41 +549,101 @@ def analyze_timeframe(
         "change5": change5,
         "change20": change20,
 
-        "high20":
-            max(highs[-20:]),
+        "high20": high20,
+        "low20": low20,
 
-        "low20":
-            min(lows[-20:]),
+        "support": support,
+        "resistance": resistance,
 
-        # Quantitative Range
-        "range_high":
-            qr["range_high"],
+        "volatility_pct": volatility_pct
+    }
 
-        "range_low":
-            qr["range_low"],
 
-        "range_pct":
-            qr["range_pct"],
+# =========================================================
+# QUANTITATIVE RANGE
+# =========================================================
 
-        "range_position":
-            qr["range_position"],
+def calculate_quantitative_range(
+    price,
+    atr_value,
+    support,
+    resistance,
+    volatility_pct
+):
 
-        "range_compression":
-            qr["range_compression"],
+    if not price:
+        return None
 
-        "range_compression_ratio":
-            qr[
-                "range_compression_ratio"
-            ],
+    if not atr_value or atr_value <= 0:
+        atr_value = price * 0.008
 
-        "range_breakout_up":
-            qr["range_breakout_up"],
+    # ATR-based expected movement
+    atr_component = (
+        atr_value * 1.20
+    )
 
-        "range_breakout_down":
-            qr["range_breakout_down"],
+    # Volatility component
+    volatility_component = (
+        price
+        * max(
+            volatility_pct,
+            0.20
+        )
+        / 100
+        * 1.50
+    )
 
-        "range_score":
-            qr["range_score"]
+    # Combine statistical components
+    movement = max(
+        atr_component,
+        volatility_component
+    )
+
+    qr_low = (
+        price - movement
+    )
+
+    qr_high = (
+        price + movement
+    )
+
+    # Keep the range connected
+    # to nearby technical structure
+    if support and support < price:
+        qr_low = max(
+            qr_low,
+            support
+        )
+
+    if resistance and resistance > price:
+        qr_high = min(
+            qr_high,
+            resistance
+        )
+
+    if qr_low >= price:
+        qr_low = (
+            price - movement
+        )
+
+    if qr_high <= price:
+        qr_high = (
+            price + movement
+        )
+
+    width_pct = (
+        (
+            qr_high - qr_low
+        )
+        / price
+        * 100
+    )
+
+    return {
+        "low": qr_low,
+        "high": qr_high,
+        "width_pct": width_pct,
+        "movement": movement
     }
 
 
@@ -681,31 +666,31 @@ def analyze_symbol(symbol):
     tf15 = analyze_timeframe(
         symbol,
         "15m",
-        180
+        220
     )
 
     tf30 = analyze_timeframe(
         symbol,
         "30m",
-        180
+        220
     )
 
     tf1h = analyze_timeframe(
         symbol,
         "1h",
-        180
+        220
     )
 
     tf4h = analyze_timeframe(
         symbol,
         "4h",
-        200
+        220
     )
 
     tf1d = analyze_timeframe(
         symbol,
         "1d",
-        200
+        220
     )
 
     if not all([
@@ -730,7 +715,7 @@ def analyze_symbol(symbol):
     short_reasons = []
 
     # =====================================================
-    # DAILY
+    # DAILY TREND
     # =====================================================
 
     if tf1d["bull"] >= 3:
@@ -882,12 +867,16 @@ def analyze_symbol(symbol):
             long_score += 5
 
             long_reasons.append(
-                "RSI مناسب للشراء"
+                "RSI في منطقة مناسبة للشراء"
             )
 
-        elif 62 < rsi15 <= 70:
+        elif rsi15 < 32:
 
             long_score += 3
+
+            long_reasons.append(
+                "RSI منخفض - احتمال ارتداد"
+            )
 
         if 68 <= rsi15 <= 82:
 
@@ -897,12 +886,26 @@ def analyze_symbol(symbol):
                 "RSI مرتفع"
             )
 
-        if rsi15 < 32:
+    # =====================================================
+    # MACD
+    # =====================================================
 
-            long_score += 3
+    if tf15["macd_hist"] is not None:
+
+        if tf15["macd_hist"] > 0:
+
+            long_score += 5
 
             long_reasons.append(
-                "RSI منخفض - احتمال ارتداد"
+                "MACD إيجابي"
+            )
+
+        elif tf15["macd_hist"] < 0:
+
+            short_score += 5
+
+            short_reasons.append(
+                "MACD سلبي"
             )
 
     # =====================================================
@@ -933,85 +936,7 @@ def analyze_symbol(symbol):
         short_score += 5
 
         short_reasons.append(
-            "ضعف الحجم مع هبوط"
-        )
-
-    # =====================================================
-    # QUANTITATIVE RANGE
-    # =====================================================
-
-    range_score = tf15[
-        "range_score"
-    ]
-
-    range_position = tf15[
-        "range_position"
-    ]
-
-    range_compression = tf15[
-        "range_compression"
-    ]
-
-    breakout_up = tf15[
-        "range_breakout_up"
-    ]
-
-    breakout_down = tf15[
-        "range_breakout_down"
-    ]
-
-    # نطاق مضغوط + قرب القاع
-    if (
-        range_compression
-        and range_position <= 0.35
-        and tf15["volume_trend"] >= 1.02
-    ):
-
-        long_score += 15
-
-        long_reasons.append(
-            "نطاق كمي مضغوط قرب القاع مع تحسن الحجم"
-        )
-
-    elif (
-        range_compression
-        and range_position <= 0.45
-    ):
-
-        long_score += 8
-
-        long_reasons.append(
-            "العملة داخل نطاق كمي مضغوط"
-        )
-
-    # اختراق النطاق لأعلى
-    if breakout_up:
-
-        long_score += 10
-
-        long_reasons.append(
-            "اختراق Quantitative Range لأعلى"
-        )
-
-    # كسر النطاق لأسفل
-    if breakout_down:
-
-        short_score += 12
-
-        short_reasons.append(
-            "كسر Quantitative Range لأسفل"
-        )
-
-    # قرب قمة النطاق مع ضعف
-    if (
-        range_position >= 0.85
-        and tf15["volume_trend"] < 1.0
-    ):
-
-        short_score += 8
-
-        short_reasons.append(
-            "السعر قرب قمة النطاق مع ضعف الحجم"
+            "ضعف الحجم مع الهبوط"
         )
 
     # =====================================================
@@ -1019,23 +944,12 @@ def analyze_symbol(symbol):
     # =====================================================
 
     accumulation = (
-
         tf15["change20"] <= 2.0
-
         and tf15["change5"] <= 3.0
-
         and tf15["change"] > -2
-
         and tf15["volume_trend"] >= 1.02
-
         and rsi15 is not None
-
         and 38 <= rsi15 <= 62
-
-        and (
-            range_compression
-            or range_position <= 0.45
-        )
     )
 
     if accumulation:
@@ -1043,7 +957,7 @@ def analyze_symbol(symbol):
         long_score += 15
 
         long_reasons.append(
-            "تجميع سيولة داخل نطاق كمي قبل الحركة"
+            "تجميع سيولة وبداية انعكاس قبل البمب"
         )
 
     # =====================================================
@@ -1051,14 +965,11 @@ def analyze_symbol(symbol):
     # =====================================================
 
     distribution = (
-
         tf1h["change20"] >= 5
-
         and (
             tf15["change"] < 0
             or tf15["volume_trend"] < 0.90
         )
-
     )
 
     if distribution:
@@ -1066,7 +977,7 @@ def analyze_symbol(symbol):
         short_score += 20
 
         short_reasons.append(
-            "Distribution - صعود سابق مع خروج السيولة"
+            "Distribution وخروج سيولة بعد صعود"
         )
 
     # =====================================================
@@ -1074,15 +985,10 @@ def analyze_symbol(symbol):
     # =====================================================
 
     late_pump = (
-
         tf15["change5"] >= 5
-
         or tf30["change5"] >= 8
-
         or tf1h["change5"] >= 10
-
         or tf4h["change"] >= 8
-
     )
 
     if late_pump:
@@ -1098,11 +1004,8 @@ def analyze_symbol(symbol):
     # =====================================================
 
     strong_dump = (
-
         tf15["change5"] <= -3
-
         and tf15["volume_ratio"] >= 1.5
-
     )
 
     if strong_dump:
@@ -1118,19 +1021,15 @@ def analyze_symbol(symbol):
     # =====================================================
 
     overheated = (
-
         (
             tf4h["rsi"] is not None
             and tf4h["rsi"] >= 80
         )
-
         or
-
         (
             tf1d["rsi"] is not None
             and tf1d["rsi"] >= 80
         )
-
     )
 
     if overheated:
@@ -1139,7 +1038,7 @@ def analyze_symbol(symbol):
         short_score += 4
 
         long_reasons.append(
-            "4H/1D ساخن جدًا - الحذر من الدخول المتأخر"
+            "4H/1D ساخن جدًا"
         )
 
     # =====================================================
@@ -1155,17 +1054,93 @@ def analyze_symbol(symbol):
         short_score -= 10
 
     # =====================================================
+    # QUANTITATIVE RANGE
+    # =====================================================
+
+    qr = calculate_quantitative_range(
+        tf15["price"],
+        tf15["atr"],
+        tf15["support"],
+        tf15["resistance"],
+        tf15["volatility_pct"]
+    )
+
+    # =====================================================
+    # TECHNICAL STRUCTURE
+    # =====================================================
+
+    support = tf15["support"]
+    resistance = tf15["resistance"]
+
+    near_support = False
+    near_resistance = False
+
+    if support and tf15["price"]:
+
+        support_distance = (
+            (
+                tf15["price"]
+                - support
+            )
+            / tf15["price"]
+            * 100
+        )
+
+        near_support = (
+            0 <= support_distance <= 2.5
+        )
+
+    if resistance and tf15["price"]:
+
+        resistance_distance = (
+            (
+                resistance
+                - tf15["price"]
+            )
+            / tf15["price"]
+            * 100
+        )
+
+        near_resistance = (
+            0 <= resistance_distance <= 2.5
+        )
+
+    if near_support:
+
+        long_score += 5
+
+        long_reasons.append(
+            "السعر قريب من دعم فني"
+        )
+
+    if near_resistance:
+
+        long_score -= 5
+
+        long_reasons.append(
+            "السعر قريب من مقاومة"
+        )
+
+        short_score += 3
+
+    # =====================================================
     # LIMIT
     # =====================================================
 
     long_score = max(
         0,
-        min(100, long_score)
+        min(
+            100,
+            int(round(long_score))
+        )
     )
 
     short_score = max(
         0,
-        min(100, short_score)
+        min(
+            100,
+            int(round(short_score))
+        )
     )
 
     # =====================================================
@@ -1205,56 +1180,42 @@ def analyze_symbol(symbol):
 
         signal = "WATCH_SHORT"
 
-    # =====================================================
-    # RESULT
-    # =====================================================
-
     return {
 
         "symbol": symbol,
 
-        "price":
-            tf15["price"],
+        "price": tf15["price"],
 
-        "signal":
-            signal,
+        "signal": signal,
 
-        "long_score":
-            long_score,
+        "long_score": long_score,
+        "short_score": short_score,
 
-        "short_score":
-            short_score,
+        # RSI
+        "rsi15": tf15["rsi"],
+        "rsi1h": tf1h["rsi"],
+        "rsi4h": tf4h["rsi"],
+        "rsi1d": tf1d["rsi"],
 
-        "rsi15":
-            tf15["rsi"],
+        # EMA
+        "ema9": tf15["ema9"],
+        "ema20": tf15["ema20"],
+        "ema50": tf15["ema50"],
+        "ema200": tf15["ema200"],
 
-        "rsi1h":
-            tf1h["rsi"],
+        # MACD
+        "macd": tf15["macd"],
+        "macd_signal": tf15["macd_signal"],
+        "macd_hist": tf15["macd_hist"],
 
-        "rsi4h":
-            tf4h["rsi"],
-
-        "rsi1d":
-            tf1d["rsi"],
-
-        "ema9":
-            tf15["ema9"],
-
-        "ema20":
-            tf15["ema20"],
-
-        "ema50":
-            tf15["ema50"],
-
-        "ema200":
-            tf15["ema200"],
-
+        # Volume
         "volume_ratio":
             tf15["volume_ratio"],
 
         "volume_trend":
             tf15["volume_trend"],
 
+        # Changes
         "change15":
             tf15["change"],
 
@@ -1270,13 +1231,40 @@ def analyze_symbol(symbol):
         "change1d":
             tf1d["change"],
 
+        # ATR
         "atr":
             tf15["atr"],
 
-        # =================================================
-        # MULTI TIMEFRAME
-        # =================================================
+        # Technical levels
+        "support":
+            support,
 
+        "resistance":
+            resistance,
+
+        "near_support":
+            near_support,
+
+        "near_resistance":
+            near_resistance,
+
+        # Quantitative Range
+        "qr_low":
+            qr["low"] if qr else None,
+
+        "qr_high":
+            qr["high"] if qr else None,
+
+        "qr_width_pct":
+            qr["width_pct"] if qr else None,
+
+        "qr_movement":
+            qr["movement"] if qr else None,
+
+        "volatility_pct":
+            tf15["volatility_pct"],
+
+        # Timeframes
         "tf15_bull":
             tf15["bull"],
 
@@ -1307,10 +1295,7 @@ def analyze_symbol(symbol):
         "tf1d_bear":
             tf1d["bear"],
 
-        # =================================================
-        # STRUCTURE
-        # =================================================
-
+        # Structure
         "accumulation":
             accumulation,
 
@@ -1323,43 +1308,10 @@ def analyze_symbol(symbol):
         "overheated":
             overheated,
 
-        # =================================================
-        # QUANTITATIVE RANGE
-        # =================================================
+        "strong_dump":
+            strong_dump,
 
-        "range_high":
-            tf15["range_high"],
-
-        "range_low":
-            tf15["range_low"],
-
-        "range_pct":
-            tf15["range_pct"],
-
-        "range_position":
-            tf15["range_position"],
-
-        "range_compression":
-            tf15["range_compression"],
-
-        "range_compression_ratio":
-            tf15[
-                "range_compression_ratio"
-            ],
-
-        "range_breakout_up":
-            tf15["range_breakout_up"],
-
-        "range_breakout_down":
-            tf15["range_breakout_down"],
-
-        "range_score":
-            range_score,
-
-        # =================================================
-        # REASONS
-        # =================================================
-
+        # Reasons
         "long_reasons":
             long_reasons,
 
@@ -1393,9 +1345,7 @@ def scan_market(limit=15):
             ""
         )
 
-        if not symbol.endswith(
-            "USDT"
-        ):
+        if not symbol.endswith("USDT"):
             continue
 
         if any(
@@ -1440,12 +1390,15 @@ def scan_market(limit=15):
             )
         )
 
+    # نأخذ عددًا أكبر للتحليل
     candidates.sort(
         key=lambda x: x[1],
         reverse=True
     )
 
-    candidates = candidates[:limit]
+    candidates = candidates[
+        :max(limit * 2, 30)
+    ]
 
     results = []
 
@@ -1463,13 +1416,13 @@ def scan_market(limit=15):
 
             if result:
 
-                result["quote_volume"] = (
-                    quote_volume
-                )
+                result[
+                    "quote_volume"
+                ] = quote_volume
 
-                result["daily_change"] = (
-                    daily_change
-                )
+                result[
+                    "daily_change"
+                ] = daily_change
 
                 results.append(
                     result
@@ -1480,9 +1433,7 @@ def scan_market(limit=15):
                     symbol,
                     result["signal"],
                     result["long_score"],
-                    result["short_score"],
-                    "RANGE:",
-                    result["range_score"]
+                    result["short_score"]
                 )
 
         except Exception as e:
@@ -1512,14 +1463,30 @@ def scan_market(limit=15):
         )
 
         signal_bonus = {
-            "EARLY_LONG": 50,
-            "SHORT": 50,
-            "WATCH_LONG": 25,
-            "WATCH_SHORT": 25,
+            "EARLY_LONG": 60,
+            "SHORT": 60,
+            "WATCH_LONG": 30,
+            "WATCH_SHORT": 30,
             "WAIT": 0
         }.get(
             result["signal"],
             0
+        )
+
+        accumulation_bonus = (
+            15
+            if result.get(
+                "accumulation"
+            )
+            else 0
+        )
+
+        distribution_bonus = (
+            15
+            if result.get(
+                "distribution"
+            )
+            else 0
         )
 
         liquidity_bonus = min(
@@ -1530,19 +1497,13 @@ def scan_market(limit=15):
             ) / 10_000_000
         )
 
-        range_bonus = (
-            result.get(
-                "range_score",
-                0
-            ) * 0.15
-        )
-
         return (
             signal_bonus
             + direction
             + difference
+            + accumulation_bonus
+            + distribution_bonus
             + liquidity_bonus
-            + range_bonus
         )
 
     results.sort(
@@ -1554,7 +1515,7 @@ def scan_market(limit=15):
 
 
 # =========================================================
-# PRICE
+# PRICE FORMAT
 # =========================================================
 
 def format_price(price):
@@ -1605,6 +1566,14 @@ def prepare_trade(result):
 
         atr_value = price * 0.008
 
+    qr_low = result.get(
+        "qr_low"
+    )
+
+    qr_high = result.get(
+        "qr_high"
+    )
+
     # =====================================================
     # LONG
     # =====================================================
@@ -1615,13 +1584,21 @@ def prepare_trade(result):
     ):
 
         entry_low = (
-            price
-            - atr_value * 0.20
+            max(
+                qr_low
+                if qr_low
+                else price - atr_value * 0.20,
+                price - atr_value * 0.35
+            )
         )
 
         entry_high = (
-            price
-            + atr_value * 0.10
+            min(
+                qr_high
+                if qr_high
+                else price + atr_value * 0.10,
+                price + atr_value * 0.10
+            )
         )
 
         stop = (
@@ -1629,12 +1606,14 @@ def prepare_trade(result):
             - atr_value * 1.20
         )
 
-        risk = price - stop
+        risk = (
+            price
+            - stop
+        )
 
         return {
 
-            "side":
-                "LONG",
+            "side": "LONG",
 
             "entry":
                 f"{format_price(entry_low)} - "
@@ -1669,13 +1648,21 @@ def prepare_trade(result):
     ):
 
         entry_low = (
-            price
-            - atr_value * 0.10
+            max(
+                qr_low
+                if qr_low
+                else price - atr_value * 0.10,
+                price - atr_value * 0.10
+            )
         )
 
         entry_high = (
-            price
-            + atr_value * 0.20
+            min(
+                qr_high
+                if qr_high
+                else price + atr_value * 0.20,
+                price + atr_value * 0.35
+            )
         )
 
         stop = (
@@ -1683,12 +1670,14 @@ def prepare_trade(result):
             + atr_value * 1.20
         )
 
-        risk = stop - price
+        risk = (
+            stop
+            - price
+        )
 
         return {
 
-            "side":
-                "SHORT",
+            "side": "SHORT",
 
             "entry":
                 f"{format_price(entry_low)} - "
