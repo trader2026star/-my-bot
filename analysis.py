@@ -1,222 +1,259 @@
-def scan_market(limit=15):
-
-    tickers = get_tickers()
-
-    if not tickers:
-        print("SCAN: NO TICKERS")
-        return []
-
-    candidates = []
-
-    for ticker in tickers:
-
-        symbol = ticker.get("symbol", "")
-
-        if not symbol.endswith("USDT"):
-            continue
-
-        if any(x in symbol for x in [
-            "UPUSDT",
-            "DOWNUSDT",
-            "BULLUSDT",
-            "BEARUSDT"
-        ]):
-            continue
-
-        try:
-            quote_volume = float(
-                ticker.get("quoteVolume", 0)
-            )
-
-            daily_change = float(
-                ticker.get("priceChangePercent", 0)
-            )
-
-        except Exception:
-            continue
-
-        # سيولة حقيقية
-        if quote_volume < 500_000:
-            continue
-
-        candidates.append({
-            "symbol": symbol,
-            "quote_volume": quote_volume,
-            "daily_change": daily_change
-        })
-
-    if not candidates:
-        print("SCAN: NO CANDIDATES")
-        return []
-
-    # =====================================================
-    # اختيار العملات الأفضل من ناحية السيولة والحركة
-    # =====================================================
-
-    candidates.sort(
-        key=lambda x: (
-            x["quote_volume"],
-            abs(x["daily_change"])
-        ),
-        reverse=True
-    )
-
-    # نفحص عدد محدود حتى لا نقتل Render المجاني
-    candidates = candidates[:limit]
-
-    results = []
-
-    for item in candidates:
-
-        symbol = item["symbol"]
-
-        try:
-
-            result = analyze_symbol(symbol)
-
-            if not result:
-                continue
-
-            result["quote_volume"] = item[
-                "quote_volume"
-            ]
-
-            result["daily_change"] = item[
-                "daily_change"
-            ]
-
-            # =================================================
-            # لا نستبعد WAIT هنا
-            # لأننا نريد أفضل فرص السوق وليس فقط الإشارات القوية
-            # =================================================
-
-            results.append(result)
-
-        except Exception as e:
-
-            print(
-                "SCAN ERROR:",
-                symbol,
-                repr(e)
-            )
-
-        time.sleep(0.05)
+def build_scan_message(results):
 
     if not results:
-        print("SCAN: ANALYSIS RETURNED NOTHING")
-        return []
 
-    # =====================================================
-    # RANKING
-    # =====================================================
-
-    def rank(result):
-
-        long_score = result.get(
-            "long_score",
-            0
+        return (
+            "🔥 Crypto Zero Reversal\n\n"
+            "⚠️ لم تصل بيانات كافية من Binance.\n\n"
+            "أعد /scan بعد لحظات."
         )
 
-        short_score = result.get(
-            "short_score",
-            0
-        )
+    message = (
+        "🔥 Crypto Zero Reversal\n"
+        "📡 BEST MARKET SETUPS\n\n"
+        "15m + 30m + 1H + 4H + 1D\n"
+        "💧 Liquidity + Volume + Momentum\n"
+        "🎯 Entry / SL / TP\n\n"
+    )
 
-        direction_score = max(
-            long_score,
-            short_score
-        )
-
-        difference = abs(
-            long_score - short_score
-        )
+    for index, result in enumerate(
+        results[:8],
+        1
+    ):
 
         signal = result.get(
             "signal",
             "WAIT"
         )
 
-        # الإشارة القوية تأخذ أفضلية
-        signal_bonus = {
-            "EARLY_LONG": 50,
-            "SHORT": 50,
-            "WATCH_LONG": 30,
-            "WATCH_SHORT": 30,
-            "WAIT": 5
-        }.get(
-            signal,
-            0
+        # =================================================
+        # تحديد نوع الفرصة
+        # =================================================
+
+        if signal == "EARLY_LONG":
+            setup = "🟢 LONG — فرصة قوية"
+
+        elif signal == "WATCH_LONG":
+            setup = "🟢 LONG — مراقبة دخول"
+
+        elif signal == "SHORT":
+            setup = "🔴 SHORT — فرصة قوية"
+
+        elif signal == "WATCH_SHORT":
+            setup = "🔴 SHORT — مراقبة دخول"
+
+        else:
+            setup = "⚪ أفضل فرصة متاحة حاليًا"
+
+        message += (
+            f"#{index} 🪙 {result['symbol']}\n"
         )
 
-        # التجميع المبكر مهم جدًا
-        accumulation_bonus = (
-            20
-            if result.get("accumulation")
-            else 0
+        message += (
+            "💰 السعر: "
+            + fmt_price(result["price"])
+            + "\n"
         )
 
-        # نخفض ترتيب العملات التي دخلت Pump متأخر
-        late_pump_penalty = (
-            25
-            if result.get("late_pump")
-            else 0
+        message += (
+            "🎯 الحالة: "
+            + setup
+            + "\n"
         )
 
-        # توزيع = تحذير مهم
-        distribution_bonus = (
-            10
-            if result.get("distribution")
-            else 0
+        message += (
+            "🟢 Long: "
+            + str(result["long_score"])
+            + "/100\n"
         )
 
-        # السيولة
-        liquidity = result.get(
-            "quote_volume",
-            0
+        message += (
+            "🔴 Short: "
+            + str(result["short_score"])
+            + "/100\n"
         )
 
-        liquidity_bonus = min(
-            15,
-            liquidity / 5_000_000
+        message += (
+            "📊 15m: "
+            + tf_direction(
+                result["tf15_bull"],
+                result["tf15_bear"]
+            )
+            + "\n"
         )
 
-        return (
-            direction_score
-            + difference
-            + signal_bonus
-            + accumulation_bonus
-            + distribution_bonus
-            + liquidity_bonus
-            - late_pump_penalty
+        message += (
+            "📊 30m: "
+            + tf_direction(
+                result["tf30_bull"],
+                result["tf30_bear"]
+            )
+            + "\n"
         )
 
-    results.sort(
-        key=rank,
-        reverse=True
-    )
+        message += (
+            "📊 1H: "
+            + tf_direction(
+                result["tf1h_bull"],
+                result["tf1h_bear"]
+            )
+            + "\n"
+        )
 
-    # =====================================================
-    # IMPORTANT
-    # لو مفيش صفقة قوية:
-    # نرجع أفضل فرص السوق بدل رسالة "مفيش صفقات"
-    # =====================================================
+        message += (
+            "📊 4H: "
+            + tf_direction(
+                result["tf4h_bull"],
+                result["tf4h_bear"]
+            )
+            + "\n"
+        )
 
-    strong = [
-        r for r in results
-        if r["signal"] in (
+        message += (
+            "📊 1D: "
+            + tf_direction(
+                result["tf1d_bull"],
+                result["tf1d_bear"]
+            )
+            + "\n"
+        )
+
+        message += (
+            "📈 RSI 15m: "
+            + fmt_rsi(result["rsi15"])
+            + "\n"
+        )
+
+        message += (
+            "📦 Volume: "
+            + "{:.2f}".format(
+                result["volume_ratio"]
+            )
+            + "x\n"
+        )
+
+        message += (
+            "📈 Volume Trend: "
+            + "{:.2f}".format(
+                result["volume_trend"]
+            )
+            + "x\n"
+        )
+
+        # =================================================
+        # STRUCTURE
+        # =================================================
+
+        if result.get("accumulation"):
+            message += "🟢 Accumulation: YES\n"
+
+        if result.get("distribution"):
+            message += "🔴 Distribution: YES ⚠️\n"
+
+        if result.get("late_pump"):
+            message += "🚀 Late Pump: HIGH ⚠️\n"
+
+        if result.get("overheated"):
+            message += "🔥 Overheated: YES ⚠️\n"
+
+        # =================================================
+        # TRADE
+        # =================================================
+
+        trade = prepare_trade(result)
+
+        if trade:
+
+            message += (
+                "\n🎯 الصفقة:\n"
+            )
+
+            message += (
+                "النوع: "
+                + trade["side"]
+                + "\n"
+            )
+
+            message += (
+                "Entry: "
+                + trade["entry"]
+                + "\n"
+            )
+
+            message += (
+                "SL: "
+                + trade["stop"]
+                + "\n"
+            )
+
+            message += (
+                "TP1: "
+                + trade["tp1"]
+                + "\n"
+            )
+
+            message += (
+                "TP2: "
+                + trade["tp2"]
+                + "\n"
+            )
+
+            message += (
+                "TP3: "
+                + trade["tp3"]
+                + "\n"
+            )
+
+        else:
+
+            message += (
+                "\n⏳ لا يوجد دخول آمن الآن.\n"
+            )
+
+        # =================================================
+        # REASONS
+        # =================================================
+
+        if signal in (
             "EARLY_LONG",
+            "WATCH_LONG"
+        ):
+
+            reasons = result.get(
+                "long_reasons",
+                []
+            )
+
+        elif signal in (
             "SHORT",
-            "WATCH_LONG",
             "WATCH_SHORT"
+        ):
+
+            reasons = result.get(
+                "short_reasons",
+                []
+            )
+
+        else:
+
+            reasons = []
+
+        if reasons:
+
+            message += (
+                "\n🧠 الأسباب:\n"
+            )
+
+            for reason in reasons[:5]:
+
+                message += (
+                    "• "
+                    + str(reason)
+                    + "\n"
+                )
+
+        message += (
+            "\n━━━━━━━━━━━━━━\n\n"
         )
-    ]
 
-    if strong:
-        return strong[:8]
-
-    # =====================================================
-    # FALLBACK
-    # أفضل 3 عملات حتى لو WAIT
-    # =====================================================
-
-    return results[:3]
+    return message
