@@ -359,7 +359,7 @@ def build_coin_message(
     message += "\n🔎 MARKET STRUCTURE\n"
 
     message += (
-        "🟢 Accumulation: "
+        "🟢 Accumulation (تجميع سيولة): "
         + (
             "YES ✅"
             if result["accumulation"]
@@ -369,7 +369,7 @@ def build_coin_message(
     )
 
     message += (
-        "🔴 Distribution: "
+        "🔴 Distribution (خروج سيولة): "
         + (
             "YES ⚠️"
             if result["distribution"]
@@ -533,25 +533,25 @@ def build_scan_message(
         if signal == "EARLY_LONG":
 
             setup = (
-                "🟢 LONG — فرصة قوية"
+                "🟢 LONG — تجميع سيولة وترند صاعد"
             )
 
         elif signal == "WATCH_LONG":
 
             setup = (
-                "🟢 LONG — مراقبة دخول"
+                "🟢 LONG — مراقبة دخول مبكر"
             )
 
         elif signal == "SHORT":
 
             setup = (
-                "🔴 SHORT — فرصة قوية"
+                "🔴 SHORT — ترند وخرجت السيولة"
             )
 
         elif signal == "WATCH_SHORT":
 
             setup = (
-                "🔴 SHORT — مراقبة دخول"
+                "🔴 SHORT — مراقبة ضعف وبيع"
             )
 
         else:
@@ -672,7 +672,7 @@ def build_scan_message(
         ):
 
             message += (
-                "🟢 Accumulation: YES\n"
+                "🟢 Accumulation: YES ✅\n"
             )
 
         if result.get(
@@ -920,14 +920,11 @@ def telegram_webhook():
                 "15m + 30m + 1H + 4H + 1D\n\n"
                 "الأوامر:\n\n"
                 "/scan\n"
-                "🔎 فحص السوق وتجهيز أفضل الصفقات\n\n"
+                "🔎 فحص السوق لاقتناص العملات الهابطة اللي بتجمع سيولة وترتفع (LONG) أو اللي خرجت منها السيولة (SHORT)\n\n"
                 "/coin BTC\n"
-                "📊 تحليل وتجهيز صفقة العملة\n\n"
+                "📊 تحليل وتجهيز صفقة العملة بدقة\n\n"
                 "🎯 Entry / SL / TP1 / TP2 / TP3\n"
-                "🟢 Long / 🔴 Short\n\n"
-                "🟢 يبحث عن التجميع المبكر\n"
-                "🔴 يبحث عن التوزيع والضعف\n"
-                "🛑 يمنع مطاردة Pump المتأخر."
+                "🟢 Long / 🔴 Short"
             )
 
             return "OK", 200
@@ -944,11 +941,10 @@ def telegram_webhook():
                 chat_id,
 
                 "🔎 بدأ فحص السوق الحقيقي...\n\n"
-                "💧 السيولة + الحجم\n"
+                "💧 التجميع واقتناص السيولة\n"
                 "📊 15m + 30m + 1H + 4H + 1D\n"
-                "🟢 البحث عن Long\n"
-                "🔴 البحث عن Short\n"
-                "🎯 تجهيز Entry / SL / TP\n"
+                "🟢 اقتناص الهابط اللي بيجمع (LONG)\n"
+                "🔴 اقتناص الترند الا خرجت سيولته (SHORT)\n"
                 "⏳ جاري التحليل..."
             )
 
@@ -995,7 +991,7 @@ def telegram_webhook():
                 + symbol
                 + "...\n\n"
                 "⏳ 15m + 30m + 1H + 4H + 1D\n"
-                "💧 السيولة + الحجم + الزخم\n"
+                "💧 السيولة + التجميع + التوزيع\n"
                 "🎯 تجهيز الصفقة..."
             )
 
