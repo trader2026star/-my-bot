@@ -12,7 +12,7 @@ DATA_URL = "https://data-api.binance.vision"
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal/6.1"
+    "User-Agent": "CryptoZeroReversal/6.2"
 })
 
 
@@ -666,7 +666,7 @@ def analyze_symbol(symbol):
     depth_analysis = analyze_market_depth(symbol)
     health_scan = check_asset_health(symbol, tf15=tf15)
 
-    long_score = 15  # نقاط أساسية لتقليل التحفظ المبالغ فيه
+    long_score = 15
     short_score = 15
 
     long_reasons = []
@@ -719,7 +719,6 @@ def analyze_symbol(symbol):
         long_score += 8
         long_reasons.append("حجم التداول يظهر اهتماماً تدريجياً")
 
-    # Accumulation / Flexible Conditions
     accumulation = (
         tf15["change20"] <= 6.0
         and tf15["change"] > -3.0
@@ -730,11 +729,9 @@ def analyze_symbol(symbol):
         long_score += 12
         long_reasons.append("إشارات تسيير أو تجميع ملحوظة للأصل")
 
-    # Limits
     long_score = max(0, min(100, int(round(long_score))))
     short_score = max(0, min(100, int(round(short_score))))
 
-    # Flexible Signals (Threshold lowered to 62 for stronger output frequency)
     signal = "WAIT"
 
     if long_score >= 62 and long_score >= short_score + 8:
@@ -775,6 +772,17 @@ def analyze_symbol(symbol):
         "change4h": tf4h["change"],
         "change1d": tf1d["change"],
         "atr": tf15["atr"],
+        # تمت إضافة المفاتيح المفقودة لمنع خطأ KeyError تماماً:
+        "tf15_bull": tf15["bull"],
+        "tf15_bear": tf15["bear"],
+        "tf30_bull": tf30["bull"],
+        "tf30_bear": tf30["bear"],
+        "tf1h_bull": tf1h["bull"],
+        "tf1h_bear": tf1h["bear"],
+        "tf4h_bull": tf4h["bull"],
+        "tf4h_bear": tf4h["bear"],
+        "tf1d_bull": tf1d["bull"],
+        "tf1d_bear": tf1d["bear"],
         "accumulation": accumulation,
         "depth_analysis": depth_analysis,
         "health_scan": health_scan,
