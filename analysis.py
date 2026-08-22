@@ -548,7 +548,7 @@ def analyze_symbol(symbol):
         )
 
     # =====================================================
-    # ACCUMULATION
+    # ACCUMULATION (اقتناص الهابط اللي بيجمع وبدأ يطلع ترند)
     # =====================================================
 
     accumulation = (
@@ -562,14 +562,14 @@ def analyze_symbol(symbol):
 
     if accumulation:
 
-        long_score += 10
+        long_score += 15
 
         long_reasons.append(
-            "تجميع مبكر قبل الحركة"
+            "تجميع سيولة وبداية انعكاس ترند صاعد (قبل البمب)"
         )
 
     # =====================================================
-    # DISTRIBUTION
+    # DISTRIBUTION (اقتناص الترند الصاعد الا خرجت منه السيولة ونفذت)
     # =====================================================
 
     distribution = (
@@ -582,10 +582,10 @@ def analyze_symbol(symbol):
 
     if distribution:
 
-        short_score += 15
+        short_score += 20
 
         short_reasons.append(
-            "احتمال توزيع وفقد زخم"
+            "العملة أصبحت ترند وصعدت سابقاً ونفذت السيولة وخارجة منها (Distribution)"
         )
 
     # =====================================================
@@ -680,8 +680,8 @@ def analyze_symbol(symbol):
     signal = "WAIT"
 
     if (
-        long_score >= 72
-        and long_score >= short_score + 18
+        long_score >= 70
+        and long_score >= short_score + 15
         and not late_pump
         and not strong_dump
         and not overheated
@@ -690,22 +690,22 @@ def analyze_symbol(symbol):
         signal = "EARLY_LONG"
 
     elif (
-        short_score >= 72
-        and short_score >= long_score + 18
+        short_score >= 70
+        and short_score >= long_score + 15
     ):
 
         signal = "SHORT"
 
     elif (
-        long_score >= 55
-        and long_score >= short_score + 12
+        long_score >= 52
+        and long_score >= short_score + 10
     ):
 
         signal = "WATCH_LONG"
 
     elif (
-        short_score >= 55
-        and short_score >= long_score + 12
+        short_score >= 52
+        and short_score >= long_score + 10
     ):
 
         signal = "WATCH_SHORT"
