@@ -101,6 +101,34 @@ def get_tickers():
     return []
 
 
+def get_order_book(symbol, limit=100):
+
+    params = {
+        "symbol": symbol.upper(),
+        "limit": limit
+    }
+
+    data = api_get(
+        FUTURES_URL,
+        "/fapi/v1/depth",
+        params
+    )
+
+    if isinstance(data, dict) and "bids" in data and "asks" in data:
+        return data
+
+    data = api_get(
+        DATA_URL,
+        "/api/v3/depth",
+        params
+    )
+
+    if isinstance(data, dict) and "bids" in data and "asks" in data:
+        return data
+
+    return None
+
+
 # =========================================================
 # MATH
 # =========================================================
@@ -341,6 +369,81 @@ def bollinger(
         upper,
         lower
     )
+
+
+# =========================================================
+# LIQUIDITY & HEALTH SCANS
+# =========================================================
+
+def analyze_market_depth(symbol):
+
+    depth = get_order_book(symbol, limit=100)
+
+    if not depth:
+        return {
+            "bid_volume": 0,
+            "ask_volume": 0,
+            "imbalance_ratio": 1.0,
+            "pressure": "NEUTRAL"
+        }
+
+    bids = depth.get("bids", [])
+    asks = depth.get("asks", [])
+
+    bid_vol = sum([float(b[0]) * float(b[1]) for b in bids])
+    ask_vol = sum([float(a[0]) * float(a[1]) for a in asks])
+
+    total_vol = bid_vol + ask_vol
+
+    if total_vol == 0:
+        return {
+            "bid_volume": 0,
+            "ask_volume": 0,
+            "imbalance_ratio": 1.0,
+            "pressure": "NEUTRAL"
+        }
+
+    imbalance = bid_vol / ask_vol if ask_vol > 0 else 1.0
+
+    if imbalance >= 1.3:
+        pressure = "BUY_PRESSURE"
+    elif imbalance <= 0.7:
+        pressure = "SELL_PRESSURE"
+    else:
+        pressure = "NEUTRAL"
+
+    return {
+        "bid_volume": bid_vol,
+        "ask_volume": ask_vol,
+        "imbalance_ratio": imbalance,
+        "pressure": pressure
+    }
+
+
+def check_asset_health(symbol, quote_volume=0, daily_change=0, tf15=None):
+
+    health_score = 100
+    flags = []
+
+    if quote_volume > 0 and quote_volume < 1_000_000:
+        health_score -= 30
+        flags.append("سيولة منخفضة (Low Liquidity)")
+
+    if abs(daily_change) > 25:
+        health_score -= 25
+        flags.append("تقلبات حادة جداً (High Volatility Risk)")
+
+    if tf15 and tf15.get("volume_ratio", 1) < 0.3:
+        health_score -= 20
+        flags.append("ضعف مفاجئ في حجم التداول")
+
+    is_healthy = health_score >= 60
+
+    return {
+        "health_score": health_score,
+        "is_healthy": is_healthy,
+        "flags": flags
+    }
 
 
 # =========================================================
@@ -668,11 +771,23 @@ def analyze_symbol(symbol):
 
         return None
 
+    # Depth & Health Check
+    depth_analysis = analyze_market_depth(symbol)
+    health_scan = check_asset_health(symbol, tf15=tf15)
+
     long_score = 0
     short_score = 0
 
     long_reasons = []
     short_reasons = []
+
+    # Orderbook Pressure Boost
+    if depth_analysis["pressure"] == "BUY_PRESSURE":
+        long_score += 5
+        long_reasons.append("وجود ضغط شراء مباشر على دفتر الأوامر (Bids)")
+    elif depth_analysis["pressure"] == "SELL_PRESSURE":
+        short_score += 5
+        short_reasons.append("وجود ضغط بيع مباشر على دفتر الأوامر (Asks)")
 
     # =====================================================
     # DAILY TREND
@@ -1290,6 +1405,9 @@ def analyze_symbol(symbol):
 
         "quantitative_zone": quantitative_zone,
 
+        "depth_analysis": depth_analysis,
+        "health_scan": health_scan,
+
         "long_reasons": long_reasons,
         "short_reasons": short_reasons
     }
@@ -1462,6 +1580,13 @@ def scan_market(limit=15):
 
                 result["candidate_score"] = (
                     candidate_score
+                )
+
+                # تحديث فحص الأمان بالسيولة الحقيقية للرمز
+                result["health_scan"] = check_asset_health(
+                    symbol,
+                    quote_volume=quote_volume,
+                    daily_change=daily_change
                 )
 
                 results.append(
@@ -1749,3 +1874,66 @@ def prepare_trade(result):
         }
 
     return None
+
+
+# =========================================================
+# RESEARCH REPORT GENERATOR (EVIDENCE-BASED)
+# =========================================================
+
+def generate_evidence_report(result, trade_setup=None):
+
+    if not result:
+        return "لا توجد بيانات متاحة لإنشاء التقرير."
+
+    symbol = result["symbol"]
+    price = format_price(result["price"])
+    signal = result["signal"]
+    long_score = result["long_score"]
+    short_score = result["short_score"]
+    depth = result.get("depth_analysis", {})
+    health = result.get("health_scan", {})
+
+    direction_ar = (
+        "صاعد (Bullish)" if signal in ["EARLY_LONG", "WATCH_LONG"]
+        else "هابط (Bearish)" if signal in ["SHORT", "WATCH_SHORT"]
+        else "محايد / انتظار (Neutral)"
+    )
+
+    report = []
+    report.append("=========================================================")
+    report.append(f"📊 تقرير بحثي مبني على الأدلة والذكاء الاصطناعي (EVIDENCE REPORT): {symbol}")
+    report.append("=========================================================")
+    report.append(f"• السعر الحالي: {price} USDT")
+    report.append(f"• اتجاه السوق المقترح: {direction_ar} | الإشارة: {signal}")
+    report.append(f"• تقييم الشراء (Long Score): {long_score}/100 | تقييم البيع (Short Score): {short_score}/100")
+    report.append("")
+    report.append("🔍 1. تحليل السيولة وضغط الأوامر (Market Liquidity & Depth):")
+    report.append(f"   - حالة ضغط الأوامر: {depth.get('pressure', 'N/A')}")
+    report.append(f"   - نسبة توازن السيولة (Bid/Ask Imbalance): {depth.get('imbalance_ratio', 1.0):.2f}")
+    report.append("")
+    report.append("🛡️ 2. فحص الأمان وصحة الأصل (Asset Health & Risk Scan):")
+    report.append(f"   - درجة الأمان والسيولة: {health.get('health_score', 100)}/100")
+    report.append(f"   - حالة الأصل: {'آمن للتداول' if health.get('is_healthy', True) else 'عالي المخاطر'}")
+    if health.get("flags"):
+        report.append(f"   - تنبيهات المخاطر: {', '.join(health.get('flags', []))}")
+    report.append("")
+    report.append("📌 3. الأدلة والأسباب الفنية (Evidence & Reasons):")
+    reasons = result.get("long_reasons" if "LONG" in signal else "short_reasons", [])
+    if reasons:
+        for r in reasons:
+            report.append(f"   ✓ {r}")
+    else:
+        report.append("   - لا توجد أسباب اتجاهية قوية حالياً، السوق في حالة انتظار.")
+
+    if trade_setup:
+        report.append("")
+        report.append("🎯 4. خطة التداول وتحديد المخاطر (Trade Setup & Risk Context):")
+        report.append(f"   - الاتجاه: {trade_setup.get('side')}")
+        report.append(f"   - منطقة الدخول: {trade_setup.get('entry')}")
+        report.append(f"   - وقف الخسارة (Stop Loss): {trade_setup.get('stop')}")
+        report.append(f"   - الهدف الأول (TP1): {trade_setup.get('tp1')}")
+        report.append(f"   - الهدف الثاني (TP2): {trade_setup.get('tp2')}")
+        report.append(f"   - الهدف الثالث (TP3): {trade_setup.get('tp3')}")
+
+    report.append("=========================================================")
+    return "\n".join(report)
