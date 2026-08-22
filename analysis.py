@@ -12,7 +12,7 @@ DATA_URL = "https://data-api.binance.vision"
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal/6.2"
+    "User-Agent": "CryptoZeroReversal/6.3"
 })
 
 
@@ -772,7 +772,8 @@ def analyze_symbol(symbol):
         "change4h": tf4h["change"],
         "change1d": tf1d["change"],
         "atr": tf15["atr"],
-        # تمت إضافة المفاتيح المفقودة لمنع خطأ KeyError تماماً:
+        # تمرير الـ ATR الخاص بـ 1H لاستخدامه في الأهداف الواسعة
+        "atr_1h": tf1h.get("atr", tf15["atr"] * 2),
         "tf15_bull": tf15["bull"],
         "tf15_bear": tf15["bear"],
         "tf30_bull": tf30["bull"],
@@ -908,7 +909,7 @@ def format_price(price):
 
 
 # =========================================================
-# TRADE
+# TRADE (BROAD & PROFITABLE TARGETS)
 # =========================================================
 
 def prepare_trade(result):
@@ -918,39 +919,41 @@ def prepare_trade(result):
 
     signal = result.get("signal", "WAIT")
     price = float(result["price"])
-    atr_value = result.get("atr")
-
+    
+    # استخدام ATR إطار الساعة (1H) لضمان أهداف أوسع وأقوى تناسب الفريمات الكبيرة
+    atr_value = result.get("atr_1h")
     if not atr_value or atr_value <= 0:
-        atr_value = price * 0.008
+        atr_value = result.get("atr", price * 0.015) * 1.5
 
     if signal in ("EARLY_LONG", "WATCH_LONG"):
-        entry_low = price - atr_value * 0.15
+        entry_low = price - atr_value * 0.20
         entry_high = price + atr_value * 0.10
-        stop = price - atr_value * 1.10
+        stop = price - atr_value * 1.25  # وقف خسارة آمن ومحسوب
         risk = price - stop
 
+        # توسيع الأهداف بنسب ربحية عالية (عائد أضعاف المخاطر)
         return {
             "side": "LONG",
             "entry": f"{format_price(entry_low)} - {format_price(entry_high)}",
             "stop": format_price(stop),
-            "tp1": format_price(price + risk * 1.5),
-            "tp2": format_price(price + risk * 2.5),
-            "tp3": format_price(price + risk * 4.0)
+            "tp1": format_price(price + risk * 2.0),  # هدف أول بعائد 1:2
+            "tp2": format_price(price + risk * 3.5),  # هدف ثاني بعائد 1:3.5
+            "tp3": format_price(price + risk * 5.5)   # هدف ثالث موسع للموجات الكبيرة
         }
 
     if signal in ("SHORT", "WATCH_SHORT"):
         entry_low = price - atr_value * 0.10
-        entry_high = price + atr_value * 0.15
-        stop = price + atr_value * 1.10
+        entry_high = price + atr_value * 0.20
+        stop = price + atr_value * 1.25
         risk = stop - price
 
         return {
             "side": "SHORT",
             "entry": f"{format_price(entry_low)} - {format_price(entry_high)}",
             "stop": format_price(stop),
-            "tp1": format_price(price - risk * 1.5),
-            "tp2": format_price(price - risk * 2.5),
-            "tp3": format_price(price - risk * 4.0)
+            "tp1": format_price(price - risk * 2.0),
+            "tp2": format_price(price - risk * 3.5),
+            "tp3": format_price(price - risk * 5.5)
         }
 
     return None
@@ -981,7 +984,7 @@ def generate_evidence_report(result, trade_setup=None):
 
     report = []
     report.append("=========================================================")
-    report.append(f"📊 تقرير بحثي ذكي ونشط (EVIDENCE REPORT): {symbol}")
+    report.append(f"📊 تقرير بحثي ذكي بأهداف واسعة (EVIDENCE REPORT): {symbol}")
     report.append("=========================================================")
     report.append(f"• السعر الحالي: {price} USDT")
     report.append(f"• اتجاه السوق المقترح: {direction_ar} | الإشارة: {signal}")
@@ -1004,12 +1007,13 @@ def generate_evidence_report(result, trade_setup=None):
 
     if trade_setup:
         report.append("")
-        report.append("🎯 4. خطة التداول المقترحة:")
+        report.append("🎯 4. خطة التداول الموسعة:")
         report.append(f"   - الاتجاه: {trade_setup.get('side')}")
         report.append(f"   - منطقة الدخول: {trade_setup.get('entry')}")
         report.append(f"   - وقف الخسارة: {trade_setup.get('stop')}")
-        report.append(f"   - الهدف الأول: {trade_setup.get('tp1')}")
-        report.append(f"   - الهدف الثاني: {trade_setup.get('tp2')}")
+        report.append(f"   - الهدف الأول (TP1): {trade_setup.get('tp1')}")
+        report.append(f"   - الهدف الثاني (TP2): {trade_setup.get('tp2')}")
+        report.append(f"   - الهدف الثالث (TP3): {trade_setup.get('tp3')}")
 
     report.append("=========================================================")
     return "\n".join(report)
