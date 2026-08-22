@@ -49,7 +49,10 @@ app = Flask(__name__)
 # TELEGRAM
 # =========================================================
 
-def telegram_request(method, data=None):
+def telegram_request(
+    method,
+    data=None
+):
 
     try:
 
@@ -78,9 +81,15 @@ def telegram_request(method, data=None):
         return None
 
 
-def send_message(chat_id, text):
+def send_message(
+    chat_id,
+    text
+):
 
     max_length = 3900
+
+    if not text:
+        text = "⚠️ لا توجد بيانات."
 
     if len(text) <= max_length:
 
@@ -145,7 +154,20 @@ def fmt_rsi(value):
     )
 
 
-def tf_direction(bull, bear):
+def fmt_number(value):
+
+    if value is None:
+        return "-"
+
+    return "{:.4f}".format(
+        float(value)
+    )
+
+
+def tf_direction(
+    bull,
+    bear
+):
 
     if bull > bear:
         return "🟢 صاعد"
@@ -167,178 +189,39 @@ def final_direction(result):
         "EARLY_LONG",
         "WATCH_LONG"
     ):
+
         return "🟢 LONG"
 
     if signal in (
         "SHORT",
         "WATCH_SHORT"
     ):
+
         return "🔴 SHORT"
 
     return "⚪ WAIT"
 
 
 # =========================================================
-# QUANTITATIVE RANGE DISPLAY
-# =========================================================
-
-def build_range_message(result):
-
-    range_high = result.get(
-        "range_high"
-    )
-
-    range_low = result.get(
-        "range_low"
-    )
-
-    range_pct = result.get(
-        "range_pct"
-    )
-
-    range_position = result.get(
-        "range_position"
-    )
-
-    compression = result.get(
-        "range_compression",
-        False
-    )
-
-    compression_ratio = result.get(
-        "range_compression_ratio"
-    )
-
-    breakout_up = result.get(
-        "range_breakout_up",
-        False
-    )
-
-    breakout_down = result.get(
-        "range_breakout_down",
-        False
-    )
-
-    range_score = result.get(
-        "range_score",
-        0
-    )
-
-    if range_position is not None:
-
-        position_pct = (
-            range_position * 100
-        )
-
-    else:
-
-        position_pct = None
-
-    if compression:
-
-        compression_text = (
-            "🟢 YES — نطاق مضغوط"
-        )
-
-    else:
-
-        compression_text = (
-            "⚪ NO"
-        )
-
-    if breakout_up:
-
-        breakout_text = (
-            "🟢 اختراق لأعلى"
-        )
-
-    elif breakout_down:
-
-        breakout_text = (
-            "🔴 كسر لأسفل"
-        )
-
-    else:
-
-        breakout_text = (
-            "⚪ داخل النطاق"
-        )
-
-    message = (
-        "\n📐 QUANTITATIVE RANGE\n\n"
-    )
-
-    message += (
-        "🔺 Range High: "
-        + fmt_price(range_high)
-        + "\n"
-    )
-
-    message += (
-        "🔻 Range Low: "
-        + fmt_price(range_low)
-        + "\n"
-    )
-
-    message += (
-        "📏 Range Width: "
-        + fmt_pct(range_pct)
-        + "\n"
-    )
-
-    if position_pct is not None:
-
-        message += (
-            "📍 Position: "
-            + "{:.1f}%".format(
-                position_pct
-            )
-            + "\n"
-        )
-
-    message += (
-        "📦 Compression: "
-        + compression_text
-        + "\n"
-    )
-
-    if compression_ratio is not None:
-
-        message += (
-            "📊 Compression Ratio: "
-            + "{:.2f}x".format(
-                compression_ratio
-            )
-            + "\n"
-        )
-
-    message += (
-        "🚦 Breakout: "
-        + breakout_text
-        + "\n"
-    )
-
-    message += (
-        "🎯 Range Score: "
-        + str(range_score)
-        + "/100\n"
-    )
-
-    return message
-
-
-# =========================================================
 # COIN MESSAGE
 # =========================================================
 
-def build_coin_message(result):
+def build_coin_message(
+    result
+):
 
     symbol = result["symbol"]
 
     message = (
-        "📊 تحليل "
+        "🔥 Crypto Zero Reversal\n"
+        "━━━━━━━━━━━━━━\n"
+        "📊 تحليل فني كامل\n\n"
+    )
+
+    message += (
+        "🪙 العملة: "
         + symbol
-        + "\n\n"
+        + "\n"
     )
 
     message += (
@@ -348,6 +231,10 @@ def build_coin_message(result):
         )
         + "\n\n"
     )
+
+    # =====================================================
+    # FINAL DIRECTION
+    # =====================================================
 
     message += (
         "🎯 الاتجاه النهائي: "
@@ -371,42 +258,40 @@ def build_coin_message(result):
         + "/100\n\n"
     )
 
+    # =====================================================
+    # MULTI TIMEFRAME
+    # =====================================================
+
     message += (
-        "📊 MULTI TIMEFRAME\n\n"
+        "📊 MULTI TIMEFRAME\n"
     )
 
     for name, bull, bear in [
-
         (
             "15m",
             result["tf15_bull"],
             result["tf15_bear"]
         ),
-
         (
             "30m",
             result["tf30_bull"],
             result["tf30_bear"]
         ),
-
         (
             "1H",
             result["tf1h_bull"],
             result["tf1h_bear"]
         ),
-
         (
             "4H",
             result["tf4h_bull"],
             result["tf4h_bear"]
         ),
-
         (
             "1D",
             result["tf1d_bull"],
             result["tf1d_bear"]
         )
-
     ]:
 
         message += (
@@ -418,6 +303,10 @@ def build_coin_message(result):
             )
             + "\n"
         )
+
+    # =====================================================
+    # RSI
+    # =====================================================
 
     message += "\n📈 RSI\n"
 
@@ -450,10 +339,14 @@ def build_coin_message(result):
         + fmt_rsi(
             result["rsi1d"]
         )
-        + "\n\n"
+        + "\n"
     )
 
-    message += "📊 EMA\n"
+    # =====================================================
+    # EMA
+    # =====================================================
+
+    message += "\n📊 EMA\n"
 
     for name in [
         "ema9",
@@ -471,7 +364,41 @@ def build_coin_message(result):
             + "\n"
         )
 
-    message += "\n📦 VOLUME\n"
+    # =====================================================
+    # MACD
+    # =====================================================
+
+    message += "\n📉 MACD\n"
+
+    message += (
+        "MACD: "
+        + fmt_number(
+            result.get("macd")
+        )
+        + "\n"
+    )
+
+    message += (
+        "Signal: "
+        + fmt_number(
+            result.get("macd_signal")
+        )
+        + "\n"
+    )
+
+    message += (
+        "Histogram: "
+        + fmt_number(
+            result.get("macd_hist")
+        )
+        + "\n"
+    )
+
+    # =====================================================
+    # VOLUME
+    # =====================================================
+
+    message += "\n📦 VOLUME / LIQUIDITY\n"
 
     message += (
         "Volume: "
@@ -486,19 +413,21 @@ def build_coin_message(result):
         + "{:.2f}".format(
             result["volume_trend"]
         )
-        + "x\n\n"
+        + "x\n"
     )
 
-    message += "📉 الحركة\n"
+    # =====================================================
+    # PRICE MOVEMENT
+    # =====================================================
+
+    message += "\n📉 الحركة\n"
 
     for name, key in [
-
         ("15m", "change15"),
         ("30m", "change30"),
         ("1H", "change1h"),
         ("4H", "change4h"),
         ("1D", "change1d")
-
     ]:
 
         message += (
@@ -511,11 +440,78 @@ def build_coin_message(result):
         )
 
     # =====================================================
+    # TECHNICAL LEVELS
+    # =====================================================
+
+    message += "\n🧱 التحليل الفني\n"
+
+    message += (
+        "Support: "
+        + fmt_price(
+            result.get("support")
+        )
+        + "\n"
+    )
+
+    message += (
+        "Resistance: "
+        + fmt_price(
+            result.get("resistance")
+        )
+        + "\n"
+    )
+
+    message += (
+        "ATR: "
+        + fmt_price(
+            result.get("atr")
+        )
+        + "\n"
+    )
+
+    message += (
+        "Volatility: "
+        + fmt_pct(
+            result.get(
+                "volatility_pct"
+            )
+        )
+        + "\n"
+    )
+
+    # =====================================================
     # QUANTITATIVE RANGE
     # =====================================================
 
-    message += build_range_message(
-        result
+    message += (
+        "\n📐 النطاق الكمي "
+        "(Quantitative Range)\n"
+    )
+
+    message += (
+        "QR Low: "
+        + fmt_price(
+            result.get("qr_low")
+        )
+        + "\n"
+    )
+
+    message += (
+        "QR High: "
+        + fmt_price(
+            result.get("qr_high")
+        )
+        + "\n"
+    )
+
+    message += (
+        "QR Width: "
+        + fmt_pct(
+            result.get(
+                "qr_width_pct"
+            )
+        )
+        + "\n"
     )
 
     # =====================================================
@@ -531,8 +527,7 @@ def build_coin_message(result):
         + (
             "YES ✅"
             if result.get(
-                "accumulation",
-                False
+                "accumulation"
             )
             else "NO"
         )
@@ -544,8 +539,7 @@ def build_coin_message(result):
         + (
             "YES ⚠️"
             if result.get(
-                "distribution",
-                False
+                "distribution"
             )
             else "NO"
         )
@@ -553,12 +547,11 @@ def build_coin_message(result):
     )
 
     message += (
-        "🚀 Late Pump Risk: "
+        "🚀 Late Pump: "
         + (
             "HIGH ⚠️"
             if result.get(
-                "late_pump",
-                False
+                "late_pump"
             )
             else "LOW ✅"
         )
@@ -566,12 +559,23 @@ def build_coin_message(result):
     )
 
     message += (
-        "🔥 Overheated 4H/1D: "
+        "🔥 Overheated: "
         + (
             "YES ⚠️"
             if result.get(
-                "overheated",
-                False
+                "overheated"
+            )
+            else "NO"
+        )
+        + "\n"
+    )
+
+    message += (
+        "💥 Strong Dump: "
+        + (
+            "YES ⚠️"
+            if result.get(
+                "strong_dump"
             )
             else "NO"
         )
@@ -689,15 +693,15 @@ def build_coin_message(result):
 # SCAN MESSAGE
 # =========================================================
 
-def build_scan_message(results):
+def build_scan_message(
+    results
+):
 
     if not results:
 
         return (
             "🔥 Crypto Zero Reversal\n\n"
             "⚠️ لم تصل بيانات كافية من Binance.\n\n"
-            "البوت حاول فحص السوق ولم يجبر "
-            "صفقة وهمية.\n\n"
             "أعد /scan بعد لحظات."
         )
 
@@ -705,8 +709,9 @@ def build_scan_message(results):
         "🔥 Crypto Zero Reversal\n"
         "📡 BEST MARKET SETUPS\n\n"
         "15m + 30m + 1H + 4H + 1D\n"
-        "💧 Liquidity + Volume + Momentum\n"
         "📐 Quantitative Range\n"
+        "📈 Technical Analysis\n"
+        "💧 Liquidity + Volume + Momentum\n"
         "🎯 Entry / SL / TP\n\n"
     )
 
@@ -723,31 +728,31 @@ def build_scan_message(results):
         if signal == "EARLY_LONG":
 
             setup = (
-                "🟢 LONG — تجميع سيولة وترند صاعد"
+                "🟢 LONG — تجميع قبل الحركة"
             )
 
         elif signal == "WATCH_LONG":
 
             setup = (
-                "🟢 LONG — مراقبة دخول مبكر"
+                "🟢 LONG — مراقبة دخول"
             )
 
         elif signal == "SHORT":
 
             setup = (
-                "🔴 SHORT — ترند وخرجت السيولة"
+                "🔴 SHORT — خروج سيولة"
             )
 
         elif signal == "WATCH_SHORT":
 
             setup = (
-                "🔴 SHORT — مراقبة ضعف وبيع"
+                "🔴 SHORT — مراقبة ضعف"
             )
 
         else:
 
             setup = (
-                "⚪ انتظار"
+                "⚪ WAIT"
             )
 
         message += (
@@ -788,58 +793,18 @@ def build_scan_message(results):
             + "/100\n"
         )
 
-        # =================================================
-        # TIMEFRAMES
-        # =================================================
-
         message += (
-            "📊 15m: "
+            "📊 MTF: "
             + tf_direction(
-                result["tf15_bull"],
-                result["tf15_bear"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "📊 30m: "
-            + tf_direction(
-                result["tf30_bull"],
-                result["tf30_bear"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "📊 1H: "
-            + tf_direction(
-                result["tf1h_bull"],
+                result["tf1h_bull"]
+                + result["tf4h_bull"]
+                + result["tf1d_bull"],
                 result["tf1h_bear"]
+                + result["tf4h_bear"]
+                + result["tf1d_bear"]
             )
             + "\n"
         )
-
-        message += (
-            "📊 4H: "
-            + tf_direction(
-                result["tf4h_bull"],
-                result["tf4h_bear"]
-            )
-            + "\n"
-        )
-
-        message += (
-            "📊 1D: "
-            + tf_direction(
-                result["tf1d_bull"],
-                result["tf1d_bear"]
-            )
-            + "\n"
-        )
-
-        # =================================================
-        # RSI
-        # =================================================
 
         message += (
             "📈 RSI 15m: "
@@ -848,10 +813,6 @@ def build_scan_message(results):
             )
             + "\n"
         )
-
-        # =================================================
-        # VOLUME
-        # =================================================
 
         message += (
             "📦 Volume: "
@@ -869,97 +830,17 @@ def build_scan_message(results):
             + "x\n"
         )
 
-        # =================================================
-        # QUANTITATIVE RANGE
-        # =================================================
-
-        range_score = result.get(
-            "range_score",
-            0
-        )
-
-        range_position = result.get(
-            "range_position"
-        )
-
-        range_pct = result.get(
-            "range_pct"
-        )
-
-        compression = result.get(
-            "range_compression",
-            False
-        )
-
-        breakout_up = result.get(
-            "range_breakout_up",
-            False
-        )
-
-        breakout_down = result.get(
-            "range_breakout_down",
-            False
-        )
-
         message += (
-            "\n📐 Quantitative Range\n"
-        )
-
-        message += (
-            "🎯 Score: "
-            + str(range_score)
-            + "/100\n"
-        )
-
-        if range_pct is not None:
-
-            message += (
-                "📏 Width: "
-                + fmt_pct(range_pct)
-                + "\n"
+            "📐 QR: "
+            + fmt_price(
+                result.get("qr_low")
             )
-
-        if range_position is not None:
-
-            message += (
-                "📍 Position: "
-                + "{:.0f}%".format(
-                    range_position * 100
-                )
-                + "\n"
-            )
-
-        message += (
-            "📦 Compression: "
-            + (
-                "YES 🟢"
-                if compression
-                else "NO"
+            + " → "
+            + fmt_price(
+                result.get("qr_high")
             )
             + "\n"
         )
-
-        if breakout_up:
-
-            message += (
-                "🚀 Breakout: UP 🟢\n"
-            )
-
-        elif breakout_down:
-
-            message += (
-                "🔻 Breakout: DOWN 🔴\n"
-            )
-
-        else:
-
-            message += (
-                "↔️ Breakout: NONE\n"
-            )
-
-        # =================================================
-        # STRUCTURE
-        # =================================================
 
         if result.get(
             "accumulation"
@@ -992,10 +873,6 @@ def build_scan_message(results):
             message += (
                 "🔥 Overheated: YES ⚠️\n"
             )
-
-        # =================================================
-        # TRADE
-        # =================================================
 
         trade = prepare_trade(
             result
@@ -1048,10 +925,6 @@ def build_scan_message(results):
             message += (
                 "\n⏳ لا يوجد دخول آمن الآن.\n"
             )
-
-        # =================================================
-        # REASONS
-        # =================================================
 
         if signal in (
             "EARLY_LONG",
@@ -1218,17 +1091,27 @@ def telegram_webhook():
                 chat_id,
 
                 "🚀 Crypto Zero Reversal شغال!\n\n"
-                "📊 Multi-Timeframe\n"
-                "15m + 30m + 1H + 4H + 1D\n"
-                "📐 Quantitative Range\n\n"
+
+                "📊 التحليل الفني:\n"
+                "EMA + RSI + MACD + ATR\n"
+                "Support / Resistance\n\n"
+
+                "📐 النطاق الكمي:\n"
+                "Quantitative Range\n\n"
+
+                "📊 Multi-Timeframe:\n"
+                "15m + 30m + 1H + 4H + 1D\n\n"
+
+                "💧 Liquidity + Volume\n"
+                "🟢 Accumulation\n"
+                "🔴 Distribution\n\n"
+
                 "الأوامر:\n\n"
                 "/scan\n"
-                "🔎 فحص السوق واقتناص العملات "
-                "الهابطة التي تجمع سيولة قبل الحركة\n\n"
+                "🔎 فحص السوق\n\n"
                 "/coin BTC\n"
                 "📊 تحليل العملة وتجهيز الصفقة\n\n"
-                "🎯 Entry / SL / TP1 / TP2 / TP3\n"
-                "🟢 Long / 🔴 Short"
+                "🎯 Entry / SL / TP1 / TP2 / TP3"
             )
 
             return "OK", 200
@@ -1245,11 +1128,12 @@ def telegram_webhook():
                 chat_id,
 
                 "🔎 بدأ فحص السوق الحقيقي...\n\n"
-                "💧 التجميع والسيولة\n"
-                "📐 Quantitative Range\n"
-                "📊 15m + 30m + 1H + 4H + 1D\n"
-                "🟢 العملات التي تجمع قبل الحركة\n"
-                "🔴 العملات التي يظهر عليها Distribution\n"
+                "📐 النطاق الكمي\n"
+                "📈 التحليل الفني\n"
+                "💧 السيولة والحجم\n"
+                "📊 15m + 30m + 1H + 4H + 1D\n\n"
+                "🟢 البحث عن تجميع قبل الحركة\n"
+                "🔴 البحث عن Distribution والضعف\n\n"
                 "⏳ جاري التحليل..."
             )
 
@@ -1295,9 +1179,10 @@ def telegram_webhook():
                 "📊 جاري تحليل "
                 + symbol
                 + "...\n\n"
-                "⏳ 15m + 30m + 1H + 4H + 1D\n"
-                "📐 Quantitative Range\n"
+                "📈 التحليل الفني\n"
+                "📐 النطاق الكمي\n"
                 "💧 السيولة + التجميع + التوزيع\n"
+                "📊 15m + 30m + 1H + 4H + 1D\n"
                 "🎯 تجهيز الصفقة..."
             )
 
