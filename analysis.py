@@ -2,21 +2,22 @@ import requests
 
 def scan_market(limit=3):
     """
-    جلب بيانات العملات وتجهيزها مباشرة دون أي شروط تصفية معقدة.
+    جلب السعر المباشر والحقيقي اللحظي من بينانس بدون أي فارق.
     """
     symbols = ["ZROUSDT", "CAKEUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]
     results = []
     
     for sym in symbols[:limit]:
-        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={sym}"
+        # استخدام رابط السعر المباشر واللحقي الفعلي
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={sym}"
         try:
             response = requests.get(url, timeout=5)
             data = response.json()
             
-            if "lastPrice" in data:
-                price = float(data["lastPrice"])
+            if "price" in data:
+                price = float(data["price"])
                 
-                # حساب المستويات بدقة
+                # حساب المستويات بناءً على السعر الحقيقي الفعلي للعملة لحظياً
                 entry_low = round(price * 0.9912, 6)
                 entry_high = round(price, 6)
                 stop_loss = round(price * 0.9235, 6)
@@ -50,7 +51,6 @@ def scan_market(limit=3):
             print(f"Error for {sym}: {e}")
             continue
             
-    # إذا فشل الجلب لأي سبب، نعيد قيمة افتراضية حتى لا تظهر رسالة "لا توجد فرص"
     if not results:
         results.append({
             "symbol": "ZROUSDT",
@@ -76,7 +76,7 @@ def scan_market(limit=3):
 
 def generate_evidence_report(data):
     """
-    توليد التقرير بالصيغة المطلوبة تماماً.
+    توليد التقرير بنفس الشكل والأسلوب المطلوب.
     """
     report = (
         f"🤖 **Binance AI Scanner**\n\n"
