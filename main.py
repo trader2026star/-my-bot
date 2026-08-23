@@ -3,7 +3,9 @@ import logging
 import threading
 
 from flask import Flask
+
 from telegram import Update
+
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -25,7 +27,12 @@ from analysis import (
 # =========================================================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
     level=logging.INFO
 )
 
@@ -36,15 +43,20 @@ logger = logging.getLogger(__name__)
 # SETTINGS
 # =========================================================
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get(
+    "BOT_TOKEN"
+)
 
 PORT = int(
-    os.environ.get("PORT", 10000)
+    os.environ.get(
+        "PORT",
+        "10000"
+    )
 )
 
 
 # =========================================================
-# FLASK SERVER FOR RENDER
+# RENDER WEB SERVER
 # =========================================================
 
 app = Flask(__name__)
@@ -52,29 +64,37 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Crypto Zero Reversal Bot is running."
+
+    return (
+        "Crypto Zero Reversal Bot "
+        "is running."
+    )
 
 
 @app.route("/health")
 def health():
+
     return "OK"
 
 
 def run_web_server():
+
     logger.info(
-        "Starting Render web server on port %s",
+        "Render web server listening "
+        "on port %s",
         PORT
     )
 
     app.run(
         host="0.0.0.0",
         port=PORT,
+        debug=False,
         use_reloader=False
     )
 
 
 # =========================================================
-# TELEGRAM /START
+# START
 # =========================================================
 
 async def start(
@@ -83,13 +103,21 @@ async def start(
 ):
 
     await update.message.reply_text(
+
         "🤖 Crypto Zero Reversal\n\n"
+
         "الأوامر المتاحة:\n"
+
         "• /scan - فحص سوق Binance Futures بالكامل\n"
+
         "• BTC - تحليل عملة محددة\n\n"
-        "التحليل يعتمد على:\n"
+
+        "📊 التحليل يعتمد على:\n"
+
         "15m + 1H + 4H + 1D\n"
-        "الدعم + المقاومة + السيولة + التجميع + الزخم"
+
+        "الدعم + المقاومة + السيولة "
+        "+ التجميع + الزخم"
     )
 
 
@@ -103,15 +131,19 @@ async def scan_command(
 ):
 
     await update.message.reply_text(
+
         "🔎 جاري فحص سوق Binance Futures بالكامل...\n\n"
+
         "أبحث عن:\n"
-        "• هبوط سابق\n"
-        "• تجميع\n"
+
+        "• الهبوط السابق\n"
+        "• التجميع\n"
         "• دخول السيولة\n"
-        "• دعم ومقاومة\n"
+        "• الدعم والمقاومة\n"
         "• تحسن الحجم والزخم\n"
         "• تأكيد 15m / 1H / 4H / 1D\n\n"
-        "⏳ قد يستغرق الفحص بعض الوقت."
+
+        "⏳ انتظر حتى ينتهي الفحص."
     )
 
     try:
@@ -120,14 +152,14 @@ async def scan_command(
             limit=5
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "Scan failed: %s",
-            e
+            "Scan failed"
         )
 
         await update.message.reply_text(
+
             "❌ حدث خطأ أثناء فحص Binance.\n"
             "راجع Logs في Render."
         )
@@ -137,16 +169,20 @@ async def scan_command(
     if not results:
 
         await update.message.reply_text(
+
             "🟡 انتهى الفحص.\n\n"
+
             "لم أجد حالياً فرصة LONG أو SHORT "
             "تتجاوز شروط التأكيد.\n\n"
-            "تم رفض الفرص الضعيفة أو القريبة "
-            "من الدعم/المقاومة أو التي تحركت بالفعل."
+
+            "تم استبعاد الفرص الضعيفة "
+            "أو التي تحركت بالفعل."
         )
 
         return
 
     await update.message.reply_text(
+
         f"✅ انتهى الفحص.\n"
         f"وجدت {len(results)} فرص مطابقة للشروط.\n"
         f"تم اختيار أفضل الفرص."
@@ -156,24 +192,25 @@ async def scan_command(
 
         try:
 
-            report = generate_evidence_report(
-                data
+            report = (
+                generate_evidence_report(
+                    data
+                )
             )
 
             await update.message.reply_text(
                 report
             )
 
-        except Exception as e:
+        except Exception:
 
             logger.exception(
-                "Report error: %s",
-                e
+                "Report error"
             )
 
 
 # =========================================================
-# COIN ANALYSIS
+# COIN MESSAGE
 # =========================================================
 
 async def handle_message(
@@ -181,21 +218,29 @@ async def handle_message(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not update.message:
+    if (
+        not update.message
+        or not update.message.text
+    ):
+
         return
 
-    text = update.message.text
+    text = (
+        update.message.text
+        .strip()
+    )
 
     if not text:
         return
 
-    text = text.strip()
-
-    if not text:
-        return
-
+    # =====================================================
+    # IMPORTANT:
     # BTC -> BTCUSDT
     # BTCUSDT -> BTCUSDT
+    #
+    # ونرسل نفس القيمة بعد التطبيع إلى دالة التحليل
+    # =====================================================
+
     symbol = normalize_symbol(
         text
     )
@@ -209,8 +254,11 @@ async def handle_message(
         return
 
     await update.message.reply_text(
-        f"🔎 جاري تحليل العملة {symbol}...\n"
-        f"15m + 1H + 4H + 1D"
+
+        f"🔎 جاري تحليل العملة "
+        f"{symbol}...\n"
+
+        "15m + 1H + 4H + 1D"
     )
 
     try:
@@ -219,14 +267,14 @@ async def handle_message(
             symbol
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "Coin analysis error: %s",
-            e
+            "Coin analysis error"
         )
 
         await update.message.reply_text(
+
             "❌ حدث خطأ أثناء جلب بيانات Binance."
         )
 
@@ -235,8 +283,9 @@ async def handle_message(
     if not data:
 
         await update.message.reply_text(
-            f"❌ لم أجد زوج {symbol} "
-            f"على Binance Futures "
+
+            f"❌ لم أجد زوج "
+            f"{symbol} على Binance Futures "
             f"أو تعذر جلب بياناته حالياً."
         )
 
@@ -244,23 +293,24 @@ async def handle_message(
 
     try:
 
-        report = generate_evidence_report(
-            data
+        report = (
+            generate_evidence_report(
+                data
+            )
         )
 
         await update.message.reply_text(
             report
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "Report error: %s",
-            e
+            "Report generation error"
         )
 
         await update.message.reply_text(
-            "❌ حدث خطأ أثناء إنشاء تقرير التحليل."
+            "❌ حدث خطأ أثناء إنشاء التقرير."
         )
 
 
@@ -278,24 +328,18 @@ def main():
 
         return
 
-    # -----------------------------------------------------
-    # Start Render Web Server
-    # -----------------------------------------------------
+    # =====================================================
+    # RENDER PORT
+    # =====================================================
 
-    web_thread = threading.Thread(
+    threading.Thread(
         target=run_web_server,
         daemon=True
-    )
+    ).start()
 
-    web_thread.start()
-
-    logger.info(
-        "Render web server started."
-    )
-
-    # -----------------------------------------------------
-    # Start Telegram Bot
-    # -----------------------------------------------------
+    # =====================================================
+    # TELEGRAM
+    # =====================================================
 
     application = (
         ApplicationBuilder()
@@ -318,14 +362,17 @@ def main():
     )
 
     application.add_handler(
+
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT
+            & ~filters.COMMAND,
             handle_message
         )
     )
 
     logger.info(
-        "Crypto Zero Reversal Telegram bot started."
+        "Crypto Zero Reversal bot "
+        "starting..."
     )
 
     application.run_polling(
@@ -334,8 +381,9 @@ def main():
 
 
 # =========================================================
-# START
+# RUN
 # =========================================================
 
 if __name__ == "__main__":
+
     main()
