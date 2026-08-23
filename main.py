@@ -43,8 +43,7 @@ logger = logging.getLogger(__name__)
 # SETTINGS
 # =========================================================
 
-BOT_TOKEN = "8927885606:AAGf6tXEKi-Q9uQOdl1NVif8_OjODH3DPbQ
-)
+BOT_TOKEN = "8927885606:AAGf6tXEKi-Q9uQOdl1NVif8_OjODH3DPbQ"
 
 PORT = int(
     os.environ.get(
@@ -232,14 +231,6 @@ async def handle_message(
     if not text:
         return
 
-    # =====================================================
-    # IMPORTANT:
-    # BTC -> BTCUSDT
-    # BTCUSDT -> BTCUSDT
-    #
-    # ونرسل نفس القيمة بعد التطبيع إلى دالة التحليل
-    # =====================================================
-
     symbol = normalize_symbol(
         text
     )
@@ -327,18 +318,10 @@ def main():
 
         return
 
-    # =====================================================
-    # RENDER PORT
-    # =====================================================
-
     threading.Thread(
         target=run_web_server,
         daemon=True
     ).start()
-
-    # =====================================================
-    # TELEGRAM
-    # =====================================================
 
     application = (
         ApplicationBuilder()
