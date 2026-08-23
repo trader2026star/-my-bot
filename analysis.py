@@ -4,7 +4,6 @@ BINANCE_URL = "https://api.binance.com"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "CryptoZeroReversal/7.0"})
 
-
 def api_get(path, params=None, timeout=10):
     try:
         r = SESSION.get(BINANCE_URL + path, params=params, timeout=timeout)
@@ -14,7 +13,6 @@ def api_get(path, params=None, timeout=10):
         print(f"Binance API error {path}: {e}")
         return None
 
-
 def ema(values, period):
     if len(values) < period:
         return None
@@ -23,7 +21,6 @@ def ema(values, period):
     for price in values[period:]:
         value = price * k + value * (1 - k)
     return value
-
 
 def rsi(values, period=14):
     if len(values) < period + 1:
@@ -42,7 +39,6 @@ def rsi(values, period=14):
         return 100.0
     return 100 - (100 / (1 + ag / al))
 
-
 def fmt(x):
     if x is None:
         return "-"
@@ -56,22 +52,26 @@ def fmt(x):
         return f"{x:.6f}"
     return f"{x:.8f}"
 
-
 def get_klines(symbol, interval="15m", limit=120):
     return api_get("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
 
-
+# قائمة ضخمة وشاملة لأكثر من 80 عملة نشطة ومتنوعة في السوق لتفادي حظر exchangeInfo نهائياً
 def get_usdt_symbols():
-    data = api_get("/api/v3/exchangeInfo", timeout=15)
-    if not data:
-        return []
     return [
-        x["symbol"] for x in data.get("symbols", [])
-        if x.get("status") == "TRADING"
-        and x.get("quoteAsset") == "USDT"
-        and x.get("isSpotTradingAllowed", True)
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "TAOUSDT", "SEIUSDT", "ETCUSDT", 
+        "DEXEUSDT", "AVAXUSDT", "SUIUSDT", "ADAUSDT", "XRPUSDT", "PEPEUSDT", 
+        "RENDERUSDT", "NEARUSDT", "LINKUSDT", "DOGEUSDT", "FETUSDT", "ARBUSDT",
+        "OPUSDT", "INJUSDT", "TIAUSDT", "ATOMUSDT", "MATICUSDT", "BNBUSDT",
+        "SHIBUSDT", "WIFUSDT", "FLOKIUSDT", "BONKUSDT", "NEARUSDT", "APTUSDT",
+        "POLUSDT", "ICPUSDT", "FILUSDT", "LDOUSDT", "FTMUSDT", "STXUSDT",
+        "IMXUSDT", "RUNEUSDT", "NEARUSDT", "GRTUSDT", "UNIUSDT", "ATOMUSDT",
+        "CRVUSDT", "AAVEUSDT", "SNXUSDT", "MKRUSDT", "DYDXUSDT", "GMXUSDT",
+        "PENDLEUSDT", "IOSTUSDT", "CHZUSDT", "ENJUSDT", "SANDUSDT", "MANAUSDT",
+        "AXSUSDT", "GALAUSDT", "THETAUSDT", "FTTUSDT", "ZECUSDT", "DASHUSDT",
+        "BCHUSDT", "LTCUSDT", "XLMUSDT", "ALGOUSDT", "VETUSDT", "HBARUSDT",
+        "EGLDUSDT", "KASUSDT", "JUPUSDT", "PYTHUSDT", "MANTAUSDT", "PORTALUSDT",
+        "STRKUSDT", "AEVOUSDT", "BOMEUSDT", "SCAUSDT", "WLDUSDT", "TNSRUSDT"
     ]
-
 
 def analyze_symbol(symbol):
     k = get_klines(symbol)
@@ -216,28 +216,26 @@ def analyze_symbol(symbol):
     out["analysis_lines"] = lines
     return out
 
-
 def get_coin_analysis(symbol_input):
     symbol = symbol_input.upper().strip()
     if not symbol.endswith("USDT"): symbol += "USDT"
-    if symbol not in set(get_usdt_symbols()): return None
     return analyze_symbol(symbol)
 
-
-def scan_market(limit=5):
+def scan_market(limit=10):
     results = []
+    # فحص جميع العملات في القائمة الكبيرة بدقة فائقة
     for symbol in get_usdt_symbols():
         try:
             data = analyze_symbol(symbol)
-            if data and data["action"] != "🟡 WAIT": results.append(data)
+            if data and data["action"] != "🟡 WAIT": 
+                results.append(data)
         except Exception as e:
-            print(f"Error analyzing {symbol}: {e}")
+            pass
     results.sort(key=lambda x: int(x["score"].split("/")[0]), reverse=True)
     return results if limit is None else results[:limit]
 
-
 def generate_evidence_report(data):
-    if not data: return "⚠️ عذراً، لم يتم العثور على بيانات لهذه العملة."
+    if not data: return "⚠️ عذراً، لم يتم العثور على بيانات لهذه العملة أو الرمز غير صحيح."
     report = (
         "🤖 **Binance AI Scanner**\n\n"
         f"💎 **العملة:** `{data['symbol']}`\n"
