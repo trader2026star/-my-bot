@@ -21,7 +21,6 @@ def run_server():
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
-# تشغيل الخادم فوراً في الخلفية
 threading.Thread(target=run_server, daemon=True).start()
 
 # =========================================================
@@ -31,7 +30,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "أهلاً بك! بوت التحليل الفني يعمل بكفاءة.\nاستخدم الأمر /scan لفحص السوق أو اكتب اسم العملة مباشرة."
+        "أهلاً بك! بوت التحليل الفني يعمل بكفاءة.\nاستخدم الأمر /scan لفحص السوق أو اكتب /coin ثم اسم العملة (مثل /coin BTC)."
     )
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -51,16 +50,24 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"حدث خطأ أثناء الفحص: {str(e)}")
 
+async def coin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # للتعامل مع أمر /coin BTC
+    if context.args:
+        coin_name = context.args[0]
+        coin_data = get_coin_analysis(coin_name)
+        if coin_data:
+            report_text = generate_evidence_report(coin_data)
+            await update.message.reply_text(report_text, parse_mode="Markdown")
+            return
+    await update.message.reply_text("⚠️ يرجى كتابة اسم العملة بعد الأمر بشكل صحيح، مثال: `/coin BTC`", parse_mode="Markdown")
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    # إذا كتب المستخدم اسم عملة (مثلا zec أو cake أو btc)
     if len(text) <= 10 and not text.startswith('/'):
         coin_data = get_coin_analysis(text)
         if coin_data:
             report_text = generate_evidence_report(coin_data)
             await update.message.reply_text(report_text, parse_mode="Markdown")
-        else:
-            await update.message.reply_text("⚠️ لم يتم العثور على هذه العملة، تأكد من كتابة الرمز بشكل صحيح.")
 
 def main():
     if not TELEGRAM_TOKEN:
@@ -70,6 +77,7 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan_command))
+    application.add_handler(CommandHandler("coin", coin_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     print("البوت يعمل الآن بنجاح...")
