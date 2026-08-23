@@ -51,7 +51,6 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"حدث خطأ أثناء الفحص: {str(e)}")
 
 async def coin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # للتعامل مع أمر /coin BTC
     if context.args:
         coin_name = context.args[0]
         coin_data = get_coin_analysis(coin_name)
@@ -81,7 +80,8 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     print("البوت يعمل الآن بنجاح...")
-    application.run_polling()
+    # إضافة drop_pending_updates لتجاهل أي تعارض قديم في الاتصال
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
