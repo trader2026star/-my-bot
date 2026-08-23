@@ -1,34 +1,26 @@
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
-
-# استيراد الدوال من ملف analysis.py الذي قمنا بتجهيزه سابقاً
 from analysis import scan_market, generate_evidence_report
 
-# =========================================================
-# 1. خادم الويب الوهمي لإرضاء منصة Render وفتح البورت
-# =========================================================
-
-class SimpleHandler(BaseHTTPRequestHandler):
+# 1. إعداد خادم الويب البسيط لإرضاء بورتات Render المجانية
+class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Crypto Bot is running successfully!")
+        self.wfile.write(b"Bot is alive and running!")
 
-def run_server():
+def run_http_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-server_thread = threading.Thread(target=run_server, daemon=True)
-server_thread.start()
+# تشغيل الخادم في الخلفية بالتوازي مع البوت
+threading.Thread(target=run_http_server, daemon=True).start()
 
-# =========================================================
-# 2. أوامر بوت التليجرام
-# =========================================================
-
+# 2. إعدادات بوت التيليجرام
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -40,7 +32,6 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 جاري فحص السوق وتحليل العمليات، أرجو الانتظار قليلاً...")
     
     try:
-        # تشغيل المسح وجلب أفضل النتائج
         results = scan_market(limit=10)
         
         if not results:
@@ -48,7 +39,6 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         for res in results:
-            # توليد التقرير بالنسق النظيف والجميل
             report_text = generate_evidence_report(res)
             await update.message.reply_text(report_text, parse_mode="Markdown")
             
