@@ -1,7 +1,5 @@
 import os
 import logging
-from flask import Flask
-from threading import Thread
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from analysis import get_coin_analysis, scan_market, generate_evidence_report
@@ -12,22 +10,6 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# 1. إنشاء سيرفر وخفيف وهمي لضمان عدم توقف الخدمة على Render مجاناً
-app_flask = Flask('')
-
-@app_flask.route('/')
-def home():
-    return "Bot is active and running 24/7!"
-
-def run_web():
-    app_flask.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True
-    t.start()
-
-# 2. أوامر بوت التيليجرام
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "🤖 **مرحباً بك في بوت تحليل العملات الرقمية**\n\n"
@@ -80,11 +62,7 @@ def main():
         logger.error("BOT_TOKEN is missing in environment variables!")
         return
 
-    # تشغيل السيرفر الوهمي أولاً لمنع إغلاق التطبيق من Render
-    keep_alive()
-
-    # تشغيل بوت التيليجرام مع حذف أي تداخل قديم للـ Webhook
-    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan_command))
