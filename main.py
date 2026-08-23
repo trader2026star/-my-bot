@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import time
 
 from flask import Flask
 
@@ -318,48 +319,56 @@ def main():
 
         return
 
+    # تشغيل سيرفر الويب في الخلفية ليبقى السيرفر نشطاً
     threading.Thread(
         target=run_web_server,
         daemon=True
     ).start()
 
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    # حلقة تكرار لإعادة الاتصال تلقائياً في حال انقطع النت أو حدث Timeout
+    while True:
+        try:
+            application = (
+                ApplicationBuilder()
+                .token(BOT_TOKEN)
+                .build()
+            )
 
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
+            application.add_handler(
+                CommandHandler(
+                    "start",
+                    start
+                )
+            )
 
-    application.add_handler(
-        CommandHandler(
-            "scan",
-            scan_command
-        )
-    )
+            application.add_handler(
+                CommandHandler(
+                    "scan",
+                    scan_command
+                )
+            )
 
-    application.add_handler(
+            application.add_handler(
 
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            handle_message
-        )
-    )
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    handle_message
+                )
+            )
 
-    logger.info(
-        "Crypto Zero Reversal bot "
-        "starting..."
-    )
+            logger.info(
+                "Crypto Zero Reversal bot "
+                "starting..."
+            )
 
-    application.run_polling(
-        drop_pending_updates=True
-    )
+            application.run_polling(
+                drop_pending_updates=True
+            )
+
+        except Exception as e:
+            logger.error(f"Polling error: {e}. Reconnecting in 5 seconds...")
+            time.sleep(5)
 
 
 # =========================================================
