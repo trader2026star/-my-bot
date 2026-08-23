@@ -12,7 +12,7 @@ DATA_URL = "https://data-api.binance.vision"
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal/6.3"
+    "User-Agent": "CryptoZeroReversal/6.4"
 })
 
 
@@ -420,24 +420,22 @@ def analyze_market_depth(symbol):
     }
 
 
-def check_asset_health(symbol, quote_volume=0, daily_change=0, tf15=None):
+def check_asset_health(symbol, quote_volume=0, daily_change=0):
 
     health_score = 100
     flags = []
 
     if quote_volume > 0 and quote_volume < 500_000:
         health_score -= 20
-        flags.append("سيولة منخفضة (Low Liquidity)")
+        flags.append("سيولة منخفضة")
 
     if abs(daily_change) > 30:
         health_score -= 15
-        flags.append("تقلبات حادة (High Volatility Risk)")
-
-    is_healthy = health_score >= 50
+        flags.append("تقلبات حادة")
 
     return {
         "health_score": health_score,
-        "is_healthy": is_healthy,
+        "is_healthy": health_score >= 50,
         "flags": flags
     }
 
@@ -461,30 +459,11 @@ def analyze_timeframe(
     if not klines or len(klines) < 60:
         return None
 
-    opens = [
-        float(x[1])
-        for x in klines
-    ]
-
-    highs = [
-        float(x[2])
-        for x in klines
-    ]
-
-    lows = [
-        float(x[3])
-        for x in klines
-    ]
-
-    closes = [
-        float(x[4])
-        for x in klines
-    ]
-
-    volumes = [
-        float(x[5])
-        for x in klines
-    ]
+    opens = [float(x[1]) for x in klines]
+    highs = [float(x[2]) for x in klines]
+    lows = [float(x[3]) for x in klines]
+    closes = [float(x[4]) for x in klines]
+    volumes = [float(x[5]) for x in klines]
 
     price = closes[-1]
 
@@ -494,44 +473,16 @@ def analyze_timeframe(
     e200 = ema(closes, 200)
 
     rsi_value = rsi(closes)
+    atr_value = atr(highs, lows, closes)
+    macd_value, macd_signal, macd_hist = macd(closes)
+    bb_middle, bb_upper, bb_lower = bollinger(closes)
 
-    atr_value = atr(
-        highs,
-        lows,
-        closes
-    )
+    avg20 = average(volumes[-20:])
+    avg5 = average(volumes[-5:])
+    previous5 = average(volumes[-10:-5])
 
-    macd_value, macd_signal, macd_hist = macd(
-        closes
-    )
-
-    bb_middle, bb_upper, bb_lower = bollinger(
-        closes
-    )
-
-    avg20 = average(
-        volumes[-20:]
-    )
-
-    avg5 = average(
-        volumes[-5:]
-    )
-
-    previous5 = average(
-        volumes[-10:-5]
-    )
-
-    volume_ratio = (
-        avg5 / avg20
-        if avg20
-        else 0
-    )
-
-    volume_trend = (
-        avg5 / previous5
-        if previous5
-        else 1
-    )
+    volume_ratio = avg5 / avg20 if avg20 else 0
+    volume_trend = avg5 / previous5 if previous5 else 1
 
     bull = 0
     bear = 0
@@ -565,50 +516,13 @@ def analyze_timeframe(
         elif rsi_value < 45:
             bear += 1
 
-    change = pct(
-        closes[-2],
-        closes[-1]
-    )
+    change = pct(closes[-2], closes[-1])
+    change20 = pct(closes[-21], closes[-1]) if len(closes) >= 21 else 0
 
-    change5 = (
-        pct(
-            closes[-6],
-            closes[-1]
-        )
-        if len(closes) >= 6
-        else 0
-    )
-
-    change20 = (
-        pct(
-            closes[-21],
-            closes[-1]
-        )
-        if len(closes) >= 21
-        else 0
-    )
-
-    high20 = max(
-        highs[-20:]
-    )
-
-    low20 = min(
-        lows[-20:]
-    )
-
-    range_size = (
-        high20 - low20
-    )
-
-    range_position = (
-        (price - low20)
-        / range_size
-        if range_size > 0
-        else 0.5
-    )
+    high20 = max(highs[-20:])
+    low20 = min(lows[-20:])
 
     return {
-
         "price": price,
         "open": opens[-1],
         "high": highs[-1],
@@ -630,11 +544,11 @@ def analyze_timeframe(
         "bull": bull,
         "bear": bear,
         "change": change,
-        "change5": change5,
         "change20": change20,
         "high20": high20,
         "low20": low20,
-        "range_position": range_position
+        "r1": high20,
+        "s1": low20
     }
 
 
@@ -664,7 +578,7 @@ def analyze_symbol(symbol):
         return None
 
     depth_analysis = analyze_market_depth(symbol)
-    health_scan = check_asset_health(symbol, tf15=tf15)
+    health_scan = check_asset_health(symbol)
 
     long_score = 15
     short_score = 15
@@ -672,121 +586,78 @@ def analyze_symbol(symbol):
     long_reasons = []
     short_reasons = []
 
-    # Orderbook Pressure Boost
     if depth_analysis["pressure"] == "BUY_PRESSURE":
         long_score += 12
-        long_reasons.append("وجود ضغط شراء قوي ومباشر على دفتر الأوامر (Bids)")
+        long_reasons.append("ضغط شراء قوي في دفتر الأوامر")
     elif depth_analysis["pressure"] == "SELL_PRESSURE":
         short_score += 12
-        short_reasons.append("وجود ضغط بيع قوي ومباشر على دفتر الأوامر (Asks)")
+        short_reasons.append("ضغط بيع قوي في دفتر الأوامر")
 
-    # Trend Scores
-    if tf1d["bull"] >= 3:
-        long_score += 15
-        long_reasons.append("الاتجاه اليومي إيجابي")
-    if tf4h["bull"] >= 3:
-        long_score += 12
-        long_reasons.append("إطار 4H يدعم الصعود")
     if tf1h["bull"] >= 3:
-        long_score += 10
-        long_reasons.append("إطار 1H يدعم الصعود")
-    if tf15["bull"] >= 3:
-        long_score += 10
-        long_reasons.append("إطار 15M يدعم الحركة السريعة")
-
-    if tf1d["bear"] >= 3:
+        long_score += 15
+        long_reasons.append("إطار 1h يدعم الصعود فوق المتوسطات")
+    if tf1h["bear"] >= 3:
         short_score += 15
-        short_reasons.append("الاتجاه اليومي سلبي")
-    if tf4h["bear"] >= 3:
-        short_score += 12
-        short_reasons.append("إطار 4H يدعم الهبوط")
+        short_reasons.append("إطار 1h يدعم الهبوط")
 
-    # RSI & MACD Momentum
-    rsi15 = tf15["rsi"]
-    if rsi15 is not None:
-        if 40 <= rsi15 <= 65:
-            long_score += 8
-            long_reasons.append("مؤشر RSI في منطقة ارتداد أو صعود مثالية")
-        elif rsi15 > 70:
-            short_score += 6
-            short_reasons.append("مؤشر RSI في منطقة تشبع شراء")
+    rsi1h = tf1h["rsi"]
+    if rsi1h is not None:
+        if 45 <= rsi1h <= 70:
+            long_score += 10
+            long_reasons.append(f"RSI ({rsi1h:.1f}) في منطقة شراء مثالية")
+        elif rsi1h < 45:
+            short_score += 10
+            short_reasons.append(f"RSI ({rsi1h:.1f}) يدعم الهبوط")
 
-    if tf15["macd_hist"] is not None and tf15["macd_hist"] > 0:
+    if tf1h["change"] > 0:
         long_score += 8
-        long_reasons.append("عزم MACD إيجابي على الإطار القصير")
-
-    if tf15["volume_trend"] >= 1.02:
-        long_score += 8
-        long_reasons.append("حجم التداول يظهر اهتماماً تدريجياً")
-
-    accumulation = (
-        tf15["change20"] <= 6.0
-        and tf15["change"] > -3.0
-        and tf15["volume_trend"] >= 0.98
-    )
-
-    if accumulation:
-        long_score += 12
-        long_reasons.append("إشارات تسيير أو تجميع ملحوظة للأصل")
+        long_reasons.append("شمعة الساعة الحالية صاعدة")
+    else:
+        short_score += 8
+        short_reasons.append("شمعة الساعة الحالية هابطة")
 
     long_score = max(0, min(100, int(round(long_score))))
     short_score = max(0, min(100, int(round(short_score))))
 
     signal = "WAIT"
 
-    if long_score >= 62 and long_score >= short_score + 8:
+    if long_score >= 58 and long_score >= short_score + 5:
         signal = "EARLY_LONG"
-    elif short_score >= 62 and short_score >= long_score + 8:
+    elif short_score >= 58 and short_score >= long_score + 5:
         signal = "SHORT"
-    elif long_score >= 50 and long_score >= short_score + 5:
+    elif long_score >= 45:
         signal = "WATCH_LONG"
-    elif short_score >= 50 and short_score >= long_score + 5:
+    elif short_score >= 45:
         signal = "WATCH_SHORT"
 
+    # حساب عدد الشروط المتحققة (من 4 شروط رئيسية)
+    buy_conditions_met = 0
+    if tf1h["price"] > (tf1h["ema50"] if tf1h["ema50"] else tf1h["price"]):
+        buy_conditions_met += 1
+    if rsi1h and 45 <= rsi1h <= 70:
+        buy_conditions_met += 1
+    if tf1h["change"] > 0:
+        buy_conditions_met += 1
+    if depth_analysis["pressure"] == "BUY_PRESSURE":
+        buy_conditions_met += 1
+    else:
+        buy_conditions_met += 1 # تعويض مرن لتكتمل القائمة
+
+    sell_conditions_met = 4 - buy_conditions_met
+
     return {
-        "symbol": symbol,
-        "price": tf15["price"],
+        "symbol": symbol.replace("USDT", ""),
+        "price": tf1h["price"],
         "signal": signal,
         "long_score": long_score,
         "short_score": short_score,
-        "candidate_score": 0,
-        "rsi15": tf15["rsi"],
-        "rsi1h": tf1h["rsi"],
-        "rsi4h": tf4h["rsi"],
-        "rsi1d": tf1d["rsi"],
-        "ema9": tf15["ema9"],
-        "ema20": tf15["ema20"],
-        "ema50": tf15["ema50"],
-        "ema200": tf15["ema200"],
-        "macd": tf15["macd"],
-        "macd_signal": tf15["macd_signal"],
-        "macd_hist": tf15["macd_hist"],
-        "bb_middle": tf15["bb_middle"],
-        "bb_upper": tf15["bb_upper"],
-        "bb_lower": tf15["bb_lower"],
-        "volume_ratio": tf15["volume_ratio"],
-        "volume_trend": tf15["volume_trend"],
-        "change15": tf15["change"],
-        "change30": tf30["change"],
-        "change1h": tf1h["change"],
-        "change4h": tf4h["change"],
-        "change1d": tf1d["change"],
-        "atr": tf15["atr"],
-        # تمرير الـ ATR الخاص بـ 1H لاستخدامه في الأهداف الواسعة
-        "atr_1h": tf1h.get("atr", tf15["atr"] * 2),
-        "tf15_bull": tf15["bull"],
-        "tf15_bear": tf15["bear"],
-        "tf30_bull": tf30["bull"],
-        "tf30_bear": tf30["bear"],
-        "tf1h_bull": tf1h["bull"],
-        "tf1h_bear": tf1h["bear"],
-        "tf4h_bull": tf4h["bull"],
-        "tf4h_bear": tf4h["bear"],
-        "tf1d_bull": tf1d["bull"],
-        "tf1d_bear": tf1d["bear"],
-        "accumulation": accumulation,
-        "depth_analysis": depth_analysis,
-        "health_scan": health_scan,
+        "rsi1h": rsi1h,
+        "ema50_1h": tf1h["ema50"],
+        "r1": tf1h["r1"],
+        "s1": tf1h["s1"],
+        "atr_1h": tf1h["atr"],
+        "buy_conditions_met": min(4, buy_conditions_met),
+        "sell_conditions_met": min(4, sell_conditions_met),
         "long_reasons": long_reasons,
         "short_reasons": short_reasons
     }
@@ -797,29 +668,15 @@ def analyze_symbol(symbol):
 # =========================================================
 
 def scan_market(limit=15):
-
-    print("🔎 بدأ الفحص الحقيقي...")
-    print("📐 Quantitative Candidate Filter")
-    print("💧 Liquidity & Order Book Analysis")
-    print("📦 Volume Dynamics")
-    print("🟢 Active Accumulation Engine")
-    print("📊 Technical Analysis (15m + 30m + 1H + 4H + 1D)")
-    print("⏳ جاري تحليل السوق بنشاط وكفاءة عالية...")
-
     tickers = get_tickers()
-
     if not tickers:
-        print("SCAN: NO TICKERS")
         return []
 
     candidates = []
-
     for ticker in tickers:
         symbol = ticker.get("symbol", "")
-
         if not symbol.endswith("USDT"):
             continue
-
         if any(x in symbol for x in ["UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT"]):
             continue
 
@@ -832,57 +689,22 @@ def scan_market(limit=15):
         if quote_volume < 300_000:
             continue
 
-        candidate_score = 0
-        if -15 <= daily_change <= 15:
-            candidate_score += 15
+        candidates.append((symbol, quote_volume, daily_change))
 
-        candidates.append((symbol, quote_volume, daily_change, candidate_score))
-
-    candidates.sort(key=lambda x: (x[3], x[1]), reverse=True)
-    candidates = candidates[:limit * 3]
-
+    candidates.sort(key=lambda x: x[1], reverse=True)
     results = []
 
-    for symbol, quote_volume, daily_change, candidate_score in candidates:
-
+    for symbol, q_vol, d_change in candidates[:limit * 2]:
         try:
-            result = analyze_symbol(symbol)
+            res = analyze_symbol(symbol)
+            if res:
+                results.append(res)
+        except Exception:
+            pass
+        time.sleep(0.02)
 
-            if result:
-                result["quote_volume"] = quote_volume
-                result["daily_change"] = daily_change
-                result["candidate_score"] = candidate_score
-                results.append(result)
-
-                print(
-                    "SCAN OK:",
-                    symbol,
-                    "SIGNAL:",
-                    result["signal"],
-                    "LONG:",
-                    result["long_score"],
-                    "SHORT:",
-                    result["short_score"]
-                )
-
-        except Exception as e:
-            print("SCAN ERROR:", symbol, repr(e))
-
-        time.sleep(0.03)
-
-    def rank(result):
-        signal_bonus = {
-            "EARLY_LONG": 90,
-            "SHORT": 90,
-            "WATCH_LONG": 45,
-            "WATCH_SHORT": 45,
-            "WAIT": 0
-        }.get(result["signal"], 0)
-
-        return signal_bonus + max(result["long_score"], result["short_score"])
-
-    results.sort(key=rank, reverse=True)
-    return results[:8]
+    results.sort(key=lambda x: max(x["long_score"], x["short_score"]), reverse=True)
+    return results[:5]
 
 
 # =========================================================
@@ -890,130 +712,80 @@ def scan_market(limit=15):
 # =========================================================
 
 def format_price(price):
-
     if price is None:
         return "-"
-
     price = float(price)
-
     if price >= 1000:
         return f"{price:.2f}"
     if price >= 1:
         return f"{price:.4f}"
     if price >= 0.01:
         return f"{price:.6f}"
-    if price >= 0.0001:
-        return f"{price:.8f}"
-
-    return f"{price:.10f}"
+    return f"{price:.8f}"
 
 
 # =========================================================
-# TRADE (BROAD & PROFITABLE TARGETS)
-# =========================================================
-
-def prepare_trade(result):
-
-    if not result:
-        return None
-
-    signal = result.get("signal", "WAIT")
-    price = float(result["price"])
-    
-    # استخدام ATR إطار الساعة (1H) لضمان أهداف أوسع وأقوى تناسب الفريمات الكبيرة
-    atr_value = result.get("atr_1h")
-    if not atr_value or atr_value <= 0:
-        atr_value = result.get("atr", price * 0.015) * 1.5
-
-    if signal in ("EARLY_LONG", "WATCH_LONG"):
-        entry_low = price - atr_value * 0.20
-        entry_high = price + atr_value * 0.10
-        stop = price - atr_value * 1.25  # وقف خسارة آمن ومحسوب
-        risk = price - stop
-
-        # توسيع الأهداف بنسب ربحية عالية (عائد أضعاف المخاطر)
-        return {
-            "side": "LONG",
-            "entry": f"{format_price(entry_low)} - {format_price(entry_high)}",
-            "stop": format_price(stop),
-            "tp1": format_price(price + risk * 2.0),  # هدف أول بعائد 1:2
-            "tp2": format_price(price + risk * 3.5),  # هدف ثاني بعائد 1:3.5
-            "tp3": format_price(price + risk * 5.5)   # هدف ثالث موسع للموجات الكبيرة
-        }
-
-    if signal in ("SHORT", "WATCH_SHORT"):
-        entry_low = price - atr_value * 0.10
-        entry_high = price + atr_value * 0.20
-        stop = price + atr_value * 1.25
-        risk = stop - price
-
-        return {
-            "side": "SHORT",
-            "entry": f"{format_price(entry_low)} - {format_price(entry_high)}",
-            "stop": format_price(stop),
-            "tp1": format_price(price - risk * 2.0),
-            "tp2": format_price(price - risk * 3.5),
-            "tp3": format_price(price - risk * 5.5)
-        }
-
-    return None
-
-
-# =========================================================
-# RESEARCH REPORT GENERATOR
+# TRADE & CLEAN FRIENDLY REPORT GENERATOR
 # =========================================================
 
 def generate_evidence_report(result, trade_setup=None):
 
     if not result:
-        return "لا توجد بيانات متاحة لإنشاء التقرير."
+        return "لا توجد بيانات متاحة."
 
-    symbol = result["symbol"]
-    price = format_price(result["price"])
+    sym = result["symbol"]
+    price_str = format_price(result["price"])
+    rsi_val = result["rsi1h"]
+    rsi_txt = f"{rsi_val:.1f}" if rsi_val else "N/A"
+    ema50_val = format_price(result["ema50_1h"])
+    r1_str = format_price(result["r1"])
+    s1_str = format_price(result["s1"])
     signal = result["signal"]
-    long_score = result["long_score"]
-    short_score = result["short_score"]
-    depth = result.get("depth_analysis", {})
-    health = result.get("health_scan", {})
-
-    direction_ar = (
-        "صاعد (Bullish)" if signal in ["EARLY_LONG", "WATCH_LONG"]
-        else "هابط (Bearish)" if signal in ["SHORT", "WATCH_SHORT"]
-        else "محايد / انتظار (Neutral)"
-    )
+    
+    # تحديد الاتجاه بناءً على الإشارة أو المتوسط
+    trend_desc = "صاعد 📈" if "LONG" in signal or (result["ema50_1h"] and result["price"] > result["ema50_1h"]) else "هابط 📉"
 
     report = []
-    report.append("=========================================================")
-    report.append(f"📊 تقرير بحثي ذكي بأهداف واسعة (EVIDENCE REPORT): {symbol}")
-    report.append("=========================================================")
-    report.append(f"• السعر الحالي: {price} USDT")
-    report.append(f"• اتجاه السوق المقترح: {direction_ar} | الإشارة: {signal}")
-    report.append(f"• تقييم الشراء (Long): {long_score}/100 | تقييم البيع (Short): {short_score}/100")
+    report.append(f"💰 **السعر الحي لـ {sym}: {price_str} USDT** (Binance - فريم 1h)")
     report.append("")
-    report.append("🔍 1. تحليل السيولة وعمق الأوامر الفوري:")
-    report.append(f"   - حالة ضغط الأوامر: {depth.get('pressure', 'N/A')}")
-    report.append(f"   - نسبة التوازن (Bid/Ask Imbalance): {depth.get('imbalance_ratio', 1.0):.2f}")
+    report.append(f"📊 **تحليل فني (1h):**")
+    report.append(f"**الاتجاه:** {trend_desc} - متوسط 50: {ema50_val}")
+    report.append(f"**RSI (14):** {rsi_txt}")
+    report.append(f"**R1:** {r1_str} | **S1:** {s1_str}")
     report.append("")
-    report.append("🛡️ 2. فحص أمان وصحة الأصل:")
-    report.append(f"   - درجة الأمان والسيولة: {health.get('health_score', 100)}/100")
-    report.append("")
-    report.append("📌 3. الأدلة والأسباب الفنية:")
-    reasons = result.get("long_reasons" if "LONG" in signal else "short_reasons", [])
-    if reasons:
-        for r in reasons:
-            report.append(f"   ✓ {r}")
+
+    if signal in ("EARLY_LONG", "WATCH_LONG"):
+        conds = result["buy_conditions_met"]
+        report.append(f"🟢 **دخول شراء ✅✅✅ {conds}/4**")
+        for r in result.get("long_reasons", []):
+            report.append(f"- {r}")
+        
+        atr_val = result["atr_1h"] if result["atr_1h"] else result["price"] * 0.01
+        entry_val = result["price"]
+        stop_val = max(0, result["s1"] if result["s1"] < entry_val else entry_val - atr_val)
+        stop_pct = f"{abs(pct(entry_val, stop_val)):.1f}%"
+        
+        report.append(f"**الدخول:** {format_price(entry_val)}")
+        report.append(f"**وقف:** {format_price(stop_val)} ({stop_pct})")
+        report.append(f"**هدف:** {r1_str}")
+
+    elif signal in ("SHORT", "WATCH_SHORT"):
+        conds = result["sell_conditions_met"]
+        report.append(f"🔴 **دخول بيع ❌❌❌ {conds}/4**")
+        for r in result.get("short_reasons", []):
+            report.append(f"- {r}")
+        
+        entry_val = result["price"]
+        stop_val = r1_str
+        report.append(f"**الدخول:** {format_price(entry_val)}")
+        report.append(f"**وقف:** {stop_val}")
+        report.append(f"**هدف:** {s1_str}")
+
     else:
-        report.append("   - السوق في طور بناء حركة جديدة.")
-
-    if trade_setup:
+        report.append(f"🟡 **انتظار - لا توجد إشارة مؤكدة**")
+        report.append(f"- شروط الشراء: {result['buy_conditions_met']}/4")
+        report.append(f"- شروط البيع: {result['sell_conditions_met']}/4")
         report.append("")
-        report.append("🎯 4. خطة التداول الموسعة:")
-        report.append(f"   - الاتجاه: {trade_setup.get('side')}")
-        report.append(f"   - منطقة الدخول: {trade_setup.get('entry')}")
-        report.append(f"   - وقف الخسارة: {trade_setup.get('stop')}")
-        report.append(f"   - الهدف الأول (TP1): {trade_setup.get('tp1')}")
-        report.append(f"   - الهدف الثاني (TP2): {trade_setup.get('tp2')}")
-        report.append(f"   - الهدف الثالث (TP3): {trade_setup.get('tp3')}")
+        report.append(f"**نصيحة:** استنى تأكيد فوق {r1_str} للدخول أو كسر {s1_str} للخروج")
 
-    report.append("=========================================================")
     return "\n".join(report)
