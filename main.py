@@ -28,16 +28,19 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "🤖 Crypto Zero Reversal\n\n"
-        "الأوامر:\n"
-        "• /scan - فحص السوق بالكامل\n"
-        "• BTC - تحليل عملة\n\n"
-        "التحليل:\n"
+        "الأوامر المتاحة:\n"
+        "• /scan - فحص سوق Binance Futures بالكامل\n"
+        "• BTC - تحليل عملة محددة\n\n"
+        "التحليل يعتمد على:\n"
         "15m + 1H + 4H + 1D\n"
-        "دعم + مقاومة + سيولة + تجميع + زخم"
+        "الدعم + المقاومة + السيولة + التجميع + الزخم"
     )
 
 
@@ -47,13 +50,13 @@ async def scan_command(
 ):
 
     await update.message.reply_text(
-        "🔎 جاري فحص سوق Binance بالكامل...\n\n"
+        "🔎 جاري فحص سوق Binance Futures بالكامل...\n\n"
         "أبحث عن:\n"
         "• هبوط سابق\n"
         "• تجميع\n"
         "• دخول السيولة\n"
         "• دعم ومقاومة\n"
-        "• تحسن الزخم\n"
+        "• تحسن الحجم والزخم\n"
         "• تأكيد 15m / 1H / 4H / 1D\n\n"
         "قد يستغرق الفحص بعض الوقت."
     )
@@ -67,7 +70,7 @@ async def scan_command(
     except Exception as e:
 
         logger.exception(
-            "Scan error: %s",
+            "Scan failed: %s",
             e
         )
 
@@ -82,18 +85,18 @@ async def scan_command(
 
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
-            "لم أجد حالياً عملات تحقق "
-            "شروط الدخول المطلوبة.\n\n"
+            "لم أجد حالياً فرصة LONG أو SHORT "
+            "تتجاوز شروط التأكيد.\n\n"
             "تم رفض الفرص الضعيفة أو القريبة "
-            "من الدعم/المقاومة أو التي انفجرت بالفعل."
+            "من الدعم/المقاومة أو التي تحركت بالفعل."
         )
 
         return
 
     await update.message.reply_text(
         f"✅ انتهى الفحص.\n"
-        f"وجدت {len(results)} فرص مطابقة.\n"
-        f"أفضل الفرص:"
+        f"وجدت {len(results)} فرص مطابقة للشروط.\n"
+        f"تم اختيار أفضل الفرص."
     )
 
     for data in results:
@@ -108,7 +111,7 @@ async def scan_command(
 
         except Exception as e:
 
-            logger.error(
+            logger.exception(
                 "Report error: %s",
                 e
             )
@@ -132,7 +135,8 @@ async def handle_message(
     if not text:
         return
 
-    # Normalize ONLY HERE
+    # BTC -> BTCUSDT
+    # BTCUSDT -> BTCUSDT
     symbol = normalize_symbol(
         text
     )
@@ -159,7 +163,7 @@ async def handle_message(
     except Exception as e:
 
         logger.exception(
-            "Coin error: %s",
+            "Coin analysis error: %s",
             e
         )
 
@@ -173,7 +177,8 @@ async def handle_message(
 
         await update.message.reply_text(
             f"❌ لم أجد زوج {symbol} "
-            f"أو تعذر جلب بيانات Binance حالياً."
+            f"على Binance Futures "
+            f"أو تعذر جلب بياناته حالياً."
         )
 
         return
@@ -223,7 +228,7 @@ def main():
     )
 
     logger.info(
-        "Crypto Zero Reversal started."
+        "Crypto Zero Reversal started successfully."
     )
 
     application.run_polling(
