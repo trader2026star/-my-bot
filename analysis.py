@@ -6,7 +6,7 @@ FUTURES_URL = "https://fapi.binance.com"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal/10.0"
+    "User-Agent": "CryptoZeroReversal/11.0"
 })
 
 logger = logging.getLogger(__name__)
@@ -23,15 +23,7 @@ def api_get(path, params=None, timeout=10):
             params=params,
             timeout=timeout
         )
-
-        if r.status_code != 200:
-            logger.error(
-                "Binance HTTP %s: %s",
-                r.status_code,
-                r.text[:300]
-            )
-            return None
-
+        r.raise_for_status()
         return r.json()
 
     except Exception as e:
@@ -48,9 +40,13 @@ def normalize_symbol(symbol):
         return None
 
     symbol = str(symbol).upper().strip()
-    symbol = symbol.replace("/", "")
-    symbol = symbol.replace("-", "")
-    symbol = symbol.replace(" ", "")
+
+    symbol = (
+        symbol
+        .replace("/", "")
+        .replace("-", "")
+        .replace(" ", "")
+    )
 
     if symbol.endswith("USDT"):
         return symbol
@@ -67,6 +63,7 @@ def ema(values, period):
         return None
 
     k = 2 / (period + 1)
+
     value = sum(values[:period]) / period
 
     for price in values[period:]:
@@ -76,6 +73,7 @@ def ema(values, period):
 
 
 def rsi(values, period=14):
+
     if len(values) < period + 1:
         return None
 
@@ -83,14 +81,17 @@ def rsi(values, period=14):
     losses = []
 
     for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
+
+        d = values[i] - values[i - 1]
+
+        gains.append(max(d, 0))
+        losses.append(max(-d, 0))
 
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
 
     for i in range(period, len(gains)):
+
         avg_gain = (
             avg_gain * (period - 1) + gains[i]
         ) / period
@@ -102,19 +103,25 @@ def rsi(values, period=14):
     if avg_loss == 0:
         return 100.0
 
-    rs = avg_gain / avg_loss
+    return 100 - (
+        100 / (1 + avg_gain / avg_loss)
+    )
 
-    return 100 - (100 / (1 + rs))
 
+def percentage(old, new):
 
-def pct(old, new):
     if old == 0:
         return 0
 
     return ((new - old) / old) * 100
 
 
+# =========================================================
+# FORMAT
+# =========================================================
+
 def fmt(x):
+
     if x is None:
         return "-"
 
@@ -134,10 +141,11 @@ def fmt(x):
 
 
 # =========================================================
-# FUTURES SYMBOLS
+# ALL BINANCE FUTURES USDT COINS
 # =========================================================
 
 def get_usdt_symbols():
+
     data = api_get(
         "/fapi/v1/exchangeInfo"
     )
@@ -149,30 +157,17 @@ def get_usdt_symbols():
 
     for item in data.get("symbols", []):
 
-        symbol = item.get("symbol")
+        if (
+            item.get("status") == "TRADING"
+            and item.get("quoteAsset") == "USDT"
+            and item.get("contractType") == "PERPETUAL"
+        ):
 
-        if not symbol:
-            continue
+            symbols.append(
+                item["symbol"]
+            )
 
-        if item.get("status") != "TRADING":
-            continue
-
-        if item.get("quoteAsset") != "USDT":
-            continue
-
-        if item.get("contractType") != "PERPETUAL":
-            continue
-
-        symbols.append(symbol)
-
-    symbols = sorted(set(symbols))
-
-    logger.info(
-        "Loaded %s Binance Futures USDT perpetuals",
-        len(symbols)
-    )
-
-    return symbols
+    return sorted(set(symbols))
 
 
 # =========================================================
@@ -180,6 +175,7 @@ def get_usdt_symbols():
 # =========================================================
 
 def get_futures_tickers():
+
     data = api_get(
         "/fapi/v1/ticker/24hr"
     )
@@ -191,25 +187,24 @@ def get_futures_tickers():
 
     for item in data:
 
-        symbol = item.get("symbol")
-
-        if not symbol:
-            continue
-
         try:
-            result[symbol] = {
+
+            result[item["symbol"]] = {
                 "price": float(
-                    item.get("lastPrice", 0)
+                    item["lastPrice"]
                 ),
+
                 "change": float(
-                    item.get("priceChangePercent", 0)
+                    item["priceChangePercent"]
                 ),
+
                 "quote_volume": float(
-                    item.get("quoteVolume", 0)
+                    item["quoteVolume"]
                 )
             }
+
         except Exception:
-            continue
+            pass
 
     return result
 
@@ -223,6 +218,7 @@ def get_klines(
     interval="15m",
     limit=150
 ):
+
     symbol = normalize_symbol(symbol)
 
     if not symbol:
@@ -238,34 +234,43 @@ def get_klines(
     )
 
 
+# =========================================================
+# PARSE KLINES
+# =========================================================
+
 def parse_klines(k):
-    if not k:
-        return None
 
     try:
+
         return {
+
             "open": [
-                float(x[1]) for x in k
+                float(x[1])
+                for x in k
             ],
+
             "high": [
-                float(x[2]) for x in k
+                float(x[2])
+                for x in k
             ],
+
             "low": [
-                float(x[3]) for x in k
+                float(x[3])
+                for x in k
             ],
+
             "close": [
-                float(x[4]) for x in k
+                float(x[4])
+                for x in k
             ],
+
             "volume": [
-                float(x[5]) for x in k
+                float(x[5])
+                for x in k
             ]
         }
 
-    except Exception as e:
-        logger.error(
-            "Kline parse error: %s",
-            e
-        )
+    except Exception:
         return None
 
 
@@ -273,41 +278,54 @@ def parse_klines(k):
 # SUPPORT / RESISTANCE
 # =========================================================
 
-def find_levels(highs, lows, price):
+def find_levels(
+    highs,
+    lows,
+    price
+):
 
     supports = []
     resistances = []
 
-    for i in range(2, len(highs) - 2):
+    for i in range(
+        2,
+        len(highs) - 2
+    ):
 
         if (
             highs[i] >= highs[i - 1]
             and highs[i] >= highs[i - 2]
             and highs[i] >= highs[i + 1]
             and highs[i] >= highs[i + 2]
+            and highs[i] > price
         ):
-            if highs[i] > price:
-                resistances.append(highs[i])
+
+            resistances.append(
+                highs[i]
+            )
 
         if (
             lows[i] <= lows[i - 1]
             and lows[i] <= lows[i - 2]
             and lows[i] <= lows[i + 1]
             and lows[i] <= lows[i + 2]
+            and lows[i] < price
         ):
-            if lows[i] < price:
-                supports.append(lows[i])
+
+            supports.append(
+                lows[i]
+            )
 
     supports = sorted(
         set(supports),
         reverse=True
-    )
+    )[:4]
 
     resistances = sorted(
         set(resistances)
-    )
+    )[:4]
 
-    return supports[:4], resistances[:4]
+    return supports, resistances
 
 
 # =========================================================
@@ -319,6 +337,7 @@ def analyze_timeframe(
     interval,
     limit=150
 ):
+
     k = get_klines(
         symbol,
         interval,
@@ -328,21 +347,22 @@ def analyze_timeframe(
     if not k or len(k) < 70:
         return None
 
-    d = parse_klines(k)
+    data = parse_klines(k)
 
-    if not d:
+    if not data:
         return None
 
-    closes = d["close"]
-    highs = d["high"]
-    lows = d["low"]
-    volumes = d["volume"]
+    closes = data["close"]
+    highs = data["high"]
+    lows = data["low"]
+    volumes = data["volume"]
 
     price = closes[-1]
 
     e9 = ema(closes, 9)
     e20 = ema(closes, 20)
     e50 = ema(closes, 50)
+
     rr = rsi(closes)
 
     if None in (
@@ -365,12 +385,6 @@ def analyze_timeframe(
         sum(volumes[-15:]) / 15
     )
 
-    volume_improving = (
-        new_volume > old_volume * 1.08
-        if old_volume
-        else False
-    )
-
     avg_volume = (
         sum(volumes[-21:-1]) / 20
     )
@@ -381,8 +395,14 @@ def analyze_timeframe(
         else 0
     )
 
+    volume_improving = (
+        new_volume > old_volume * 1.08
+        if old_volume
+        else False
+    )
+
     # -----------------------------------------------------
-    # Buy/Sell pressure
+    # BUY / SELL PRESSURE
     # -----------------------------------------------------
 
     buy = 0
@@ -390,26 +410,26 @@ def analyze_timeframe(
 
     for candle in k[-20:]:
 
-        high = float(candle[2])
-        low = float(candle[3])
-        close = float(candle[4])
-        volume = float(candle[5])
+        h = float(candle[2])
+        l = float(candle[3])
+        c = float(candle[4])
+        v = float(candle[5])
 
-        candle_range = max(
-            high - low,
+        rng = max(
+            h - l,
             1e-12
         )
 
         buy += (
-            volume
-            * max(close - low, 0)
-            / candle_range
+            v *
+            max(c - l, 0) /
+            rng
         )
 
         sell += (
-            volume
-            * max(high - close, 0)
-            / candle_range
+            v *
+            max(h - c, 0) /
+            rng
         )
 
     total = buy + sell
@@ -421,37 +441,42 @@ def analyze_timeframe(
     )
 
     # -----------------------------------------------------
-    # Trend
+    # TREND
     # -----------------------------------------------------
 
     if e9 > e20 > e50:
+
         trend = "BULLISH_STRONG"
+
     elif e9 > e20:
+
         trend = "BULLISH"
+
     elif e9 < e20 < e50:
+
         trend = "BEARISH_STRONG"
+
     elif e9 < e20:
+
         trend = "BEARISH"
+
     else:
+
         trend = "SIDEWAYS"
 
     # -----------------------------------------------------
-    # Price changes
+    # PRICE MOVEMENT
     # -----------------------------------------------------
 
-    change_5 = pct(
+    change_5 = percentage(
         closes[-6],
         price
     )
 
-    change_10 = pct(
+    change_10 = percentage(
         closes[-11],
         price
     )
-
-    # -----------------------------------------------------
-    # Previous dump
-    # -----------------------------------------------------
 
     previous_high = max(
         closes[-80:-15]
@@ -461,25 +486,17 @@ def analyze_timeframe(
         closes[-15:]
     )
 
-    previous_dump = pct(
+    previous_dump = percentage(
         previous_high,
         recent_low
     )
-
-    # -----------------------------------------------------
-    # Consolidation
-    # -----------------------------------------------------
 
     recent_high = max(
         highs[-15:]
     )
 
-    recent_low_15 = min(
-        lows[-15:]
-    )
-
-    consolidation_range = pct(
-        recent_low_15,
+    consolidation_range = percentage(
+        recent_low,
         recent_high
     )
 
@@ -487,17 +504,13 @@ def analyze_timeframe(
         consolidation_range <= 12
     )
 
-    # -----------------------------------------------------
-    # Recovery
-    # -----------------------------------------------------
-
-    recovery = pct(
+    recovery = percentage(
         recent_low,
         price
     )
 
     # -----------------------------------------------------
-    # Levels
+    # LEVELS
     # -----------------------------------------------------
 
     supports, resistances = find_levels(
@@ -519,24 +532,47 @@ def analyze_timeframe(
     )
 
     return {
+
         "price": price,
+
         "ema9": e9,
         "ema20": e20,
         "ema50": e50,
+
         "rsi": rr,
+
         "volume_ratio": volume_ratio,
-        "volume_improving": volume_improving,
+
+        "volume_improving":
+            volume_improving,
+
         "pressure": pressure,
+
         "trend": trend,
+
         "change_5": change_5,
         "change_10": change_10,
-        "previous_dump": previous_dump,
-        "consolidation": consolidation,
-        "recovery": recovery,
-        "support": support,
-        "resistance": resistance,
-        "supports": supports,
-        "resistances": resistances
+
+        "previous_dump":
+            previous_dump,
+
+        "consolidation":
+            consolidation,
+
+        "recovery":
+            recovery,
+
+        "support":
+            support,
+
+        "resistance":
+            resistance,
+
+        "supports":
+            supports,
+
+        "resistances":
+            resistances
     }
 
 
@@ -562,19 +598,15 @@ def analyze_symbol(symbol):
 
         result = analyze_timeframe(
             symbol,
-            interval,
-            150
+            interval
         )
 
         if not result:
-            logger.warning(
-                "No %s data for %s",
-                interval,
-                symbol
-            )
             return None
 
-        timeframes[interval] = result
+        timeframes[
+            interval
+        ] = result
 
         time.sleep(0.04)
 
@@ -595,20 +627,22 @@ def analyze_symbol(symbol):
     # DAILY
     # =====================================================
 
-    if tf1d["trend"] in (
-        "BULLISH",
-        "BULLISH_STRONG"
+    if tf1d["trend"].startswith(
+        "BULLISH"
     ):
+
         long_score += 12
+
         long_reasons.append(
             "الاتجاه اليومي صاعد"
         )
 
-    elif tf1d["trend"] in (
-        "BEARISH",
-        "BEARISH_STRONG"
+    elif tf1d["trend"].startswith(
+        "BEARISH"
     ):
+
         short_score += 12
+
         short_reasons.append(
             "الاتجاه اليومي هابط"
         )
@@ -617,20 +651,22 @@ def analyze_symbol(symbol):
     # 4H
     # =====================================================
 
-    if tf4h["trend"] in (
-        "BULLISH",
-        "BULLISH_STRONG"
+    if tf4h["trend"].startswith(
+        "BULLISH"
     ):
+
         long_score += 15
+
         long_reasons.append(
             "تأكيد صاعد على 4H"
         )
 
-    elif tf4h["trend"] in (
-        "BEARISH",
-        "BEARISH_STRONG"
+    elif tf4h["trend"].startswith(
+        "BEARISH"
     ):
+
         short_score += 15
+
         short_reasons.append(
             "تأكيد هابط على 4H"
         )
@@ -639,20 +675,22 @@ def analyze_symbol(symbol):
     # 1H
     # =====================================================
 
-    if tf1h["trend"] in (
-        "BULLISH",
-        "BULLISH_STRONG"
+    if tf1h["trend"].startswith(
+        "BULLISH"
     ):
+
         long_score += 10
+
         long_reasons.append(
             "تحسن الاتجاه على 1H"
         )
 
-    elif tf1h["trend"] in (
-        "BEARISH",
-        "BEARISH_STRONG"
+    elif tf1h["trend"].startswith(
+        "BEARISH"
     ):
+
         short_score += 10
+
         short_reasons.append(
             "ضعف الاتجاه على 1H"
         )
@@ -661,20 +699,22 @@ def analyze_symbol(symbol):
     # 15M
     # =====================================================
 
-    if tf15["trend"] in (
-        "BULLISH",
-        "BULLISH_STRONG"
+    if tf15["trend"].startswith(
+        "BULLISH"
     ):
+
         long_score += 8
+
         long_reasons.append(
             "15m يدعم الصعود"
         )
 
-    elif tf15["trend"] in (
-        "BEARISH",
-        "BEARISH_STRONG"
+    elif tf15["trend"].startswith(
+        "BEARISH"
     ):
+
         short_score += 8
+
         short_reasons.append(
             "15m يدعم الهبوط"
         )
@@ -684,19 +724,23 @@ def analyze_symbol(symbol):
     # =====================================================
 
     if 45 <= tf15["rsi"] <= 68:
+
         long_score += 7
+
         long_reasons.append(
             "RSI مناسب للصعود"
         )
 
     if 32 <= tf15["rsi"] <= 50:
+
         short_score += 7
+
         short_reasons.append(
             "RSI يسمح باستمرار الهبوط"
         )
 
     # =====================================================
-    # LIQUIDITY
+    # PRESSURE
     # =====================================================
 
     if tf15["pressure"] >= 55:
@@ -737,18 +781,19 @@ def analyze_symbol(symbol):
                 "الحجم يدعم البائعين"
             )
 
-    if tf15["volume_improving"]:
+    if (
+        tf15["volume_improving"]
+        and tf15["pressure"] >= 52
+    ):
 
-        if tf15["pressure"] >= 52:
+        long_score += 7
 
-            long_score += 7
-
-            long_reasons.append(
-                "الحجم يتحسن تدريجياً"
-            )
+        long_reasons.append(
+            "الحجم يتحسن تدريجياً"
+        )
 
     # =====================================================
-    # DUMP + ACCUMULATION
+    # ACCUMULATION
     # =====================================================
 
     accumulation = (
@@ -771,27 +816,31 @@ def analyze_symbol(symbol):
     # SUPPORT
     # =====================================================
 
-    support = tf15["support"]
-
     support_distance = (
-        abs(price - support)
+        abs(
+            price - tf15["support"]
+        )
         / price
         * 100
     )
 
-    if support_distance <= 3:
-
-        if tf15["pressure"] >= 52:
-
-            long_score += 10
-
-            long_reasons.append(
-                "السعر قريب من دعم مع ضغط شراء"
-            )
-
-    # Support breakdown
     if (
-        price < support
+        support_distance <= 3
+        and tf15["pressure"] >= 52
+    ):
+
+        long_score += 10
+
+        long_reasons.append(
+            "السعر قريب من دعم مع ضغط شراء"
+        )
+
+    # =====================================================
+    # SUPPORT BREAK
+    # =====================================================
+
+    if (
+        price < tf15["support"]
         and tf15["pressure"] <= 48
         and tf15["volume_ratio"] >= 1.10
     ):
@@ -806,10 +855,10 @@ def analyze_symbol(symbol):
     # RESISTANCE
     # =====================================================
 
-    resistance = tf15["resistance"]
-
     resistance_distance = (
-        abs(resistance - price)
+        abs(
+            tf15["resistance"] - price
+        )
         / price
         * 100
     )
@@ -830,9 +879,12 @@ def analyze_symbol(symbol):
                 "رفض محتمل من المقاومة"
             )
 
-    # Resistance breakout
+    # =====================================================
+    # RESISTANCE BREAK
+    # =====================================================
+
     if (
-        price > resistance
+        price > tf15["resistance"]
         and tf15["pressure"] >= 55
         and tf15["volume_ratio"] >= 1.15
     ):
@@ -844,7 +896,7 @@ def analyze_symbol(symbol):
         )
 
     # =====================================================
-    # DON'T CHASE PUMP
+    # EXPLOSION FILTER
     # =====================================================
 
     exploded = (
@@ -861,10 +913,6 @@ def analyze_symbol(symbol):
             "العملة تحركت بقوة بالفعل"
         )
 
-    # =====================================================
-    # SCORE
-    # =====================================================
-
     long_score = max(
         0,
         min(long_score, 100)
@@ -880,7 +928,7 @@ def analyze_symbol(symbol):
     )
 
     # =====================================================
-    # FINAL ACTION
+    # FINAL DECISION
     # =====================================================
 
     if (
@@ -890,13 +938,20 @@ def analyze_symbol(symbol):
     ):
 
         action = "🟢 LONG"
+
         score = long_score
 
-        if accumulation and not exploded:
+        if (
+            accumulation
+            and not exploded
+        ):
+
             status = (
                 "🟢 تجميع + مراقبة دخول السيولة"
             )
+
         else:
+
             status = (
                 "🟢 تأكيد صعود"
             )
@@ -908,7 +963,9 @@ def analyze_symbol(symbol):
     ):
 
         action = "🔴 SHORT"
+
         score = short_score
+
         status = (
             "🔴 تصريف + ضغط بيع"
         )
@@ -916,16 +973,18 @@ def analyze_symbol(symbol):
     else:
 
         action = "🟡 WAIT"
+
         score = max(
             long_score,
             short_score
         )
+
         status = (
             "🟡 انتظار تأكيد"
         )
 
     # =====================================================
-    # ENTRY / STOP / TARGETS
+    # ENTRY / SL / TARGETS
     # =====================================================
 
     supports = tf15["supports"]
@@ -933,31 +992,34 @@ def analyze_symbol(symbol):
 
     if action == "🟢 LONG":
 
-        nearest_support = (
+        support_level = (
             supports[0]
             if supports
-            else support
+            else tf15["support"]
         )
 
-        stop = nearest_support * 0.99
+        stop = (
+            support_level * 0.99
+        )
 
         entry_low = max(
-            nearest_support,
+            support_level,
             price * 0.995
         )
 
         entry_high = price
 
-        future_resistances = [
-            x for x in resistances
+        future_resistance = [
+            x
+            for x in resistances
             if x > price
         ]
 
-        if len(future_resistances) >= 3:
+        if len(future_resistance) >= 3:
 
-            tp1 = future_resistances[0]
-            tp2 = future_resistances[1]
-            tp3 = future_resistances[2]
+            tp1 = future_resistance[0]
+            tp2 = future_resistance[1]
+            tp3 = future_resistance[2]
 
         else:
 
@@ -972,19 +1034,22 @@ def analyze_symbol(symbol):
 
     elif action == "🔴 SHORT":
 
-        nearest_resistance = (
+        resistance_level = (
             resistances[0]
             if resistances
-            else resistance
+            else tf15["resistance"]
         )
 
-        stop = nearest_resistance * 1.01
+        stop = (
+            resistance_level * 1.01
+        )
 
         entry_low = price
         entry_high = price * 1.005
 
         lower_supports = [
-            x for x in supports
+            x
+            for x in supports
             if x < price
         ]
 
@@ -1019,7 +1084,7 @@ def analyze_symbol(symbol):
     else:
 
         entry_low = price * 0.995
-        entry_high = price * 1.005
+        entry_high = price
 
         stop = None
         tp1 = None
@@ -1027,65 +1092,88 @@ def analyze_symbol(symbol):
         tp3 = None
 
     return {
+
         "symbol": symbol,
+
         "action": action,
-        "score": f"{score}/100",
+
+        "score":
+            f"{score}/100",
+
         "status": status,
 
-        "price": fmt(price),
+        "price":
+            fmt(price),
 
-        "rsi": f"{tf15['rsi']:.1f}",
+        "rsi":
+            f"{tf15['rsi']:.1f}",
 
-        "volume": (
-            f"{tf15['volume_ratio']:.2f}x"
-        ),
+        "volume":
+            f"{tf15['volume_ratio']:.2f}x",
 
-        "buy_pressure": (
-            f"{tf15['pressure']:.1f}%"
-        ),
+        "buy_pressure":
+            f"{tf15['pressure']:.1f}%",
 
-        "trend": tf1d["trend"],
+        "trend":
+            tf1d["trend"],
 
-        "support": fmt(support),
-        "resistance": fmt(resistance),
+        "support":
+            fmt(tf15["support"]),
 
-        "supports": [
-            fmt(x) for x in supports
-        ],
+        "resistance":
+            fmt(tf15["resistance"]),
 
-        "resistances": [
-            fmt(x) for x in resistances
-        ],
+        "supports":
+            [
+                fmt(x)
+                for x in supports
+            ],
 
-        "entry_range": (
-            f"{fmt(entry_low)} - "
-            f"{fmt(entry_high)}"
-        ),
+        "resistances":
+            [
+                fmt(x)
+                for x in resistances
+            ],
 
-        "stop_loss": fmt(stop),
+        "entry_range":
+            f"{fmt(entry_low)} - {fmt(entry_high)}",
 
-        "tp1": fmt(tp1),
-        "tp2": fmt(tp2),
-        "tp3": fmt(tp3),
+        "stop_loss":
+            fmt(stop),
 
-        "accumulation": accumulation,
-        "exploded": exploded,
+        "tp1":
+            fmt(tp1),
 
-        "long_score": long_score,
-        "short_score": short_score,
+        "tp2":
+            fmt(tp2),
 
-        "long_reasons": long_reasons,
-        "short_reasons": short_reasons,
+        "tp3":
+            fmt(tp3),
 
-        "timeframes": timeframes
+        "accumulation":
+            accumulation,
+
+        "exploded":
+            exploded,
+
+        "long_reasons":
+            long_reasons,
+
+        "short_reasons":
+            short_reasons,
+
+        "timeframes":
+            timeframes
     }
 
 
 # =========================================================
-# DIRECT COIN
+# SINGLE COIN
 # =========================================================
 
-def get_coin_analysis(symbol_input):
+def get_coin_analysis(
+    symbol_input
+):
 
     symbol = normalize_symbol(
         symbol_input
@@ -1094,22 +1182,20 @@ def get_coin_analysis(symbol_input):
     if not symbol:
         return None
 
-    logger.info(
-        "Analyzing: %s",
+    return analyze_symbol(
         symbol
     )
 
-    return analyze_symbol(symbol)
-
 
 # =========================================================
-# FAST FILTER
+# QUICK SCANNER FILTER
 # =========================================================
 
 def quick_filter(
     symbol,
     ticker=None
 ):
+
     k = get_klines(
         symbol,
         "1h",
@@ -1119,18 +1205,26 @@ def quick_filter(
     if not k or len(k) < 50:
         return None
 
-    d = parse_klines(k)
+    data = parse_klines(k)
 
-    if not d:
+    if not data:
         return None
 
-    closes = d["close"]
-    volumes = d["volume"]
+    closes = data["close"]
+    volumes = data["volume"]
 
     price = closes[-1]
 
-    e20 = ema(closes, 20)
-    e50 = ema(closes, 50)
+    e20 = ema(
+        closes,
+        20
+    )
+
+    e50 = ema(
+        closes,
+        50
+    )
+
     rr = rsi(closes)
 
     if None in (
@@ -1151,20 +1245,13 @@ def quick_filter(
         else 0
     )
 
-    change_10 = pct(
+    change = percentage(
         closes[-11],
         price
     )
 
-    # Don't chase a coin that already exploded.
-    if change_10 > 15:
-        return None
-
-    # Avoid dead coins.
-    if (
-        abs(change_10) < 0.5
-        and volume_ratio < 0.7
-    ):
+    # لا نريد عملة انفجرت بالفعل
+    if change > 15:
         return None
 
     potential = 0
@@ -1181,26 +1268,27 @@ def quick_filter(
     if volume_ratio >= 0.8:
         potential += 1
 
-    if abs(change_10) >= 2:
+    if abs(change) >= 2:
         potential += 1
 
-    # 24h activity
     if ticker:
 
         if ticker.get(
             "quote_volume",
             0
         ) >= 5_000_000:
+
             potential += 1
 
-    if potential < 3:
-        return None
-
-    return symbol
+    return (
+        symbol
+        if potential >= 3
+        else None
+    )
 
 
 # =========================================================
-# FULL MARKET SCANNER
+# MARKET SCAN
 # =========================================================
 
 def scan_market(limit=5):
@@ -1208,38 +1296,23 @@ def scan_market(limit=5):
     symbols = get_usdt_symbols()
 
     if not symbols:
-        logger.error(
-            "No Futures symbols found"
-        )
         return []
 
     tickers = get_futures_tickers()
 
-    logger.info(
-        "Starting full Futures scan: %s symbols",
-        len(symbols)
-    )
-
     candidates = []
 
-    # -----------------------------------------------------
-    # Stage 1
-    # -----------------------------------------------------
-
-    for index, symbol in enumerate(symbols):
+    for symbol in symbols:
 
         try:
 
-            ticker = tickers.get(
-                symbol
-            )
-
             candidate = quick_filter(
                 symbol,
-                ticker
+                tickers.get(symbol)
             )
 
             if candidate:
+
                 candidates.append(
                     candidate
                 )
@@ -1247,27 +1320,15 @@ def scan_market(limit=5):
         except Exception as e:
 
             logger.error(
-                "Quick filter error %s: %s",
+                "Quick filter %s: %s",
                 symbol,
                 e
             )
 
-        if index % 8 == 0:
-            time.sleep(0.05)
-
-    logger.info(
-        "Quick filter produced %s candidates",
-        len(candidates)
-    )
-
-    # Keep deep scan manageable on Render free.
+    # حماية Render من الفحص العميق لكل آلاف العملات دفعة واحدة
     candidates = candidates[:40]
 
     results = []
-
-    # -----------------------------------------------------
-    # Stage 2
-    # -----------------------------------------------------
 
     for symbol in candidates:
 
@@ -1277,40 +1338,39 @@ def scan_market(limit=5):
                 symbol
             )
 
-            if not data:
-                continue
+            if data:
 
-            score = int(
-                data["score"].split("/")[0]
-            )
-
-            if (
-                data["action"] in (
-                    "🟢 LONG",
-                    "🔴 SHORT"
+                score = int(
+                    data["score"].split("/")[0]
                 )
-                and score >= 70
-            ):
-                results.append(data)
+
+                if (
+                    data["action"]
+                    in (
+                        "🟢 LONG",
+                        "🔴 SHORT"
+                    )
+                    and score >= 70
+                ):
+
+                    results.append(
+                        data
+                    )
 
         except Exception as e:
 
             logger.error(
-                "Deep analysis error %s: %s",
+                "Deep analysis %s: %s",
                 symbol,
                 e
             )
 
     results.sort(
-        key=lambda x: int(
-            x["score"].split("/")[0]
-        ),
+        key=lambda x:
+            int(
+                x["score"].split("/")[0]
+            ),
         reverse=True
-    )
-
-    logger.info(
-        "Final opportunities: %s",
-        len(results)
     )
 
     return results[:limit]
@@ -1323,35 +1383,24 @@ def scan_market(limit=5):
 def generate_evidence_report(data):
 
     if not data:
+
         return (
             "❌ لم يتم العثور على بيانات."
         )
 
     if data["action"] == "🟢 LONG":
-        reasons = data["long_reasons"]
 
-    elif data["action"] == "🔴 SHORT":
-        reasons = data["short_reasons"]
+        reasons = data[
+            "long_reasons"
+        ]
 
     else:
-        reasons = (
-            data["long_reasons"]
-            + data["short_reasons"]
-        )
 
-    reason_text = "\n".join(
-        f"• {x}"
-        for x in reasons[:7]
-    )
+        reasons = data[
+            "short_reasons"
+        ]
 
     tf = data["timeframes"]
-
-    tf_text = (
-        f"15m: {tf['15m']['trend']}\n"
-        f"1H: {tf['1h']['trend']}\n"
-        f"4H: {tf['4h']['trend']}\n"
-        f"1D: {tf['1d']['trend']}"
-    )
 
     support_text = (
         " / ".join(
@@ -1369,7 +1418,13 @@ def generate_evidence_report(data):
         else data["resistance"]
     )
 
+    reason_text = "\n".join(
+        f"• {x}"
+        for x in reasons[:7]
+    )
+
     return (
+
         "🤖 Binance AI Scanner\n\n"
 
         f"💎 العملة: {data['symbol']}\n"
@@ -1389,25 +1444,41 @@ def generate_evidence_report(data):
         f"💧 ضغط الشراء: "
         f"{data['buy_pressure']}\n\n"
 
-        f"📍 Multi-Timeframe:\n"
-        f"{tf_text}\n\n"
+        "📍 Multi-Timeframe:\n"
 
-        f"🟢 الدعم:\n"
-        f"{support_text}\n\n"
+        f"15m: "
+        f"{tf['15m']['trend']}\n"
 
-        f"🔴 المقاومة:\n"
+        f"1H: "
+        f"{tf['1h']['trend']}\n"
+
+        f"4H: "
+        f"{tf['4h']['trend']}\n"
+
+        f"1D: "
+        f"{tf['1d']['trend']}\n\n"
+
+        f"🟢 الدعم: "
+        f"{support_text}\n"
+
+        f"🔴 المقاومة: "
         f"{resistance_text}\n\n"
 
-        f"🎯 منطقة الدخول:\n"
-        f"{data['entry_range']}\n\n"
+        f"🎯 منطقة الدخول: "
+        f"{data['entry_range']}\n"
 
-        f"🛑 Stop Loss:\n"
-        f"{data['stop_loss']}\n\n"
+        f"🛑 Stop Loss: "
+        f"{data['stop_loss']}\n"
 
-        f"🎯 TP1: {data['tp1']}\n"
-        f"🎯 TP2: {data['tp2']}\n"
-        f"🎯 TP3: {data['tp3']}\n\n"
+        f"🎯 TP1: "
+        f"{data['tp1']}\n"
+
+        f"🎯 TP2: "
+        f"{data['tp2']}\n"
+
+        f"🎯 TP3: "
+        f"{data['tp3']}\n\n"
 
         f"🧠 أسباب التحليل:\n"
-        f"{reason_text if reason_text else 'لا توجد إشارات كافية'}"
+        f"{reason_text or 'لا توجد إشارات كافية'}"
     )
