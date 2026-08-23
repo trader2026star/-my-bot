@@ -1,6 +1,8 @@
 import os
 import logging
+import threading
 
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -18,6 +20,10 @@ from analysis import (
 )
 
 
+# =========================================================
+# LOGGING
+# =========================================================
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -25,8 +31,51 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
+PORT = int(
+    os.environ.get("PORT", 10000)
+)
+
+
+# =========================================================
+# FLASK SERVER FOR RENDER
+# =========================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Crypto Zero Reversal Bot is running."
+
+
+@app.route("/health")
+def health():
+    return "OK"
+
+
+def run_web_server():
+    logger.info(
+        "Starting Render web server on port %s",
+        PORT
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        use_reloader=False
+    )
+
+
+# =========================================================
+# TELEGRAM /START
+# =========================================================
 
 async def start(
     update: Update,
@@ -44,6 +93,10 @@ async def start(
     )
 
 
+# =========================================================
+# SCAN
+# =========================================================
+
 async def scan_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -58,7 +111,7 @@ async def scan_command(
         "• دعم ومقاومة\n"
         "• تحسن الحجم والزخم\n"
         "• تأكيد 15m / 1H / 4H / 1D\n\n"
-        "قد يستغرق الفحص بعض الوقت."
+        "⏳ قد يستغرق الفحص بعض الوقت."
     )
 
     try:
@@ -103,10 +156,12 @@ async def scan_command(
 
         try:
 
+            report = generate_evidence_report(
+                data
+            )
+
             await update.message.reply_text(
-                generate_evidence_report(
-                    data
-                )
+                report
             )
 
         except Exception as e:
@@ -116,6 +171,10 @@ async def scan_command(
                 e
             )
 
+
+# =========================================================
+# COIN ANALYSIS
+# =========================================================
 
 async def handle_message(
     update: Update,
@@ -183,12 +242,31 @@ async def handle_message(
 
         return
 
-    await update.message.reply_text(
-        generate_evidence_report(
+    try:
+
+        report = generate_evidence_report(
             data
         )
-    )
 
+        await update.message.reply_text(
+            report
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Report error: %s",
+            e
+        )
+
+        await update.message.reply_text(
+            "❌ حدث خطأ أثناء إنشاء تقرير التحليل."
+        )
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
 
@@ -199,6 +277,25 @@ def main():
         )
 
         return
+
+    # -----------------------------------------------------
+    # Start Render Web Server
+    # -----------------------------------------------------
+
+    web_thread = threading.Thread(
+        target=run_web_server,
+        daemon=True
+    )
+
+    web_thread.start()
+
+    logger.info(
+        "Render web server started."
+    )
+
+    # -----------------------------------------------------
+    # Start Telegram Bot
+    # -----------------------------------------------------
 
     application = (
         ApplicationBuilder()
@@ -228,13 +325,17 @@ def main():
     )
 
     logger.info(
-        "Crypto Zero Reversal started successfully."
+        "Crypto Zero Reversal Telegram bot started."
     )
 
     application.run_polling(
         drop_pending_updates=True
     )
 
+
+# =========================================================
+# START
+# =========================================================
 
 if __name__ == "__main__":
     main()
