@@ -3,89 +3,67 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
-from analysis import get_market_data, generate_evidence_report, get_coin_analysis
+from analysis import scan_market, generate_evidence_report, get_coin_analysis
 
-# =========================================================
-# خادم ويب سريع لمنع خطأ البورت في Render
-# =========================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is active!")
-    def log_message(self, format, *args):
-        pass
+        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+    def log_message(self, format, *args): pass
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", port), HealthHandler).serve_forever()
 
 threading.Thread(target=run_server, daemon=True).start()
-
-# =========================================================
-# تشغيل بوت التيليجرام
-# =========================================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("BOT_TOKEN") or ""
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك في بوت Binance AI Scanner. استخدم الأمر /scan لفحص السوق أو اكتب اسم العملة مباشرة.")
+    await update.message.reply_text("أهلاً بك! 🤖\n\nاستخدم /scan لفحص جميع عملات USDT، أو اكتب اسم العملة مباشرة مثل BTC أو AVAX.")
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 جاري فحص السوق وجلب الأسعار الحقيقية من بينانس، أرجو الانتظار قليلاً...")
+    await update.message.reply_text("🔍 جاري فحص جميع عملات USDT وتحليلها... قد يستغرق بعض الوقت.")
     try:
-        results = get_market_data()
+        results = scan_market(limit=5)
         if not results:
-            await update.message.reply_text("⚠️ لم يتم العثور على فرص حالياً.")
-            return
-            
-        # فرز النتائج واختيار أفضل الفرص
-        valid_results = [r for r in results if "WAIT" not in r["action"]]
-        valid_results.sort(key=lambda x: int(x["score"].split("/")[0]), reverse=True)
-        
-        selected = valid_results[:5] if len(valid_results) >= 5 else results[:5]
-        
-        await update.message.reply_text(f"✅ انتهى الفحص\nوجدت {len(results)} فرصة مطابقة للشروط.\nتم إرسال أفضل {len(selected)} فرص.")
-        
-        for res in selected:
-            report_text = generate_evidence_report(res)
-            await update.message.reply_text(report_text, parse_mode="Markdown")
-            
+            await update.message.reply_text("⚠️ لم يتم العثور على فرص مطابقة للشروط حالياً."); return
+        await update.message.reply_text(f"Crypto Zero Reversal:\n✅ انتهى الفحص\nوجدت فرص مطابقة للشروط.\nتم إرسال أفضل {len(results)} فرص.")
+        for res in results:
+            await update.message.reply_text(generate_evidence_report(res), parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"حدث خطأ أثناء الفحص: {str(e)}")
+        print(f"SCAN ERROR: {e}"); await update.message.reply_text(f"⚠️ حدث خطأ أثناء الفحص: {e}")
 
 async def coin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args:
-        coin_name = context.args[0]
-        coin_data = get_coin_analysis(coin_name)
-        if coin_data:
-            report_text = generate_evidence_report(coin_data)
-            await update.message.reply_text(report_text, parse_mode="Markdown")
-            return
-    await update.message.reply_text("⚠️ يرجى كتابة رمز العملة بعد الأمر، مثال: `/coin BTC`", parse_mode="Markdown")
+    if not context.args:
+        await update.message.reply_text("⚠️ اكتب رمز العملة هكذا: /coin BTC"); return
+    try:
+        data = get_coin_analysis(context.args[0])
+        if not data:
+            await update.message.reply_text(f"⚠️ لم أجد العملة `{context.args[0].upper()}` على Binance.", parse_mode="Markdown"); return
+        await update.message.reply_text(generate_evidence_report(data), parse_mode="Markdown")
+    except Exception as e:
+        print(f"COIN ERROR: {e}"); await update.message.reply_text(f"⚠️ حدث خطأ أثناء تحليل العملة: {e}")
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if len(text) <= 10 and not text.startswith('/'):
-        coin_data = get_coin_analysis(text)
-        if coin_data:
-            report_text = generate_evidence_report(coin_data)
-            await update.message.reply_text(report_text, parse_mode="Markdown")
+    text = (update.message.text or "").strip()
+    if not text or text.startswith("/") or len(text) > 20 or " " in text: return
+    try:
+        data = get_coin_analysis(text)
+        if data:
+            await update.message.reply_text(generate_evidence_report(data), parse_mode="Markdown")
+        else:
+            await update.message.reply_text("⚠️ لم أجد هذه العملة على Binance. اكتب الرمز مثل BTC أو AVAX")
+    except Exception as e:
+        print(f"TEXT ERROR: {e}"); await update.message.reply_text(f"⚠️ حدث خطأ أثناء تحليل العملة: {e}")
 
 def main():
     if not TELEGRAM_TOKEN:
-        print("Telegram Token is missing.")
-        return
+        print("خطأ: ضع TELEGRAM_TOKEN أو BOT_TOKEN في Environment Variables."); return
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("coin", coin_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    print("Crypto Zero Reversal Bot connected.")
+    app.run_polling(drop_pending_updates=True)
 
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("scan", scan_command))
-    application.add_handler(CommandHandler("coin", coin_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-
-    print("البوت يعمل الآن بنفس التصميم القديم وبكفاءة كاملة...")
-    application.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
