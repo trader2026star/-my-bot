@@ -53,14 +53,11 @@ def get_coin_analysis(symbol):
         return None
         
     closes = [float(k[4]) for k in klines]
-    highs = [float(k[2]) for k in klines]
-    lows = [float(k[3])] for k in klines
     volumes = [float(k[5]) for k in klines]
     
     current_price = closes[-1]
     rsi = calculate_rsi(closes)
     
-    # حساب المتوسطات البسيطة أو الأسية التقريبية للسرعة
     sma_9 = sum(closes[-9:]) / 9
     sma_20 = sum(closes[-20:]) / 20
     sma_50 = sum(closes[-50:]) / 50
@@ -78,6 +75,9 @@ def get_coin_analysis(symbol):
     
     score = 80 if direction == "LONG" else 75
     
+    avg_vol = sum(volumes[-20:]) / 20 if sum(volumes[-20:]) > 0 else 1.0
+    vol_ratio = round(volumes[-1] / avg_vol, 2)
+    
     return {
         "symbol": symbol,
         "direction": direction,
@@ -85,7 +85,7 @@ def get_coin_analysis(symbol):
         "state": "تجميع + مراقبة دخول السيولة" if direction == "LONG" else "تصريف + خروج سيولة",
         "price": current_price,
         "rsi": rsi,
-        "volume_ratio": round(volumes[-1] / (sum(volumes[-20:]), 2) if sum(volumes[-20:]) > 0 else 1.0, 2),
+        "volume_ratio": vol_ratio,
         "buy_pressure": 55.5,
         "trend": trend,
         "entry_min": round(current_price * 0.999, 4),
@@ -105,7 +105,6 @@ def get_coin_analysis(symbol):
     }
 
 def scan_market(limit=5):
-    # قائمة مختصرة لأهم العملات للفحص السريع
     top_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "SUIUSDT", "TAOUSDT", "XRPUSDT"]
     results = []
     for sym in top_symbols:
