@@ -604,10 +604,6 @@ def detect_bottom_accumulation(klines):
     conditions = 0
     reasons = []
 
-    # -----------------------------------------------------
-    # هبوط سابق
-    # -----------------------------------------------------
-
     if drawdown <= -10:
         conditions += 2
         reasons.append("هبوط سابق قوي قبل التماسك")
@@ -615,10 +611,6 @@ def detect_bottom_accumulation(klines):
     elif drawdown <= -6:
         conditions += 1
         reasons.append("هبوط سابق ثم بداية تماسك")
-
-    # -----------------------------------------------------
-    # تضييق النطاق
-    # -----------------------------------------------------
 
     if compression:
         conditions += compression_score
@@ -628,25 +620,13 @@ def detect_bottom_accumulation(klines):
         conditions += 1
         reasons.append("النطاق السعري أصبح أضيق")
 
-    # -----------------------------------------------------
-    # الحجم
-    # -----------------------------------------------------
-
     if volume_holding:
         conditions += 1
         reasons.append("الحجم لم يختفِ أثناء التماسك")
 
-    # -----------------------------------------------------
-    # رفض القاع
-    # -----------------------------------------------------
-
     if candle["lower_wick_ratio"] >= 0.30:
         conditions += 1
         reasons.append("رفض سعري من منطقة القاع")
-
-    # -----------------------------------------------------
-    # السعر داخل الجزء السفلي من النطاق
-    # -----------------------------------------------------
 
     if recent_high > recent_low:
         position = (
@@ -705,10 +685,6 @@ def detect_liquidity_flow(klines):
 
     score = 0
 
-    # -----------------------------------------------------
-    # شراء تدريجي
-    # -----------------------------------------------------
-
     if (
         bullish_volume > bearish_volume * 1.10
         and volume_ratio >= 1.05
@@ -737,10 +713,6 @@ def detect_liquidity_flow(klines):
         reasons.append(
             "ارتفاع تدريجي مع تحسن الحجم"
         )
-
-    # -----------------------------------------------------
-    # ضغط بيعي
-    # -----------------------------------------------------
 
     if (
         bearish_volume > bullish_volume * 1.15
@@ -806,16 +778,11 @@ def detect_pre_pump(klines):
         detect_range_compression(klines)
     )
 
-    # لا نريد Pump بالفعل
     if change_5 >= 10:
         return False, -5, ["العملة انفجرت بالفعل خلال آخر 5 شموع"]
 
     if change_10 >= 18:
         return False, -5, ["العملة ارتفعت بقوة خلال آخر 10 شموع"]
-
-    # -----------------------------------------------------
-    # حركة صغيرة + حجم يتحسن
-    # -----------------------------------------------------
 
     if (
         volume_ratio >= 1.10
@@ -826,29 +793,17 @@ def detect_pre_pump(klines):
             "الحجم يتحسن قبل انفجار سعري واضح"
         )
 
-    # -----------------------------------------------------
-    # تماسك
-    # -----------------------------------------------------
-
     if compression:
         score += compression_score
         reasons.append(
             "السعر في مرحلة ضغط/تماسك"
         )
 
-    # -----------------------------------------------------
-    # اتجاه متوسط الأجل
-    # -----------------------------------------------------
-
     if change_20 <= -5:
         score += 2
         reasons.append(
             "كانت هابطة قبل بداية التماسك"
         )
-
-    # -----------------------------------------------------
-    # بداية تحسن
-    # -----------------------------------------------------
 
     if (
         change_10 > change_20
@@ -899,7 +854,6 @@ def detect_distribution(klines):
         elif closes[i] < opens[i]:
             bearish_volume += volumes[i]
 
-    # Pump
     if change_5 >= 10:
         score += 3
         reasons.append(
@@ -912,7 +866,6 @@ def detect_distribution(klines):
             "ارتفاع قوي خلال آخر 10 شموع"
         )
 
-    # تصريف
     if (
         volume_ratio >= 1.30
         and bearish_volume > bullish_volume * 1.20
@@ -1040,10 +993,6 @@ def get_coin_analysis(symbol):
     if not symbol_exists(symbol):
         return None
 
-    # -----------------------------------------------------
-    # 1H هو الفريم الرئيسي للتحليل
-    # -----------------------------------------------------
-
     klines_1h = get_binance_futures_klines(
         symbol,
         "1h",
@@ -1080,10 +1029,6 @@ def get_coin_analysis(symbol):
         )
     )
 
-    # -----------------------------------------------------
-    # TIMEFRAMES
-    # -----------------------------------------------------
-
     tf_15m = get_timeframe_data(symbol, "15m")
     tf_1h = get_timeframe_data(symbol, "1h")
     tf_4h = get_timeframe_data(symbol, "4h")
@@ -1093,10 +1038,6 @@ def get_coin_analysis(symbol):
     trend_1h = tf_1h["trend"]
     trend_4h = tf_4h["trend"]
     trend_1d = tf_1d["trend"]
-
-    # -----------------------------------------------------
-    # STRUCTURE
-    # -----------------------------------------------------
 
     bottom_detected, bottom_score, bottom_reasons = (
         detect_bottom_accumulation(
@@ -1161,28 +1102,17 @@ def get_coin_analysis(symbol):
         else 0
     )
 
-    # =====================================================
-    # NEW OPPORTUNITY SCORE
-    # =====================================================
-
     long_score = 0
     short_score = 0
 
     analysis_lines = []
 
-    # =====================================================
-    # LONG: PRICE STRUCTURE
-    # =====================================================
-
-    # الاتجاه المتوسط
     if ema20 > ema50:
         long_score += 6
         analysis_lines.append(
             "الاتجاه المتوسط بدأ يتحسن"
         )
 
-    # لا نعاقب العملة بقوة لو كانت EMA ما زالت سلبية
-    # لأن هدفنا اصطيادها قبل البمب
     if ema9 > ema20:
         long_score += 5
         analysis_lines.append(
@@ -1194,10 +1124,6 @@ def get_coin_analysis(symbol):
         analysis_lines.append(
             "EMA9 يقترب من EMA20"
         )
-
-    # =====================================================
-    # RSI
-    # =====================================================
 
     if 38 <= rsi <= 58:
         long_score += 7
@@ -1220,10 +1146,6 @@ def get_coin_analysis(symbol):
             "RSI مرتفع؛ خطر مطاردة الحركة"
         )
 
-    # =====================================================
-    # PREVIOUS DUMP
-    # =====================================================
-
     if drawdown <= -15:
         long_score += 10
         analysis_lines.append(
@@ -1239,10 +1161,6 @@ def get_coin_analysis(symbol):
     elif drawdown <= -5:
         long_score += 3
 
-    # =====================================================
-    # RECOVERY
-    # =====================================================
-
     if 1 <= recovery <= 8:
         long_score += 7
         analysis_lines.append(
@@ -1251,10 +1169,6 @@ def get_coin_analysis(symbol):
 
     elif 8 < recovery < 15:
         long_score += 3
-
-    # =====================================================
-    # BOTTOM
-    # =====================================================
 
     if bottom_detected:
         long_score += 15
@@ -1268,10 +1182,6 @@ def get_coin_analysis(symbol):
                 f"قاع: {reason}"
             )
 
-    # =====================================================
-    # PRE-PUMP
-    # =====================================================
-
     if pre_pump:
         long_score += 15
 
@@ -1283,10 +1193,6 @@ def get_coin_analysis(symbol):
             analysis_lines.append(
                 f"Pre-Pump: {reason}"
             )
-
-    # =====================================================
-    # LIQUIDITY
-    # =====================================================
 
     if liquidity_state == "INFLOW":
         long_score += 15
@@ -1302,10 +1208,6 @@ def get_coin_analysis(symbol):
             "خروج سيولة واضح"
         )
 
-    # =====================================================
-    # VOLUME
-    # =====================================================
-
     if volume_ratio >= 1.10:
         if change_5 >= -2:
             long_score += 6
@@ -1319,10 +1221,6 @@ def get_coin_analysis(symbol):
             "الحجم في اتجاه صاعد"
         )
 
-    # =====================================================
-    # SUPPORT
-    # =====================================================
-
     if 0 < support_distance <= 5:
         long_score += 8
         analysis_lines.append(
@@ -1335,10 +1233,6 @@ def get_coin_analysis(symbol):
             "السعر قريب جدًا من الدعم"
         )
 
-    # =====================================================
-    # RESISTANCE
-    # =====================================================
-
     if 0 < resistance_distance <= 5:
         long_score -= 4
 
@@ -1347,13 +1241,6 @@ def get_coin_analysis(symbol):
         analysis_lines.append(
             "المقاومة قريبة؛ لا تطارد الدخول"
         )
-
-    # =====================================================
-    # MULTI TIMEFRAME
-    # =====================================================
-
-    # لا نطلب أن تكون كل الفريمات LONG
-    # لأن ذلك يناقض فكرة الدخول قبل البمب.
 
     if trend_15m == "LONG":
         long_score += 3
@@ -1367,7 +1254,6 @@ def get_coin_analysis(symbol):
     if trend_1d == "LONG":
         long_score += 4
 
-    # بداية تحسن على الفريمات
     if (
         trend_15m == "LONG"
         and trend_1h in ("LONG", "NEUTRAL")
@@ -1383,10 +1269,6 @@ def get_coin_analysis(symbol):
             "4H لم ينفجر بعد؛ مناسب لفكرة الدخول المبكر"
         )
 
-    # =====================================================
-    # PUMP PROTECTION
-    # =====================================================
-
     if change_5 >= 8:
         long_score -= 18
         analysis_lines.append(
@@ -1399,10 +1281,6 @@ def get_coin_analysis(symbol):
     if change_10 >= 20:
         long_score -= 25
 
-    # =====================================================
-    # DISTRIBUTION PROTECTION
-    # =====================================================
-
     if distribution:
         long_score -= 25
 
@@ -1414,10 +1292,6 @@ def get_coin_analysis(symbol):
             analysis_lines.append(
                 f"تحذير: {reason}"
             )
-
-    # =====================================================
-    # SHORT SCORE
-    # =====================================================
 
     if ema9 < ema20:
         short_score += 7
@@ -1443,32 +1317,17 @@ def get_coin_analysis(symbol):
     if change_5 <= -6:
         short_score += 6
 
-    # لا نطارد الانهيار
     if change_5 <= -10:
         short_score -= 20
 
     if change_10 <= -18:
         short_score -= 20
 
-    # لو فيه تجميع وقاع، امنع الشورت
     if bottom_detected:
         short_score -= 10
 
-    # لو فيه دخول سيولة
     if liquidity_state == "INFLOW":
         short_score -= 12
-
-    # =====================================================
-    # FINAL DIRECTION
-    # =====================================================
-
-    score_difference = abs(
-        long_score - short_score
-    )
-
-    # =====================================================
-    # EARLY LONG
-    # =====================================================
 
     early_long_conditions = (
         long_score >= 48
@@ -1546,10 +1405,6 @@ def get_coin_analysis(symbol):
         min(100, int(score))
     )
 
-    # =====================================================
-    # INVALID / WEAK
-    # =====================================================
-
     if (
         direction == "EARLY_LONG"
         and score < 48
@@ -1562,16 +1417,11 @@ def get_coin_analysis(symbol):
     ):
         direction = "WAIT"
 
-    # =====================================================
-    # ENTRY / SL / TP
-    # =====================================================
-
     if atr is None or atr <= 0:
         atr = current_price * 0.01
 
     if direction in ("LONG", "EARLY_LONG"):
 
-        # في الدخول المبكر نريد منطقة وليس سعر مطاردة
         entry_min = max(
             support,
             current_price - atr * 0.50
@@ -1579,7 +1429,6 @@ def get_coin_analysis(symbol):
 
         entry_max = current_price
 
-        # لا نجعل الدخول أقل من الدعم بشكل غير منطقي
         if entry_min > entry_max:
             entry_min = current_price - atr * 0.30
 
@@ -1604,8 +1453,6 @@ def get_coin_analysis(symbol):
                 resistance
             )
 
-            # إذا كانت المقاومة قريبة جدًا
-            # لا نعطيها كهدف وهمي
             if tp1 <= current_price:
                 tp1 = current_price + risk
 
@@ -1658,10 +1505,6 @@ def get_coin_analysis(symbol):
         tp2 = current_price + risk * 2
         tp3 = current_price + risk * 3
 
-    # =====================================================
-    # BUY PRESSURE
-    # =====================================================
-
     pressure = 50
 
     if liquidity_state == "INFLOW":
@@ -1687,10 +1530,6 @@ def get_coin_analysis(symbol):
         1
     )
 
-    # =====================================================
-    # OPPORTUNITY TYPE
-    # =====================================================
-
     if direction == "EARLY_LONG":
         opportunity_type = "PRE_PUMP"
 
@@ -1702,10 +1541,6 @@ def get_coin_analysis(symbol):
 
     else:
         opportunity_type = "WAIT"
-
-    # =====================================================
-    # RETURN
-    # =====================================================
 
     return {
         "symbol": symbol,
@@ -1822,7 +1657,6 @@ def get_top_futures_symbols(limit=60):
                 )
             )
 
-            # السيولة أهم من مجرد الحركة
             liquidity_score = (
                 quote_volume
                 * (
@@ -1884,19 +1718,11 @@ def scan_market(limit=DEFAULT_RESULTS):
             if not data:
                 continue
 
-            # -------------------------------------------------
-            # لا نريد العملات المنفجرة
-            # -------------------------------------------------
-
             if (
                 data.get("distribution")
                 and data.get("change_5", 0) >= 8
             ):
                 continue
-
-            # -------------------------------------------------
-            # نستبعد WAIT الضعيف جدًا فقط
-            # -------------------------------------------------
 
             if (
                 data["direction"] == "WAIT"
@@ -1915,10 +1741,6 @@ def scan_market(limit=DEFAULT_RESULTS):
             )
 
         time.sleep(0.05)
-
-    # =====================================================
-    # RANKING
-    # =====================================================
 
     def ranking_key(x):
 
@@ -1970,10 +1792,6 @@ def scan_market(limit=DEFAULT_RESULTS):
         reverse=True
     )
 
-    # =====================================================
-    # PREFER EARLY LONG / LONG
-    # =====================================================
-
     preferred = [
         x for x in all_results
         if x["direction"] in (
@@ -1992,11 +1810,8 @@ def scan_market(limit=DEFAULT_RESULTS):
         if x["direction"] == "WAIT"
     ]
 
-    # الأولوية للفرص الصاعدة المبكرة
     final_results = preferred[:limit]
 
-    # إذا لم توجد فرص Long قوية،
-    # نسمح بأفضل Short
     if len(final_results) < limit:
         remaining = limit - len(final_results)
 
@@ -2004,8 +1819,6 @@ def scan_market(limit=DEFAULT_RESULTS):
             shorts[:remaining]
         )
 
-    # إذا لم نجد حتى ذلك،
-    # نعرض أفضل فرص تحتاج تأكيد
     if len(final_results) < limit:
 
         remaining = limit - len(final_results)
@@ -2025,7 +1838,6 @@ def scan_market(limit=DEFAULT_RESULTS):
             if len(final_results) >= limit:
                 break
 
-    # ترتيب نهائي
     final_results.sort(
         key=ranking_key,
         reverse=True
@@ -2127,7 +1939,7 @@ def generate_evidence_report(data):
         "🎯 الأهداف",
         f"TP1: {data['tp1']}",
         f"TP2: {data['tp2']}",
-        f"TP3: {data['tp3']",
+        f"TP3: {data['tp3']}",
         "",
         "🔍 إشارات التحليل"
     ]
