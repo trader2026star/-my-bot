@@ -1,7 +1,8 @@
 import os
 import logging
-import asyncio
+import threading
 
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -24,16 +25,9 @@ from analysis import (
 # =========================================================
 
 logging.basicConfig(
-    format=(
-        "%(asctime)s - "
-        "%(name)s - "
-        "%(levelname)s - "
-        "%(message)s"
-    ),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
-
-logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -49,6 +43,32 @@ if not TOKEN:
 
 
 # =========================================================
+# FLASK SERVER
+# =========================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Binance AI Scanner is running."
+
+
+@app.route("/health")
+def health():
+    return "OK"
+
+
+def run_flask():
+    port = int(os.getenv("PORT", "10000"))
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+
+# =========================================================
 # START
 # =========================================================
 
@@ -56,9 +76,6 @@ async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-
-    if not update.message:
-        return
 
     await update.message.reply_text(
         "🤖 أهلاً بك في Binance AI Scanner\n\n"
@@ -69,13 +86,12 @@ async def start(
         "📌 أو استخدم:\n"
         "/scan\n\n"
         "🔎 التحليل يشمل:\n"
-        "• اصطياد القيعان\n"
-        "• التجميع المبكر\n"
+        "• الاتجاه\n"
+        "• RSI\n"
+        "• Volume\n"
         "• دخول السيولة\n"
         "• خروج السيولة\n"
         "• الدعم والمقاومة\n"
-        "• RSI\n"
-        "• Volume\n"
         "• 15M / 1H / 4H / 1D\n"
         "• Entry / SL / TP"
     )
@@ -90,64 +106,33 @@ async def scan_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not update.message:
-        return
-
     await update.message.reply_text(
         "🔍 جاري فحص Binance Futures...\n"
-        "⏳ أبحث عن القيعان والتجميع ودخول السيولة."
+        "⏳ يتم البحث عن أفضل الفرص."
     )
 
-    try:
-        results = await asyncio.to_thread(
-            scan_market,
-            5
-        )
-
-    except Exception as exc:
-        logger.exception(
-            "Scan error: %s",
-            exc
-        )
-
-        await update.message.reply_text(
-            "❌ حدث خطأ أثناء فحص السوق.\n"
-            "راجع Render Logs."
-        )
-
-        return
+    results = scan_market(limit=5)
 
     if not results:
 
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
-            "لم أجد حالياً فرصة قوية تتجاوز "
-            "شروط الفلترة."
+            "لم يتم العثور حالياً على فرص "
+            "تتجاوز شروط التأكيد."
         )
 
         return
 
     await update.message.reply_text(
-        "✅ انتهى الفحص.\n"
-        f"وجدت {len(results)} فرص محتملة."
+        f"✅ انتهى الفحص.\n"
+        f"وجدت {len(results)} فرص مطابقة للشروط."
     )
 
     for data in results:
 
-        try:
-            report = generate_evidence_report(
-                data
-            )
+        report = generate_evidence_report(data)
 
-            await update.message.reply_text(
-                report
-            )
-
-        except Exception as exc:
-            logger.exception(
-                "Report error: %s",
-                exc
-            )
+        await update.message.reply_text(report)
 
 
 # =========================================================
@@ -170,75 +155,25 @@ async def handle_message(
     symbol = normalize_symbol(text)
 
     await update.message.reply_text(
-        f"🔍 جاري تحليل {symbol}...\n"
-        "⏳ أفحص الاتجاه والسيولة والقاع والدعم والمقاومة."
+        f"🔍 جاري تحليل العملة {symbol}..."
     )
 
-    try:
-        data = await asyncio.to_thread(
-            get_coin_analysis,
-            symbol
-        )
-
-    except Exception as exc:
-        logger.exception(
-            "Coin analysis error for %s: %s",
-            symbol,
-            exc
-        )
-
-        await update.message.reply_text(
-            "❌ حدث خطأ أثناء التحليل.\n"
-            "راجع Render Logs."
-        )
-
-        return
+    data = get_coin_analysis(symbol)
 
     if not data:
 
         await update.message.reply_text(
-            f"❌ لم أستطع جلب بيانات {symbol}.\n\n"
-            "تأكد أن العملة موجودة على "
-            "Binance Futures كزوج USDT Perpetual."
+            f"❌ تعذر جلب بيانات {symbol} "
+            f"من Binance Futures حالياً.\n\n"
+            f"تأكد أن الزوج موجود على Binance Futures "
+            f"وأنه USDT Perpetual."
         )
 
         return
 
-    try:
-        report = generate_evidence_report(
-            data
-        )
+    report = generate_evidence_report(data)
 
-        await update.message.reply_text(
-            report
-        )
-
-    except Exception as exc:
-        logger.exception(
-            "Report generation error: %s",
-            exc
-        )
-
-        await update.message.reply_text(
-            "❌ تم تحليل العملة لكن حدث خطأ "
-            "أثناء تجهيز التقرير."
-        )
-
-
-# =========================================================
-# ERROR HANDLER
-# =========================================================
-
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    logger.error(
-        "Telegram error: %s",
-        context.error,
-        exc_info=True
-    )
+    await update.message.reply_text(report)
 
 
 # =========================================================
@@ -247,10 +182,15 @@ async def error_handler(
 
 def main():
 
-    logger.info(
-        "Starting CryptoZeroReversal bot..."
+    # تشغيل Flask حتى يتعرف Render على الخدمة
+    flask_thread = threading.Thread(
+        target=run_flask,
+        daemon=True
     )
 
+    flask_thread.start()
+
+    # إنشاء Telegram application
     application = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -258,34 +198,22 @@ def main():
     )
 
     application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     application.add_handler(
-        CommandHandler(
-            "scan",
-            scan_command
-        )
+        CommandHandler("scan", scan_command)
     )
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT
-            & (~filters.COMMAND),
+            filters.TEXT & (~filters.COMMAND),
             handle_message
         )
     )
 
-    application.add_error_handler(
-        error_handler
-    )
-
-    logger.info(
-        "Bot is starting polling..."
-    )
+    print("Telegram bot is starting...")
+    print("Flask server is starting...")
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
