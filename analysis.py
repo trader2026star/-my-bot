@@ -1810,4 +1810,377 @@ def get_top_futures_symbols(limit=60):
 
         try:
             quote_volume = float(
-               
+                item.get("quoteVolume", 0)
+            )
+
+            price_change = abs(
+                float(
+                    item.get(
+                        "priceChangePercent",
+                        0
+                    )
+                )
+            )
+
+            # السيولة أهم من مجرد الحركة
+            liquidity_score = (
+                quote_volume
+                * (
+                    1
+                    + min(
+                        price_change / 100,
+                        0.20
+                    )
+                )
+            )
+
+            candidates.append(
+                (
+                    symbol,
+                    liquidity_score
+                )
+            )
+
+        except (TypeError, ValueError):
+            continue
+
+    candidates.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    return [
+        symbol
+        for symbol, _ in candidates[:limit]
+    ]
+
+
+# =========================================================
+# MARKET SCANNER
+# =========================================================
+
+def scan_market(limit=DEFAULT_RESULTS):
+
+    symbols = get_top_futures_symbols(
+        SCAN_UNIVERSE
+    )
+
+    if not symbols:
+        return []
+
+    all_results = []
+
+    logger.info(
+        "Starting market scan | %s symbols",
+        len(symbols)
+    )
+
+    for symbol in symbols:
+
+        try:
+
+            data = get_coin_analysis(symbol)
+
+            if not data:
+                continue
+
+            # -------------------------------------------------
+            # لا نريد العملات المنفجرة
+            # -------------------------------------------------
+
+            if (
+                data.get("distribution")
+                and data.get("change_5", 0) >= 8
+            ):
+                continue
+
+            # -------------------------------------------------
+            # نستبعد WAIT الضعيف جدًا فقط
+            # -------------------------------------------------
+
+            if (
+                data["direction"] == "WAIT"
+                and data["score"] < 42
+            ):
+                continue
+
+            all_results.append(data)
+
+        except Exception as exc:
+
+            logger.exception(
+                "Analysis failed for %s: %s",
+                symbol,
+                exc
+            )
+
+        time.sleep(0.05)
+
+    # =====================================================
+    # RANKING
+    # =====================================================
+
+    def ranking_key(x):
+
+        direction_bonus = {
+            "EARLY_LONG": 5,
+            "LONG": 4,
+            "SHORT": 2,
+            "WAIT": 0
+        }.get(
+            x["direction"],
+            0
+        )
+
+        liquidity_bonus = (
+            5
+            if x["liquidity_state"] == "INFLOW"
+            else 0
+        )
+
+        bottom_bonus = (
+            5
+            if x["bottom_detected"]
+            else 0
+        )
+
+        pre_pump_bonus = (
+            5
+            if x.get("pre_pump")
+            else 0
+        )
+
+        distribution_penalty = (
+            -20
+            if x.get("distribution")
+            else 0
+        )
+
+        return (
+            x["score"]
+            + direction_bonus
+            + liquidity_bonus
+            + bottom_bonus
+            + pre_pump_bonus
+            + distribution_penalty
+        )
+
+    all_results.sort(
+        key=ranking_key,
+        reverse=True
+    )
+
+    # =====================================================
+    # PREFER EARLY LONG / LONG
+    # =====================================================
+
+    preferred = [
+        x for x in all_results
+        if x["direction"] in (
+            "EARLY_LONG",
+            "LONG"
+        )
+    ]
+
+    shorts = [
+        x for x in all_results
+        if x["direction"] == "SHORT"
+    ]
+
+    waits = [
+        x for x in all_results
+        if x["direction"] == "WAIT"
+    ]
+
+    # الأولوية للفرص الصاعدة المبكرة
+    final_results = preferred[:limit]
+
+    # إذا لم توجد فرص Long قوية،
+    # نسمح بأفضل Short
+    if len(final_results) < limit:
+        remaining = limit - len(final_results)
+
+        final_results.extend(
+            shorts[:remaining]
+        )
+
+    # إذا لم نجد حتى ذلك،
+    # نعرض أفضل فرص تحتاج تأكيد
+    if len(final_results) < limit:
+
+        remaining = limit - len(final_results)
+
+        used = {
+            x["symbol"]
+            for x in final_results
+        }
+
+        for item in waits:
+
+            if item["symbol"] in used:
+                continue
+
+            final_results.append(item)
+
+            if len(final_results) >= limit:
+                break
+
+    # ترتيب نهائي
+    final_results.sort(
+        key=ranking_key,
+        reverse=True
+    )
+
+    logger.info(
+        "Market scan completed | %s results",
+        len(final_results)
+    )
+
+    return final_results[:limit]
+
+
+# =========================================================
+# REPORT
+# =========================================================
+
+def generate_evidence_report(data):
+
+    direction = data["direction"]
+
+    if direction in ("LONG", "EARLY_LONG"):
+        direction_emoji = "🟢"
+    elif direction == "SHORT":
+        direction_emoji = "🔴"
+    else:
+        direction_emoji = "🟡"
+
+    if data["liquidity_state"] == "INFLOW":
+        liquidity_text = "🟢 دخول سيولة"
+
+    elif data["liquidity_state"] == "OUTFLOW":
+        liquidity_text = "🔴 خروج سيولة"
+
+    else:
+        liquidity_text = "🟡 سيولة محايدة"
+
+    bottom_text = (
+        "🟢 قاع/تجميع محتمل"
+        if data["bottom_detected"]
+        else "⚪ لا يوجد تأكيد قاع كافٍ"
+    )
+
+    pre_pump_text = (
+        "🟢 نعم — مرحلة مبكرة"
+        if data.get("pre_pump")
+        else "⚪ غير مؤكد"
+    )
+
+    distribution_text = (
+        "🔴 تحذير تصريف"
+        if data.get("distribution")
+        else "🟢 لا توجد إشارة تصريف قوية"
+    )
+
+    lines = [
+        "🤖 Binance AI Scanner",
+        "",
+        f"💎 العملة: {data['symbol']}",
+        f"📈 الاتجاه: {direction_emoji} {direction}",
+        f"⭐ Score: {data['score']}/100",
+        "",
+        f"🧠 الحالة: {data['state']}",
+        f"🎯 نوع الفرصة: {data.get('opportunity_type', 'WAIT')}",
+        "",
+        f"💰 السعر: {data['price']}",
+        f"📊 RSI: {data['rsi']}",
+        f"📊 Volume: {data['volume_ratio']}x",
+        f"📈 Volume Trend: {data['volume_trend']}",
+        f"💧 السيولة: {liquidity_text}",
+        f"💧 Buy Pressure: {data['buy_pressure']}%",
+        "",
+        f"🎯 القاع: {bottom_text}",
+        f"🚀 Pre-Pump: {pre_pump_text}",
+        f"⚠️ التصريف: {distribution_text}",
+        "",
+        f"📉 الهبوط السابق: {data['drawdown']}%",
+        f"📈 التعافي من القاع: {data['recovery']}%",
+        f"📊 5 شموع: {data['change_5']}%",
+        f"📊 10 شموع: {data['change_10']}%",
+        "",
+        "📊 تأكيد الفريمات",
+        f"15M: {data['trend_15m']}",
+        f"1H: {data['trend_1h']}",
+        f"4H: {data['trend_4h']}",
+        f"1D: {data['trend_1d']}",
+        "",
+        "🛡️ الدعم والمقاومة",
+        f"🟢 Support: {data['support']}",
+        f"🔴 Resistance: {data['resistance']}",
+        f"📏 البعد عن الدعم: {data['support_distance']}%",
+        f"📏 البعد عن المقاومة: {data['resistance_distance']}%",
+        "",
+        "📍 منطقة الدخول",
+        f"{data['entry_min']} - {data['entry_max']}",
+        "",
+        f"🛑 Stop Loss: {data['stop_loss']}",
+        "",
+        "🎯 الأهداف",
+        f"TP1: {data['tp1']}",
+        f"TP2: {data['tp2']}",
+        f"TP3: {data['tp3']",
+        "",
+        "🔍 إشارات التحليل"
+    ]
+
+    for line in data["analysis_lines"]:
+        lines.append(
+            f"• {line}"
+        )
+
+    if data["liquidity_reasons"]:
+
+        lines.append("")
+        lines.append("💧 تفاصيل السيولة")
+
+        for reason in data["liquidity_reasons"][:4]:
+            lines.append(
+                f"• {reason}"
+            )
+
+    if data["bottom_reasons"]:
+
+        lines.append("")
+        lines.append("🎯 تفاصيل القاع")
+
+        for reason in data["bottom_reasons"][:4]:
+            lines.append(
+                f"• {reason}"
+            )
+
+    if data.get("pre_pump_reasons"):
+
+        lines.append("")
+        lines.append("🚀 تفاصيل Pre-Pump")
+
+        for reason in data["pre_pump_reasons"][:4]:
+            lines.append(
+                f"• {reason}"
+            )
+
+    if data.get("distribution_reasons"):
+
+        lines.append("")
+        lines.append("⚠️ تحذيرات")
+
+        for reason in data["distribution_reasons"][:4]:
+            lines.append(
+                f"• {reason}"
+            )
+
+    lines.extend([
+        "",
+        "⚠️ هذه إشارة تحليلية وليست ضمانًا للربح.",
+        "⚠️ لا تطارد البمب؛ انتظر منطقة الدخول والتأكيد."
+    ])
+
+    return "\n".join(lines)
