@@ -1,378 +1,77 @@
 import os
-import logging
 import threading
-import time
-
 from flask import Flask
-
 from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from analysis import scan_market, get_coin_analysis, generate_evidence_report
 
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    MessageHandler,
-    filters
-)
-
-from analysis import (
-    normalize_symbol,
-    get_coin_analysis,
-    scan_market,
-    generate_evidence_report
-)
-
-
-# =========================================================
-# LOGGING
-# =========================================================
-
-logging.basicConfig(
-    format=(
-        "%(asctime)s - "
-        "%(name)s - "
-        "%(levelname)s - "
-        "%(message)s"
-    ),
-    level=logging.INFO
-)
-
-logger = logging.getLogger(__name__)
-
-
-# =========================================================
-# SETTINGS
-# =========================================================
-
-BOT_TOKEN = "8523562412:AAGKKEXKbedyLqmd6hAEnxJdJVFgMiVxDxA"
-
-PORT = int(
-    os.environ.get(
-        "PORT",
-        "10000"
-    )
-)
-
-
-# =========================================================
-# RENDER WEB SERVER
-# =========================================================
-
+# إعداد سيرفر Flask ليبقى البوت نشطاً على Render
 app = Flask(__name__)
 
-
-@app.route("/")
+@app.route('/')
 def home():
+    return "Bot is running live!"
 
-    return (
-        "Crypto Zero Reversal Bot "
-        "is running."
-    )
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, use_reloader=False)
 
+# توكن البوت
+TOKEN = os.getenv("BOT_TOKEN", "8523562412:AAGKKEXKbedyLqmd6hAEnxJdJVFgMiVxDxA")
 
-@app.route("/health")
-def health():
-
-    return "OK"
-
-
-def run_web_server():
-
-    logger.info(
-        "Render web server listening "
-        "on port %s",
-        PORT
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=PORT,
-        debug=False,
-        use_reloader=False
-    )
-
-
-# =========================================================
-# START
-# =========================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-
-        "🤖 Crypto Zero Reversal\n\n"
-
+        "🤖 أهلاً بك يا غالي في بوت تداول العملات الرقمية (Binance Futures).\n\n"
         "الأوامر المتاحة:\n"
-
-        "• /scan - فحص سوق Binance Futures بالكامل\n"
-
-        "• BTC - تحليل عملة محددة\n\n"
-
-        "📊 التحليل يعتمد على:\n"
-
-        "15m + 1H + 4H + 1D\n"
-
-        "الدعم + المقاومة + السيولة "
-        "+ التجميع + الزخم"
+        "• أرسل اسم أي عملة مثل: `BTC` أو `FLOW` أو `SOL` للحصول على التحليل الفني.\n"
+        "• أرسل الأمر `/scan` لفحص السوق والبحث عن الفرص."
     )
 
-
-# =========================================================
-# SCAN
-# =========================================================
-
-async def scan_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    await update.message.reply_text(
-
-        "🔎 جاري فحص سوق Binance Futures بالكامل...\n\n"
-
-        "أبحث عن:\n"
-
-        "• الهبوط السابق\n"
-        "• التجميع\n"
-        "• دخول السيولة\n"
-        "• الدعم والمقاومة\n"
-        "• تحسن الحجم والزخم\n"
-        "• تأكيد 15m / 1H / 4H / 1D\n\n"
-
-        "⏳ انتظر حتى ينتهي الفحص."
-    )
-
-    try:
-
-        results = scan_market(
-            limit=5
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Scan failed"
-        )
-
-        await update.message.reply_text(
-
-            "❌ حدث خطأ أثناء فحص Binance.\n"
-            "راجع Logs في Render."
-        )
-
-        return
-
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 جاري فحص سوق Binance Futures بالكامل والبحث عن أفضل الفرص...")
+    results = scan_market(limit=3)
     if not results:
-
-        await update.message.reply_text(
-
-            "🟡 انتهى الفحص.\n\n"
-
-            "لم أجد حالياً فرصة LONG أو SHORT "
-            "تتجاوز شروط التأكيد.\n\n"
-
-            "تم استبعاد الفرص الضعيفة "
-            "أو التي تحركت بالفعل."
-        )
-
+        await update.message.reply_text("🟡 انتهى الفحص.\nلم أجد حالياً فرص تتجاوز شروط التأكيد القوية.")
         return
-
-    await update.message.reply_text(
-
-        f"✅ انتهى الفحص.\n"
-        f"وجدت {len(results)} فرص مطابقة للشروط.\n"
-        f"تم اختيار أفضل الفرص."
-    )
-
+    
     for data in results:
+        report = generate_evidence_report(data)
+        await update.message.reply_text(report)
 
-        try:
-
-            report = (
-                generate_evidence_report(
-                    data
-                )
-            )
-
-            await update.message.reply_text(
-                report
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Report error"
-            )
-
-
-# =========================================================
-# COIN MESSAGE
-# =========================================================
-
-async def handle_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if (
-        not update.message
-        or not update.message.text
-    ):
-
-        return
-
-    text = (
-        update.message.text
-        .strip()
-    )
-
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
     if not text:
         return
-
-    symbol = normalize_symbol(
-        text
-    )
-
-    if not symbol:
-
-        await update.message.reply_text(
-            "❌ اكتب رمز العملة مثل BTC."
-        )
-
+    
+    symbol = text.strip()
+    if symbol.startswith("/"):
         return
-
-    await update.message.reply_text(
-
-        f"🔎 جاري تحليل العملة "
-        f"{symbol}...\n"
-
-        "15m + 1H + 4H + 1D"
-    )
-
-    try:
-
-        data = get_coin_analysis(
-            symbol
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Coin analysis error"
-        )
-
-        await update.message.reply_text(
-
-            "❌ حدث خطأ أثناء جلب بيانات Binance."
-        )
-
-        return
-
+        
+    await update.message.reply_text(f"🔍 جاري تحليل العملة {symbol.upper()}USDT...")
+    data = get_coin_analysis(symbol)
+    
     if not data:
-
-        await update.message.reply_text(
-
-            f"❌ لم أجد زوج "
-            f"{symbol} على Binance Futures "
-            f"أو تعذر جلب بياناته حالياً."
-        )
-
+        await update.message.reply_text(f"❌ لم أجد زوج {symbol.upper()}USDT على Binance Futures أو تعذر جلب بياناته حالياً.")
         return
-
-    try:
-
-        report = (
-            generate_evidence_report(
-                data
-            )
-        )
-
-        await update.message.reply_text(
-            report
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Report generation error"
-        )
-
-        await update.message.reply_text(
-            "❌ حدث خطأ أثناء إنشاء التقرير."
-        )
-
-
-# =========================================================
-# MAIN
-# =========================================================
+        
+    report = generate_evidence_report(data)
+    await update.message.reply_text(report)
 
 def main():
+    # تشغيل سيرفر الفلاسك في الخلفية أولاً
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
 
-    if not BOT_TOKEN:
+    # بناء وتشغيل بوت تيليجرام
+    application = ApplicationBuilder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("scan", scan_command))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    print("Crypto Zero Reversal bot starting...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-        logger.error(
-            "BOT_TOKEN is missing!"
-        )
-
-        return
-
-    threading.Thread(
-        target=run_web_server,
-        daemon=True
-    ).start()
-
-    while True:
-        try:
-            application = (
-                ApplicationBuilder()
-                .token(BOT_TOKEN)
-                .build()
-            )
-
-            application.add_handler(
-                CommandHandler(
-                    "start",
-                    start
-                )
-            )
-
-            application.add_handler(
-                CommandHandler(
-                    "scan",
-                    scan_command
-                )
-            )
-
-            application.add_handler(
-
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    handle_message
-                )
-            )
-
-            logger.info(
-                "Crypto Zero Reversal bot "
-                "starting..."
-            )
-
-            application.run_polling(
-                drop_pending_updates=True
-            )
-
-        except Exception as e:
-            logger.error(f"Polling error: {e}. Reconnecting in 5 seconds...")
-            time.sleep(5)
-
-
-# =========================================================
-# RUN
-# =========================================================
-
-if __name__ == "__main__":
-
+if __name__ == '__main__':
     main()
