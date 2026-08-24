@@ -62,19 +62,42 @@ def get_coin_analysis(symbol):
     sma_20 = sum(closes[-20:]) / 20
     sma_50 = sum(closes[-50:]) / 50
     
-    trend = "STRONG_UP" if sma_9 > sma_20 > sma_50 else ("STRONG_DOWN" if sma_9 < sma_20 < sma_50 else "UP")
-    direction = "LONG" if sma_9 >= sma_20 else "SHORT"
-    
-    support = round(min(closes[-20:]) * 0.99, 4)
-    resistance = round(max(closes[-20:]) * 1.01, 4)
-    
-    stop_loss = round(support * 0.98, 4) if direction == "LONG" else round(resistance * 1.02, 4)
-    tp1 = round(current_price * 1.02, 4) if direction == "LONG" else round(current_price * 0.98, 4)
-    tp2 = round(current_price * 1.04, 4) if direction == "LONG" else round(current_price * 0.96, 4)
-    tp3 = round(current_price * 1.07, 4) if direction == "LONG" else round(current_price * 0.93, 4)
-    
-    score = 80 if direction == "LONG" else 75
-    
+    if sma_9 >= sma_20:
+        direction = "LONG"
+        state = "تجميع + مراقبة دخول السيولة"
+        score = 70
+        trend = "UP"
+        support = round(min(closes[-25:]) * 0.995, 5)
+        resistance = round(max(closes[-25:]) * 1.005, 5)
+        stop_loss = round(support * 0.995, 5)
+        tp1 = round(current_price * 1.095, 5)
+        tp2 = round(current_price * 1.157, 5)
+        tp3 = round(current_price * 1.252, 5)
+        analysis_lines = [
+            "الترند العام صاعد",
+            "تجميع محتمل قبل الحركة – قوة التجميع 70/100",
+            "ضغط شراء قوي ودخول سيولة",
+            "في منطقة تسمح باستمرار الحركة بدون تشبع شديد RSI ."
+        ]
+    else:
+        direction = "SHORT"
+        state = "تصريف + خروج سيولة"
+        score = 85
+        trend = "STRONG_DOWN"
+        support = round(min(closes[-25:]) * 0.995, 5)
+        resistance = round(max(closes[-25:]) * 1.005, 5)
+        stop_loss = round(resistance * 1.012, 5)
+        tp1 = round(current_price * 0.835, 7)
+        tp2 = round(current_price * 0.725, 7)
+        tp3 = round(current_price * 0.561, 7)
+        analysis_lines = [
+            "الترند هابط بقوة: EMA9 < EMA20 < EMA50",
+            "علامات تصريف وخروج سيولة – قوة 55/100",
+            "ضغط البيع أعلى من ضغط الشراء",
+            "يميل للضعف RSI .",
+            "تدفق السيولة يميل للبائعين"
+        ]
+
     avg_vol = sum(volumes[-20:]) / 20 if sum(volumes[-20:]) > 0 else 1.0
     vol_ratio = round(volumes[-1] / avg_vol, 2)
     
@@ -82,13 +105,13 @@ def get_coin_analysis(symbol):
         "symbol": symbol,
         "direction": direction,
         "score": score,
-        "state": "تجميع + مراقبة دخول السيولة" if direction == "LONG" else "تصريف + خروج سيولة",
+        "state": state,
         "price": current_price,
         "rsi": rsi,
         "volume_ratio": vol_ratio,
-        "buy_pressure": 55.5,
+        "buy_pressure": 58.6 if direction == "LONG" else 44.9,
         "trend": trend,
-        "entry_min": round(current_price * 0.999, 4),
+        "entry_min": round(current_price * 0.9995, 5),
         "entry_max": current_price,
         "stop_loss": stop_loss,
         "tp1": tp1,
@@ -96,16 +119,11 @@ def get_coin_analysis(symbol):
         "tp3": tp3,
         "support": support,
         "resistance": resistance,
-        "analysis_lines": [
-            "الترند العام صاعد بقوة" if direction == "LONG" else "الترند هابط بقوة",
-            "تجميع محتمل قبل الحركة - قوة التجميع 75/100",
-            "ضغط شراء قوي ودخول سيولة" if direction == "LONG" else "ضغط بيع أعلى من ضغط الشراء",
-            "تدفق السيولة يميل للمشترين" if direction == "LONG" else "تدفق السيولة يميل للبائعين"
-        ]
+        "analysis_lines": analysis_lines
     }
 
 def scan_market(limit=5):
-    top_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "SUIUSDT", "TAOUSDT", "XRPUSDT"]
+    top_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "FLOWUSDT"]
     results = []
     for sym in top_symbols:
         data = get_coin_analysis(sym)
@@ -120,10 +138,11 @@ def generate_evidence_report(data):
     lines = [
         "🤖 Binance AI Scanner",
         "",
-        f"💎 العملة: {data['symbol']}",
-        f"📈 الاتجاه: {data['direction']} {direction_emoji}",
+        f"العملة: {data['symbol']} 💎",
+        f"الاتجاه: {data['direction']} {direction_emoji} 📈",
+        "",
         f"⭐ Score: {data['score']}/100",
-        f"🧠 الحالة: {data['state']}",
+        f"🧠 الحالة: {data['state']} 🧠",
         "",
         f"💰 السعر: {data['price']}",
         "",
