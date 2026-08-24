@@ -1,22 +1,15 @@
 import os
-import threading
-from flask import Flask
+import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from analysis import scan_market, get_coin_analysis, generate_evidence_report
 
-# إعداد سيرفر Flask ليبقى البوت نشطاً على Render
-app = Flask(__name__)
+# إعداد السجل (Logs) لرؤية الأخطاء إن وجدت بوضوح
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-@app.route('/')
-def home():
-    return "Bot is running live!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-# توكن البوت
 TOKEN = os.getenv("BOT_TOKEN", "8523562412:AAGKKEXKbedyLqmd6hAEnxJdJVFgMiVxDxA")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,19 +51,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report)
 
 def main():
-    # تشغيل سيرفر الفلاسك في الخلفية أولاً
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # بناء وتشغيل بوت تيليجرام
     application = ApplicationBuilder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan_command))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    print("Crypto Zero Reversal bot starting...")
+    print("Bot is starting polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
