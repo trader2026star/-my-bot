@@ -319,13 +319,11 @@ def main():
 
         return
 
-    # تشغيل سيرفر الويب في الخلفية ليبقى السيرفر نشطاً
     threading.Thread(
         target=run_web_server,
         daemon=True
     ).start()
 
-    # حلقة تكرار لإعادة الاتصال تلقائياً في حال انقطع النت أو حدث Timeout
     while True:
         try:
             application = (
