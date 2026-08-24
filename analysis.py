@@ -13,14 +13,14 @@ BINGX_URL = "https://open-api.bingx.com"
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal-BingX/2.0"
+    "User-Agent": "CryptoZeroReversal-BingX/3.0"
 })
 
 logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# CACHE
+# CACHE SETTINGS
 # =========================================================
 
 _SYMBOL_CACHE = set()
@@ -30,16 +30,32 @@ SYMBOL_CACHE_SECONDS = 600
 
 
 # KLINE CACHE
-# key = (symbol, interval)
+# key = (symbol, interval, limit)
 _KLINE_CACHE = {}
 
-KLINE_CACHE_SECONDS = 45
+# أطول من السابق حتى لا نكرر نفس البيانات
+KLINE_CACHE_SECONDS = 120
 
 
-# عند حدوث 109429 نوقف الطلبات مؤقتاً
+# TICKER CACHE
+_TICKER_CACHE = None
+_TICKER_CACHE_TIME = 0
+
+TICKER_CACHE_SECONDS = 60
+
+
+# =========================================================
+# RATE LIMIT PROTECTION
+# =========================================================
+
 _RATE_LIMIT_UNTIL = 0
 
 _RATE_LOCK = threading.Lock()
+
+# أقل وقت بين طلبات BingX
+_MIN_REQUEST_INTERVAL = 0.40
+
+_LAST_REQUEST_TIME = 0.0
 
 
 # =========================================================
@@ -49,20 +65,39 @@ _RATE_LOCK = threading.Lock()
 def bingx_get(path, params=None, timeout=12):
 
     global _RATE_LIMIT_UNTIL
+    global _LAST_REQUEST_TIME
 
-    now = time.time()
+    # -----------------------------------------------------
+    # RATE LIMIT LOCK
+    # -----------------------------------------------------
 
     with _RATE_LOCK:
+
+        now = time.time()
 
         if now < _RATE_LIMIT_UNTIL:
 
             logger.warning(
-                "BingX rate-limit protection active. "
-                "Retry in %.0f seconds",
+                "BingX protection active. Retry in %.0f seconds",
                 _RATE_LIMIT_UNTIL - now
             )
 
             return None
+
+        # تأخير بسيط بين الطلبات
+        wait_time = (
+            _MIN_REQUEST_INTERVAL
+            - (now - _LAST_REQUEST_TIME)
+        )
+
+        if wait_time > 0:
+            time.sleep(wait_time)
+
+        _LAST_REQUEST_TIME = time.time()
+
+    # -----------------------------------------------------
+    # REQUEST
+    # -----------------------------------------------------
 
     try:
 
@@ -91,26 +126,45 @@ def bingx_get(path, params=None, timeout=12):
         code = data.get("code")
 
         # =================================================
-        # RATE LIMIT / INVALID REQUEST
+        # RATE / API ERROR
         # =================================================
 
         if code in (109429, 109400):
 
             logger.warning(
-                "BingX rate/API error: %s",
+                "BingX rate/API protection triggered: %s",
                 data
             )
 
-            # توقف 90 ثانية على الأقل
-            # حتى لا نستمر في ضرب API
+            # -------------------------------------------------
+            # مهم:
+            # BingX نفسها قد تطلب الانتظار فترة طويلة.
+            # لا نريد إعادة ضرب API أثناء هذه الفترة.
+            # -------------------------------------------------
+
+            retry_seconds = 900
+
+            message = str(
+                data.get("msg", "")
+            ).lower()
+
+            # لو BingX أعطتنا مدة واضحة
+            if "retry after time" in message:
+
+                retry_seconds = 900
+
             with _RATE_LOCK:
 
                 _RATE_LIMIT_UNTIL = max(
                     _RATE_LIMIT_UNTIL,
-                    time.time() + 90
+                    time.time() + retry_seconds
                 )
 
             return None
+
+        # =================================================
+        # OTHER API ERROR
+        # =================================================
 
         if code not in (0, None):
 
@@ -227,9 +281,6 @@ def get_futures_symbols(force_refresh=False):
 
         symbol = str(symbol).upper()
 
-        # BingX format:
-        # BTC-USDT
-
         if not symbol.endswith("-USDT"):
             continue
 
@@ -283,7 +334,10 @@ def get_bingx_klines(
 
         cached_time, cached_data = cached
 
-        if now - cached_time < KLINE_CACHE_SECONDS:
+        if (
+            now - cached_time
+            < KLINE_CACHE_SECONDS
+        ):
 
             return cached_data
 
@@ -799,7 +853,6 @@ def detect_bottom_accumulation(
     if drawdown <= -8:
 
         score += 1
-
         reasons.append(
             "هبوط سابق واضح"
         )
@@ -807,19 +860,16 @@ def detect_bottom_accumulation(
     if recent_range <= 18:
 
         score += 1
-
         reasons.append(
             "النطاق السعري بدأ يضيق"
         )
 
     if (
         old_volume > 0
-        and recent_volume
-        >= old_volume * 0.75
+        and recent_volume >= old_volume * 0.75
     ):
 
         score += 1
-
         reasons.append(
             "الحجم ما زال حاضرًا بعد الهبوط"
         )
@@ -829,7 +879,6 @@ def detect_bottom_accumulation(
     ] >= 0.30:
 
         score += 1
-
         reasons.append(
             "رفض سعري من الأسفل"
         )
@@ -845,7 +894,6 @@ def detect_bottom_accumulation(
         if position <= 0.70:
 
             score += 1
-
             reasons.append(
                 "السعر ما زال في منطقة مبكرة"
             )
@@ -1095,10 +1143,131 @@ def smart_round(value):
 
 
 # =========================================================
+# 1H PRE-FILTER
+# =========================================================
+
+def calculate_fast_candidate_score(
+    klines
+):
+
+    if not klines or len(klines) < 50:
+        return -999
+
+    closes = [
+        k[4]
+        for k in klines
+    ]
+
+    volumes = [
+        k[5]
+        for k in klines
+    ]
+
+    current = closes[-1]
+
+    ema9 = calculate_ema(
+        closes,
+        9
+    )
+
+    ema20 = calculate_ema(
+        closes,
+        20
+    )
+
+    ema50 = calculate_ema(
+        closes,
+        50
+    )
+
+    if None in (
+        ema9,
+        ema20,
+        ema50
+    ):
+
+        return -999
+
+    rsi = calculate_rsi(
+        closes
+    )
+
+    volume_ratio = calculate_volume_ratio(
+        volumes
+    )
+
+    score = 0
+
+    # اتجاه EMA
+    if ema9 > ema20:
+        score += 10
+
+    if ema20 > ema50:
+        score += 10
+
+    # RSI
+    if 35 <= rsi <= 65:
+        score += 8
+
+    elif rsi < 35:
+        score += 10
+
+    # حجم
+    if volume_ratio >= 1.10:
+        score += 8
+
+    elif volume_ratio >= 0.90:
+        score += 3
+
+    # قاع مبكر
+    bottom, bottom_score, _ = (
+        detect_bottom_accumulation(
+            klines
+        )
+    )
+
+    if bottom:
+        score += 12
+
+    else:
+        score += bottom_score * 2
+
+    # سيولة
+    liquidity, liquidity_score, _ = (
+        detect_liquidity_flow(
+            klines
+        )
+    )
+
+    if liquidity == "INFLOW":
+        score += 12
+
+    elif liquidity == "NEUTRAL":
+        score += 2
+
+    elif liquidity == "OUTFLOW":
+        score -= 8
+
+    # لا نطارد انفجار
+    recent_change = percentage_change(
+        closes[-6],
+        current
+    )
+
+    if recent_change >= 8:
+        score -= 15
+
+    return score
+
+
+# =========================================================
 # COIN ANALYSIS
 # =========================================================
 
-def get_coin_analysis(symbol):
+def get_coin_analysis(
+    symbol,
+    klines_1h=None
+):
 
     symbol = normalize_symbol(symbol)
 
@@ -1115,11 +1284,13 @@ def get_coin_analysis(symbol):
     # GET 1H
     # =====================================================
 
-    klines_1h = get_bingx_klines(
-        symbol,
-        "1h",
-        200
-    )
+    if klines_1h is None:
+
+        klines_1h = get_bingx_klines(
+            symbol,
+            "1h",
+            200
+        )
 
     if not klines_1h:
         return None
@@ -1145,6 +1316,15 @@ def get_coin_analysis(symbol):
         "1d",
         100
     )
+
+    # لو أي فريم أساسي فشل، لا نعتبر التحليل كاملًا
+    if not all([
+        klines_15m,
+        klines_4h,
+        klines_1d
+    ]):
+
+        return None
 
     closes = [
         k[4]
@@ -1185,16 +1365,12 @@ def get_coin_analysis(symbol):
         closes
     )
 
-    volume_ratio = (
-        calculate_volume_ratio(
-            volumes
-        )
+    volume_ratio = calculate_volume_ratio(
+        volumes
     )
 
-    volume_trend = (
-        calculate_volume_trend(
-            volumes
-        )
+    volume_trend = calculate_volume_trend(
+        volumes
     )
 
     atr = calculate_atr(
@@ -1207,28 +1383,20 @@ def get_coin_analysis(symbol):
         )
     )
 
-    trend_15m = (
-        calculate_timeframe_trend(
-            klines_15m
-        )
+    trend_15m = calculate_timeframe_trend(
+        klines_15m
     )
 
-    trend_1h = (
-        calculate_timeframe_trend(
-            klines_1h
-        )
+    trend_1h = calculate_timeframe_trend(
+        klines_1h
     )
 
-    trend_4h = (
-        calculate_timeframe_trend(
-            klines_4h
-        )
+    trend_4h = calculate_timeframe_trend(
+        klines_4h
     )
 
-    trend_1d = (
-        calculate_timeframe_trend(
-            klines_1d
-        )
+    trend_1d = calculate_timeframe_trend(
+        klines_1d
     )
 
     bottom_detected, bottom_score, bottom_reasons = (
@@ -1330,11 +1498,8 @@ def get_coin_analysis(symbol):
     if volume_trend == "RISING":
 
         if ema9 >= ema20:
-
             long_score += 5
-
         else:
-
             short_score += 5
 
     # Liquidity
@@ -1759,6 +1924,46 @@ def get_coin_analysis(symbol):
 
 
 # =========================================================
+# TICKER
+# =========================================================
+
+def get_ticker_data():
+
+    global _TICKER_CACHE
+    global _TICKER_CACHE_TIME
+
+    now = time.time()
+
+    if (
+        _TICKER_CACHE is not None
+        and
+        now - _TICKER_CACHE_TIME
+        < TICKER_CACHE_SECONDS
+    ):
+
+        return _TICKER_CACHE
+
+    data = bingx_get(
+        "/openApi/swap/v2/quote/ticker"
+    )
+
+    if not data:
+
+        return _TICKER_CACHE
+
+    rows = data.get("data")
+
+    if not isinstance(rows, list):
+
+        return _TICKER_CACHE
+
+    _TICKER_CACHE = rows
+    _TICKER_CACHE_TIME = now
+
+    return rows
+
+
+# =========================================================
 # TOP SYMBOLS
 # =========================================================
 
@@ -1772,17 +1977,9 @@ def get_top_futures_symbols(
 
         return []
 
-    data = bingx_get(
-        "/openApi/swap/v2/quote/ticker"
-    )
+    rows = get_ticker_data()
 
-    if not data:
-
-        return list(symbols)[:limit]
-
-    rows = data.get("data")
-
-    if not isinstance(rows, list):
+    if not rows:
 
         return list(symbols)[:limit]
 
@@ -1876,8 +2073,11 @@ def scan_market(
     limit=5
 ):
 
-    # بدل 60 عملة
-    # نبدأ بـ 20 فقط
+    # =====================================================
+    # المرحلة الأولى
+    # 20 عملة فقط
+    # =====================================================
+
     symbols = get_top_futures_symbols(
         20
     )
@@ -1886,12 +2086,94 @@ def scan_market(
 
         return []
 
-    results = []
+    fast_candidates = []
+
+    logger.info(
+        "BingX scanner: fast filtering %s symbols",
+        len(symbols)
+    )
+
+    # =====================================================
+    # FAST 1H FILTER
+    # =====================================================
 
     for symbol in symbols:
 
-        # لو BingX دخل rate limit
-        # نوقف الفحص فوراً
+        if time.time() < _RATE_LIMIT_UNTIL:
+
+            logger.warning(
+                "Scanner stopped because BingX protection is active."
+            )
+
+            return []
+
+        try:
+
+            klines_1h = get_bingx_klines(
+                symbol,
+                "1h",
+                200
+            )
+
+            if not klines_1h:
+                continue
+
+            fast_score = calculate_fast_candidate_score(
+                klines_1h
+            )
+
+            if fast_score >= 18:
+
+                fast_candidates.append(
+                    (
+                        symbol,
+                        fast_score,
+                        klines_1h
+                    )
+                )
+
+        except Exception as exc:
+
+            logger.warning(
+                "Fast filter failed for %s: %s",
+                symbol,
+                exc
+            )
+
+    # =====================================================
+    # ترتيب المرحلة الأولى
+    # =====================================================
+
+    fast_candidates.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    # =====================================================
+    # فقط أفضل 7 تدخل Multi-Timeframe
+    # =====================================================
+
+    selected = fast_candidates[:7]
+
+    logger.info(
+        "BingX scanner: %s symbols passed 1H filter. "
+        "Analyzing top %s with multi-timeframe.",
+        len(fast_candidates),
+        len(selected)
+    )
+
+    if not selected:
+
+        return []
+
+    results = []
+
+    # =====================================================
+    # MULTI TIMEFRAME
+    # =====================================================
+
+    for symbol, fast_score, klines_1h in selected:
+
         if time.time() < _RATE_LIMIT_UNTIL:
 
             logger.warning(
@@ -1902,8 +2184,13 @@ def scan_market(
 
         try:
 
+            # مهم:
+            # نمرر klines_1h التي جلبناها بالفعل
+            # حتى لا يتم طلب 1H مرة ثانية.
+
             data = get_coin_analysis(
-                symbol
+                symbol,
+                klines_1h=klines_1h
             )
 
             if not data:
@@ -1962,7 +2249,9 @@ def scan_market(
 
                 continue
 
+            # =================================================
             # منع مطاردة الانفجار
+            # =================================================
 
             if (
                 data["direction"]
@@ -1989,8 +2278,8 @@ def scan_market(
                 exc
             )
 
-        # لا تضرب BingX بسرعة
-        time.sleep(0.25)
+        # تأخير إضافي بين التحليلات
+        time.sleep(0.50)
 
     # =====================================================
     # RANK
