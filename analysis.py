@@ -95,6 +95,12 @@ def bingx_symbol(symbol):
 
     symbol = normalize_symbol(symbol)
 
+    if symbol.endswith("USDT"):
+        return symbol[:-4] + "-USDT"
+
+    if symbol.endswith("USDC"):
+        return symbol[:-4] + "-USDC"
+
     return symbol
 
 
