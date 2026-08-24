@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # SETTINGS
 # =========================================================
 
-BOT_TOKEN = "8927885606:AAGf6tXEKi-Q9uQOdl1NVif8_OjODH3DPbQ"
+BOT_TOKEN = "8523562412:AAGKKEXKbedyLqmd6hAEnxJdJVFgMiVxDxA"
 
 PORT = int(
     os.environ.get(
