@@ -3,6 +3,7 @@ import logging
 import threading
 
 from flask import Flask
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -29,6 +30,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+logger = logging.getLogger(__name__)
+
 
 # =========================================================
 # TOKEN
@@ -43,7 +46,7 @@ if not TOKEN:
 
 
 # =========================================================
-# FLASK SERVER
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -51,7 +54,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Binance AI Scanner is running."
+    return "Crypto Zero Reversal Bot is running."
 
 
 @app.route("/health")
@@ -60,11 +63,24 @@ def health():
 
 
 def run_flask():
-    port = int(os.getenv("PORT", "10000"))
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000"
+        )
+    )
+
+    logger.info(
+        "Flask server starting on port %s",
+        port
+    )
 
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        debug=False,
+        use_reloader=False
     )
 
 
@@ -78,22 +94,30 @@ async def start(
 ):
 
     await update.message.reply_text(
-        "🤖 أهلاً بك في Binance AI Scanner\n\n"
+
+        "🤖 أهلاً بك في Crypto Zero Reversal\n\n"
+
         "📌 أرسل اسم العملة:\n"
         "BTC\n"
         "ETH\n"
         "SOL\n\n"
+
         "📌 أو استخدم:\n"
         "/scan\n\n"
-        "🔎 التحليل يشمل:\n"
-        "• الاتجاه\n"
+
+        "🔎 التحليل يعتمد على:\n"
+        "• اتجاه 4H كاتجاه رئيسي\n"
+        "• EMA\n"
         "• RSI\n"
         "• Volume\n"
-        "• دخول السيولة\n"
-        "• خروج السيولة\n"
+        "• دخول/خروج السيولة\n"
+        "• اكتشاف القاع والتجميع\n"
         "• الدعم والمقاومة\n"
-        "• 15M / 1H / 4H / 1D\n"
-        "• Entry / SL / TP"
+        "• ATR\n"
+        "• Entry / SL / TP\n\n"
+
+        "⚠️ لا يتم فتح LONG ضد اتجاه 4H.\n"
+        "⚠️ لا يتم فتح SHORT ضد اتجاه 4H."
     )
 
 
@@ -106,33 +130,54 @@ async def scan_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    await update.message.reply_text(
-        "🔍 جاري فحص Binance Futures...\n"
-        "⏳ يتم البحث عن أفضل الفرص."
-    )
-
-    results = scan_market(limit=5)
-
-    if not results:
+    try:
 
         await update.message.reply_text(
-            "🟡 انتهى الفحص.\n\n"
-            "لم يتم العثور حالياً على فرص "
-            "تتجاوز شروط التأكيد."
+            "🔍 جاري فحص السوق...\n"
+            "📊 الاتجاه الرئيسي: 4H\n"
+            "⏳ انتظر حتى انتهاء الفحص."
         )
 
-        return
+        results = scan_market(
+            limit=5
+        )
 
-    await update.message.reply_text(
-        f"✅ انتهى الفحص.\n"
-        f"وجدت {len(results)} فرص مطابقة للشروط."
-    )
+        if not results:
 
-    for data in results:
+            await update.message.reply_text(
+                "🟡 انتهى الفحص.\n\n"
+                "لم يتم العثور حالياً على فرصة "
+                "تتوافق مع اتجاه 4H وشروط التأكيد."
+            )
 
-        report = generate_evidence_report(data)
+            return
 
-        await update.message.reply_text(report)
+        await update.message.reply_text(
+            f"✅ انتهى الفحص.\n"
+            f"وجدت {len(results)} فرص مطابقة للشروط."
+        )
+
+        for data in results:
+
+            report = generate_evidence_report(
+                data
+            )
+
+            await update.message.reply_text(
+                report
+            )
+
+    except Exception as exc:
+
+        logger.exception(
+            "SCAN ERROR: %s",
+            exc
+        )
+
+        await update.message.reply_text(
+            "❌ حدث خطأ أثناء فحص السوق.\n"
+            "راجع Logs في Render."
+        )
 
 
 # =========================================================
@@ -152,28 +197,67 @@ async def handle_message(
     if not text:
         return
 
-    symbol = normalize_symbol(text)
-
-    await update.message.reply_text(
-        f"🔍 جاري تحليل العملة {symbol}..."
+    symbol = normalize_symbol(
+        text
     )
 
-    data = get_coin_analysis(symbol)
-
-    if not data:
+    try:
 
         await update.message.reply_text(
-            f"❌ تعذر جلب بيانات {symbol} "
-            f"من Binance Futures حالياً.\n\n"
-            f"تأكد أن الزوج موجود على Binance Futures "
-            f"وأنه USDT Perpetual."
+            f"🔍 جاري تحليل {symbol}...\n"
+            f"📊 الاتجاه الرئيسي: 4H"
         )
 
-        return
+        data = get_coin_analysis(
+            symbol
+        )
 
-    report = generate_evidence_report(data)
+        if not data:
 
-    await update.message.reply_text(report)
+            await update.message.reply_text(
+                f"❌ تعذر تحليل {symbol} حالياً.\n\n"
+                "قد يكون السبب:\n"
+                "• الزوج غير موجود على BingX Futures\n"
+                "• بيانات السوق غير متاحة مؤقتاً\n"
+                "• 4H غير واضح وبالتالي لا توجد صفقة"
+            )
+
+            return
+
+        report = generate_evidence_report(
+            data
+        )
+
+        await update.message.reply_text(
+            report
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "COIN ANALYSIS ERROR %s: %s",
+            symbol,
+            exc
+        )
+
+        await update.message.reply_text(
+            "❌ حدث خطأ أثناء تحليل العملة."
+        )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def telegram_error_handler(
+    update,
+    context
+):
+
+    logger.error(
+        "Telegram error: %s",
+        context.error
+    )
 
 
 # =========================================================
@@ -182,43 +266,79 @@ async def handle_message(
 
 def main():
 
-    # تشغيل Flask حتى يتعرف Render على الخدمة
+    logger.info(
+        "Starting Crypto Zero Reversal..."
+    )
+
+    # =====================================================
+    # FLASK THREAD
+    # =====================================================
+
     flask_thread = threading.Thread(
         target=run_flask,
+        name="FlaskThread",
         daemon=True
     )
 
     flask_thread.start()
 
-    # إنشاء Telegram application
+    # =====================================================
+    # TELEGRAM
+    # =====================================================
+
     application = (
         ApplicationBuilder()
         .token(TOKEN)
         .build()
     )
 
+    # Commands
+
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     application.add_handler(
-        CommandHandler("scan", scan_command)
+        CommandHandler(
+            "scan",
+            scan_command
+        )
     )
+
+    # Coin messages
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & (~filters.COMMAND),
+            filters.TEXT & ~filters.COMMAND,
             handle_message
         )
     )
 
-    print("Telegram bot is starting...")
-    print("Flask server is starting...")
+    application.add_error_handler(
+        telegram_error_handler
+    )
+
+    logger.info(
+        "Telegram bot is starting..."
+    )
+
+    # =====================================================
+    # POLLING
+    # =====================================================
 
     application.run_polling(
-        allowed_updates=Update.ALL_TYPES
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
     )
 
 
+# =========================================================
+# ENTRY POINT
+# =========================================================
+
 if __name__ == "__main__":
+
     main()
