@@ -13,14 +13,14 @@ BINGX_URL = "https://open-api.bingx.com"
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal-BingX/3.0"
+    "User-Agent": "CryptoZeroReversal-BingX-4H/1.0"
 })
 
 logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# CACHE SETTINGS
+# CACHE
 # =========================================================
 
 _SYMBOL_CACHE = set()
@@ -29,11 +29,10 @@ _SYMBOL_CACHE_TIME = 0
 SYMBOL_CACHE_SECONDS = 600
 
 
-# KLINE CACHE
+# 4H KLINE CACHE
 # key = (symbol, interval, limit)
 _KLINE_CACHE = {}
 
-# أطول من السابق حتى لا نكرر نفس البيانات
 KLINE_CACHE_SECONDS = 120
 
 
@@ -52,8 +51,7 @@ _RATE_LIMIT_UNTIL = 0
 
 _RATE_LOCK = threading.Lock()
 
-# أقل وقت بين طلبات BingX
-_MIN_REQUEST_INTERVAL = 0.40
+_MIN_REQUEST_INTERVAL = 0.50
 
 _LAST_REQUEST_TIME = 0.0
 
@@ -68,7 +66,7 @@ def bingx_get(path, params=None, timeout=12):
     global _LAST_REQUEST_TIME
 
     # -----------------------------------------------------
-    # RATE LIMIT LOCK
+    # حماية قبل إرسال الطلب
     # -----------------------------------------------------
 
     with _RATE_LOCK:
@@ -78,13 +76,13 @@ def bingx_get(path, params=None, timeout=12):
         if now < _RATE_LIMIT_UNTIL:
 
             logger.warning(
-                "BingX protection active. Retry in %.0f seconds",
+                "BingX rate-limit protection active. "
+                "Retry in %.0f seconds",
                 _RATE_LIMIT_UNTIL - now
             )
 
             return None
 
-        # تأخير بسيط بين الطلبات
         wait_time = (
             _MIN_REQUEST_INTERVAL
             - (now - _LAST_REQUEST_TIME)
@@ -126,7 +124,7 @@ def bingx_get(path, params=None, timeout=12):
         code = data.get("code")
 
         # =================================================
-        # RATE / API ERROR
+        # RATE LIMIT
         # =================================================
 
         if code in (109429, 109400):
@@ -136,34 +134,18 @@ def bingx_get(path, params=None, timeout=12):
                 data
             )
 
-            # -------------------------------------------------
-            # مهم:
-            # BingX نفسها قد تطلب الانتظار فترة طويلة.
-            # لا نريد إعادة ضرب API أثناء هذه الفترة.
-            # -------------------------------------------------
-
-            retry_seconds = 900
-
-            message = str(
-                data.get("msg", "")
-            ).lower()
-
-            # لو BingX أعطتنا مدة واضحة
-            if "retry after time" in message:
-
-                retry_seconds = 900
-
+            # توقف طويل بدل الاستمرار في ضرب API
             with _RATE_LOCK:
 
                 _RATE_LIMIT_UNTIL = max(
                     _RATE_LIMIT_UNTIL,
-                    time.time() + retry_seconds
+                    time.time() + 900
                 )
 
             return None
 
         # =================================================
-        # OTHER API ERROR
+        # OTHER API ERRORS
         # =================================================
 
         if code not in (0, None):
@@ -309,14 +291,17 @@ def symbol_exists(symbol):
 
 
 # =========================================================
-# KLINES
+# 4H KLINES
 # =========================================================
 
 def get_bingx_klines(
     symbol,
-    interval="1h",
+    interval="4h",
     limit=200
 ):
+
+    # لا نسمح باستخدام فريم مختلف
+    interval = "4h"
 
     symbol = normalize_symbol(symbol)
 
@@ -347,7 +332,7 @@ def get_bingx_klines(
         "/openApi/swap/v3/quote/klines",
         {
             "symbol": api_symbol,
-            "interval": interval,
+            "interval": "4h",
             "limit": limit
         }
     )
@@ -399,7 +384,7 @@ def get_bingx_klines(
 
             continue
 
-    if len(result) < 20:
+    if len(result) < 50:
         return None
 
     result.sort(
@@ -788,7 +773,7 @@ def calculate_recent_drawdown(
 
 
 # =========================================================
-# BOTTOM
+# BOTTOM / ACCUMULATION
 # =========================================================
 
 def detect_bottom_accumulation(
@@ -853,6 +838,7 @@ def detect_bottom_accumulation(
     if drawdown <= -8:
 
         score += 1
+
         reasons.append(
             "هبوط سابق واضح"
         )
@@ -860,6 +846,7 @@ def detect_bottom_accumulation(
     if recent_range <= 18:
 
         score += 1
+
         reasons.append(
             "النطاق السعري بدأ يضيق"
         )
@@ -870,6 +857,7 @@ def detect_bottom_accumulation(
     ):
 
         score += 1
+
         reasons.append(
             "الحجم ما زال حاضرًا بعد الهبوط"
         )
@@ -879,6 +867,7 @@ def detect_bottom_accumulation(
     ] >= 0.30:
 
         score += 1
+
         reasons.append(
             "رفض سعري من الأسفل"
         )
@@ -894,6 +883,7 @@ def detect_bottom_accumulation(
         if position <= 0.70:
 
             score += 1
+
             reasons.append(
                 "السعر ما زال في منطقة مبكرة"
             )
@@ -938,11 +928,9 @@ def detect_liquidity_flow(
 
     reasons = []
 
-    volume_ratio = (
-        calculate_volume_ratio(
-            volumes,
-            20
-        )
+    volume_ratio = calculate_volume_ratio(
+        volumes,
+        20
     )
 
     recent_volume = (
@@ -955,11 +943,9 @@ def detect_liquidity_flow(
         / 10
     )
 
-    recent_change = (
-        percentage_change(
-            closes[-6],
-            closes[-1]
-        )
+    recent_change = percentage_change(
+        closes[-6],
+        closes[-1]
     )
 
     bullish_volume = 0
@@ -1055,15 +1041,14 @@ def detect_liquidity_flow(
 
 
 # =========================================================
-# TIMEFRAME TREND
+# 4H TREND
 # =========================================================
 
-def calculate_timeframe_trend(
+def calculate_4h_trend(
     klines
 ):
 
     if not klines:
-
         return "UNKNOWN"
 
     closes = [
@@ -1143,130 +1128,12 @@ def smart_round(value):
 
 
 # =========================================================
-# 1H PRE-FILTER
-# =========================================================
-
-def calculate_fast_candidate_score(
-    klines
-):
-
-    if not klines or len(klines) < 50:
-        return -999
-
-    closes = [
-        k[4]
-        for k in klines
-    ]
-
-    volumes = [
-        k[5]
-        for k in klines
-    ]
-
-    current = closes[-1]
-
-    ema9 = calculate_ema(
-        closes,
-        9
-    )
-
-    ema20 = calculate_ema(
-        closes,
-        20
-    )
-
-    ema50 = calculate_ema(
-        closes,
-        50
-    )
-
-    if None in (
-        ema9,
-        ema20,
-        ema50
-    ):
-
-        return -999
-
-    rsi = calculate_rsi(
-        closes
-    )
-
-    volume_ratio = calculate_volume_ratio(
-        volumes
-    )
-
-    score = 0
-
-    # اتجاه EMA
-    if ema9 > ema20:
-        score += 10
-
-    if ema20 > ema50:
-        score += 10
-
-    # RSI
-    if 35 <= rsi <= 65:
-        score += 8
-
-    elif rsi < 35:
-        score += 10
-
-    # حجم
-    if volume_ratio >= 1.10:
-        score += 8
-
-    elif volume_ratio >= 0.90:
-        score += 3
-
-    # قاع مبكر
-    bottom, bottom_score, _ = (
-        detect_bottom_accumulation(
-            klines
-        )
-    )
-
-    if bottom:
-        score += 12
-
-    else:
-        score += bottom_score * 2
-
-    # سيولة
-    liquidity, liquidity_score, _ = (
-        detect_liquidity_flow(
-            klines
-        )
-    )
-
-    if liquidity == "INFLOW":
-        score += 12
-
-    elif liquidity == "NEUTRAL":
-        score += 2
-
-    elif liquidity == "OUTFLOW":
-        score -= 8
-
-    # لا نطارد انفجار
-    recent_change = percentage_change(
-        closes[-6],
-        current
-    )
-
-    if recent_change >= 8:
-        score -= 15
-
-    return score
-
-
-# =========================================================
-# COIN ANALYSIS
+# COIN ANALYSIS - 4H ONLY
 # =========================================================
 
 def get_coin_analysis(
     symbol,
-    klines_1h=None
+    klines_4h=None
 ):
 
     symbol = normalize_symbol(symbol)
@@ -1281,62 +1148,35 @@ def get_coin_analysis(
         return None
 
     # =====================================================
-    # GET 1H
+    # 4H ONLY
     # =====================================================
 
-    if klines_1h is None:
+    if klines_4h is None:
 
-        klines_1h = get_bingx_klines(
+        klines_4h = get_bingx_klines(
             symbol,
-            "1h",
+            "4h",
             200
         )
 
-    if not klines_1h:
-        return None
-
-    # =====================================================
-    # GET OTHER TIMEFRAMES
-    # =====================================================
-
-    klines_15m = get_bingx_klines(
-        symbol,
-        "15m",
-        100
-    )
-
-    klines_4h = get_bingx_klines(
-        symbol,
-        "4h",
-        100
-    )
-
-    klines_1d = get_bingx_klines(
-        symbol,
-        "1d",
-        100
-    )
-
-    # لو أي فريم أساسي فشل، لا نعتبر التحليل كاملًا
-    if not all([
-        klines_15m,
-        klines_4h,
-        klines_1d
-    ]):
-
+    if not klines_4h:
         return None
 
     closes = [
         k[4]
-        for k in klines_1h
+        for k in klines_4h
     ]
 
     volumes = [
         k[5]
-        for k in klines_1h
+        for k in klines_4h
     ]
 
     current = closes[-1]
+
+    # =====================================================
+    # INDICATORS
+    # =====================================================
 
     ema9 = calculate_ema(
         closes,
@@ -1374,40 +1214,28 @@ def get_coin_analysis(
     )
 
     atr = calculate_atr(
-        klines_1h
+        klines_4h
     )
 
     support, resistance = (
         calculate_support_resistance(
-            klines_1h
+            klines_4h
         )
     )
 
-    trend_15m = calculate_timeframe_trend(
-        klines_15m
-    )
-
-    trend_1h = calculate_timeframe_trend(
-        klines_1h
-    )
-
-    trend_4h = calculate_timeframe_trend(
+    trend_4h = calculate_4h_trend(
         klines_4h
-    )
-
-    trend_1d = calculate_timeframe_trend(
-        klines_1d
     )
 
     bottom_detected, bottom_score, bottom_reasons = (
         detect_bottom_accumulation(
-            klines_1h
+            klines_4h
         )
     )
 
     liquidity_state, liquidity_score, liquidity_reasons = (
         detect_liquidity_flow(
-            klines_1h
+            klines_4h
         )
     )
 
@@ -1434,28 +1262,66 @@ def get_coin_analysis(
 
     analysis_lines = []
 
+    # -----------------------------------------------------
     # EMA
+    # -----------------------------------------------------
+
     if ema9 > ema20:
 
-        long_score += 8
+        long_score += 10
 
         analysis_lines.append(
-            "EMA9 أعلى من EMA20"
+            "EMA9 أعلى من EMA20 على 4H"
         )
 
     else:
 
-        short_score += 8
+        short_score += 10
+
+        analysis_lines.append(
+            "EMA9 أسفل EMA20 على 4H"
+        )
 
     if ema20 > ema50:
 
-        long_score += 8
+        long_score += 10
+
+        analysis_lines.append(
+            "EMA20 أعلى من EMA50 على 4H"
+        )
 
     else:
 
-        short_score += 8
+        short_score += 10
 
+        analysis_lines.append(
+            "EMA20 أسفل EMA50 على 4H"
+        )
+
+    # -----------------------------------------------------
+    # 4H TREND
+    # -----------------------------------------------------
+
+    if trend_4h == "LONG":
+
+        long_score += 12
+
+        analysis_lines.append(
+            "الاتجاه العام على 4H صاعد"
+        )
+
+    elif trend_4h == "SHORT":
+
+        short_score += 12
+
+        analysis_lines.append(
+            "الاتجاه العام على 4H هابط"
+        )
+
+    # -----------------------------------------------------
     # RSI
+    # -----------------------------------------------------
+
     if 40 <= rsi <= 62:
 
         long_score += 8
@@ -1480,7 +1346,10 @@ def get_coin_analysis(
             "RSI مرتفع واحتمال تصحيح"
         )
 
-    # Volume
+    # -----------------------------------------------------
+    # VOLUME
+    # -----------------------------------------------------
+
     if volume_ratio >= 1.20:
 
         if ema9 >= ema20:
@@ -1488,7 +1357,7 @@ def get_coin_analysis(
             long_score += 8
 
             analysis_lines.append(
-                "حجم مرتفع مع تحسن سعري"
+                "حجم مرتفع مع تحسن سعري على 4H"
             )
 
         else:
@@ -1498,17 +1367,23 @@ def get_coin_analysis(
     if volume_trend == "RISING":
 
         if ema9 >= ema20:
+
             long_score += 5
+
         else:
+
             short_score += 5
 
-    # Liquidity
+    # -----------------------------------------------------
+    # LIQUIDITY
+    # -----------------------------------------------------
+
     if liquidity_state == "INFLOW":
 
         long_score += 15
 
         analysis_lines.append(
-            "دخول سيولة محتمل"
+            "دخول سيولة محتمل على 4H"
         )
 
     elif liquidity_state == "OUTFLOW":
@@ -1516,16 +1391,19 @@ def get_coin_analysis(
         short_score += 15
 
         analysis_lines.append(
-            "خروج سيولة محتمل"
+            "خروج سيولة محتمل على 4H"
         )
 
-    # Bottom
+    # -----------------------------------------------------
+    # BOTTOM
+    # -----------------------------------------------------
+
     if bottom_detected:
 
         long_score += 15
 
         analysis_lines.append(
-            "تم رصد بنية قاع/تجميع مبكرة"
+            "تم رصد بنية قاع/تجميع مبكرة على 4H"
         )
 
         for reason in bottom_reasons[:3]:
@@ -1534,45 +1412,16 @@ def get_coin_analysis(
                 f"قاع: {reason}"
             )
 
-    # =====================================================
-    # MULTI TIMEFRAME
-    # =====================================================
+    # -----------------------------------------------------
+    # SUPPORT
+    # -----------------------------------------------------
 
-    weights = {
-        "15m": 4,
-        "1h": 7,
-        "4h": 10,
-        "1d": 8
-    }
-
-    timeframe_data = [
-        ("15m", trend_15m),
-        ("1h", trend_1h),
-        ("4h", trend_4h),
-        ("1d", trend_1d)
-    ]
-
-    for timeframe, trend in timeframe_data:
-
-        if trend == "LONG":
-
-            long_score += weights[
-                timeframe
-            ]
-
-        elif trend == "SHORT":
-
-            short_score += weights[
-                timeframe
-            ]
-
-    # Support
     if support_distance <= 4:
 
         long_score += 8
 
         analysis_lines.append(
-            "السعر قريب من الدعم"
+            "السعر قريب من الدعم على 4H"
         )
 
     if support_distance <= 1.5:
@@ -1583,7 +1432,10 @@ def get_coin_analysis(
             "السعر قريب جدًا من الدعم"
         )
 
-    # Resistance
+    # -----------------------------------------------------
+    # RESISTANCE
+    # -----------------------------------------------------
+
     if resistance_distance <= 4:
 
         short_score += 6
@@ -1596,7 +1448,10 @@ def get_coin_analysis(
             "السعر قريب جدًا من المقاومة"
         )
 
-    # Recent move
+    # -----------------------------------------------------
+    # RECENT MOVE
+    # -----------------------------------------------------
+
     recent_change = percentage_change(
         closes[-6],
         current
@@ -1607,7 +1462,7 @@ def get_coin_analysis(
         long_score -= 20
 
         analysis_lines.append(
-            "ارتفاع سريع؛ تجنب مطاردة البمب"
+            "ارتفاع سريع على 4H؛ تجنب مطاردة البمب"
         )
 
     if recent_change <= -8:
@@ -1615,7 +1470,7 @@ def get_coin_analysis(
         short_score -= 15
 
         analysis_lines.append(
-            "هبوط سريع؛ تجنب مطاردة الشورت"
+            "هبوط سريع على 4H؛ تجنب مطاردة الشورت"
         )
 
     # =====================================================
@@ -1626,7 +1481,7 @@ def get_coin_analysis(
         long_score - short_score
     )
 
-    if difference < 6:
+    if difference < 8:
 
         direction = "WAIT"
 
@@ -1635,7 +1490,7 @@ def get_coin_analysis(
             short_score
         )
 
-        state = "انتظار تأكيد"
+        state = "انتظار تأكيد 4H"
 
         trend = "NEUTRAL"
 
@@ -1653,19 +1508,25 @@ def get_coin_analysis(
         ):
 
             state = (
-                "قاع + تجميع + دخول سيولة محتمل"
+                "قاع + تجميع + دخول سيولة محتمل على 4H"
             )
 
         elif bottom_detected:
 
             state = (
-                "تجميع مبكر + مراقبة الدخول"
+                "تجميع مبكر على 4H + مراقبة الدخول"
+            )
+
+        elif liquidity_state == "INFLOW":
+
+            state = (
+                "دخول سيولة + ميل صاعد على 4H"
             )
 
         else:
 
             state = (
-                "ميل صاعد + مراقبة الدخول"
+                "ميل صاعد على 4H + مراقبة الدخول"
             )
 
     else:
@@ -1679,13 +1540,13 @@ def get_coin_analysis(
         if liquidity_state == "OUTFLOW":
 
             state = (
-                "تصريف + خروج سيولة محتمل"
+                "تصريف + خروج سيولة محتمل على 4H"
             )
 
         else:
 
             state = (
-                "ميل هابط + مراقبة الشورت"
+                "ميل هابط على 4H + مراقبة الشورت"
             )
 
     score = int(
@@ -1705,6 +1566,10 @@ def get_coin_analysis(
     if not atr or atr <= 0:
 
         atr = current * 0.01
+
+    # =====================================================
+    # LONG
+    # =====================================================
 
     if direction == "LONG":
 
@@ -1736,6 +1601,10 @@ def get_coin_analysis(
                 resistance
             )
 
+    # =====================================================
+    # SHORT
+    # =====================================================
+
     elif direction == "SHORT":
 
         entry_min = current
@@ -1765,6 +1634,10 @@ def get_coin_analysis(
                 tp1,
                 support
             )
+
+    # =====================================================
+    # WAIT
+    # =====================================================
 
     else:
 
@@ -1823,6 +1696,10 @@ def get_coin_analysis(
         1
     )
 
+    # =====================================================
+    # RESULT
+    # =====================================================
+
     return {
 
         "symbol": symbol,
@@ -1864,41 +1741,49 @@ def get_coin_analysis(
         "trend":
             trend,
 
-        "trend_15m":
-            trend_15m,
-
-        "trend_1h":
-            trend_1h,
-
+        # 4H فقط
         "trend_4h":
             trend_4h,
 
-        "trend_1d":
-            trend_1d,
-
         "entry_min":
-            smart_round(entry_min),
+            smart_round(
+                entry_min
+            ),
 
         "entry_max":
-            smart_round(entry_max),
+            smart_round(
+                entry_max
+            ),
 
         "stop_loss":
-            smart_round(stop_loss),
+            smart_round(
+                stop_loss
+            ),
 
         "tp1":
-            smart_round(tp1),
+            smart_round(
+                tp1
+            ),
 
         "tp2":
-            smart_round(tp2),
+            smart_round(
+                tp2
+            ),
 
         "tp3":
-            smart_round(tp3),
+            smart_round(
+                tp3
+            ),
 
         "support":
-            smart_round(support),
+            smart_round(
+                support
+            ),
 
         "resistance":
-            smart_round(resistance),
+            smart_round(
+                resistance
+            ),
 
         "support_distance":
             round(
@@ -2074,8 +1959,7 @@ def scan_market(
 ):
 
     # =====================================================
-    # المرحلة الأولى
-    # 20 عملة فقط
+    # نأخذ أفضل 20 عملة من ناحية السيولة
     # =====================================================
 
     symbols = get_top_futures_symbols(
@@ -2086,15 +1970,15 @@ def scan_market(
 
         return []
 
-    fast_candidates = []
+    results = []
 
     logger.info(
-        "BingX scanner: fast filtering %s symbols",
+        "BingX 4H scanner started | symbols=%s",
         len(symbols)
     )
 
     # =====================================================
-    # FAST 1H FILTER
+    # 4H ANALYSIS ONLY
     # =====================================================
 
     for symbol in symbols:
@@ -2102,95 +1986,26 @@ def scan_market(
         if time.time() < _RATE_LIMIT_UNTIL:
 
             logger.warning(
-                "Scanner stopped because BingX protection is active."
-            )
-
-            return []
-
-        try:
-
-            klines_1h = get_bingx_klines(
-                symbol,
-                "1h",
-                200
-            )
-
-            if not klines_1h:
-                continue
-
-            fast_score = calculate_fast_candidate_score(
-                klines_1h
-            )
-
-            if fast_score >= 18:
-
-                fast_candidates.append(
-                    (
-                        symbol,
-                        fast_score,
-                        klines_1h
-                    )
-                )
-
-        except Exception as exc:
-
-            logger.warning(
-                "Fast filter failed for %s: %s",
-                symbol,
-                exc
-            )
-
-    # =====================================================
-    # ترتيب المرحلة الأولى
-    # =====================================================
-
-    fast_candidates.sort(
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    # =====================================================
-    # فقط أفضل 7 تدخل Multi-Timeframe
-    # =====================================================
-
-    selected = fast_candidates[:7]
-
-    logger.info(
-        "BingX scanner: %s symbols passed 1H filter. "
-        "Analyzing top %s with multi-timeframe.",
-        len(fast_candidates),
-        len(selected)
-    )
-
-    if not selected:
-
-        return []
-
-    results = []
-
-    # =====================================================
-    # MULTI TIMEFRAME
-    # =====================================================
-
-    for symbol, fast_score, klines_1h in selected:
-
-        if time.time() < _RATE_LIMIT_UNTIL:
-
-            logger.warning(
-                "Stopping scanner because BingX rate limit is active."
+                "Scanner stopped because BingX rate-limit protection is active."
             )
 
             break
 
         try:
 
-            # مهم:
-            # نمرر klines_1h التي جلبناها بالفعل
-            # حتى لا يتم طلب 1H مرة ثانية.
+            klines_4h = get_bingx_klines(
+                symbol,
+                "4h",
+                200
+            )
+
+            if not klines_4h:
+
+                continue
 
             data = get_coin_analysis(
                 symbol,
-                klines_1h=klines_1h
+                klines_4h=klines_4h
             )
 
             if not data:
@@ -2202,15 +2017,8 @@ def scan_market(
                 continue
 
             # =================================================
-            # PRE-PUMP
+            # LONG
             # =================================================
-
-            recent_state = (
-                data["bottom_detected"]
-                or
-                data["liquidity_state"]
-                == "INFLOW"
-            )
 
             strong_long = (
                 data["direction"]
@@ -2219,6 +2027,10 @@ def scan_market(
                 data["score"]
                 >= 52
             )
+
+            # =================================================
+            # SHORT
+            # =================================================
 
             strong_short = (
                 data["direction"]
@@ -2231,14 +2043,23 @@ def scan_market(
                 == "OUTFLOW"
             )
 
+            # =================================================
+            # EARLY LONG
+            # =================================================
+
             early_long = (
-                recent_state
+                data["direction"]
+                == "LONG"
+                and
+                (
+                    data["bottom_detected"]
+                    or
+                    data["liquidity_state"]
+                    == "INFLOW"
+                )
                 and
                 data["score"]
                 >= 48
-                and
-                data["direction"]
-                == "LONG"
             )
 
             if not (
@@ -2250,7 +2071,7 @@ def scan_market(
                 continue
 
             # =================================================
-            # منع مطاردة الانفجار
+            # منع مطاردة البمب
             # =================================================
 
             if (
@@ -2273,13 +2094,13 @@ def scan_market(
         except Exception as exc:
 
             logger.exception(
-                "Analysis failed for %s: %s",
+                "4H analysis failed for %s: %s",
                 symbol,
                 exc
             )
 
-        # تأخير إضافي بين التحليلات
-        time.sleep(0.50)
+        # تأخير بين العملات
+        time.sleep(0.60)
 
     # =====================================================
     # RANK
@@ -2301,6 +2122,11 @@ def scan_market(
             x["buy_pressure"]
         ),
         reverse=True
+    )
+
+    logger.info(
+        "BingX 4H scanner finished | opportunities=%s",
+        len(results)
     )
 
     return results[:limit]
@@ -2365,33 +2191,27 @@ def generate_evidence_report(
 
         f"💰 السعر: {data['price']}",
 
-        f"📊 RSI: {data['rsi']}",
+        f"📊 RSI 4H: {data['rsi']}",
 
-        f"📊 Volume: {data['volume_ratio']}x",
+        f"📊 Volume 4H: {data['volume_ratio']}x",
 
-        f"📈 Volume Trend: {data['volume_trend']}",
+        f"📈 Volume Trend 4H: {data['volume_trend']}",
 
-        f"💧 السيولة: {liquidity}",
+        f"💧 السيولة 4H: {liquidity}",
 
         f"💧 Buy Pressure: {data['buy_pressure']}%",
 
         "",
 
-        f"🎯 القاع: {bottom}",
+        f"🎯 القاع 4H: {bottom}",
 
-        f"📉 الهبوط السابق: {data['drawdown']}%",
+        f"📉 الهبوط السابق 4H: {data['drawdown']}%",
 
         "",
 
-        "📊 تأكيد الفريمات",
-
-        f"15M: {data['trend_15m']}",
-
-        f"1H: {data['trend_1h']}",
+        "📊 تحليل الفريم",
 
         f"4H: {data['trend_4h']}",
-
-        f"1D: {data['trend_1d']}",
 
         "",
 
@@ -2444,7 +2264,7 @@ def generate_evidence_report(
 
         lines.append("")
         lines.append(
-            "💧 تفاصيل السيولة"
+            "💧 تفاصيل السيولة 4H"
         )
 
         for reason in data[
@@ -2461,7 +2281,7 @@ def generate_evidence_report(
 
         lines.append("")
         lines.append(
-            "🎯 تفاصيل القاع"
+            "🎯 تفاصيل القاع 4H"
         )
 
         for reason in data[
@@ -2478,7 +2298,7 @@ def generate_evidence_report(
 
         "⚠️ إشارة تحليلية وليست ضمانًا للربح.",
 
-        "⚠️ لا تطارد البمب؛ انتظر منطقة الدخول والتأكيد."
+        "⚠️ لا تطارد البمب؛ انتظر منطقة الدخول والتأكيد على 4H."
 
     ])
 
