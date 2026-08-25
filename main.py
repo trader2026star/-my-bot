@@ -3,6 +3,7 @@ import logging
 import threading
 
 from flask import Flask
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -45,7 +46,7 @@ if not TOKEN:
 
 
 # =========================================================
-# FLASK SERVER
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -98,25 +99,28 @@ async def start(
         "BTC\n"
         "ETH\n"
         "SOL\n"
-        "XRP\n"
-        "أو أي عملة USDT موجودة على BingX.\n\n"
+        "XRP\n\n"
 
-        "📌 أو استخدم:\n"
+        "أو أي زوج USDT موجود على BingX Futures.\n\n"
+
+        "📌 أمر الفحص الكامل:\n"
         "/scan\n\n"
 
-        "🔎 التحليل يعتمد على:\n"
-        "• اتجاه 4H كاتجاه رئيسي\n"
-        "• فريم الساعة لتحديد منطقة الدخول\n"
-        "• RSI\n"
-        "• Volume\n"
-        "• دخول وخروج السيولة\n"
-        "• القاع والتجميع\n"
-        "• الدعم والمقاومة\n"
+        "🔎 النظام يعتمد على:\n"
+        "• 4H = الاتجاه الرئيسي\n"
+        "• 1H = بوابة الدخول\n"
+        "• BOS مؤكد\n"
         "• Market Structure\n"
+        "• السيولة\n"
+        "• Volume\n"
+        "• RSI\n"
+        "• EMA\n"
+        "• القاع والتجميع\n"
+        "• Support / Resistance\n"
+        "• ATR\n"
         "• Entry / SL / TP\n\n"
 
-        "⚠️ لا يتم فتح LONG عكس اتجاه 4H.\n"
-        "⚠️ ولا يتم فتح SHORT عكس اتجاه 4H."
+        "🛡️ لا يتم اعتماد الصفقة إلا بعد اكتمال التأكيدات."
     )
 
 
@@ -135,11 +139,15 @@ async def scan_command(
     await update.message.reply_text(
 
         "🔍 جاري فحص BingX Futures...\n\n"
-        "📊 يتم البحث عن العملات التي:\n"
-        "• يوجد بها دخول سيولة → LONG\n"
-        "• يوجد بها خروج سيولة → SHORT\n"
+
+        "🧠 شروط البحث:\n"
         "• اتجاه 4H واضح\n"
-        "• الساعة مناسبة لمنطقة الدخول\n\n"
+        "• تأكيد 1H\n"
+        "• BOS\n"
+        "• سيولة مؤكدة\n"
+        "• Volume مناسب\n"
+        "• عدم مطاردة القاع أو البامب\n\n"
+
         "⏳ انتظر قليلاً..."
     )
 
@@ -159,7 +167,7 @@ async def scan_command(
         await update.message.reply_text(
 
             "❌ حدث خطأ أثناء فحص السوق.\n\n"
-            "حاول مرة أخرى بعد قليل."
+            "راجع Logs وحاول مرة أخرى."
         )
 
         return
@@ -170,11 +178,11 @@ async def scan_command(
 
             "🟡 انتهى الفحص.\n\n"
 
-            "لم يتم العثور حالياً على فرص "
-            "تستوفي شروط التأكيد.\n\n"
+            "لم يتم العثور حالياً على صفقة "
+            "مؤكدة بالشروط النهائية.\n\n"
 
-            "هذا يعني أن البوت رفض الدخول "
-            "بدلاً من إعطاء صفقة ضعيفة."
+            "🛡️ البوت فضّل الانتظار بدلاً من "
+            "إعطاء صفقة ضعيفة."
         )
 
         return
@@ -182,8 +190,8 @@ async def scan_command(
     await update.message.reply_text(
 
         f"✅ انتهى الفحص.\n\n"
-        f"🎯 تم العثور على {len(results)} فرص.\n"
-        f"📊 سيتم إرسال أفضل الفرص."
+        f"🎯 تم العثور على {len(results)} فرص مؤكدة.\n"
+        f"📊 سيتم إرسال الأفضل."
     )
 
     for data in results:
@@ -207,7 +215,7 @@ async def scan_command(
 
 
 # =========================================================
-# COIN ANALYSIS
+# COIN
 # =========================================================
 
 async def handle_message(
@@ -236,7 +244,8 @@ async def handle_message(
 
         f"🔍 جاري تحليل {symbol}...\n\n"
         "📊 4H = الاتجاه الرئيسي\n"
-        "⏱️ 1H = تحديد منطقة الدخول"
+        "⏱️ 1H = بوابة الدخول\n"
+        "🧠 جاري فحص BOS + السيولة + الحجم..."
     )
 
     try:
@@ -267,8 +276,8 @@ async def handle_message(
 
             f"❌ لم أستطع تحليل {symbol} حالياً.\n\n"
 
-            "تأكد أن العملة موجودة على BingX "
-            "Futures وأن الزوج USDT."
+            "تأكد أن الزوج موجود على "
+            "BingX Futures وأنه USDT."
         )
 
         return
@@ -286,17 +295,18 @@ async def handle_message(
     except Exception as exc:
 
         logger.exception(
-            "Generate report error: %s",
+            "Report error for %s: %s",
+            symbol,
             exc
         )
 
         await update.message.reply_text(
-            "❌ حدث خطأ أثناء إنشاء تقرير التحليل."
+            "❌ حدث خطأ أثناء إنشاء التقرير."
         )
 
 
 # =========================================================
-# ERROR HANDLER
+# ERROR
 # =========================================================
 
 async def error_handler(
@@ -316,10 +326,6 @@ async def error_handler(
 
 def main():
 
-    # =====================================================
-    # START FLASK
-    # =====================================================
-
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
@@ -327,19 +333,11 @@ def main():
 
     flask_thread.start()
 
-    # =====================================================
-    # TELEGRAM APPLICATION
-    # =====================================================
-
     application = (
         ApplicationBuilder()
         .token(TOKEN)
         .build()
     )
-
-    # =====================================================
-    # COMMANDS
-    # =====================================================
 
     application.add_handler(
         CommandHandler(
@@ -355,10 +353,6 @@ def main():
         )
     )
 
-    # =====================================================
-    # COIN MESSAGE
-    # =====================================================
-
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -366,17 +360,9 @@ def main():
         )
     )
 
-    # =====================================================
-    # ERROR HANDLER
-    # =====================================================
-
     application.add_error_handler(
         error_handler
     )
-
-    # =====================================================
-    # START
-    # =====================================================
 
     print(
         "Telegram bot is starting..."
