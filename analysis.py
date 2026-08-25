@@ -13,7 +13,7 @@ BINGX_URL = "https://open-api.bingx.com"
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal-BingX/3.0"
+    "User-Agent": "CryptoZeroReversal-BingX/8.0"
 })
 
 logger = logging.getLogger(__name__)
@@ -28,14 +28,29 @@ _SYMBOL_CACHE_TIME = 0
 
 SYMBOL_CACHE_SECONDS = 600
 
+_TICKER_CACHE = []
+_TICKER_CACHE_TIME = 0
+
+TICKER_CACHE_SECONDS = 30
+
 _KLINE_CACHE = {}
 
-# لا نعيد نفس بيانات الشمعة باستمرار
 KLINE_CACHE_SECONDS = 60
+
+
+# =========================================================
+# RATE LIMIT PROTECTION
+# =========================================================
 
 _RATE_LIMIT_UNTIL = 0
 
 _RATE_LOCK = threading.Lock()
+
+_REQUEST_LOCK = threading.Lock()
+
+_LAST_REQUEST_TIME = 0
+
+MIN_REQUEST_INTERVAL = 0.35
 
 
 # =========================================================
@@ -45,20 +60,33 @@ _RATE_LOCK = threading.Lock()
 def bingx_get(path, params=None, timeout=12):
 
     global _RATE_LIMIT_UNTIL
-
-    now = time.time()
+    global _LAST_REQUEST_TIME
 
     with _RATE_LOCK:
 
-        if now < _RATE_LIMIT_UNTIL:
+        if time.time() < _RATE_LIMIT_UNTIL:
 
             logger.warning(
-                "BingX rate-limit protection active. "
-                "Retry in %.0f seconds",
-                _RATE_LIMIT_UNTIL - now
+                "BingX protection active. Retry in %.0f sec",
+                _RATE_LIMIT_UNTIL - time.time()
             )
 
             return None
+
+    # حماية عامة بين الطلبات
+    with _REQUEST_LOCK:
+
+        now = time.time()
+
+        wait = (
+            MIN_REQUEST_INTERVAL
+            - (now - _LAST_REQUEST_TIME)
+        )
+
+        if wait > 0:
+            time.sleep(wait)
+
+        _LAST_REQUEST_TIME = time.time()
 
     try:
 
@@ -71,10 +99,9 @@ def bingx_get(path, params=None, timeout=12):
         if response.status_code != 200:
 
             logger.warning(
-                "BingX HTTP %s | %s | %s",
+                "BingX HTTP %s | %s",
                 response.status_code,
-                path,
-                response.text[:300]
+                path
             )
 
             return None
@@ -86,23 +113,18 @@ def bingx_get(path, params=None, timeout=12):
 
         code = data.get("code")
 
-        # =================================================
-        # RATE LIMIT
-        # =================================================
-
         if code in (109429, 109400):
 
             logger.warning(
-                "BingX rate/API error: %s",
+                "BingX API/RATE error: %s",
                 data
             )
 
-            # حماية لمدة 120 ثانية
             with _RATE_LOCK:
 
                 _RATE_LIMIT_UNTIL = max(
                     _RATE_LIMIT_UNTIL,
-                    time.time() + 120
+                    time.time() + 90
                 )
 
             return None
@@ -242,9 +264,10 @@ def get_futures_symbols(force_refresh=False):
 
 def symbol_exists(symbol):
 
-    symbol = normalize_symbol(symbol)
-
-    return symbol in get_futures_symbols()
+    return (
+        normalize_symbol(symbol)
+        in get_futures_symbols()
+    )
 
 
 # =========================================================
@@ -280,12 +303,10 @@ def get_bingx_klines(
 
             return cached_data
 
-    api_symbol = bingx_symbol(symbol)
-
     data = bingx_get(
         "/openApi/swap/v3/quote/klines",
         {
-            "symbol": api_symbol,
+            "symbol": bingx_symbol(symbol),
             "interval": interval,
             "limit": limit
         }
@@ -338,7 +359,7 @@ def get_bingx_klines(
 
             continue
 
-    if len(result) < 20:
+    if len(result) < 30:
         return None
 
     result.sort(
@@ -364,9 +385,10 @@ def calculate_ema(values, period):
 
     multiplier = 2 / (period + 1)
 
-    ema = sum(
-        values[:period]
-    ) / period
+    ema = (
+        sum(values[:period])
+        / period
+    )
 
     for price in values[period:]:
 
@@ -434,6 +456,7 @@ def calculate_rsi(
         ) / period
 
     if avg_loss == 0:
+
         return 100.0
 
     rs = avg_gain / avg_loss
@@ -581,6 +604,11 @@ def calculate_support_resistance(
     klines
 ):
 
+    closes = [
+        k[4]
+        for k in klines
+    ]
+
     highs = [
         k[2]
         for k in klines
@@ -588,11 +616,6 @@ def calculate_support_resistance(
 
     lows = [
         k[3]
-        for k in klines
-    ]
-
-    closes = [
-        k[4]
         for k in klines
     ]
 
@@ -607,14 +630,12 @@ def calculate_support_resistance(
     recent_lows = lows[-lookback:]
 
     supports = [
-        x
-        for x in recent_lows
+        x for x in recent_lows
         if x < current
     ]
 
     resistances = [
-        x
-        for x in recent_highs
+        x for x in recent_highs
         if x > current
     ]
 
@@ -634,12 +655,10 @@ def calculate_support_resistance(
 
 
 # =========================================================
-# CANDLE INFORMATION
+# CANDLE
 # =========================================================
 
-def candle_information(
-    klines
-):
+def candle_information(klines):
 
     k = klines[-1]
 
@@ -681,6 +700,7 @@ def candle_information(
     )
 
     return {
+
         "body_ratio":
             body / candle_range,
 
@@ -699,7 +719,7 @@ def candle_information(
 
 
 # =========================================================
-# DRAWDOWN
+# DRAW DOWN
 # =========================================================
 
 def calculate_recent_drawdown(
@@ -727,37 +747,397 @@ def calculate_recent_drawdown(
 
 
 # =========================================================
-# FAST CRASH FILTER
+# MARKET STRUCTURE
 # =========================================================
 
-def detect_fast_crash(
-    klines
+def detect_market_structure(
+    klines,
+    pivot=3
 ):
 
-    if len(klines) < 4:
+    if len(klines) < 30:
 
-        return False, 0.0
+        return {
+            "structure": "UNKNOWN",
+            "bos": "NONE",
+            "swing_high": None,
+            "swing_low": None
+        }
+
+    highs = [
+        k[2]
+        for k in klines
+    ]
+
+    lows = [
+        k[3]
+        for k in klines
+    ]
 
     closes = [
         k[4]
         for k in klines
     ]
 
-    # آخر شمعتين
-    old_price = closes[-3]
-    current = closes[-1]
+    swing_highs = []
+    swing_lows = []
 
-    change = percentage_change(
-        old_price,
-        current
+    for i in range(
+        pivot,
+        len(klines) - pivot
+    ):
+
+        high = highs[i]
+        low = lows[i]
+
+        left_highs = highs[
+            i - pivot:i
+        ]
+
+        right_highs = highs[
+            i + 1:i + pivot + 1
+        ]
+
+        left_lows = lows[
+            i - pivot:i
+        ]
+
+        right_lows = lows[
+            i + 1:i + pivot + 1
+        ]
+
+        if (
+            high > max(left_highs)
+            and
+            high > max(right_highs)
+        ):
+
+            swing_highs.append(high)
+
+        if (
+            low < min(left_lows)
+            and
+            low < min(right_lows)
+        ):
+
+            swing_lows.append(low)
+
+    swing_high = (
+        swing_highs[-1]
+        if swing_highs
+        else None
     )
 
-    # انهيار سريع
-    if change <= -20:
+    swing_low = (
+        swing_lows[-1]
+        if swing_lows
+        else None
+    )
 
-        return True, round(change, 2)
+    current = closes[-1]
 
-    return False, round(change, 2)
+    bos = "NONE"
+
+    if (
+        swing_high is not None
+        and current > swing_high
+    ):
+
+        bos = "BULLISH"
+
+    elif (
+        swing_low is not None
+        and current < swing_low
+    ):
+
+        bos = "BEARISH"
+
+    if len(swing_highs) >= 2:
+
+        if (
+            swing_highs[-1]
+            > swing_highs[-2]
+        ):
+
+            high_structure = "HH"
+
+        else:
+
+            high_structure = "LH"
+
+    else:
+
+        high_structure = "UNKNOWN"
+
+    if len(swing_lows) >= 2:
+
+        if (
+            swing_lows[-1]
+            > swing_lows[-2]
+        ):
+
+            low_structure = "HL"
+
+        else:
+
+            low_structure = "LL"
+
+    else:
+
+        low_structure = "UNKNOWN"
+
+    if (
+        high_structure == "HH"
+        and low_structure == "HL"
+    ):
+
+        structure = "BULLISH"
+
+    elif (
+        high_structure == "LH"
+        and low_structure == "LL"
+    ):
+
+        structure = "BEARISH"
+
+    else:
+
+        structure = "MIXED"
+
+    return {
+
+        "structure": structure,
+
+        "bos": bos,
+
+        "swing_high": swing_high,
+
+        "swing_low": swing_low
+    }
+
+
+# =========================================================
+# 4H MASTER TREND
+# =========================================================
+
+def calculate_4h_trend(
+    klines
+):
+
+    if len(klines) < 60:
+
+        return "UNKNOWN"
+
+    closes = [
+        k[4]
+        for k in klines
+    ]
+
+    ema20 = calculate_ema(
+        closes,
+        20
+    )
+
+    ema50 = calculate_ema(
+        closes,
+        50
+    )
+
+    if (
+        ema20 is None
+        or ema50 is None
+    ):
+
+        return "UNKNOWN"
+
+    structure = detect_market_structure(
+        klines
+    )
+
+    current = closes[-1]
+
+    bullish_points = 0
+    bearish_points = 0
+
+    if ema20 > ema50:
+        bullish_points += 1
+
+    if ema20 < ema50:
+        bearish_points += 1
+
+    if current > ema20:
+        bullish_points += 1
+
+    if current < ema20:
+        bearish_points += 1
+
+    if structure["structure"] == "BULLISH":
+        bullish_points += 2
+
+    if structure["structure"] == "BEARISH":
+        bearish_points += 2
+
+    if structure["bos"] == "BULLISH":
+        bullish_points += 2
+
+    if structure["bos"] == "BEARISH":
+        bearish_points += 2
+
+    if bullish_points >= 4:
+        return "LONG"
+
+    if bearish_points >= 4:
+        return "SHORT"
+
+    return "NEUTRAL"
+
+
+# =========================================================
+# LIQUIDITY PROXY
+# =========================================================
+
+def detect_liquidity_flow(
+    klines
+):
+
+    if len(klines) < 30:
+
+        return (
+            "NEUTRAL",
+            0,
+            []
+        )
+
+    opens = [
+        k[1]
+        for k in klines
+    ]
+
+    closes = [
+        k[4]
+        for k in klines
+    ]
+
+    volumes = [
+        k[5]
+        for k in klines
+    ]
+
+    volume_ratio = calculate_volume_ratio(
+        volumes,
+        20
+    )
+
+    recent_volume = (
+        sum(volumes[-5:])
+        / 5
+    )
+
+    previous_volume = (
+        sum(volumes[-15:-5])
+        / 10
+    )
+
+    bullish_volume = 0
+    bearish_volume = 0
+
+    for i in range(
+        max(0, len(klines) - 10),
+        len(klines)
+    ):
+
+        if closes[i] > opens[i]:
+
+            bullish_volume += volumes[i]
+
+        elif closes[i] < opens[i]:
+
+            bearish_volume += volumes[i]
+
+    reasons = []
+
+    score = 0
+
+    # ---------------------------------------------
+    # BUYING PRESSURE
+    # ---------------------------------------------
+
+    if (
+        bullish_volume
+        > bearish_volume * 1.20
+    ):
+
+        score += 2
+
+        reasons.append(
+            "حجم الشموع الصاعدة أكبر من الهابطة"
+        )
+
+    if (
+        recent_volume
+        > previous_volume * 1.10
+    ):
+
+        score += 1
+
+        reasons.append(
+            "الحجم بدأ يرتفع"
+        )
+
+    # ---------------------------------------------
+    # SELLING PRESSURE
+    # ---------------------------------------------
+
+    if (
+        bearish_volume
+        > bullish_volume * 1.20
+    ):
+
+        score -= 2
+
+        reasons.append(
+            "حجم الشموع الهابطة أكبر من الصاعدة"
+        )
+
+    if (
+        recent_volume
+        > previous_volume * 1.10
+        and
+        bearish_volume
+        > bullish_volume
+    ):
+
+        score -= 1
+
+        reasons.append(
+            "ارتفاع الحجم مع ضغط بيعي"
+        )
+
+    # ---------------------------------------------
+    # FINAL
+    # ---------------------------------------------
+
+    if score >= 2:
+
+        return (
+            "INFLOW",
+            score,
+            reasons
+        )
+
+    if score <= -2:
+
+        return (
+            "OUTFLOW",
+            score,
+            reasons
+        )
+
+    return (
+        "NEUTRAL",
+        score,
+        reasons
+    )
 
 
 # =========================================================
@@ -785,11 +1165,13 @@ def detect_bottom_accumulation(
     current = closes[-1]
 
     old = closes[-40:-20]
+
     recent = closes[-20:]
 
     old_high = max(old)
 
     recent_low = min(recent)
+
     recent_high = max(recent)
 
     if old_high <= 0:
@@ -821,6 +1203,7 @@ def detect_bottom_accumulation(
     )
 
     score = 0
+
     reasons = []
 
     if drawdown <= -8:
@@ -836,19 +1219,20 @@ def detect_bottom_accumulation(
         score += 1
 
         reasons.append(
-            "النطاق السعري بدأ يضيق"
+            "السعر بدأ يدخل نطاق تجميع"
         )
 
     if (
         old_volume > 0
-        and recent_volume
+        and
+        recent_volume
         >= old_volume * 0.75
     ):
 
         score += 1
 
         reasons.append(
-            "الحجم ما زال حاضرًا بعد الهبوط"
+            "الحجم ما زال موجوداً بعد الهبوط"
         )
 
     if candle[
@@ -861,7 +1245,9 @@ def detect_bottom_accumulation(
             "رفض سعري من الأسفل"
         )
 
-    if recent_high > recent_low:
+    if (
+        recent_high > recent_low
+    ):
 
         position = (
             current - recent_low
@@ -874,7 +1260,7 @@ def detect_bottom_accumulation(
             score += 1
 
             reasons.append(
-                "السعر ما زال في منطقة مبكرة"
+                "السعر ليس في قمة النطاق"
             )
 
     return (
@@ -885,272 +1271,67 @@ def detect_bottom_accumulation(
 
 
 # =========================================================
-# LIQUIDITY FLOW
+# VOLATILITY / CRASH FILTER
 # =========================================================
 
-def detect_liquidity_flow(
+def detect_abnormal_move(
     klines
 ):
 
-    if len(klines) < 30:
+    if len(klines) < 5:
 
-        return (
-            "NEUTRAL",
-            0,
-            []
-        )
+        return False, 0.0, "UNKNOWN"
 
-    opens = [
-        k[1]
-        for k in klines
-    ]
-
-    closes = [
-        k[4]
-        for k in klines
-    ]
-
-    volumes = [
-        k[5]
-        for k in klines
-    ]
-
-    reasons = []
-
-    volume_ratio = calculate_volume_ratio(
-        volumes,
-        20
-    )
-
-    recent_volume = (
-        sum(volumes[-5:])
-        / 5
-    )
-
-    previous_volume = (
-        sum(volumes[-15:-5])
-        / 10
-    )
-
-    recent_change = percentage_change(
-        closes[-6],
-        closes[-1]
-    )
-
-    bullish_volume = 0
-    bearish_volume = 0
+    changes = []
 
     for i in range(
-        max(
-            0,
-            len(klines) - 10
-        ),
+        len(klines) - 2,
         len(klines)
     ):
 
-        if closes[i] > opens[i]:
+        old = klines[i - 1][4]
+        new = klines[i][4]
 
-            bullish_volume += volumes[i]
-
-        elif closes[i] < opens[i]:
-
-            bearish_volume += volumes[i]
-
-    score = 0
-
-    if (
-        bullish_volume
-        > bearish_volume * 1.15
-        and volume_ratio >= 1.05
-    ):
-
-        score += 2
-
-        reasons.append(
-            "زيادة حجم الشموع الصاعدة"
+        changes.append(
+            percentage_change(
+                old,
+                new
+            )
         )
 
-    if (
-        recent_volume
-        > previous_volume * 1.10
-        and recent_change > -3
-    ):
-
-        score += 1
-
-        reasons.append(
-            "الحجم يتحسن بدون هبوط حاد"
+    two_candle_change = (
+        percentage_change(
+            klines[-3][4],
+            klines[-1][4]
         )
+    )
 
+    # انهيار/انفجار غير طبيعي
     if (
-        bearish_volume
-        > bullish_volume * 1.20
-        and volume_ratio >= 1.05
+        two_candle_change <= -12
     ):
-
-        score -= 2
-
-        reasons.append(
-            "زيادة حجم الشموع الهابطة"
-        )
-
-    if (
-        recent_volume
-        > previous_volume * 1.10
-        and recent_change < -3
-    ):
-
-        score -= 1
-
-        reasons.append(
-            "ارتفاع الحجم مع ضغط بيعي"
-        )
-
-    if score >= 2:
 
         return (
-            "INFLOW",
-            score,
-            reasons
+            True,
+            two_candle_change,
+            "CRASH"
         )
 
-    if score <= -2:
+    if (
+        two_candle_change >= 15
+    ):
 
         return (
-            "OUTFLOW",
-            score,
-            reasons
+            True,
+            two_candle_change,
+            "PUMP"
         )
 
     return (
-        "NEUTRAL",
-        score,
-        reasons
+        False,
+        two_candle_change,
+        "NORMAL"
     )
-
-
-# =========================================================
-# TIMEFRAME TREND
-# =========================================================
-
-def calculate_timeframe_trend(
-    klines
-):
-
-    if not klines:
-
-        return "UNKNOWN"
-
-    closes = [
-        k[4]
-        for k in klines
-    ]
-
-    ema9 = calculate_ema(
-        closes,
-        9
-    )
-
-    ema20 = calculate_ema(
-        closes,
-        20
-    )
-
-    ema50 = calculate_ema(
-        closes,
-        50
-    )
-
-    if None in (
-        ema9,
-        ema20,
-        ema50
-    ):
-
-        return "UNKNOWN"
-
-    current = closes[-1]
-
-    if (
-        ema9 > ema20 > ema50
-        and current > ema20
-    ):
-
-        return "LONG"
-
-    if (
-        ema9 < ema20 < ema50
-        and current < ema20
-    ):
-
-        return "SHORT"
-
-    return "NEUTRAL"
-
-
-# =========================================================
-# 4H MARKET STRUCTURE
-# =========================================================
-
-def calculate_market_structure(
-    klines
-):
-
-    if len(klines) < 30:
-
-        return "UNKNOWN", []
-
-    highs = [
-        k[2]
-        for k in klines
-    ]
-
-    lows = [
-        k[3]
-        for k in klines
-    ]
-
-    closes = [
-        k[4]
-        for k in klines
-    ]
-
-    current = closes[-1]
-
-    recent_high = max(
-        highs[-20:-2]
-    )
-
-    recent_low = min(
-        lows[-20:-2]
-    )
-
-    reasons = []
-
-    # BOS صاعد
-    if current > recent_high:
-
-        reasons.append(
-            "كسر قمة سابقة - BOS صاعد"
-        )
-
-        return "BULLISH_BOS", reasons
-
-    # BOS هابط
-    if current < recent_low:
-
-        reasons.append(
-            "كسر قاع سابق - BOS هابط"
-        )
-
-        return "BEARISH_BOS", reasons
-
-    # عدم وجود كسر واضح
-    reasons.append(
-        "لا يوجد BOS واضح حاليًا"
-    )
-
-    return "RANGE", reasons
 
 
 # =========================================================
@@ -1184,8 +1365,6 @@ def smart_round(value):
 
 # =========================================================
 # COIN ANALYSIS
-# 4H = MASTER DIRECTION
-# 1H = ENTRY / TIMING
 # =========================================================
 
 def get_coin_analysis(symbol):
@@ -1194,28 +1373,10 @@ def get_coin_analysis(symbol):
 
     if not symbol_exists(symbol):
 
-        logger.info(
-            "Symbol not found on BingX: %s",
-            symbol
-        )
-
         return None
 
     # =====================================================
-    # 1H
-    # =====================================================
-
-    klines_1h = get_bingx_klines(
-        symbol,
-        "1h",
-        200
-    )
-
-    if not klines_1h:
-        return None
-
-    # =====================================================
-    # 4H
+    # 4H MASTER
     # =====================================================
 
     klines_4h = get_bingx_klines(
@@ -1225,6 +1386,33 @@ def get_coin_analysis(symbol):
     )
 
     if not klines_4h:
+
+        return None
+
+    # =====================================================
+    # 1H ENTRY
+    # =====================================================
+
+    klines_1h = get_bingx_klines(
+        symbol,
+        "1h",
+        150
+    )
+
+    if not klines_1h:
+
+        return None
+
+    # =====================================================
+    # 4H DIRECTION
+    # =====================================================
+
+    trend_4h = calculate_4h_trend(
+        klines_4h
+    )
+
+    if trend_4h == "UNKNOWN":
+
         return None
 
     # =====================================================
@@ -1243,36 +1431,12 @@ def get_coin_analysis(symbol):
 
     current = closes[-1]
 
-    ema9_1h = calculate_ema(
-        closes,
-        9
-    )
-
-    ema20_1h = calculate_ema(
-        closes,
-        20
-    )
-
-    ema50_1h = calculate_ema(
-        closes,
-        50
-    )
-
-    if None in (
-        ema9_1h,
-        ema20_1h,
-        ema50_1h
-    ):
-
-        return None
-
     rsi = calculate_rsi(
         closes
     )
 
     volume_ratio = calculate_volume_ratio(
-        volumes,
-        20
+        volumes
     )
 
     volume_trend = calculate_volume_trend(
@@ -1283,6 +1447,10 @@ def get_coin_analysis(symbol):
         klines_1h
     )
 
+    if not atr or atr <= 0:
+
+        atr = current * 0.01
+
     support, resistance = (
         calculate_support_resistance(
             klines_1h
@@ -1290,91 +1458,11 @@ def get_coin_analysis(symbol):
     )
 
     # =====================================================
-    # 4H MASTER
+    # STRUCTURE
     # =====================================================
 
-    trend_4h = calculate_timeframe_trend(
-        klines_4h
-    )
-
-    structure_4h, structure_reasons = (
-        calculate_market_structure(
-            klines_4h
-        )
-    )
-
-    if trend_4h == "UNKNOWN":
-
-        return None
-
-    # =====================================================
-    # 4H NEUTRAL = NO TRADE
-    # =====================================================
-
-    if trend_4h == "NEUTRAL":
-
-        return {
-            "symbol": symbol,
-            "direction": "NO TRADE",
-            "score": 0,
-            "state": "4H محايد؛ لا توجد صفقة",
-            "price": smart_round(current),
-            "rsi": rsi,
-            "volume_ratio": volume_ratio,
-            "volume_trend": volume_trend,
-            "liquidity_state": "NEUTRAL",
-            "liquidity_score": 0,
-            "bottom_detected": False,
-            "bottom_score": 0,
-            "drawdown": calculate_recent_drawdown(closes),
-            "buy_pressure": 50,
-            "trend": "NEUTRAL",
-            "trend_4h": trend_4h,
-            "trend_1h": "NEUTRAL",
-            "entry_min": smart_round(current),
-            "entry_max": smart_round(current),
-            "stop_loss": smart_round(current),
-            "tp1": smart_round(current),
-            "tp2": smart_round(current),
-            "tp3": smart_round(current),
-            "support": smart_round(support),
-            "resistance": smart_round(resistance),
-            "support_distance": round(
-                abs(current - support)
-                / current * 100,
-                2
-            ),
-            "resistance_distance": round(
-                abs(resistance - current)
-                / current * 100,
-                2
-            ),
-            "analysis_lines": [
-                "4H محايد",
-                "لا توجد صفقة حتى يتضح الاتجاه"
-            ],
-            "liquidity_reasons": [],
-            "bottom_reasons": [],
-            "structure_4h": structure_4h,
-            "structure_reasons": structure_reasons
-        }
-
-    # =====================================================
-    # 1H TREND
-    # =====================================================
-
-    trend_1h = calculate_timeframe_trend(
+    structure = detect_market_structure(
         klines_1h
-    )
-
-    # =====================================================
-    # BOTTOM
-    # =====================================================
-
-    bottom_detected, bottom_score, bottom_reasons = (
-        detect_bottom_accumulation(
-            klines_1h
-        )
     )
 
     # =====================================================
@@ -1388,18 +1476,24 @@ def get_coin_analysis(symbol):
     )
 
     # =====================================================
-    # CRASH FILTER
+    # BOTTOM
     # =====================================================
 
-    fast_crash, crash_change = (
-        detect_fast_crash(
+    bottom_detected, bottom_score, bottom_reasons = (
+        detect_bottom_accumulation(
             klines_1h
         )
     )
 
     # =====================================================
-    # DISTANCES
+    # VOLATILITY
     # =====================================================
+
+    abnormal_move, two_candle_change, move_type = (
+        detect_abnormal_move(
+            klines_1h
+        )
+    )
 
     drawdown = calculate_recent_drawdown(
         closes
@@ -1407,25 +1501,23 @@ def get_coin_analysis(symbol):
 
     support_distance = (
         abs(current - support)
-        / current * 100
+        / current
+        * 100
     )
 
     resistance_distance = (
         abs(resistance - current)
-        / current * 100
+        / current
+        * 100
     )
 
-    # =====================================================
-    # SCORING
-    # =====================================================
+    analysis_lines = []
 
     long_score = 0
     short_score = 0
 
-    analysis_lines = []
-
     # =====================================================
-    # 4H MASTER DIRECTION
+    # MASTER 4H
     # =====================================================
 
     if trend_4h == "LONG":
@@ -1433,7 +1525,7 @@ def get_coin_analysis(symbol):
         long_score += 30
 
         analysis_lines.append(
-            "4H صاعد — الاتجاه الرئيسي LONG"
+            "4H هو الاتجاه الرئيسي: صاعد"
         )
 
     elif trend_4h == "SHORT":
@@ -1441,166 +1533,54 @@ def get_coin_analysis(symbol):
         short_score += 30
 
         analysis_lines.append(
-            "4H هابط — الاتجاه الرئيسي SHORT"
+            "4H هو الاتجاه الرئيسي: هابط"
+        )
+
+    else:
+
+        analysis_lines.append(
+            "4H غير واضح"
         )
 
     # =====================================================
-    # 4H MARKET STRUCTURE
+    # 1H STRUCTURE
     # =====================================================
 
-    if structure_4h == "BULLISH_BOS":
+    if structure["structure"] == "BULLISH":
 
         long_score += 15
 
         analysis_lines.append(
-            "BOS صاعد على 4H"
+            "هيكل 1H صاعد"
         )
 
-    elif structure_4h == "BEARISH_BOS":
+    elif structure["structure"] == "BEARISH":
 
         short_score += 15
 
         analysis_lines.append(
-            "BOS هابط على 4H"
+            "هيكل 1H هابط"
         )
 
     # =====================================================
-    # 1H EMA
-    # EMA مجرد تأكيد وليس صاحب القرار
+    # BOS
     # =====================================================
 
-    if ema9_1h > ema20_1h:
+    if structure["bos"] == "BULLISH":
 
-        long_score += 6
-
-        analysis_lines.append(
-            "1H: EMA9 فوق EMA20"
-        )
-
-    else:
-
-        short_score += 6
+        long_score += 15
 
         analysis_lines.append(
-            "1H: EMA9 تحت EMA20"
+            "BOS صاعد على 1H"
         )
 
-    if ema20_1h > ema50_1h:
+    elif structure["bos"] == "BEARISH":
 
-        long_score += 5
-
-    else:
-
-        short_score += 5
-
-    # =====================================================
-    # 1H TREND
-    # =====================================================
-
-    if trend_1h == "LONG":
-
-        long_score += 8
+        short_score += 15
 
         analysis_lines.append(
-            "1H يؤكد الاتجاه الصاعد"
+            "BOS هابط على 1H"
         )
-
-    elif trend_1h == "SHORT":
-
-        short_score += 8
-
-        analysis_lines.append(
-            "1H يؤكد الاتجاه الهابط"
-        )
-
-    # =====================================================
-    # RSI SMART FILTER
-    # =====================================================
-
-    # التشبع الشديد لا يعني SHORT تلقائيًا
-
-    if rsi <= 15:
-
-        analysis_lines.append(
-            "RSI شديد التشبع البيعي — ممنوع فتح SHORT أعمى"
-        )
-
-        # لو 4H هابط، ننتظر ارتداد/تأكيد
-        if trend_4h == "SHORT":
-
-            short_score -= 18
-
-    elif rsi <= 20:
-
-        analysis_lines.append(
-            "RSI في تشبع بيعي قوي — خطر البيع في القاع"
-        )
-
-        if trend_4h == "SHORT":
-
-            short_score -= 10
-
-    elif rsi >= 85:
-
-        analysis_lines.append(
-            "RSI شديد التشبع الشرائي — خطر مطاردة LONG"
-        )
-
-        if trend_4h == "LONG":
-
-            long_score -= 15
-
-    elif rsi >= 75:
-
-        analysis_lines.append(
-            "RSI مرتفع — لا تطارد LONG"
-        )
-
-        if trend_4h == "LONG":
-
-            long_score -= 8
-
-    elif 40 <= rsi <= 65:
-
-        if trend_4h == "LONG":
-
-            long_score += 5
-
-        elif trend_4h == "SHORT":
-
-            short_score += 5
-
-    # =====================================================
-    # VOLUME
-    # =====================================================
-
-    if volume_ratio >= 1.20:
-
-        if trend_4h == "LONG":
-
-            long_score += 8
-
-            analysis_lines.append(
-                "حجم جيد يدعم الحركة الصاعدة"
-            )
-
-        elif trend_4h == "SHORT":
-
-            short_score += 8
-
-            analysis_lines.append(
-                "حجم جيد يدعم الحركة الهابطة"
-            )
-
-    if volume_trend == "RISING":
-
-        if trend_4h == "LONG":
-
-            long_score += 5
-
-        elif trend_4h == "SHORT":
-
-            short_score += 5
 
     # =====================================================
     # LIQUIDITY
@@ -1608,7 +1588,7 @@ def get_coin_analysis(symbol):
 
     if liquidity_state == "INFLOW":
 
-        long_score += 10
+        long_score += 20
 
         analysis_lines.append(
             "دخول سيولة محتمل"
@@ -1616,11 +1596,81 @@ def get_coin_analysis(symbol):
 
     elif liquidity_state == "OUTFLOW":
 
-        short_score += 10
+        short_score += 20
 
         analysis_lines.append(
             "خروج سيولة محتمل"
         )
+
+    # =====================================================
+    # VOLUME
+    # =====================================================
+
+    if volume_ratio >= 1.20:
+
+        if liquidity_state == "INFLOW":
+
+            long_score += 8
+
+            analysis_lines.append(
+                "حجم مرتفع مع طلب"
+            )
+
+        elif liquidity_state == "OUTFLOW":
+
+            short_score += 8
+
+            analysis_lines.append(
+                "حجم مرتفع مع ضغط بيع"
+            )
+
+    if volume_trend == "RISING":
+
+        if liquidity_state == "INFLOW":
+
+            long_score += 5
+
+        elif liquidity_state == "OUTFLOW":
+
+            short_score += 5
+
+    # =====================================================
+    # RSI
+    # =====================================================
+
+    # RSI ليس صاحب القرار.
+    # لا نفتح SHORT بسبب RSI منخفض.
+
+    if trend_4h == "LONG":
+
+        if 40 <= rsi <= 68:
+
+            long_score += 6
+
+        elif rsi < 25:
+
+            analysis_lines.append(
+                "RSI منخفض جداً؛ انتظار تأكيد الارتداد"
+            )
+
+    elif trend_4h == "SHORT":
+
+        if 35 <= rsi <= 65:
+
+            short_score += 6
+
+        elif rsi < 20:
+
+            # حماية من البيع في القاع
+            short_score -= 15
+
+            analysis_lines.append(
+                "RSI منخفض جداً؛ ممنوع مطاردة الشورت"
+            )
+
+        elif rsi > 75:
+
+            short_score += 5
 
     # =====================================================
     # BOTTOM
@@ -1628,29 +1678,14 @@ def get_coin_analysis(symbol):
 
     if bottom_detected:
 
-        # القاع لا يسمح بتحويل 4H هابط إلى LONG
-        # لكنه يعطي تحذير من البيع في القاع
-
-        if trend_4h == "LONG":
-
-            long_score += 10
-
-        elif trend_4h == "SHORT":
-
-            short_score -= 8
+        long_score += 10
 
         analysis_lines.append(
-            "تم رصد خصائص قاع/تجميع على 1H"
+            "تجميع/قاع محتمل على 1H"
         )
 
-        for reason in bottom_reasons[:3]:
-
-            analysis_lines.append(
-                f"قاع: {reason}"
-            )
-
     # =====================================================
-    # SUPPORT / RESISTANCE
+    # SUPPORT
     # =====================================================
 
     if support_distance <= 3:
@@ -1660,8 +1695,12 @@ def get_coin_analysis(symbol):
             long_score += 8
 
             analysis_lines.append(
-                "السعر قريب من الدعم"
+                "السعر قريب من دعم"
             )
+
+    # =====================================================
+    # RESISTANCE
+    # =====================================================
 
     if resistance_distance <= 3:
 
@@ -1670,160 +1709,234 @@ def get_coin_analysis(symbol):
             short_score += 8
 
             analysis_lines.append(
-                "السعر قريب من المقاومة"
+                "السعر قريب من مقاومة"
             )
 
     # =====================================================
-    # FAST CRASH
+    # FAST MOVE
     # =====================================================
 
-    if fast_crash:
+    if two_candle_change <= -8:
+
+        long_score -= 15
+
+        short_score -= 20
 
         analysis_lines.append(
-            f"⚠️ انهيار سريع خلال آخر شمعتين: {crash_change}%"
+            "هبوط سريع؛ منع مطاردة الحركة"
         )
 
-        # ممنوع الدخول في أي اتجاه
-        direction = "NO TRADE"
+    if two_candle_change >= 8:
+
+        long_score -= 20
+
+        short_score -= 15
+
+        analysis_lines.append(
+            "ارتفاع سريع؛ منع مطاردة البمب"
+        )
+
+    # =====================================================
+    # ABNORMAL MOVE = NO TRADE
+    # =====================================================
+
+    if abnormal_move:
+
+        direction = "WAIT"
 
         score = 0
+
+        trend = (
+            "UP"
+            if trend_4h == "LONG"
+            else
+            "DOWN"
+            if trend_4h == "SHORT"
+            else
+            "NEUTRAL"
+        )
 
         state = (
-            "NO TRADE — انهيار سعري سريع؛ انتظار استقرار السوق"
+            "NO TRADE - حركة سعرية غير طبيعية"
         )
 
-    else:
+    # =====================================================
+    # 4H NEUTRAL
+    # =====================================================
 
-        direction = None
+    elif trend_4h == "NEUTRAL":
+
+        direction = "WAIT"
+
         score = 0
-        state = ""
+
+        trend = "NEUTRAL"
+
+        state = (
+            "NO TRADE - اتجاه 4H غير واضح"
+        )
 
     # =====================================================
-    # HARD DIRECTION FILTER
+    # 4H LONG
     # =====================================================
 
-    if not fast_crash:
+    elif trend_4h == "LONG":
 
-        if trend_4h == "LONG":
+        trend = "UP"
 
-            # لا LONG إذا الأدلة الداخلية عكسية بشدة
-            if short_score > long_score + 12:
+        # ممنوع SHORT ضد 4H
+        if liquidity_state == "OUTFLOW":
 
-                direction = "NO TRADE"
+            direction = "WAIT"
 
-                score = max(
-                    long_score,
-                    short_score
-                )
+            score = 0
 
-                state = (
-                    "NO TRADE — 4H صاعد لكن إشارات 1H متضاربة"
-                )
+            state = (
+                "NO TRADE - 4H صاعد لكن السيولة خارجة"
+            )
 
-            else:
+        elif structure["structure"] == "BEARISH":
 
-                direction = "LONG"
+            direction = "WAIT"
 
-                score = long_score
+            score = 0
 
-                if (
-                    trend_1h == "LONG"
-                    and
-                    liquidity_state == "INFLOW"
-                ):
+            state = (
+                "NO TRADE - 4H صاعد لكن هيكل 1H هابط"
+            )
 
-                    state = (
-                        "4H صاعد + 1H يؤكد + دخول سيولة"
-                    )
-
-                elif trend_1h == "LONG":
-
-                    state = (
-                        "4H صاعد + 1H يؤكد الاتجاه"
-                    )
-
-                elif bottom_detected:
-
-                    state = (
-                        "4H صاعد + 1H قريب من منطقة تجميع"
-                    )
-
-                else:
-
-                    state = (
-                        "4H صاعد + انتظار دخول 1H"
-                    )
-
-        elif trend_4h == "SHORT":
-
-            # RSI شديد التشبع أو قاع محتمل
-            # يمنع الشورت الأعمى
-
-            dangerous_short = (
-                rsi <= 20
+        elif (
+            long_score >= 55
+            and
+            (
+                liquidity_state == "INFLOW"
                 or
-                rsi <= 15
+                structure["bos"] == "BULLISH"
                 or
                 bottom_detected
             )
+        ):
 
-            if dangerous_short:
+            direction = "LONG"
 
-                direction = "NO TRADE"
+            score = long_score
 
-                score = max(
-                    short_score,
-                    long_score
-                )
-
-                state = (
-                    "NO TRADE — 4H هابط لكن السعر في منطقة خطر للبيع"
-                )
-
-                analysis_lines.append(
-                    "الانتظار حتى يظهر تأكيد هابط جديد على 1H"
-                )
-
-            elif long_score > short_score + 12:
-
-                direction = "NO TRADE"
-
-                score = max(
-                    long_score,
-                    short_score
-                )
+            if (
+                liquidity_state == "INFLOW"
+                and
+                structure["bos"] == "BULLISH"
+            ):
 
                 state = (
-                    "NO TRADE — 4H هابط لكن إشارات 1H متضاربة"
+                    "4H صاعد + دخول سيولة + BOS صاعد"
+                )
+
+            elif liquidity_state == "INFLOW":
+
+                state = (
+                    "4H صاعد + دخول سيولة"
                 )
 
             else:
 
-                direction = "SHORT"
+                state = (
+                    "4H صاعد + تأكيد 1H"
+                )
 
-                score = short_score
+        else:
 
-                if (
-                    trend_1h == "SHORT"
-                    and
-                    liquidity_state == "OUTFLOW"
-                ):
+            direction = "WAIT"
 
-                    state = (
-                        "4H هابط + 1H يؤكد + خروج سيولة"
-                    )
+            score = 0
 
-                elif trend_1h == "SHORT":
+            state = (
+                "NO TRADE - لم يكتمل تأكيد LONG"
+            )
 
-                    state = (
-                        "4H هابط + 1H يؤكد الاتجاه"
-                    )
+    # =====================================================
+    # 4H SHORT
+    # =====================================================
 
-                else:
+    else:
 
-                    state = (
-                        "4H هابط + انتظار تأكيد دخول الشورت على 1H"
-                    )
+        trend = "DOWN"
+
+        # ممنوع LONG ضد 4H
+        if liquidity_state == "INFLOW":
+
+            direction = "WAIT"
+
+            score = 0
+
+            state = (
+                "NO TRADE - 4H هابط لكن السيولة داخلة"
+            )
+
+        elif structure["structure"] == "BULLISH":
+
+            direction = "WAIT"
+
+            score = 0
+
+            state = (
+                "NO TRADE - 4H هابط لكن هيكل 1H صاعد"
+            )
+
+        elif rsi < 20:
+
+            direction = "WAIT"
+
+            score = 0
+
+            state = (
+                "NO TRADE - RSI منخفض جداً وخطر البيع في القاع"
+            )
+
+        elif (
+            short_score >= 55
+            and
+            (
+                liquidity_state == "OUTFLOW"
+                or
+                structure["bos"] == "BEARISH"
+            )
+        ):
+
+            direction = "SHORT"
+
+            score = short_score
+
+            if (
+                liquidity_state == "OUTFLOW"
+                and
+                structure["bos"] == "BEARISH"
+            ):
+
+                state = (
+                    "4H هابط + خروج سيولة + BOS هابط"
+                )
+
+            elif liquidity_state == "OUTFLOW":
+
+                state = (
+                    "4H هابط + خروج سيولة"
+                )
+
+            else:
+
+                state = (
+                    "4H هابط + تأكيد 1H"
+                )
+
+        else:
+
+            direction = "WAIT"
+
+            score = 0
+
+            state = (
+                "NO TRADE - لم يكتمل تأكيد SHORT"
+            )
 
     # =====================================================
     # SCORE
@@ -1841,45 +1954,73 @@ def get_coin_analysis(symbol):
 
     # =====================================================
     # ENTRY / SL / TP
-    # 1H هو المسؤول عن منطقة الدخول
     # =====================================================
-
-    if not atr or atr <= 0:
-
-        atr = current * 0.01
 
     if direction == "LONG":
 
-        # دخول قريب من السعر والدعم
         entry_min = max(
             support,
-            current - atr * 0.40
+            current - atr * 0.50
         )
 
         entry_max = current
 
-        # SL ليس نسبة ثابتة
-        stop_loss = min(
-            support - atr * 0.25,
-            current - atr * 1.0
+        # SL هيكلي
+        structural_sl = (
+            support - atr * 0.25
         )
+
+        atr_sl = (
+            current - atr * 1.30
+        )
+
+        stop_loss = min(
+            structural_sl,
+            atr_sl
+        )
+
+        # لا نسمح بمخاطرة بعيدة جداً
+        max_sl = current * 0.96
+
+        if stop_loss < max_sl:
+
+            stop_loss = max_sl
+
+            analysis_lines.append(
+                "تم تقليل مسافة Stop Loss لحماية الصفقة"
+            )
 
         risk = current - stop_loss
 
         if risk <= 0:
 
-            risk = atr
+            direction = "WAIT"
 
-        tp1 = current + risk * 1.2
-        tp2 = current + risk * 2.0
-        tp3 = current + risk * 3.0
+            score = 0
 
-        if resistance > current:
-
-            tp1 = min(
-                tp1,
-                resistance
+            state = (
+                "NO TRADE - لا توجد منطقة SL سليمة"
             )
+
+            entry_min = current
+            entry_max = current
+            stop_loss = current
+            tp1 = current
+            tp2 = current
+            tp3 = current
+
+        else:
+
+            tp1 = current + risk * 1.2
+            tp2 = current + risk * 2.0
+            tp3 = current + risk * 3.0
+
+            if resistance > current:
+
+                tp1 = min(
+                    tp1,
+                    resistance
+                )
 
     elif direction == "SHORT":
 
@@ -1887,30 +2028,64 @@ def get_coin_analysis(symbol):
 
         entry_max = min(
             resistance,
-            current + atr * 0.40
+            current + atr * 0.50
+        )
+
+        structural_sl = (
+            resistance + atr * 0.25
+        )
+
+        atr_sl = (
+            current + atr * 1.30
         )
 
         stop_loss = max(
-            resistance + atr * 0.25,
-            current + atr * 1.0
+            structural_sl,
+            atr_sl
         )
+
+        # حد أقصى للمخاطرة
+        max_sl = current * 1.04
+
+        if stop_loss > max_sl:
+
+            stop_loss = max_sl
+
+            analysis_lines.append(
+                "تم تقليل مسافة Stop Loss لحماية الصفقة"
+            )
 
         risk = stop_loss - current
 
         if risk <= 0:
 
-            risk = atr
+            direction = "WAIT"
 
-        tp1 = current - risk * 1.2
-        tp2 = current - risk * 2.0
-        tp3 = current - risk * 3.0
+            score = 0
 
-        if support < current:
-
-            tp1 = max(
-                tp1,
-                support
+            state = (
+                "NO TRADE - لا توجد منطقة SL سليمة"
             )
+
+            entry_min = current
+            entry_max = current
+            stop_loss = current
+            tp1 = current
+            tp2 = current
+            tp3 = current
+
+        else:
+
+            tp1 = current - risk * 1.2
+            tp2 = current - risk * 2.0
+            tp3 = current - risk * 3.0
+
+            if support < current:
+
+                tp1 = max(
+                    tp1,
+                    support
+                )
 
     else:
 
@@ -1924,7 +2099,7 @@ def get_coin_analysis(symbol):
         tp3 = current
 
     # =====================================================
-    # BUY PRESSURE
+    # BUY / SELL PRESSURE
     # =====================================================
 
     if liquidity_state == "INFLOW":
@@ -2005,29 +2180,32 @@ def get_coin_analysis(symbol):
             buy_pressure,
 
         "trend":
-            (
-                "UP"
-                if trend_4h == "LONG"
-                else "DOWN"
-            ),
+            trend,
 
         "trend_4h":
             trend_4h,
 
-        "trend_1h":
-            trend_1h,
+        "structure":
+            structure["structure"],
 
-        "structure_4h":
-            structure_4h,
+        "bos":
+            structure["bos"],
 
-        "structure_reasons":
-            structure_reasons,
+        "swing_high":
+            smart_round(
+                structure["swing_high"]
+            ),
 
-        "fast_crash":
-            fast_crash,
+        "swing_low":
+            smart_round(
+                structure["swing_low"]
+            ),
 
-        "crash_change":
-            crash_change,
+        "two_candle_change":
+            round(
+                two_candle_change,
+                2
+            ),
 
         "entry_min":
             smart_round(entry_min),
@@ -2077,11 +2255,52 @@ def get_coin_analysis(symbol):
 
 
 # =========================================================
-# TOP SYMBOLS
+# TICKERS
+# =========================================================
+
+def get_market_tickers():
+
+    global _TICKER_CACHE
+    global _TICKER_CACHE_TIME
+
+    now = time.time()
+
+    if (
+        _TICKER_CACHE
+        and
+        now - _TICKER_CACHE_TIME
+        < TICKER_CACHE_SECONDS
+    ):
+
+        return list(_TICKER_CACHE)
+
+    data = bingx_get(
+        "/openApi/swap/v2/quote/ticker"
+    )
+
+    if not data:
+
+        return list(_TICKER_CACHE)
+
+    rows = data.get("data")
+
+    if not isinstance(rows, list):
+
+        return list(_TICKER_CACHE)
+
+    _TICKER_CACHE = rows
+
+    _TICKER_CACHE_TIME = now
+
+    return list(rows)
+
+
+# =========================================================
+# TOP / DIVERSIFIED SYMBOLS
 # =========================================================
 
 def get_top_futures_symbols(
-    limit=20
+    limit=35
 ):
 
     symbols = get_futures_symbols()
@@ -2090,17 +2309,9 @@ def get_top_futures_symbols(
 
         return []
 
-    data = bingx_get(
-        "/openApi/swap/v2/quote/ticker"
-    )
+    rows = get_market_tickers()
 
-    if not data:
-
-        return list(symbols)[:limit]
-
-    rows = data.get("data")
-
-    if not isinstance(rows, list):
+    if not rows:
 
         return list(symbols)[:limit]
 
@@ -2118,25 +2329,21 @@ def get_top_futures_symbols(
         if not raw_symbol:
             continue
 
-        symbol = str(
-            raw_symbol
-        ).replace(
-            "-",
-            ""
-        ).upper()
+        symbol = (
+            str(raw_symbol)
+            .replace("-", "")
+            .upper()
+        )
 
         if symbol not in symbols:
             continue
 
         try:
 
-            volume = float(
+            quote_volume = float(
                 item.get(
                     "quoteVolume",
-                    item.get(
-                        "volume",
-                        0
-                    )
+                    0
                 )
             )
 
@@ -2149,13 +2356,24 @@ def get_top_futures_symbols(
                 )
             )
 
+            last_price = float(
+                item.get(
+                    "lastPrice",
+                    0
+                )
+            )
+
+            if quote_volume <= 0:
+                continue
+
+            # سيولة كافية + حركة
             score = (
-                volume
+                quote_volume
                 * (
                     1
                     + min(
                         change / 100,
-                        0.25
+                        0.30
                     )
                 )
             )
@@ -2163,7 +2381,10 @@ def get_top_futures_symbols(
             candidates.append(
                 (
                     symbol,
-                    score
+                    score,
+                    quote_volume,
+                    change,
+                    last_price
                 )
             )
 
@@ -2179,11 +2400,51 @@ def get_top_futures_symbols(
         reverse=True
     )
 
-    return [
-        symbol
-        for symbol, _ in
-        candidates[:limit]
-    ]
+    # =====================================================
+    # لا نريد BTC/ETH/SOL/XRP فقط
+    # =====================================================
+
+    majors = {
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "BNBUSDT",
+        "DOGEUSDT",
+        "ADAUSDT"
+    }
+
+    selected = []
+
+    # أولاً: العملات البديلة
+    for item in candidates:
+
+        symbol = item[0]
+
+        if symbol in majors:
+            continue
+
+        selected.append(symbol)
+
+        if len(selected) >= limit - 5:
+            break
+
+    # ثم بعض العملات الرئيسية
+    for item in candidates:
+
+        symbol = item[0]
+
+        if symbol not in majors:
+            continue
+
+        if symbol not in selected:
+
+            selected.append(symbol)
+
+        if len(selected) >= limit:
+            break
+
+    return selected[:limit]
 
 
 # =========================================================
@@ -2195,7 +2456,7 @@ def scan_market(
 ):
 
     symbols = get_top_futures_symbols(
-        20
+        35
     )
 
     if not symbols:
@@ -2204,12 +2465,17 @@ def scan_market(
 
     results = []
 
+    logger.info(
+        "Scanner started. Candidates: %s",
+        len(symbols)
+    )
+
     for symbol in symbols:
 
         if time.time() < _RATE_LIMIT_UNTIL:
 
             logger.warning(
-                "Stopping scanner because BingX rate limit is active."
+                "Stopping scanner because rate limit is active."
             )
 
             break
@@ -2221,36 +2487,17 @@ def scan_market(
             )
 
             if not data:
-                continue
-
-            # =================================================
-            # NO TRADE = NEVER SEND
-            # =================================================
-
-            if data["direction"] == "NO TRADE":
 
                 continue
 
             # =================================================
-            # STRICT 4H
+            # ONLY REAL TRADES
             # =================================================
 
-            if data["trend_4h"] not in (
+            if data["direction"] not in (
                 "LONG",
                 "SHORT"
             ):
-
-                continue
-
-            if data["direction"] != data["trend_4h"]:
-
-                continue
-
-            # =================================================
-            # FAST CRASH
-            # =================================================
-
-            if data["fast_crash"]:
 
                 continue
 
@@ -2268,11 +2515,17 @@ def scan_market(
 
             if data["direction"] == "LONG":
 
+                if data["trend_4h"] != "LONG":
+
+                    continue
+
+                # لازم دليل سيولة أو BOS أو تجميع
                 confirmation = (
-                    data["trend_1h"] == "LONG"
-                    or
                     data["liquidity_state"]
                     == "INFLOW"
+                    or
+                    data["bos"]
+                    == "BULLISH"
                     or
                     data["bottom_detected"]
                 )
@@ -2281,8 +2534,11 @@ def scan_market(
 
                     continue
 
-                # لا LONG في تشبع شرائي شديد
-                if data["rsi"] >= 85:
+                # ممنوع LONG بعد انهيار
+                if (
+                    data["two_candle_change"]
+                    <= -8
+                ):
 
                     continue
 
@@ -2292,11 +2548,16 @@ def scan_market(
 
             elif data["direction"] == "SHORT":
 
+                if data["trend_4h"] != "SHORT":
+
+                    continue
+
                 confirmation = (
-                    data["trend_1h"] == "SHORT"
-                    or
                     data["liquidity_state"]
                     == "OUTFLOW"
+                    or
+                    data["bos"]
+                    == "BEARISH"
                 )
 
                 if not confirmation:
@@ -2304,30 +2565,17 @@ def scan_market(
                     continue
 
                 # ممنوع البيع في القاع
-                if data["rsi"] <= 20:
+                if data["rsi"] < 20:
 
                     continue
 
-                if data["bottom_detected"]:
+                # ممنوع مطاردة انهيار
+                if (
+                    data["two_candle_change"]
+                    <= -8
+                ):
 
                     continue
-
-            # =================================================
-            # PRE-PUMP PROTECTION
-            # =================================================
-
-            if (
-                data["direction"]
-                == "LONG"
-                and
-                data["drawdown"]
-                > -2
-                and
-                data["volume_ratio"]
-                > 2.5
-            ):
-
-                continue
 
             results.append(
                 data
@@ -2341,8 +2589,8 @@ def scan_market(
                 exc
             )
 
-        # حماية API
-        time.sleep(0.45)
+        # حماية BingX
+        time.sleep(0.80)
 
     # =====================================================
     # RANK
@@ -2350,34 +2598,41 @@ def scan_market(
 
     results.sort(
         key=lambda x: (
+
             x["score"],
 
             1
-            if x["trend_4h"]
-            == x["direction"]
-            else 0,
-
-            1
-            if x["trend_1h"]
-            == x["direction"]
-            else 0,
-
-            1
-            if x["structure_4h"]
+            if x["liquidity_state"]
             in (
-                "BULLISH_BOS",
-                "BEARISH_BOS"
+                "INFLOW",
+                "OUTFLOW"
             )
             else 0,
 
             1
-            if x["liquidity_state"]
-            == "INFLOW"
+            if x["bos"]
+            in (
+                "BULLISH",
+                "BEARISH"
+            )
             else 0,
 
-            x["buy_pressure"]
+            1
+            if x["structure"]
+            in (
+                "BULLISH",
+                "BEARISH"
+            )
+            else 0,
+
+            x["volume_ratio"]
         ),
         reverse=True
+    )
+
+    logger.info(
+        "Scanner finished. Valid trades: %s",
+        len(results)
     )
 
     return results[:limit]
@@ -2391,13 +2646,11 @@ def generate_evidence_report(
     data
 ):
 
-    direction = data["direction"]
-
-    if direction == "LONG":
+    if data["direction"] == "LONG":
 
         emoji = "🟢"
 
-    elif direction == "SHORT":
+    elif data["direction"] == "SHORT":
 
         emoji = "🔴"
 
@@ -2407,23 +2660,25 @@ def generate_evidence_report(
 
     if data["liquidity_state"] == "INFLOW":
 
-        liquidity = "🟢 دخول سيولة"
+        liquidity = "🟢 دخول سيولة محتمل"
 
     elif data["liquidity_state"] == "OUTFLOW":
 
-        liquidity = "🔴 خروج سيولة"
+        liquidity = "🔴 خروج سيولة محتمل"
 
     else:
 
         liquidity = "🟡 سيولة محايدة"
 
-    if data["bottom_detected"]:
+    structure = data.get(
+        "structure",
+        "UNKNOWN"
+    )
 
-        bottom = "🟢 خصائص قاع/تجميع"
-
-    else:
-
-        bottom = "⚪ لا يوجد تأكيد قاع"
+    bos = data.get(
+        "bos",
+        "NONE"
+    )
 
     lines = [
 
@@ -2433,7 +2688,7 @@ def generate_evidence_report(
 
         f"💎 العملة: {data['symbol']}",
 
-        f"📈 الاتجاه النهائي: {emoji} {direction}",
+        f"📈 الاتجاه النهائي: {emoji} {data['direction']}",
 
         f"⭐ Score: {data['score']}/100",
 
@@ -2443,37 +2698,37 @@ def generate_evidence_report(
 
         "",
 
-        f"💰 السعر: {data['price']}",
-
-        f"📊 RSI 1H: {data['rsi']}",
-
-        f"📊 Volume 1H: {data['volume_ratio']}x",
-
-        f"📈 Volume Trend 1H: {data['volume_trend']}",
-
-        f"💧 السيولة: {liquidity}",
-
-        f"💧 Buy Pressure: {data['buy_pressure']}%",
-
-        "",
-
-        "🧭 الاتجاه الرئيسي",
+        "📊 الاتجاه الرئيسي",
 
         f"4H: {data['trend_4h']}",
 
-        f"🏗️ Market Structure: {data['structure_4h']}",
+        "",
+
+        "🔎 تأكيد الدخول - 1H",
+
+        f"هيكل السوق: {structure}",
+
+        f"BOS: {bos}",
+
+        f"💧 السيولة: {liquidity}",
+
+        f"📊 Volume: {data['volume_ratio']}x",
+
+        f"📈 Volume Trend: {data['volume_trend']}",
+
+        f"💪 Buy Pressure: {data['buy_pressure']}%",
+
+        f"📊 RSI: {data['rsi']}",
 
         "",
 
-        "🎯 توقيت الدخول",
-
-        f"1H: {data['trend_1h']}",
-
-        "",
-
-        f"🎯 القاع: {bottom}",
+        f"🎯 القاع/التجميع: "
+        f"{'🟢 نعم' if data['bottom_detected'] else '⚪ لا'}",
 
         f"📉 الهبوط السابق: {data['drawdown']}%",
+
+        f"⚡ حركة آخر شمعتين: "
+        f"{data['two_candle_change']}%",
 
         "",
 
@@ -2483,13 +2738,15 @@ def generate_evidence_report(
 
         f"🔴 Resistance: {data['resistance']}",
 
-        f"📏 البعد عن الدعم: {data['support_distance']}%",
+        f"📏 البعد عن الدعم: "
+        f"{data['support_distance']}%",
 
-        f"📏 البعد عن المقاومة: {data['resistance_distance']}%",
+        f"📏 البعد عن المقاومة: "
+        f"{data['resistance_distance']}%",
 
         "",
 
-        "📍 منطقة الدخول",
+        "📍 منطقة الدخول 1H",
 
         f"{data['entry_min']} - {data['entry_max']}",
 
@@ -2509,7 +2766,7 @@ def generate_evidence_report(
 
         "",
 
-        "🔍 أسباب التحليل"
+        "🔍 أسباب القرار"
     ]
 
     for line in data[
@@ -2521,31 +2778,13 @@ def generate_evidence_report(
         )
 
     if data[
-        "structure_reasons"
-    ]:
-
-        lines.append("")
-
-        lines.append(
-            "🏗️ Market Structure"
-        )
-
-        for reason in data[
-            "structure_reasons"
-        ][:3]:
-
-            lines.append(
-                f"• {reason}"
-            )
-
-    if data[
         "liquidity_reasons"
     ]:
 
         lines.append("")
 
         lines.append(
-            "💧 تفاصيل السيولة"
+            "💧 أدلة السيولة"
         )
 
         for reason in data[
@@ -2563,7 +2802,7 @@ def generate_evidence_report(
         lines.append("")
 
         lines.append(
-            "🎯 تفاصيل القاع"
+            "🎯 أدلة التجميع"
         )
 
         for reason in data[
@@ -2578,13 +2817,11 @@ def generate_evidence_report(
 
         "",
 
-        "⚠️ النظام لا يدخل عكس اتجاه 4H.",
+        "⚠️ إشارة تحليلية وليست ضماناً للربح.",
 
-        "⚠️ RSI شديد التشبع لا يعتبر وحده إشارة بيع أو شراء.",
+        "⚠️ لا تدخل إذا تحرك السعر بعيداً عن منطقة الدخول.",
 
-        "⚠️ الانهيار السريع أو تضارب 1H مع 4H = NO TRADE.",
-
-        "⚠️ التحليل احتمالي وليس ضمانًا للربح."
+        "⚠️ SHORT لا يعتمد على RSI وحده، وLONG لا يعتمد على EMA وحده."
 
     ])
 
