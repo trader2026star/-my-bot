@@ -803,7 +803,12 @@ def _stage1_score(symbol):
         if 35 <= rsi <= 68: score += 5
         if vr >= 0.80: score += 4
         if 3 <= change6 <= 12: score += 5
-        if change6 > 15 or change6 < -15: score -= 12
+        # Strong movement is not a reason to discard the coin at stage 1.
+        # Full analysis decides whether it becomes ENTRY READY or REVERSAL WATCH.
+        if change6 > 15:
+            score -= 2
+        if change6 < -15:
+            score -= 4
         return (symbol, score, bottom, t4, t1, rsi, rd, sd)
     except Exception as exc:
         logger.debug("Stage1 failed for %s: %s", symbol, exc)
@@ -812,7 +817,7 @@ def _stage1_score(symbol):
 
 def scan_market(limit=5):
     """Two-stage scan: cheap shortlist first, full 5-timeframe analysis second."""
-    universe = get_top_futures_symbols(16)
+    universe = get_top_futures_symbols(30)
     if not universe:
         return []
 
@@ -827,9 +832,9 @@ def scan_market(limit=5):
     # Keep both directional setups and accumulation bases. This prevents strong bases
     # from disappearing just because they are not yet LONG on 4H.
     stage1.sort(key=lambda x: x[1], reverse=True)
-    shortlist = [x[0] for x in stage1[:8]]
+    shortlist = [x[0] for x in stage1[:10]]
     for item in stage1:
-        if item[2] and item[0] not in shortlist and len(shortlist) < 10:
+        if item[2] and item[0] not in shortlist and len(shortlist) < 12:
             shortlist.append(item[0])
 
     results = []
@@ -857,7 +862,7 @@ def scan_market(limit=5):
                 if data.get("support_distance", 0) < 0.20 or data.get("rsi", 50) < 30:
                     continue
             elif "REVERSAL WATCH" in state:
-                if data.get("resistance_distance", 0) < 0.20:
+                if data.get("resistance_distance", 0) < 0.08:
                     continue
             results.append(data)
         except Exception as exc:
@@ -869,6 +874,37 @@ def scan_market(limit=5):
         return (state_rank, x.get("score", 0), x.get("bottom_score", 0), x.get("liquidity_score", 0), x.get("volume_ratio", 0))
 
     results.sort(key=rank, reverse=True)
+
+    # If there is no immediate entry, return the best watch candidates rather
+    # than falsely reporting that the market has nothing worth monitoring.
+    if not results:
+        watch_candidates = []
+        for item in stage1[:12]:
+            symbol = item[0]
+            try:
+                data = get_coin_analysis(symbol)
+                if not data or data.get("crash_detected"):
+                    continue
+                state = data.get("state", "")
+                if (
+                    "REVERSAL WATCH" in state or
+                    "ACCUMULATION WATCH" in state
+                ):
+                    watch_candidates.append(data)
+            except Exception as exc:
+                logger.debug("Watch fallback failed for %s: %s", symbol, exc)
+
+        watch_candidates.sort(
+            key=lambda x: (
+                2 if "REVERSAL WATCH" in x.get("state", "") else 1,
+                x.get("entry_score", x.get("score", 0)),
+                x.get("bottom_score", 0),
+                x.get("liquidity_score", 0),
+            ),
+            reverse=True,
+        )
+        return watch_candidates[:limit]
+
     return results[:limit]
 
 
