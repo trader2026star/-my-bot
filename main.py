@@ -1,6 +1,8 @@
 import os
 import logging
 import threading
+import asyncio
+import time
 
 from flask import Flask
 from telegram import Update
@@ -79,7 +81,7 @@ def run_flask():
 
 
 # =========================================================
-# /START
+# START
 # =========================================================
 
 async def start(
@@ -118,7 +120,7 @@ async def start(
         "• Entry / SL / TP\n\n"
 
         "🟢 ENTRY READY = صفقة جاهزة\n"
-        "🟡 REVERSAL WATCH = ننتظر Pullback/تأكيد\n"
+        "🟡 REVERSAL WATCH = ننتظر Pullback/BOS\n"
         "🔵 ACCUMULATION WATCH = تجميع مبكر\n\n"
 
         "🛡️ التأكيدات موزونة وليست كلها شروطاً منفردة."
@@ -126,7 +128,7 @@ async def start(
 
 
 # =========================================================
-# /SCAN
+# SCAN
 # =========================================================
 
 async def scan_command(
@@ -137,21 +139,28 @@ async def scan_command(
     if not update.message:
         return
 
+    start_time = time.time()
+
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
-        "⚡ سيتم أولاً فلترة السوق بسرعة، "
-        "ثم تحليل أفضل المرشحين فقط.\n\n"
-        "🧠 جاري البحث عن:\n"
+        "⚡ فلترة سريعة للسوق أولاً.\n"
+        "🧠 ثم تحليل أفضل العملات فقط.\n\n"
         "🟢 ENTRY READY\n"
         "🟡 REVERSAL WATCH\n"
         "🔵 ACCUMULATION WATCH\n\n"
-        "⏳ انتظر قليلاً..."
+        "⏳ انتظر..."
     )
 
     try:
-        results = scan_market(limit=5)
+
+        # تشغيل التحليل خارج event loop
+        results = await asyncio.to_thread(
+            scan_market,
+            5
+        )
 
     except Exception as exc:
+
         logger.exception(
             "Scanner error: %s",
             exc
@@ -159,36 +168,46 @@ async def scan_command(
 
         await update.message.reply_text(
             "❌ حدث خطأ أثناء فحص السوق.\n\n"
-            "راجع Logs وحاول مرة أخرى."
+            "راجع Logs."
         )
 
         return
+
+    elapsed = round(
+        time.time() - start_time,
+        1
+    )
 
     if not results:
 
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
-            "لم يتم العثور حالياً على فرصة قوية "
-            "تستحق الإرسال.\n\n"
+            "لم يتم العثور حالياً على فرصة قوية.\n\n"
             "🛡️ البوت فضّل الانتظار بدلاً من "
-            "إعطاء صفقة ضعيفة."
+            "إعطاء صفقة ضعيفة.\n\n"
+            f"⏱️ وقت الفحص: {elapsed} ثانية"
         )
 
         return
 
     await update.message.reply_text(
         "✅ انتهى الفحص.\n\n"
-        f"🎯 تم العثور على {len(results)} مرشحين.\n\n"
-        "📊 يتم إرسال أفضل النتائج:"
+        f"🎯 تم العثور على {len(results)} مرشحين.\n"
+        f"⏱️ وقت الفحص: {elapsed} ثانية\n\n"
+        "📊 أفضل النتائج:"
     )
 
     for data in results:
 
         try:
 
-            report = generate_evidence_report(data)
+            report = generate_evidence_report(
+                data
+            )
 
-            await update.message.reply_text(report)
+            await update.message.reply_text(
+                report
+            )
 
         except Exception as exc:
 
@@ -237,7 +256,11 @@ async def handle_message(
 
     try:
 
-        data = get_coin_analysis(symbol)
+        # لا نجمد Telegram أثناء طلبات BingX
+        data = await asyncio.to_thread(
+            get_coin_analysis,
+            symbol
+        )
 
     except Exception as exc:
 
@@ -266,9 +289,13 @@ async def handle_message(
 
     try:
 
-        report = generate_evidence_report(data)
+        report = generate_evidence_report(
+            data
+        )
 
-        await update.message.reply_text(report)
+        await update.message.reply_text(
+            report
+        )
 
     except Exception as exc:
 
@@ -305,7 +332,9 @@ async def error_handler(
 
 def run_bot():
 
-    logger.info("Creating Telegram application...")
+    logger.info(
+        "Creating Telegram application..."
+    )
 
     application = (
         ApplicationBuilder()
@@ -314,11 +343,17 @@ def run_bot():
     )
 
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     application.add_handler(
-        CommandHandler("scan", scan_command)
+        CommandHandler(
+            "scan",
+            scan_command
+        )
     )
 
     application.add_handler(
@@ -328,9 +363,13 @@ def run_bot():
         )
     )
 
-    application.add_error_handler(error_handler)
+    application.add_error_handler(
+        error_handler
+    )
 
-    logger.info("Telegram bot is starting...")
+    logger.info(
+        "Telegram bot is starting..."
+    )
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
@@ -346,12 +385,10 @@ def run_bot():
 def main():
 
     logger.info("=" * 60)
-    logger.info("BingX AI Scanner starting...")
+    logger.info(
+        "BingX AI Scanner starting..."
+    )
     logger.info("=" * 60)
-
-    # -----------------------------------------------------
-    # Start Flask first
-    # -----------------------------------------------------
 
     flask_thread = threading.Thread(
         target=run_flask,
@@ -365,17 +402,7 @@ def main():
         "Flask thread started."
     )
 
-    # -----------------------------------------------------
-    # Give Flask a moment to bind the Render port
-    # -----------------------------------------------------
-
-    import time
-
     time.sleep(1)
-
-    # -----------------------------------------------------
-    # Start Telegram in main process
-    # -----------------------------------------------------
 
     run_bot()
 
