@@ -9,14 +9,14 @@ from telegram.ext import (
     ContextTypes,
     CommandHandler,
     MessageHandler,
-    filters
+    filters,
 )
 
 from analysis import (
     scan_market,
     get_coin_analysis,
     generate_evidence_report,
-    normalize_symbol
+    normalize_symbol,
 )
 
 
@@ -26,7 +26,7 @@ from analysis import (
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ if not TOKEN:
 
 
 # =========================================================
-# FLASK
+# FLASK / RENDER
 # =========================================================
 
 app = Flask(__name__)
@@ -53,37 +53,38 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "BingX AI Scanner is running."
+    return "BingX AI Scanner is running.", 200
 
 
 @app.route("/health")
 def health():
-    return "OK"
+    return "OK", 200
 
 
 def run_flask():
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000"
-        )
+    port = int(os.getenv("PORT", "10000"))
+
+    logger.info(
+        "Starting Flask server on 0.0.0.0:%s",
+        port
     )
 
     app.run(
         host="0.0.0.0",
         port=port,
         debug=False,
-        use_reloader=False
+        use_reloader=False,
+        threaded=True,
     )
 
 
 # =========================================================
-# START
+# /START
 # =========================================================
 
 async def start(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
@@ -104,12 +105,10 @@ async def start(
         "/scan\n\n"
 
         "🔎 النظام يعتمد على:\n"
-
         "• 1D = الاتجاه العام\n"
         "• 4H = الاتجاه الرئيسي\n"
         "• 1H = بوابة الدخول\n"
         "• 30m + 15m = تأكيد إضافي\n"
-
         "• BOS + Market Structure\n"
         "• السيولة والحجم\n"
         "• RSI + EMA\n"
@@ -118,17 +117,21 @@ async def start(
         "• ATR\n"
         "• Entry / SL / TP\n\n"
 
-        "🛡️ التأكيدات موزونة، وليس شرطاً أن تكون كلها موجودة."
+        "🟢 ENTRY READY = صفقة جاهزة\n"
+        "🟡 REVERSAL WATCH = ننتظر Pullback/تأكيد\n"
+        "🔵 ACCUMULATION WATCH = تجميع مبكر\n\n"
+
+        "🛡️ التأكيدات موزونة وليست كلها شروطاً منفردة."
     )
 
 
 # =========================================================
-# SCAN COMMAND
+# /SCAN
 # =========================================================
 
 async def scan_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
@@ -136,26 +139,19 @@ async def scan_command(
 
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
-
-        "🧠 شروط البحث:\n"
-        "• 1D + 4H اتجاه واضح\n"
-        "• 1H بوابة الدخول\n"
-        "• 30m + 15m تأكيد\n"
-        "• BOS / Market Structure\n"
-        "• السيولة والحجم\n"
-        "• عدم مطاردة القاع أو البامب\n\n"
-
+        "⚡ سيتم أولاً فلترة السوق بسرعة، "
+        "ثم تحليل أفضل المرشحين فقط.\n\n"
+        "🧠 جاري البحث عن:\n"
+        "🟢 ENTRY READY\n"
+        "🟡 REVERSAL WATCH\n"
+        "🔵 ACCUMULATION WATCH\n\n"
         "⏳ انتظر قليلاً..."
     )
 
     try:
-
-        results = scan_market(
-            limit=5
-        )
+        results = scan_market(limit=5)
 
     except Exception as exc:
-
         logger.exception(
             "Scanner error: %s",
             exc
@@ -172,10 +168,8 @@ async def scan_command(
 
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
-
-            "لم يتم العثور حالياً على صفقة قوية "
-            "بالشروط النهائية.\n\n"
-
+            "لم يتم العثور حالياً على فرصة قوية "
+            "تستحق الإرسال.\n\n"
             "🛡️ البوت فضّل الانتظار بدلاً من "
             "إعطاء صفقة ضعيفة."
         )
@@ -184,23 +178,17 @@ async def scan_command(
 
     await update.message.reply_text(
         "✅ انتهى الفحص.\n\n"
-
-        f"🎯 تم العثور على {len(results)} فرص.\n"
-
-        "📊 سيتم إرسال الأفضل."
+        f"🎯 تم العثور على {len(results)} مرشحين.\n\n"
+        "📊 يتم إرسال أفضل النتائج:"
     )
 
     for data in results:
 
         try:
 
-            report = generate_evidence_report(
-                data
-            )
+            report = generate_evidence_report(data)
 
-            await update.message.reply_text(
-                report
-            )
+            await update.message.reply_text(report)
 
         except Exception as exc:
 
@@ -211,12 +199,12 @@ async def scan_command(
 
 
 # =========================================================
-# COIN MESSAGE
+# COIN ANALYSIS
 # =========================================================
 
 async def handle_message(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if (
@@ -230,26 +218,26 @@ async def handle_message(
     if not text:
         return
 
-    symbol = normalize_symbol(
-        text
-    )
+    symbol = normalize_symbol(text)
 
     await update.message.reply_text(
         f"🔍 جاري تحليل {symbol}...\n\n"
-
         "📊 1D = الاتجاه العام\n"
         "📊 4H = الاتجاه الرئيسي\n"
         "⏱️ 1H = بوابة الدخول\n"
-
-        "🧠 جاري فحص 30m + 15m + "
-        "BOS + السيولة + الحجم..."
+        "⏱️ 30m + 15m = التأكيد\n\n"
+        "🧠 جاري فحص:\n"
+        "BOS + Market Structure\n"
+        "السيولة + الحجم\n"
+        "RSI + EMA\n"
+        "القاع والتجميع\n"
+        "Support / Resistance\n\n"
+        "⏳ انتظر النتيجة..."
     )
 
     try:
 
-        data = get_coin_analysis(
-            symbol
-        )
+        data = get_coin_analysis(symbol)
 
     except Exception as exc:
 
@@ -270,7 +258,6 @@ async def handle_message(
 
         await update.message.reply_text(
             f"❌ لم أستطع تحليل {symbol} حالياً.\n\n"
-
             "تأكد أن الزوج موجود على "
             "BingX Futures وأنه USDT."
         )
@@ -279,13 +266,9 @@ async def handle_message(
 
     try:
 
-        report = generate_evidence_report(
-            data
-        )
+        report = generate_evidence_report(data)
 
-        await update.message.reply_text(
-            report
-        )
+        await update.message.reply_text(report)
 
     except Exception as exc:
 
@@ -306,12 +289,53 @@ async def handle_message(
 
 async def error_handler(
     update,
-    context
+    context,
 ):
 
     logger.error(
         "Telegram error: %s",
-        context.error
+        context.error,
+        exc_info=True,
+    )
+
+
+# =========================================================
+# TELEGRAM BOT
+# =========================================================
+
+def run_bot():
+
+    logger.info("Creating Telegram application...")
+
+    application = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CommandHandler("scan", scan_command)
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message,
+        )
+    )
+
+    application.add_error_handler(error_handler)
+
+    logger.info("Telegram bot is starting...")
+
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        stop_signals=None,
     )
 
 
@@ -321,70 +345,39 @@ async def error_handler(
 
 def main():
 
+    logger.info("=" * 60)
+    logger.info("BingX AI Scanner starting...")
+    logger.info("=" * 60)
+
     # -----------------------------------------------------
-    # Flask / Render health server
+    # Start Flask first
     # -----------------------------------------------------
 
-    threading.Thread(
+    flask_thread = threading.Thread(
         target=run_flask,
-        daemon=True
-    ).start()
+        name="FlaskServer",
+        daemon=True,
+    )
 
-    # -----------------------------------------------------
-    # Telegram Application
-    # -----------------------------------------------------
+    flask_thread.start()
 
-    application = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .build()
+    logger.info(
+        "Flask thread started."
     )
 
     # -----------------------------------------------------
-    # Handlers
+    # Give Flask a moment to bind the Render port
     # -----------------------------------------------------
 
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
+    import time
 
-    application.add_handler(
-        CommandHandler(
-            "scan",
-            scan_command
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_message
-        )
-    )
-
-    application.add_error_handler(
-        error_handler
-    )
+    time.sleep(1)
 
     # -----------------------------------------------------
-    # Start
+    # Start Telegram in main process
     # -----------------------------------------------------
 
-    print(
-        "Telegram bot is starting..."
-    )
-
-    print(
-        "Flask server is starting..."
-    )
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    run_bot()
 
 
 # =========================================================
