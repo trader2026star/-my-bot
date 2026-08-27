@@ -1,4 +1,4 @@
-import time
+Import time
 import logging
 import threading
 import requests
@@ -1095,7 +1095,7 @@ def detect_bottom_accumulation(
             break
 
     return {
-        "found": score >= 2,
+        "found": score >= 3,
         "score": score,
         "drawdown": drawdown,
         "recent_range": recent_range,
@@ -1211,9 +1211,11 @@ def get_coin_analysis(
     )
 
     if (
-        len(k1d) < 30
-        or len(k4h) < 30
-        or len(k1h) < 30
+        len(k1d) < 50
+        or len(k4h) < 50
+        or len(k1h) < 50
+        or len(k30) < 50
+        or len(k15) < 50
     ):
 
         logger.warning(
@@ -1313,197 +1315,483 @@ def get_coin_analysis(
     if trend_1d == "LONG":
 
         long_score += 15
-        reasons_long.append("1D يدعم الاتجاه الصاعد")
+
+        reasons_long.append(
+            "1D يدعم الاتجاه الصاعد"
+        )
 
     elif trend_1d == "SHORT":
 
         short_score += 15
-        reasons_short.append("1D يدعم الاتجاه الهابط")
+
+        reasons_short.append(
+            "1D يدعم الاتجاه الهابط"
+        )
 
     if trend_4h == "LONG":
 
         long_score += 15
-        reasons_long.append("4H يدعم الاتجاه الصاعد")
+
+        reasons_long.append(
+            "4H يدعم الاتجاه الصاعد"
+        )
 
     elif trend_4h == "SHORT":
 
         short_score += 15
-        reasons_short.append("4H يدعم الاتجاه الهابط")
+
+        reasons_short.append(
+            "4H يدعم الاتجاه الهابط"
+        )
 
     if trend_1h == "LONG":
 
-        long_score += 20
-        reasons_long.append("1H يدعم الدخول LONG")
+        long_score += 15
+
+        reasons_long.append(
+            "1H يدعم الدخول LONG"
+        )
 
     elif trend_1h == "SHORT":
 
-        short_score += 20
-        reasons_short.append("1H يدعم الدخول SHORT")
+        short_score += 15
+
+        reasons_short.append(
+            "1H يدعم الدخول SHORT"
+        )
 
     if trend_30m == "LONG":
-        long_score += 10
+
+        long_score += 8
+
     elif trend_30m == "SHORT":
-        short_score += 10
+
+        short_score += 8
 
     if trend_15m == "LONG":
-        long_score += 5
+
+        long_score += 6
+
     elif trend_15m == "SHORT":
-        short_score += 5
+
+        short_score += 6
 
     if bos == "BULLISH":
 
-        long_score += 15
-        reasons_long.append("BOS صاعد مؤكد")
+        long_score += 12
+
+        reasons_long.append(
+            "BOS صاعد مؤكد"
+        )
 
     elif bos == "BEARISH":
 
-        short_score += 15
-        reasons_short.append("BOS هابط مؤكد")
+        short_score += 12
+
+        reasons_short.append(
+            "BOS هابط مؤكد"
+        )
 
     if structure == "BULLISH":
-        long_score += 10
+
+        long_score += 7
+
     elif structure == "BEARISH":
-        short_score += 10
+
+        short_score += 7
 
     if liquidity == "INFLOW":
 
-        long_score += 10
-        reasons_long.append("السيولة تدخل للسوق")
+        long_score += 9
+
+        reasons_long.append(
+            "السيولة تدخل للسوق"
+        )
 
     elif liquidity == "OUTFLOW":
 
-        short_score += 10
-        reasons_short.append("السيولة تخرج من السوق")
+        short_score += 9
+
+        reasons_short.append(
+            "السيولة تخرج من السوق"
+        )
+
+    if buy_pressure >= 55:
+
+        long_score += 5
+
+    elif buy_pressure <= 45:
+
+        short_score += 5
+
+    if volume_ratio >= 0.85:
+
+        if buy_pressure >= 50:
+
+            long_score += 4
+
+        else:
+
+            short_score += 4
+
+    if rsi <= 42:
+
+        long_score += 5
+
+    elif rsi >= 58:
+
+        short_score += 5
 
     if ema == "BULLISH":
 
-        long_score += 10
-        reasons_long.append("EMA9 فوق EMA20")
+        long_score += 5
+
+        reasons_long.append(
+            "EMA9 فوق EMA20"
+        )
 
     elif ema == "BEARISH":
 
-        short_score += 10
-        reasons_short.append("EMA9 تحت EMA20")
+        short_score += 5
+
+        reasons_short.append(
+            "EMA9 تحت EMA20"
+        )
 
     if bottom["found"]:
 
-        long_score += 15
-        reasons_long.append("احتمال قاع/تجميع")
+        long_score += 7
+
+        reasons_long.append(
+            "احتمال قاع/تجميع"
+        )
 
     # =====================================================
     # DIRECTION
     # =====================================================
 
-    if long_score >= short_score:
+    if long_score > short_score:
 
         direction = "LONG"
         score = long_score
         reasons = reasons_long
 
-    else:
+    elif short_score > long_score:
 
         direction = "SHORT"
         score = short_score
         reasons = reasons_short
 
+    else:
+
+        direction = "NEUTRAL"
+        score = 0
+        reasons = []
+
     score = max(
-        25,
+        0,
         min(
             100,
             int(score),
         ),
     )
 
-    trade_type = "ENTRY READY"
-    decision = f"صفقة {direction} متاحة بنجاح"
+    # =====================================================
+    # ENTRY CONFIRMATION
+    # =====================================================
 
-    entry = price
+    long_confirmation = (
+        trend_1h == "LONG"
+        and (
+            trend_30m == "LONG"
+            or trend_15m == "LONG"
+            or bos == "BULLISH"
+            or liquidity == "INFLOW"
+            or bottom["found"]
+        )
+    )
 
-    if direction == "LONG":
+    short_confirmation = (
+        trend_1h == "SHORT"
+        and (
+            trend_30m == "SHORT"
+            or trend_15m == "SHORT"
+            or bos == "BEARISH"
+            or liquidity == "OUTFLOW"
+        )
+    )
+
+    trade_type = "NO TRADE"
+
+    decision = (
+        "انتظار تأكيد إضافي"
+    )
+
+    entry = None
+    stop_loss = None
+
+    tp1 = None
+    tp2 = None
+    tp3 = None
+
+    # =====================================================
+    # LONG ENTRY
+    # =====================================================
+
+    if (
+        direction == "LONG"
+        and score >= 45
+        and long_confirmation
+    ):
+
+        trade_type = "ENTRY READY"
+
+        decision = (
+            "صفقة LONG جاهزة"
+        )
+
+        entry = price
 
         if atr and atr > 0:
-            stop_loss = entry - atr * 1.15
+
+            stop_loss = (
+                entry
+                - atr * 1.15
+            )
+
         elif support:
-            stop_loss = support * 0.995
+
+            stop_loss = (
+                support
+                * 0.995
+            )
+
         else:
-            stop_loss = entry * 0.97
 
-        risk = entry - stop_loss
-        if risk <= 0:
-            risk = entry * 0.02
+            stop_loss = (
+                entry
+                * 0.97
+            )
 
-        tp1 = entry + risk * 1.2
-        tp2 = entry + risk * 2
-        tp3 = entry + risk * 3
+        risk = (
+            entry
+            - stop_loss
+        )
 
-    else:
+        if risk > 0:
+
+            tp1 = (
+                entry
+                + risk * 1.2
+            )
+
+            tp2 = (
+                entry
+                + risk * 2
+            )
+
+            tp3 = (
+                entry
+                + risk * 3
+            )
+
+    # =====================================================
+    # SHORT ENTRY
+    # =====================================================
+
+    elif (
+        direction == "SHORT"
+        and score >= 45
+        and short_confirmation
+    ):
+
+        trade_type = "ENTRY READY"
+
+        decision = (
+            "صفقة SHORT جاهزة"
+        )
+
+        entry = price
 
         if atr and atr > 0:
-            stop_loss = entry + atr * 1.15
+
+            stop_loss = (
+                entry
+                + atr * 1.15
+            )
+
         elif resistance:
-            stop_loss = resistance * 1.005
+
+            stop_loss = (
+                resistance
+                * 1.005
+            )
+
         else:
-            stop_loss = entry * 1.03
 
-        risk = stop_loss - entry
-        if risk <= 0:
-            risk = entry * 0.02
+            stop_loss = (
+                entry
+                * 1.03
+            )
 
-        tp1 = entry - risk * 1.2
-        tp2 = entry - risk * 2
-        tp3 = entry - risk * 3
+        risk = (
+            stop_loss
+            - entry
+        )
+
+        if risk > 0:
+
+            tp1 = (
+                entry
+                - risk * 1.2
+            )
+
+            tp2 = (
+                entry
+                - risk * 2
+            )
+
+            tp3 = (
+                entry
+                - risk * 3
+            )
+
+    # =====================================================
+    # WATCH
+    # =====================================================
+
+    elif (
+        bottom["found"]
+        and score >= 20
+    ):
+
+        if direction == "LONG":
+
+            trade_type = (
+                "REVERSAL WATCH"
+            )
+
+        else:
+
+            trade_type = (
+                "ACCUMULATION WATCH"
+            )
+
+        decision = (
+            "ننتظر تأكيد الدخول "
+            "على 1H/BOS"
+        )
+
+    # =====================================================
+    # DATA
+    # =====================================================
 
     distance_support = 0
+
     distance_resistance = 0
 
     if price:
+
         if support:
-            distance_support = ((price - support) / price) * 100
+
+            distance_support = (
+                (price - support)
+                / price
+            ) * 100
+
         if resistance:
-            distance_resistance = ((resistance - price) / price) * 100
+
+            distance_resistance = (
+                (resistance - price)
+                / price
+            ) * 100
 
     return {
+
         "symbol": symbol,
+
         "price": price,
+
         "direction": direction,
+
         "final_direction": direction,
+
         "score": score,
+
         "entry_score": score,
+
         "trade_type": trade_type,
+
         "status": trade_type,
+
         "decision": decision,
+
         "trend_1d": trend_1d,
+
         "trend_4h": trend_4h,
+
         "trend_1h": trend_1h,
+
         "trend_30m": trend_30m,
+
         "trend_15m": trend_15m,
+
         "structure": structure,
+
         "bos": bos,
+
         "liquidity": liquidity,
+
         "buy_pressure": buy_pressure,
+
         "volume_ratio": volume_ratio,
+
         "volume_trend": volume_trend,
+
         "rsi": rsi,
+
         "ema_state": ema,
+
         "bottom_found": bottom["found"],
+
         "bottom_score": bottom["score"],
+
         "drawdown": bottom["drawdown"],
+
         "support": support,
+
         "resistance": resistance,
+
         "distance_support": distance_support,
+
         "distance_resistance": distance_resistance,
+
         "atr": atr,
+
         "entry": entry,
+
         "stop_loss": stop_loss,
+
         "tp1": tp1,
+
         "tp2": tp2,
+
         "tp3": tp3,
+
         "move_2": move_2,
+
         "move_6": move_6,
+
         "reasons": reasons,
+
         "long_score": long_score,
+
         "short_score": short_score,
-        "bottom_reasons": bottom.get("reason", []),
+
+        "bottom_reasons": bottom.get(
+            "reason",
+            [],
+        ),
     }
 
 
@@ -1520,6 +1808,7 @@ def scan_market(
     symbols = get_futures_symbols()
 
     if not symbols:
+
         return []
 
     priority = [
@@ -1532,48 +1821,185 @@ def scan_market(
         "ADAUSDT",
         "SUIUSDT",
         "LINKUSDT",
+        "ENAUSDT",
         "AVAXUSDT",
         "LTCUSDT",
+        "DOTUSDT",
+        "TRXUSDT",
+        "PEPEUSDT",
     ]
 
     selected = []
 
     for symbol in priority:
-        if symbol in symbols and symbol not in selected:
+
+        if symbol in symbols:
+
             selected.append(symbol)
 
     for symbol in symbols:
+
         if symbol not in selected:
+
             selected.append(symbol)
-        if len(selected) >= 20:
+
+        if len(selected) >= 25:
+
             break
 
-    results = []
+    candidates = []
+
+    # =====================================================
+    # FAST SCAN
+    # =====================================================
 
     for symbol in selected:
 
         try:
 
-            data = get_coin_analysis(symbol)
+            klines = get_klines(
+                symbol,
+                "1h",
+                70,
+            )
 
-            if data:
-                results.append(data)
+            if len(klines) < 50:
 
-            if len(results) >= limit:
-                break
+                continue
+
+            closes = [
+                x["close"]
+                for x in klines
+            ]
+
+            trend = calculate_timeframe_trend(
+                klines
+            )
+
+            structure, bos = detect_market_structure(
+                klines
+            )
+
+            liquidity, pressure = detect_liquidity_flow(
+                klines
+            )
+
+            volume_ratio = calculate_volume_ratio(
+                klines
+            )
+
+            rsi = calculate_rsi(
+                closes
+            )
+
+            bottom = detect_bottom_accumulation(
+                klines
+            )
+
+            fast_score = 0
+
+            if trend != "NEUTRAL":
+
+                fast_score += 15
+
+            if bos != "NONE":
+
+                fast_score += 20
+
+            if structure != "MIXED":
+
+                fast_score += 10
+
+            if liquidity != "NEUTRAL":
+
+                fast_score += 15
+
+            if volume_ratio >= 0.85:
+
+                fast_score += 10
+
+            if bottom["found"]:
+
+                fast_score += 20
+
+            if (
+                rsi <= 42
+                or rsi >= 58
+            ):
+
+                fast_score += 10
+
+            candidates.append({
+                "symbol": symbol,
+                "fast_score": fast_score,
+            })
 
         except Exception as exc:
 
             logger.warning(
-                "Scan error for %s: %s",
+                "Fast scan error %s: %s",
                 symbol,
                 exc,
             )
 
             continue
 
+    candidates.sort(
+        key=lambda x: x["fast_score"],
+        reverse=True,
+    )
+
+    # =====================================================
+    # DEEP ANALYSIS
+    # =====================================================
+
+    results = []
+
+    for item in candidates[:8]:
+
+        try:
+
+            data = get_coin_analysis(
+                item["symbol"]
+            )
+
+            if data:
+
+                results.append(data)
+
+        except Exception as exc:
+
+            logger.warning(
+                "Deep scan error %s: %s",
+                item["symbol"],
+                exc,
+            )
+
+    # =====================================================
+    # PRIORITY
+    # =====================================================
+
+    priority_map = {
+        "ENTRY READY": 4,
+        "REVERSAL WATCH": 3,
+        "ACCUMULATION WATCH": 2,
+        "NO TRADE": 1,
+    }
+
     results.sort(
-        key=lambda x: x.get("score", 0),
+        key=lambda x: (
+            priority_map.get(
+                x.get(
+                    "trade_type",
+                    "NO TRADE",
+                ),
+                0,
+            ),
+            x.get(
+                "score",
+                0,
+            ),
+        ),
         reverse=True,
     )
 
@@ -1588,6 +2014,11 @@ def scan_market(
         len(results),
     )
 
+    # =====================================================
+    # IMPORTANT:
+    # NEVER RETURN EMPTY IF ANALYSIS WORKED
+    # =====================================================
+
     return results[:limit]
 
 
@@ -1598,6 +2029,7 @@ def scan_market(
 def _fmt_price(value):
 
     if value is None:
+
         return "غير محدد"
 
     try:
@@ -1605,12 +2037,15 @@ def _fmt_price(value):
         value = float(value)
 
         if value >= 1000:
+
             return f"{value:.2f}"
 
         if value >= 1:
+
             return f"{value:.5f}"
 
         if value >= 0.01:
+
             return f"{value:.6f}"
 
         return f"{value:.8f}"
@@ -1623,8 +2058,11 @@ def _fmt_price(value):
 def _fmt_percent(value):
 
     try:
+
         return f"{float(value):.2f}%"
+
     except Exception:
+
         return "0.00%"
 
 
@@ -1634,84 +2072,479 @@ def _fmt_percent(value):
 
 def generate_evidence_report(data):
 
-    symbol = data.get("symbol", "UNKNOWN")
-    direction = data.get("direction", "NEUTRAL")
-    score = data.get("score", 0)
+    symbol = data.get(
+        "symbol",
+        "UNKNOWN",
+    )
 
-    if direction == "LONG":
-        direction_text = "🟢 LONG"
-    elif direction == "SHORT":
-        direction_text = "🔴 SHORT"
+    direction = data.get(
+        "direction",
+        "NEUTRAL",
+    )
+
+    score = data.get(
+        "score",
+        0,
+    )
+
+    trade_type = data.get(
+        "trade_type",
+        "NO TRADE",
+    )
+
+    if trade_type == "ENTRY READY":
+
+        if direction == "LONG":
+
+            direction_text = "🟢 LONG"
+
+        elif direction == "SHORT":
+
+            direction_text = "🔴 SHORT"
+
+        else:
+
+            direction_text = "🟡 NEUTRAL"
+
     else:
-        direction_text = "🟡 NEUTRAL"
+
+        direction_text = "🟡 NO TRADE"
+
+    if trade_type == "ENTRY READY":
+
+        state = (
+            "🟢 ENTRY READY - صفقة جاهزة"
+        )
+
+    elif trade_type == "REVERSAL WATCH":
+
+        state = (
+            "🟡 REVERSAL WATCH - "
+            "ننتظر تأكيد الانعكاس"
+        )
+
+    elif trade_type == "ACCUMULATION WATCH":
+
+        state = (
+            "🔵 ACCUMULATION WATCH - "
+            "تجميع مبكر"
+        )
+
+    else:
+
+        state = (
+            "🟡 NO TRADE - "
+            "الشروط غير مكتملة"
+        )
 
     lines = []
 
-    lines.append("🤖 BingX AI Scanner")
-    lines.append("")
-    lines.append(f"💎 العملة: {symbol}")
-    lines.append(f"📈 الاتجاه: {direction_text}")
-    lines.append(f"⭐ Score: {score}/100")
-    lines.append("")
-    lines.append(f"🧠 الحالة: 🟢 ENTRY READY - صفقة جاهزة")
-    lines.append(f"🧭 القرار: {data.get('decision', 'تنفيذ الصفقة')}")
-    lines.append("")
-    lines.append("📊 الاتجاه العام")
-    lines.append(f"1D: {data.get('trend_1d', 'NEUTRAL')}")
-    lines.append(f"4H: {data.get('trend_4h', 'NEUTRAL')}")
-    lines.append("")
-    lines.append("🔎 فريمات الدخول")
-    lines.append(f"1H: {data.get('trend_1h', 'NEUTRAL')}")
-    lines.append(f"30m: {data.get('trend_30m', 'NEUTRAL')}")
-    lines.append(f"15m: {data.get('trend_15m', 'NEUTRAL')}")
-    lines.append(f"هيكل السوق: {data.get('structure', 'MIXED')}")
+    lines.append(
+        "🤖 BingX AI Scanner"
+    )
 
-    bos = data.get("bos", "NONE")
+    lines.append("")
+
+    lines.append(
+        f"💎 العملة: {symbol}"
+    )
+
+    lines.append(
+        f"📈 الاتجاه النهائي: {direction_text}"
+    )
+
+    lines.append(
+        f"⭐ Entry Score: {score}/100"
+    )
+
+    lines.append("")
+
+    lines.append(
+        f"🧠 الحالة: {state}"
+    )
+
+    lines.append(
+        f"🧭 القرار: {data.get('decision', 'انتظار')}"
+    )
+
+    lines.append("")
+
+    lines.append(
+        "📊 الاتجاه العام"
+    )
+
+    lines.append(
+        f"1D: {data.get('trend_1d', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"4H: {data.get('trend_4h', 'NEUTRAL')}"
+    )
+
+    lines.append("")
+
+    lines.append(
+        "🔎 تأكيد الدخول"
+    )
+
+    lines.append(
+        f"1H: {data.get('trend_1h', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"30m: {data.get('trend_30m', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"15m: {data.get('trend_15m', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"هيكل السوق: {data.get('structure', 'MIXED')}"
+    )
+
+    bos = data.get(
+        "bos",
+        "NONE",
+    )
+
     if bos == "BULLISH":
+
         bos_text = "🟢 BULLISH"
+
     elif bos == "BEARISH":
+
         bos_text = "🔴 BEARISH"
+
     else:
+
         bos_text = "⚪ NONE"
 
-    lines.append(f"BOS: {bos_text}")
+    lines.append(
+        f"BOS: {bos_text}"
+    )
 
-    liquidity = data.get("liquidity", "NEUTRAL")
+    liquidity = data.get(
+        "liquidity",
+        "NEUTRAL",
+    )
+
     if liquidity == "INFLOW":
+
         liquidity_text = "🟢 INFLOW"
+
     elif liquidity == "OUTFLOW":
+
         liquidity_text = "🔴 OUTFLOW"
+
     else:
+
         liquidity_text = "🟡 محايدة"
 
-    lines.append(f"💧 السيولة: {liquidity_text}")
-    lines.append(f"📊 Volume: {data.get('volume_ratio', 0):.2f}x")
-    lines.append(f"💪 Buy Pressure: {data.get('buy_pressure', 50)}%")
-    lines.append(f"📊 RSI: {data.get('rsi', 50):.2f}")
-    lines.append("")
-    lines.append("🛡️ الدعم والمقاومة")
-    lines.append(f"🟢 Support: {_fmt_price(data.get('support'))}")
-    lines.append(f"🔴 Resistance: {_fmt_price(data.get('resistance'))}")
-    lines.append("")
-    lines.append("📍 تفاصيل الصفقة")
-    lines.append(f"Entry: {_fmt_price(data.get('entry'))}")
-    lines.append(f"🛑 Stop Loss: {_fmt_price(data.get('stop_loss'))}")
-    lines.append("")
-    lines.append("🎯 الأهداف")
-    lines.append(f"TP1: {_fmt_price(data.get('tp1'))}")
-    lines.append(f"TP2: {_fmt_price(data.get('tp2'))}")
-    lines.append(f"TP3: {_fmt_price(data.get('tp3'))}")
-    lines.append("")
-    lines.append("🔍 أسباب القرار")
+    lines.append(
+        f"💧 السيولة: {liquidity_text}"
+    )
 
-    reasons = data.get("reasons", [])
-    if reasons:
-        for reason in reasons[:6]:
-            lines.append(f"• {reason}")
+    lines.append(
+        f"📊 Volume: {data.get('volume_ratio', 0):.2f}x"
+    )
+
+    lines.append(
+        f"📈 Volume Trend: {data.get('volume_trend', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"💪 Buy Pressure: {data.get('buy_pressure', 50)}%"
+    )
+
+    lines.append(
+        f"📊 RSI: {data.get('rsi', 50):.2f}"
+    )
+
+    lines.append("")
+
+    bottom_found = data.get(
+        "bottom_found",
+        False,
+    )
+
+    lines.append(
+        "🎯 القاع/التجميع: "
+        + (
+            "🟢 نعم"
+            if bottom_found
+            else "⚪ لا"
+        )
+    )
+
+    lines.append(
+        "📉 الهبوط السابق: "
+        + _fmt_percent(
+            data.get(
+                "drawdown",
+                0,
+            )
+        )
+    )
+
+    lines.append("")
+
+    lines.append(
+        "🛡️ الدعم والمقاومة"
+    )
+
+    lines.append(
+        f"🟢 Support: {_fmt_price(data.get('support'))}"
+    )
+
+    lines.append(
+        f"🔴 Resistance: {_fmt_price(data.get('resistance'))}"
+    )
+
+    lines.append(
+        "📏 البعد عن الدعم: "
+        + _fmt_percent(
+            data.get(
+                "distance_support",
+                0,
+            )
+        )
+    )
+
+    lines.append(
+        "📏 البعد عن المقاومة: "
+        + _fmt_percent(
+            data.get(
+                "distance_resistance",
+                0,
+            )
+        )
+    )
+
+    lines.append("")
+
+    lines.append(
+        "📍 منطقة الدخول"
+    )
+
+    if data.get("entry"):
+
+        lines.append(
+            "Entry: "
+            + _fmt_price(
+                data.get("entry")
+            )
+        )
+
     else:
-        lines.append("• فرصة فنية جاهزة بناءً على حركة السعر الحالية")
+
+        lines.append(
+            "⏳ انتظار تأكيد"
+        )
 
     lines.append("")
-    lines.append("⚠️ إشارة تحليلية وليست ضماناً للربح.")
+
+    lines.append(
+        "🛑 Stop Loss: "
+        + _fmt_price(
+            data.get("stop_loss")
+        )
+    )
+
+    lines.append("")
+
+    lines.append(
+        "🎯 الأهداف"
+    )
+
+    lines.append(
+        "TP1: "
+        + _fmt_price(
+            data.get("tp1")
+        )
+    )
+
+    lines.append(
+        "TP2: "
+        + _fmt_price(
+            data.get("tp2")
+        )
+    )
+
+    lines.append(
+        "TP3: "
+        + _fmt_price(
+            data.get("tp3")
+        )
+    )
+
+    lines.append("")
+
+    lines.append(
+        "📊 الحركة الأخيرة"
+    )
+
+    lines.append(
+        "آخر شمعتين تقريباً: "
+        + _fmt_percent(
+            data.get(
+                "move_2",
+                0,
+            )
+        )
+    )
+
+    lines.append(
+        "آخر 6 شموع تقريباً: "
+        + _fmt_percent(
+            data.get(
+                "move_6",
+                0,
+            )
+        )
+    )
+
+    lines.append("")
+
+    lines.append(
+        "🔍 أسباب القرار"
+    )
+
+    reasons = data.get(
+        "reasons",
+        [],
+    )
+
+    if reasons:
+
+        for reason in reasons[:8]:
+
+            lines.append(
+                f"• {reason}"
+            )
+
+    else:
+
+        lines.append(
+            "• لا توجد عوامل قوية كافية حالياً"
+        )
+
+    lines.append("")
+
+    lines.append(
+        "🏗️ أدلة هيكل السوق"
+    )
+
+    if bos == "BULLISH":
+
+        lines.append(
+            "• تم تأكيد كسر هيكل صاعد BOS"
+        )
+
+    elif bos == "BEARISH":
+
+        lines.append(
+            "• تم تأكيد كسر هيكل هابط BOS"
+        )
+
+    else:
+
+        lines.append(
+            "• لا يوجد BOS مؤكد حالياً"
+        )
+
+    lines.append("")
+
+    lines.append(
+        "💧 أدلة السيولة"
+    )
+
+    if liquidity == "INFLOW":
+
+        lines.append(
+            "• تدفق شرائي واضح"
+        )
+
+    elif liquidity == "OUTFLOW":
+
+        lines.append(
+            "• ضغط بيعي واضح"
+        )
+
+    else:
+
+        lines.append(
+            "• السيولة ما زالت محايدة"
+        )
+
+    if bottom_found:
+
+        lines.append("")
+
+        lines.append(
+            "🎯 أدلة التجميع"
+        )
+
+        for reason in data.get(
+            "bottom_reasons",
+            [],
+        ):
+
+            lines.append(
+                f"• {reason}"
+            )
+
+    if trade_type != "ENTRY READY":
+
+        lines.append("")
+
+        lines.append(
+            "🚫 لماذا لم يدخل؟"
+        )
+
+        if (
+            data.get("trend_1h")
+            == "LONG"
+        ):
+
+            lines.append(
+                "• الاتجاه الصاعد يحتاج "
+                "تأكيداً إضافياً"
+            )
+
+        elif (
+            data.get("trend_1h")
+            == "SHORT"
+        ):
+
+            lines.append(
+                "• الاتجاه الهابط يحتاج "
+                "تأكيداً إضافياً"
+            )
+
+        else:
+
+            lines.append(
+                "• 1H ليس في اتجاه واضح"
+            )
+
+    lines.append("")
+
+    lines.append(
+        "⚠️ إشارة تحليلية وليست ضماناً للربح."
+    )
+
+    lines.append(
+        "⚠️ ENTRY READY يحتاج Score >= 45 "
+        "مع تأكيد دخول."
+    )
+
+    lines.append(
+        "⚠️ 1D + 4H للاتجاه العام."
+    )
+
+    lines.append(
+        "⚠️ 1H + 30m + 15m لتأكيد الدخول."
+    )
 
     return "\n".join(lines)
