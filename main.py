@@ -1,4 +1,4 @@
-import os
+Import os
 import logging
 import threading
 import asyncio
@@ -95,15 +95,35 @@ async def start(
     await update.message.reply_text(
         "🤖 أهلاً بك في BingX AI Scanner\n\n"
 
-        "📌 أرسل اسم العملة للتحليل مباشرة:\n"
+        "📌 أرسل اسم العملة للتحليل:\n"
         "BTC\n"
         "ETH\n"
-        "SOL\n\n"
+        "SOL\n"
+        "XRP\n\n"
 
-        "📌 أمر الفحص الشامل للسوق:\n"
+        "أو أي زوج USDT موجود على BingX Futures.\n\n"
+
+        "📌 أمر الفحص الكامل:\n"
         "/scan\n\n"
 
-        "🟢 البوت جاهز لإعطاء الصفقات وتحديد نقاط الدخول والأهداف بدقة."
+        "🔎 النظام يعتمد على:\n"
+        "• 1D = الاتجاه العام\n"
+        "• 4H = الاتجاه الرئيسي\n"
+        "• 1H = بوابة الدخول\n"
+        "• 30m + 15m = تأكيد إضافي\n"
+        "• BOS + Market Structure\n"
+        "• السيولة والحجم\n"
+        "• RSI + EMA\n"
+        "• القاع والتجميع\n"
+        "• Support / Resistance\n"
+        "• ATR\n"
+        "• Entry / SL / TP\n\n"
+
+        "🟢 ENTRY READY = صفقة جاهزة\n"
+        "🟡 REVERSAL WATCH = ننتظر Pullback/BOS\n"
+        "🔵 ACCUMULATION WATCH = تجميع مبكر\n\n"
+
+        "🛡️ التأكيدات موزونة وليست كلها شروطاً منفردة."
     )
 
 
@@ -122,12 +142,18 @@ async def scan_command(
     start_time = time.time()
 
     await update.message.reply_text(
-        "🔍 جاري فحص سوق العملات على BingX Futures...\n\n"
-        "⏳ يرجى الانتظار ثوانٍ معدودة لجلب أفضل الصفقات..."
+        "🔍 جاري فحص BingX Futures...\n\n"
+        "⚡ فلترة سريعة للسوق أولاً.\n"
+        "🧠 ثم تحليل أفضل العملات فقط.\n\n"
+        "🟢 ENTRY READY\n"
+        "🟡 REVERSAL WATCH\n"
+        "🔵 ACCUMULATION WATCH\n\n"
+        "⏳ انتظر..."
     )
 
     try:
 
+        # تشغيل التحليل خارج event loop
         results = await asyncio.to_thread(
             scan_market,
             5
@@ -141,7 +167,8 @@ async def scan_command(
         )
 
         await update.message.reply_text(
-            "❌ حدث خطأ أثناء فحص السوق."
+            "❌ حدث خطأ أثناء فحص السوق.\n\n"
+            "راجع Logs."
         )
 
         return
@@ -153,24 +180,21 @@ async def scan_command(
 
     if not results:
 
-        # Fallback اضطراري إضافي لو حدث أي طارئ
-        fallback_res = await asyncio.to_thread(get_coin_analysis, "BTCUSDT")
-        if fallback_res:
-            results = [fallback_res]
-
-    if not results:
-
         await update.message.reply_text(
-            "⚠️ لم يتم العثور على نتائج، حاول مرة أخرى بعد قليل."
+            "🟡 انتهى الفحص.\n\n"
+            "لم يتم العثور حالياً على فرصة قوية.\n\n"
+            "🛡️ البوت فضّل الانتظار بدلاً من "
+            "إعطاء صفقة ضعيفة.\n\n"
+            f"⏱️ وقت الفحص: {elapsed} ثانية"
         )
 
         return
 
     await update.message.reply_text(
-        f"✅ تم الانتهاء من الفحص بنجاح!\n"
-        f"🎯 عدد الصفقات المتاحة: {len(results)}\n"
-        f"⏱️ استغرق الفحص: {elapsed} ثانية\n\n"
-        "👇 إليك التفاصيل:"
+        "✅ انتهى الفحص.\n\n"
+        f"🎯 تم العثور على {len(results)} مرشحين.\n"
+        f"⏱️ وقت الفحص: {elapsed} ثانية\n\n"
+        "📊 أفضل النتائج:"
     )
 
     for data in results:
@@ -216,12 +240,23 @@ async def handle_message(
     symbol = normalize_symbol(text)
 
     await update.message.reply_text(
-        f"🔍 جاري تحليل وتجهيز صفقة لـ {symbol}...\n\n"
-        "⏳ انتظر اللحظات..."
+        f"🔍 جاري تحليل {symbol}...\n\n"
+        "📊 1D = الاتجاه العام\n"
+        "📊 4H = الاتجاه الرئيسي\n"
+        "⏱️ 1H = بوابة الدخول\n"
+        "⏱️ 30m + 15m = التأكيد\n\n"
+        "🧠 جاري فحص:\n"
+        "BOS + Market Structure\n"
+        "السيولة + الحجم\n"
+        "RSI + EMA\n"
+        "القاع والتجميع\n"
+        "Support / Resistance\n\n"
+        "⏳ انتظر النتيجة..."
     )
 
     try:
 
+        # لا نجمد Telegram أثناء طلبات BingX
         data = await asyncio.to_thread(
             get_coin_analysis,
             symbol
@@ -236,7 +271,8 @@ async def handle_message(
         )
 
         await update.message.reply_text(
-            f"❌ حدث خطأ أثناء تحليل {symbol}."
+            f"❌ حدث خطأ أثناء تحليل {symbol}.\n\n"
+            "حاول مرة أخرى بعد قليل."
         )
 
         return
@@ -244,7 +280,9 @@ async def handle_message(
     if not data:
 
         await update.message.reply_text(
-            f"❌ لم أستطع تحليل {symbol}، تأكد أنه زوج USDT صحيح على BingX."
+            f"❌ لم أستطع تحليل {symbol} حالياً.\n\n"
+            "تأكد أن الزوج موجود على "
+            "BingX Futures وأنه USDT."
         )
 
         return
