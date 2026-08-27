@@ -1,7 +1,6 @@
-Import os
+import os
 import logging
 import threading
-import asyncio
 import time
 
 from flask import Flask
@@ -94,7 +93,6 @@ async def start(
 
     await update.message.reply_text(
         "🤖 أهلاً بك في BingX AI Scanner\n\n"
-
         "📌 أرسل اسم العملة للتحليل:\n"
         "BTC\n"
         "ETH\n"
@@ -120,10 +118,10 @@ async def start(
         "• Entry / SL / TP\n\n"
 
         "🟢 ENTRY READY = صفقة جاهزة\n"
-        "🟡 REVERSAL WATCH = ننتظر Pullback/BOS\n"
+        "🟡 REVERSAL WATCH = ننتظر التأكيد\n"
         "🔵 ACCUMULATION WATCH = تجميع مبكر\n\n"
 
-        "🛡️ التأكيدات موزونة وليست كلها شروطاً منفردة."
+        "🛡️ البوت لا يدخل صفقة لمجرد وجود إشارة واحدة."
     )
 
 
@@ -139,24 +137,28 @@ async def scan_command(
     if not update.message:
         return
 
-    start_time = time.time()
+    started = time.time()
+
+    # -----------------------------------------------------
+    # Start message
+    # -----------------------------------------------------
 
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
         "⚡ فلترة سريعة للسوق أولاً.\n"
         "🧠 ثم تحليل أفضل العملات فقط.\n\n"
+
         "🟢 ENTRY READY\n"
         "🟡 REVERSAL WATCH\n"
         "🔵 ACCUMULATION WATCH\n\n"
+
         "⏳ انتظر..."
     )
 
     try:
 
-        # تشغيل التحليل خارج event loop
-        results = await asyncio.to_thread(
-            scan_market,
-            5
+        results = scan_market(
+            limit=5
         )
 
     except Exception as exc:
@@ -166,17 +168,21 @@ async def scan_command(
             exc
         )
 
+        elapsed = time.time() - started
+
         await update.message.reply_text(
             "❌ حدث خطأ أثناء فحص السوق.\n\n"
-            "راجع Logs."
+            f"⏱️ وقت الفحص: {elapsed:.1f} ثانية\n\n"
+            "راجع Logs في Render."
         )
 
         return
 
-    elapsed = round(
-        time.time() - start_time,
-        1
-    )
+    elapsed = time.time() - started
+
+    # -----------------------------------------------------
+    # No results
+    # -----------------------------------------------------
 
     if not results:
 
@@ -185,15 +191,19 @@ async def scan_command(
             "لم يتم العثور حالياً على فرصة قوية.\n\n"
             "🛡️ البوت فضّل الانتظار بدلاً من "
             "إعطاء صفقة ضعيفة.\n\n"
-            f"⏱️ وقت الفحص: {elapsed} ثانية"
+            f"⏱️ وقت الفحص: {elapsed:.1f} ثانية"
         )
 
         return
 
+    # -----------------------------------------------------
+    # Results found
+    # -----------------------------------------------------
+
     await update.message.reply_text(
         "✅ انتهى الفحص.\n\n"
         f"🎯 تم العثور على {len(results)} مرشحين.\n"
-        f"⏱️ وقت الفحص: {elapsed} ثانية\n\n"
+        f"⏱️ وقت الفحص: {elapsed:.1f} ثانية\n\n"
         "📊 أفضل النتائج:"
     )
 
@@ -205,15 +215,47 @@ async def scan_command(
                 data
             )
 
-            await update.message.reply_text(
-                report
-            )
+            # Telegram limit protection
+            if len(report) <= 4000:
+
+                await update.message.reply_text(
+                    report
+                )
+
+            else:
+
+                # Split long report
+                chunks = []
+
+                current = ""
+
+                for line in report.split("\n"):
+
+                    if len(current) + len(line) + 1 > 3900:
+
+                        chunks.append(current)
+                        current = ""
+
+                    current += line + "\n"
+
+                if current:
+                    chunks.append(current)
+
+                for chunk in chunks:
+
+                    await update.message.reply_text(
+                        chunk
+                    )
 
         except Exception as exc:
 
             logger.exception(
                 "Report error: %s",
                 exc
+            )
+
+            await update.message.reply_text(
+                "❌ حدث خطأ أثناء إنشاء تقرير إحدى العملات."
             )
 
 
@@ -237,28 +279,38 @@ async def handle_message(
     if not text:
         return
 
-    symbol = normalize_symbol(text)
+    symbol = normalize_symbol(
+        text
+    )
+
+    if not symbol:
+        await update.message.reply_text(
+            "❌ اكتب اسم العملة مثل BTC أو ETH."
+        )
+        return
 
     await update.message.reply_text(
         f"🔍 جاري تحليل {symbol}...\n\n"
+
         "📊 1D = الاتجاه العام\n"
         "📊 4H = الاتجاه الرئيسي\n"
         "⏱️ 1H = بوابة الدخول\n"
         "⏱️ 30m + 15m = التأكيد\n\n"
+
         "🧠 جاري فحص:\n"
         "BOS + Market Structure\n"
         "السيولة + الحجم\n"
         "RSI + EMA\n"
         "القاع والتجميع\n"
-        "Support / Resistance\n\n"
+        "Support / Resistance\n"
+        "ATR + Entry / SL / TP\n\n"
+
         "⏳ انتظر النتيجة..."
     )
 
     try:
 
-        # لا نجمد Telegram أثناء طلبات BingX
-        data = await asyncio.to_thread(
-            get_coin_analysis,
+        data = get_coin_analysis(
             symbol
         )
 
@@ -293,9 +345,33 @@ async def handle_message(
             data
         )
 
-        await update.message.reply_text(
-            report
-        )
+        if len(report) <= 4000:
+
+            await update.message.reply_text(
+                report
+            )
+
+        else:
+
+            current = ""
+
+            for line in report.split("\n"):
+
+                if len(current) + len(line) + 1 > 3900:
+
+                    await update.message.reply_text(
+                        current
+                    )
+
+                    current = ""
+
+                current += line + "\n"
+
+            if current:
+
+                await update.message.reply_text(
+                    current
+                )
 
     except Exception as exc:
 
@@ -319,11 +395,21 @@ async def error_handler(
     context,
 ):
 
+    error = context.error
+
     logger.error(
         "Telegram error: %s",
-        context.error,
+        error,
         exc_info=True,
     )
+
+    # Conflict means another bot instance is polling.
+    if error and "Conflict" in str(error):
+
+        logger.error(
+            "Telegram polling conflict: "
+            "another bot instance is running."
+        )
 
 
 # =========================================================
@@ -342,6 +428,10 @@ def run_bot():
         .build()
     )
 
+    # -----------------------------------------------------
+    # Commands
+    # -----------------------------------------------------
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -356,12 +446,20 @@ def run_bot():
         )
     )
 
+    # -----------------------------------------------------
+    # Coin messages
+    # -----------------------------------------------------
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_message,
         )
     )
+
+    # -----------------------------------------------------
+    # Errors
+    # -----------------------------------------------------
 
     application.add_error_handler(
         error_handler
@@ -370,6 +468,10 @@ def run_bot():
     logger.info(
         "Telegram bot is starting..."
     )
+
+    # -----------------------------------------------------
+    # Polling
+    # -----------------------------------------------------
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
@@ -390,6 +492,10 @@ def main():
     )
     logger.info("=" * 60)
 
+    # -----------------------------------------------------
+    # Flask
+    # -----------------------------------------------------
+
     flask_thread = threading.Thread(
         target=run_flask,
         name="FlaskServer",
@@ -402,7 +508,15 @@ def main():
         "Flask thread started."
     )
 
+    # -----------------------------------------------------
+    # Wait for Flask
+    # -----------------------------------------------------
+
     time.sleep(1)
+
+    # -----------------------------------------------------
+    # Telegram
+    # -----------------------------------------------------
 
     run_bot()
 
