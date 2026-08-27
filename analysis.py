@@ -1,4 +1,4 @@
-Import time
+import time
 import logging
 import threading
 import requests
