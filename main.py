@@ -5,6 +5,7 @@ import time
 
 from flask import Flask
 from telegram import Update
+from telegram.error import Conflict, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -87,11 +88,6 @@ async def send_long_message(
     update: Update,
     text: str,
 ):
-    """
-    Telegram يسمح بحوالي 4096 حرف.
-    نقسم التقرير بأمان بدون فقدان المحتوى.
-    """
-
     if not update.message:
         return
 
@@ -101,34 +97,20 @@ async def send_long_message(
     max_length = 3900
 
     if len(text) <= max_length:
-
-        await update.message.reply_text(
-            text
-        )
-
+        await update.message.reply_text(text)
         return
 
     current = ""
 
     for line in text.split("\n"):
 
-        # لو السطر نفسه طويل جداً
         if len(line) > max_length:
 
             if current:
-
-                await update.message.reply_text(
-                    current
-                )
-
+                await update.message.reply_text(current)
                 current = ""
 
-            for i in range(
-                0,
-                len(line),
-                max_length,
-            ):
-
+            for i in range(0, len(line), max_length):
                 await update.message.reply_text(
                     line[i:i + max_length]
                 )
@@ -143,20 +125,14 @@ async def send_long_message(
         ):
 
             if current:
-
-                await update.message.reply_text(
-                    current
-                )
+                await update.message.reply_text(current)
 
             current = ""
 
         current += line + "\n"
 
     if current:
-
-        await update.message.reply_text(
-            current
-        )
+        await update.message.reply_text(current)
 
 
 # =========================================================
@@ -222,10 +198,6 @@ async def scan_command(
 
     started = time.time()
 
-    # -----------------------------------------------------
-    # START MESSAGE
-    # -----------------------------------------------------
-
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
 
@@ -242,10 +214,7 @@ async def scan_command(
     )
 
     try:
-
-        results = scan_market(
-            limit=5
-        )
+        results = scan_market(limit=5)
 
     except Exception as exc:
 
@@ -254,10 +223,7 @@ async def scan_command(
             exc,
         )
 
-        elapsed = (
-            time.time()
-            - started
-        )
+        elapsed = time.time() - started
 
         await update.message.reply_text(
             "❌ حدث خطأ أثناء فحص السوق.\n\n"
@@ -267,14 +233,7 @@ async def scan_command(
 
         return
 
-    elapsed = (
-        time.time()
-        - started
-    )
-
-    # -----------------------------------------------------
-    # NO RESULTS
-    # -----------------------------------------------------
+    elapsed = time.time() - started
 
     if not results:
 
@@ -292,22 +251,12 @@ async def scan_command(
 
         return
 
-    # -----------------------------------------------------
-    # RESULTS
-    # -----------------------------------------------------
-
     await update.message.reply_text(
         "✅ انتهى الفحص.\n\n"
-
         f"🎯 عدد المرشحين: {len(results)}\n"
         f"⏱️ وقت الفحص: {elapsed:.1f} ثانية\n\n"
-
         "🏦 أفضل مناطق Order Block:"
     )
-
-    # -----------------------------------------------------
-    # SEND RESULTS
-    # -----------------------------------------------------
 
     for index, data in enumerate(
         results,
@@ -347,7 +296,8 @@ async def scan_command(
             )
 
             logger.info(
-                "SCAN RESULT %s | %s | direction=%s | state=%s | score=%s | OB=%s/%s",
+                "SCAN RESULT %s | %s | direction=%s | "
+                "state=%s | score=%s | OB=%s/%s",
                 index,
                 symbol,
                 direction,
@@ -357,9 +307,7 @@ async def scan_command(
                 ob_score,
             )
 
-            report = generate_evidence_report(
-                data
-            )
+            report = generate_evidence_report(data)
 
             await send_long_message(
                 update,
@@ -393,24 +341,15 @@ async def handle_message(
     ):
         return
 
-    text = (
-        update.message.text
-        .strip()
-    )
+    text = update.message.text.strip()
 
     if not text:
         return
 
-    # -----------------------------------------------------
-    # Ignore accidental commands
-    # -----------------------------------------------------
-
     if text.startswith("/"):
         return
 
-    symbol = normalize_symbol(
-        text
-    )
+    symbol = normalize_symbol(text)
 
     if not symbol:
 
@@ -444,9 +383,7 @@ async def handle_message(
 
     try:
 
-        data = get_coin_analysis(
-            symbol
-        )
+        data = get_coin_analysis(symbol)
 
     except Exception as exc:
 
@@ -463,10 +400,6 @@ async def handle_message(
 
         return
 
-    # -----------------------------------------------------
-    # NO DATA
-    # -----------------------------------------------------
-
     if not data:
 
         await update.message.reply_text(
@@ -476,14 +409,7 @@ async def handle_message(
 
         return
 
-    # -----------------------------------------------------
-    # ANALYSIS FAILED
-    # -----------------------------------------------------
-
-    if not data.get(
-        "analysis_ok",
-        False,
-    ):
+    if not data.get("analysis_ok", False):
 
         reason = data.get(
             "reason",
@@ -496,26 +422,15 @@ async def handle_message(
         )
 
         if reason:
+            message += f"\n\n🧾 السبب: {reason}"
 
-            message += (
-                f"\n\n🧾 السبب: {reason}"
-            )
-
-        await update.message.reply_text(
-            message
-        )
+        await update.message.reply_text(message)
 
         return
 
-    # -----------------------------------------------------
-    # REPORT
-    # -----------------------------------------------------
-
     try:
 
-        report = generate_evidence_report(
-            data
-        )
+        report = generate_evidence_report(data)
 
         await send_long_message(
             update,
@@ -546,18 +461,20 @@ async def error_handler(
 
     error = context.error
 
+    if isinstance(error, Conflict):
+
+        logger.error(
+            "TELEGRAM CONFLICT: another getUpdates "
+            "polling instance is active."
+        )
+
+        return
+
     logger.error(
         "Telegram error: %s",
         error,
         exc_info=True,
     )
-
-    if error and "Conflict" in str(error):
-
-        logger.error(
-            "TELEGRAM CONFLICT: "
-            "another bot instance is running."
-        )
 
 
 # =========================================================
@@ -576,10 +493,6 @@ def run_bot():
         .build()
     )
 
-    # -----------------------------------------------------
-    # COMMANDS
-    # -----------------------------------------------------
-
     application.add_handler(
         CommandHandler(
             "start",
@@ -594,21 +507,12 @@ def run_bot():
         )
     )
 
-    # -----------------------------------------------------
-    # COIN MESSAGES
-    # -----------------------------------------------------
-
     application.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND,
             handle_message,
         )
     )
-
-    # -----------------------------------------------------
-    # ERROR HANDLER
-    # -----------------------------------------------------
 
     application.add_error_handler(
         error_handler
@@ -618,15 +522,56 @@ def run_bot():
         "Telegram bot is starting..."
     )
 
-    # -----------------------------------------------------
-    # POLLING
-    # -----------------------------------------------------
+    try:
 
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-        stop_signals=None,
-    )
+        # تنظيف أي Webhook قديم قبل استخدام Polling
+        logger.info(
+            "Removing Telegram webhook..."
+        )
+
+        application.bot.delete_webhook(
+            drop_pending_updates=True
+        )
+
+    except Exception as exc:
+
+        logger.warning(
+            "Could not remove Telegram webhook: %s",
+            exc,
+        )
+
+    try:
+
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            stop_signals=None,
+        )
+
+    except Conflict:
+
+        logger.error(
+            "TELEGRAM CONFLICT: another bot instance "
+            "is already using this BOT_TOKEN."
+        )
+
+        logger.error(
+            "Stop the other instance or change BOT_TOKEN."
+        )
+
+    except TelegramError as exc:
+
+        logger.exception(
+            "Telegram startup/runtime error: %s",
+            exc,
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Unexpected Telegram error: %s",
+            exc,
+        )
 
 
 # =========================================================
@@ -655,10 +600,6 @@ def main():
 
     logger.info("=" * 70)
 
-    # -----------------------------------------------------
-    # FLASK
-    # -----------------------------------------------------
-
     flask_thread = threading.Thread(
         target=run_flask,
         name="FlaskServer",
@@ -671,15 +612,7 @@ def main():
         "Flask thread started."
     )
 
-    # -----------------------------------------------------
-    # WAIT FOR FLASK
-    # -----------------------------------------------------
-
     time.sleep(1)
-
-    # -----------------------------------------------------
-    # TELEGRAM
-    # -----------------------------------------------------
 
     run_bot()
 
