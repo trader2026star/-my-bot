@@ -3,16 +3,9 @@
 # BingX Futures AI Scanner
 # ORDER BLOCK PRIMARY ENGINE
 # Price + OB + Retest + BOS + Liquidity + MTF Confirmation
-# Scanner v16.0 - RESILIENT DATA / NO-FAKE-TRADE
+# Scanner v16.0
 #
-# IMPORTANT:
-# - 1H = PRIMARY Order Block engine
-# - 4H = MTF Order Block
-# - 1D / 30m / 15m = confirmations only
-# - Order Block remains the PRIMARY engine
-# - No synthetic/fake trade
-# - Optional timeframe failure MUST NOT kill analysis
-# - Improved BingX request/retry/rate-limit handling
+# DATA ENGINE FIX
 # =========================================================
 
 import time
@@ -20,15 +13,9 @@ import logging
 import threading
 import requests
 
-
-# =========================================================
-# CONFIG
-# =========================================================
-
 BINGX_URL = "https://open-api.bingx.com"
 
 SESSION = requests.Session()
-
 SESSION.headers.update({
     "User-Agent": "CryptoZeroReversal-BingX-OB-Scanner/16.0",
     "Accept": "application/json",
@@ -36,303 +23,136 @@ SESSION.headers.update({
 
 logger = logging.getLogger(__name__)
 
+# =========================================================
+# CACHE
+# =========================================================
+
 SYMBOL_CACHE_SECONDS = 600
 KLINE_CACHE_SECONDS = 60
 PRICE_CACHE_SECONDS = 3
 
 _SYMBOL_CACHE = set()
-_SYMBOL_CACHE_TIME = 0.0
+_SYMBOL_CACHE_TIME = 0
 
 _KLINE_CACHE = {}
 _PRICE_CACHE = {}
 
-_RATE_LIMIT_UNTIL = 0.0
+# Keep stale data so temporary API failure does not destroy
+# the analysis.
+_KLINE_LAST_GOOD = {}
+_PRICE_LAST_GOOD = {}
+
+# =========================================================
+# RATE LIMIT
+# =========================================================
+
+_RATE_LIMIT_UNTIL = 0
 _RATE_LOCK = threading.Lock()
 
 _REQUEST_LOCK = threading.Lock()
 _LAST_REQUEST_TIME = 0.0
 
-# Slower than previous version to reduce BingX throttling.
-MIN_REQUEST_INTERVAL = 0.60
+# Do not hammer BingX.
+MIN_REQUEST_INTERVAL = 0.55
+
+# Temporary cooldown after rate limit.
+RATE_LIMIT_COOLDOWN = 20
 
 
 # =========================================================
 # BINGX REQUEST
 # =========================================================
 
-def bingx_get(path, params=None, timeout=12, retries=3):
-    """
-    Resilient BingX request layer.
-
-    IMPORTANT:
-    This function only handles API communication.
-    It does NOT change Order Block logic.
-    """
-
+def bingx_get(path, params=None, timeout=12):
     global _RATE_LIMIT_UNTIL
     global _LAST_REQUEST_TIME
 
-    last_error = None
+    now = time.time()
 
-    for attempt in range(retries):
-
-        # -------------------------------------------------
-        # Rate-limit cooldown
-        # -------------------------------------------------
-        with _RATE_LOCK:
-            remaining = (
-                _RATE_LIMIT_UNTIL
-                - time.time()
-            )
-
-        if remaining > 0:
-            logger.warning(
-                "BingX cooldown %.1fs | %s",
-                remaining,
-                path,
-            )
+    with _RATE_LOCK:
+        if now < _RATE_LIMIT_UNTIL:
             return None
 
-        # -------------------------------------------------
-        # Global request throttle
-        # -------------------------------------------------
-        with _REQUEST_LOCK:
+    with _REQUEST_LOCK:
+        wait = MIN_REQUEST_INTERVAL - (
+            time.time() - _LAST_REQUEST_TIME
+        )
 
-            now = time.time()
+        if wait > 0:
+            time.sleep(wait)
 
-            wait = (
-                MIN_REQUEST_INTERVAL
-                - (now - _LAST_REQUEST_TIME)
+        _LAST_REQUEST_TIME = time.time()
+
+    try:
+        response = SESSION.get(
+            BINGX_URL + path,
+            params=params or {},
+            timeout=timeout,
+        )
+
+        if response.status_code != 200:
+            logger.warning(
+                "BingX HTTP %s | %s | %s",
+                response.status_code,
+                path,
+                response.text[:250],
             )
-
-            if wait > 0:
-                time.sleep(wait)
-
-            _LAST_REQUEST_TIME = time.time()
+            return None
 
         try:
-
-            response = SESSION.get(
-                BINGX_URL + path,
-                params=params or {},
-                timeout=timeout,
-            )
-
-            # -------------------------------------------------
-            # HTTP RATE LIMIT
-            # -------------------------------------------------
-            if response.status_code in (429, 418):
-
-                logger.warning(
-                    "BingX HTTP RATE LIMIT %s | %s",
-                    response.status_code,
-                    path,
-                )
-
-                with _RATE_LOCK:
-                    _RATE_LIMIT_UNTIL = max(
-                        _RATE_LIMIT_UNTIL,
-                        time.time() + 8,
-                    )
-
-                return None
-
-            # -------------------------------------------------
-            # HTTP ERROR
-            # -------------------------------------------------
-            if response.status_code != 200:
-
-                last_error = (
-                    f"HTTP {response.status_code}"
-                )
-
-                logger.warning(
-                    "BingX HTTP %s | %s | %s",
-                    response.status_code,
-                    path,
-                    response.text[:300],
-                )
-
-                if attempt < retries - 1:
-                    time.sleep(
-                        0.8 * (attempt + 1)
-                    )
-                    continue
-
-                return None
-
-            # -------------------------------------------------
-            # JSON
-            # -------------------------------------------------
-            try:
-                data = response.json()
-
-            except ValueError:
-
-                last_error = "INVALID_JSON"
-
-                logger.warning(
-                    "BingX INVALID JSON | %s | %s",
-                    path,
-                    response.text[:300],
-                )
-
-                if attempt < retries - 1:
-                    time.sleep(0.6)
-                    continue
-
-                return None
-
-            if not isinstance(data, dict):
-                last_error = "INVALID_RESPONSE"
-
-                if attempt < retries - 1:
-                    time.sleep(0.6)
-                    continue
-
-                return None
-
-            code = data.get("code")
-
-            # -------------------------------------------------
-            # SUCCESS
-            # -------------------------------------------------
-            if code in (0, None):
-                return data
-
-            # -------------------------------------------------
-            # RATE LIMIT API CODES
-            # -------------------------------------------------
-            if code in (109429, 109400):
-
-                logger.warning(
-                    "BingX RATE LIMIT | code=%s | %s",
-                    code,
-                    path,
-                )
-
-                # Short cooldown.
-                # Do NOT lock scanner for 90 seconds.
-                with _RATE_LOCK:
-                    _RATE_LIMIT_UNTIL = max(
-                        _RATE_LIMIT_UNTIL,
-                        time.time() + 8,
-                    )
-
-                return None
-
-            # -------------------------------------------------
-            # TEMPORARY API ERROR
-            # -------------------------------------------------
-            if code in (
-                100001,
-                100002,
-                100003,
-                100004,
-                100500,
-            ):
-
-                last_error = (
-                    f"API_CODE_{code}"
-                )
-
-                logger.warning(
-                    "BingX TEMP API ERROR | code=%s | %s",
-                    code,
-                    path,
-                )
-
-                if attempt < retries - 1:
-                    time.sleep(
-                        0.8 * (attempt + 1)
-                    )
-                    continue
-
-                return None
-
-            # -------------------------------------------------
-            # NORMAL API ERROR
-            # -------------------------------------------------
+            data = response.json()
+        except ValueError:
             logger.warning(
-                "BingX API ERROR | code=%s | %s | %s",
-                code,
+                "BingX INVALID JSON | %s | %s",
                 path,
-                str(data)[:400],
+                response.text[:250],
             )
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        code = data.get("code")
+
+        if code in (109429, 109400):
+            logger.warning(
+                "BingX RATE LIMIT | code=%s",
+                code,
+            )
+
+            with _RATE_LOCK:
+                _RATE_LIMIT_UNTIL = max(
+                    _RATE_LIMIT_UNTIL,
+                    time.time() + RATE_LIMIT_COOLDOWN,
+                )
 
             return None
 
-        except requests.Timeout as exc:
-
-            last_error = str(exc)
-
+        if code not in (0, None):
             logger.warning(
-                "BingX TIMEOUT | %s | attempt=%s/%s",
-                path,
-                attempt + 1,
-                retries,
+                "BingX API ERROR | code=%s | %s",
+                code,
+                str(data)[:400],
             )
+            return None
 
-            if attempt < retries - 1:
-                time.sleep(
-                    0.8 * (attempt + 1)
-                )
-                continue
+        return data
 
-        except requests.ConnectionError as exc:
+    except requests.RequestException as exc:
+        logger.warning(
+            "BingX REQUEST FAILED | %s | %s",
+            path,
+            exc,
+        )
+        return None
 
-            last_error = str(exc)
-
-            logger.warning(
-                "BingX CONNECTION ERROR | %s | attempt=%s/%s",
-                path,
-                attempt + 1,
-                retries,
-            )
-
-            if attempt < retries - 1:
-                time.sleep(
-                    0.8 * (attempt + 1)
-                )
-                continue
-
-        except requests.RequestException as exc:
-
-            last_error = str(exc)
-
-            logger.warning(
-                "BingX REQUEST ERROR | %s | %s",
-                path,
-                exc,
-            )
-
-            if attempt < retries - 1:
-                time.sleep(
-                    0.8 * (attempt + 1)
-                )
-                continue
-
-        except Exception as exc:
-
-            last_error = str(exc)
-
-            logger.exception(
-                "BingX UNKNOWN ERROR | %s | %s",
-                path,
-                exc,
-            )
-
-            if attempt < retries - 1:
-                time.sleep(0.6)
-                continue
-
-    logger.warning(
-        "BingX REQUEST FAILED AFTER RETRIES | %s | %s",
-        path,
-        last_error,
-    )
-
-    return None
+    except Exception as exc:
+        logger.exception(
+            "BingX UNKNOWN ERROR | %s | %s",
+            path,
+            exc,
+        )
+        return None
 
 
 # =========================================================
@@ -340,7 +160,6 @@ def bingx_get(path, params=None, timeout=12, retries=3):
 # =========================================================
 
 def normalize_symbol(text):
-
     text = (
         str(text)
         .strip()
@@ -361,7 +180,6 @@ def normalize_symbol(text):
 
 
 def bingx_symbol(symbol):
-
     symbol = normalize_symbol(symbol)
 
     if symbol.endswith("USDT"):
@@ -378,7 +196,6 @@ def bingx_symbol(symbol):
 # =========================================================
 
 def get_futures_symbols(force_refresh=False):
-
     global _SYMBOL_CACHE
     global _SYMBOL_CACHE_TIME
 
@@ -387,60 +204,32 @@ def get_futures_symbols(force_refresh=False):
     if (
         not force_refresh
         and _SYMBOL_CACHE
-        and now - _SYMBOL_CACHE_TIME
-        < SYMBOL_CACHE_SECONDS
+        and now - _SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS
     ):
         return set(_SYMBOL_CACHE)
 
-    endpoints = (
-        "/openApi/swap/v2/quote/contracts",
-        "/openApi/swap/v2/quote/contracts/",
-    )
+    endpoint = "/openApi/swap/v2/quote/contracts"
 
-    data = None
-
-    for endpoint in endpoints:
-
-        data = bingx_get(
-            endpoint,
-            timeout=12,
-            retries=2,
-        )
-
-        if data:
-            break
+    data = bingx_get(endpoint)
 
     if not data:
-
         logger.warning(
-            "Unable to load BingX futures contracts"
+            "CONTRACTS REQUEST FAILED - using cached symbols"
         )
-
-        # IMPORTANT:
-        # If cache exists, use it.
-        if _SYMBOL_CACHE:
-            return set(_SYMBOL_CACHE)
-
-        return set()
+        return set(_SYMBOL_CACHE)
 
     rows = data.get("data")
 
     if not isinstance(rows, list):
-
         logger.warning(
-            "BingX contracts invalid data | %s",
+            "BingX contracts invalid data: %s",
             str(data)[:400],
         )
-
-        if _SYMBOL_CACHE:
-            return set(_SYMBOL_CACHE)
-
-        return set()
+        return set(_SYMBOL_CACHE)
 
     symbols = set()
 
     for item in rows:
-
         if not isinstance(item, dict):
             continue
 
@@ -460,17 +249,12 @@ def get_futures_symbols(force_refresh=False):
 
         status = item.get("status")
 
-        if status not in (
-            1,
-            "1",
-            None,
-        ):
+        if status not in (1, "1", None):
             continue
 
         symbols.add(raw)
 
     if symbols:
-
         _SYMBOL_CACHE = symbols
         _SYMBOL_CACHE_TIME = now
 
@@ -483,13 +267,12 @@ def get_futures_symbols(force_refresh=False):
 
 
 def symbol_exists(symbol):
-
     symbol = normalize_symbol(symbol)
 
     symbols = get_futures_symbols()
 
-    # If contracts endpoint fails temporarily,
-    # do not block direct analysis.
+    # Never block direct analysis if contracts endpoint
+    # temporarily fails.
     if not symbols:
         return True
 
@@ -497,11 +280,10 @@ def symbol_exists(symbol):
 
 
 # =========================================================
-# PRICE HELPERS
+# PRICE PARSER
 # =========================================================
 
 def _extract_price_from_row(row):
-
     if not isinstance(row, dict):
         return None
 
@@ -512,12 +294,8 @@ def _extract_price_from_row(row):
         "close",
         "markPrice",
     ):
-
         try:
-
-            value = float(
-                row.get(key)
-            )
+            value = float(row.get(key))
 
             if value > 0:
                 return value
@@ -531,10 +309,12 @@ def _extract_price_from_row(row):
     return None
 
 
+# =========================================================
+# PRICE
+# =========================================================
+
 def get_current_price(symbol, force=False):
-
     symbol = normalize_symbol(symbol)
-
     now = time.time()
 
     cached = _PRICE_CACHE.get(symbol)
@@ -542,59 +322,53 @@ def get_current_price(symbol, force=False):
     if (
         not force
         and cached
-        and now - cached[0]
-        < PRICE_CACHE_SECONDS
+        and now - cached[0] < PRICE_CACHE_SECONDS
     ):
         return cached[1]
 
-    # -------------------------------------------------
-    # V2 PRICE
-    # -------------------------------------------------
+    # -----------------------------------------------------
+    # PRIMARY V2 PRICE
+    # -----------------------------------------------------
 
     data = bingx_get(
         "/openApi/swap/v2/quote/price",
         {
             "symbol": bingx_symbol(symbol),
         },
-        timeout=10,
-        retries=2,
     )
 
     if data:
-
         row = data.get("data")
 
-        price = _extract_price_from_row(
-            row
-        )
+        price = _extract_price_from_row(row)
 
         if price:
-
             _PRICE_CACHE[symbol] = (
+                now,
+                price,
+            )
+
+            _PRICE_LAST_GOOD[symbol] = (
                 now,
                 price,
             )
 
             return price
 
-    # -------------------------------------------------
+    # -----------------------------------------------------
     # V2 TICKER
-    # -------------------------------------------------
+    # -----------------------------------------------------
 
     data = bingx_get(
-        "/openApi/swap/v2/quote/ticker",
-        timeout=10,
-        retries=2,
+        "/openApi/swap/v2/quote/ticker"
     )
 
     if data:
-
         rows = data.get("data")
 
         if isinstance(rows, list):
 
             for row in rows:
-
                 if not isinstance(row, dict):
                     continue
 
@@ -612,81 +386,65 @@ def get_current_price(symbol, force=False):
                 if raw != symbol:
                     continue
 
-                price = _extract_price_from_row(
-                    row
-                )
+                price = _extract_price_from_row(row)
 
                 if price:
-
                     _PRICE_CACHE[symbol] = (
+                        now,
+                        price,
+                    )
+
+                    _PRICE_LAST_GOOD[symbol] = (
                         now,
                         price,
                     )
 
                     return price
 
-        elif isinstance(rows, dict):
-
-            raw = str(
-                rows.get("symbol", "")
-            ).upper()
-
-            raw = (
-                raw
-                .replace("-", "")
-                .replace("_", "")
-                .replace("/", "")
-            )
-
-            if (
-                not raw
-                or raw == symbol
-            ):
-
-                price = _extract_price_from_row(
-                    rows
-                )
-
-                if price:
-
-                    _PRICE_CACHE[symbol] = (
-                        now,
-                        price,
-                    )
-
-                    return price
-
-    # -------------------------------------------------
-    # V3 PRICE FALLBACK
-    # -------------------------------------------------
+    # -----------------------------------------------------
+    # V3 FALLBACK
+    # -----------------------------------------------------
 
     data = bingx_get(
         "/openApi/swap/v3/quote/price",
         {
             "symbol": bingx_symbol(symbol),
         },
-        timeout=10,
-        retries=2,
     )
 
     if data:
-
         row = data.get("data")
 
-        price = _extract_price_from_row(
-            row
-        )
+        price = _extract_price_from_row(row)
 
         if price:
-
             _PRICE_CACHE[symbol] = (
+                now,
+                price,
+            )
+
+            _PRICE_LAST_GOOD[symbol] = (
                 now,
                 price,
             )
 
             return price
 
-    logger.warning(
+    # -----------------------------------------------------
+    # STALE LAST GOOD PRICE
+    # -----------------------------------------------------
+
+    stale = _PRICE_LAST_GOOD.get(symbol)
+
+    if stale:
+        logger.warning(
+            "PRICE API FAILED - using last good price | %s",
+            symbol,
+        )
+
+        return stale[1]
+
+    logger.error(
         "CURRENT PRICE FAILED | %s",
         symbol,
     )
@@ -699,7 +457,6 @@ def get_current_price(symbol, force=False):
 # =========================================================
 
 def _parse_kline_rows(rows):
-
     result = []
 
     if not isinstance(rows, list):
@@ -726,13 +483,7 @@ def _parse_kline_rows(rows):
 
                 vol = row.get(
                     "volume",
-                    row.get(
-                        "vol",
-                        row.get(
-                            "quoteVolume",
-                            0,
-                        ),
-                    ),
+                    row.get("vol", 0),
                 )
 
                 if None in (
@@ -773,32 +524,12 @@ def _parse_kline_rows(rows):
         ):
             continue
 
-    # -------------------------------------------------
     # Sort only when timestamps are usable.
-    # -------------------------------------------------
-
     try:
-
         if result:
-
-            valid_timestamps = True
-
-            for x in result:
-
-                if x[0] in (
-                    None,
-                    "",
-                    0,
-                    "0",
-                ):
-                    valid_timestamps = False
-                    break
-
-            if valid_timestamps:
-                result.sort(
-                    key=lambda x: float(x[0])
-                )
-
+            result.sort(
+                key=lambda x: x[0]
+            )
     except Exception:
         pass
 
@@ -814,14 +545,7 @@ def get_bingx_klines(
     interval="1h",
     limit=200,
 ):
-
     symbol = normalize_symbol(symbol)
-
-    interval = str(
-        interval
-    ).lower()
-
-    limit = int(limit)
 
     key = (
         symbol,
@@ -831,12 +555,15 @@ def get_bingx_klines(
 
     now = time.time()
 
+    # -----------------------------------------------------
+    # FRESH CACHE
+    # -----------------------------------------------------
+
     cached = _KLINE_CACHE.get(key)
 
     if (
         cached
-        and now - cached[0]
-        < KLINE_CACHE_SECONDS
+        and now - cached[0] < KLINE_CACHE_SECONDS
     ):
         return cached[1]
 
@@ -846,67 +573,97 @@ def get_bingx_klines(
         "limit": limit,
     }
 
-    endpoints = (
+    # -----------------------------------------------------
+    # V2 PRIMARY
+    # -----------------------------------------------------
+
+    data = bingx_get(
         "/openApi/swap/v2/quote/klines",
-        "/openApi/swap/v3/quote/klines",
+        params,
     )
 
-    best_result = None
-
-    for endpoint in endpoints:
-
-        data = bingx_get(
-            endpoint,
-            params,
-            timeout=12,
-            retries=2,
-        )
-
-        if not data:
-            continue
+    if data:
 
         rows = data.get("data")
 
-        result = _parse_kline_rows(
-            rows
-        )
+        result = _parse_kline_rows(rows)
+
+        if len(result) >= 30:
+
+            _KLINE_CACHE[key] = (
+                now,
+                result,
+            )
+
+            _KLINE_LAST_GOOD[key] = (
+                now,
+                result,
+            )
+
+            return result
 
         if result:
+            logger.warning(
+                "V2 KLINE SHORT | %s %s | rows=%s",
+                symbol,
+                interval,
+                len(result),
+            )
 
-            if (
-                best_result is None
-                or len(result)
-                > len(best_result)
-            ):
-                best_result = result
+    # -----------------------------------------------------
+    # V3 FALLBACK
+    # -----------------------------------------------------
 
-            if len(result) >= 30:
+    data = bingx_get(
+        "/openApi/swap/v3/quote/klines",
+        params,
+    )
 
-                _KLINE_CACHE[key] = (
-                    now,
-                    result,
-                )
+    if data:
 
-                return result
+        rows = data.get("data")
+
+        result = _parse_kline_rows(rows)
+
+        if len(result) >= 30:
+
+            _KLINE_CACHE[key] = (
+                now,
+                result,
+            )
+
+            _KLINE_LAST_GOOD[key] = (
+                now,
+                result,
+            )
+
+            return result
+
+        if result:
+            logger.warning(
+                "V3 KLINE SHORT | %s %s | rows=%s",
+                symbol,
+                interval,
+                len(result),
+            )
+
+    # -----------------------------------------------------
+    # STALE LAST GOOD KLINE
+    # -----------------------------------------------------
+
+    stale = _KLINE_LAST_GOOD.get(key)
+
+    if stale:
 
         logger.warning(
-            "KLINE EMPTY/INSUFFICIENT | %s %s | %s | rows=%s",
+            "KLINE API FAILED - using last good cache | %s %s",
             symbol,
             interval,
-            endpoint,
-            len(result),
         )
 
-    if best_result:
+        return stale[1]
 
-        _KLINE_CACHE[key] = (
-            now,
-            best_result,
-        )
-
-        return best_result
-
-    logger.warning(
+    logger.error(
         "KLINE FAILED ALL ENDPOINTS | %s %s",
         symbol,
         interval,
@@ -920,20 +677,16 @@ def get_bingx_klines(
 # =========================================================
 
 def calculate_ema(values, period):
-
-    if len(values) < period:
+    if not values or len(values) < period:
         return None
 
-    multiplier = 2 / (
-        period + 1
-    )
+    multiplier = 2 / (period + 1)
 
     ema = sum(
         values[:period]
     ) / period
 
     for price in values[period:]:
-
         ema = (
             (price - ema)
             * multiplier
@@ -946,17 +699,13 @@ def calculate_rsi(
     closes,
     period=14,
 ):
-
     if len(closes) < period + 1:
         return 50.0
 
     gains = []
     losses = []
 
-    for i in range(
-        1,
-        len(closes),
-    ):
+    for i in range(1, len(closes)):
 
         change = (
             closes[i]
@@ -987,24 +736,19 @@ def calculate_rsi(
     ):
 
         avg_gain = (
-            avg_gain
-            * (period - 1)
+            avg_gain * (period - 1)
             + gains[i]
         ) / period
 
         avg_loss = (
-            avg_loss
-            * (period - 1)
+            avg_loss * (period - 1)
             + losses[i]
         ) / period
 
     if avg_loss == 0:
         return 100.0
 
-    rs = (
-        avg_gain
-        / avg_loss
-    )
+    rs = avg_gain / avg_loss
 
     return round(
         100 - (
@@ -1018,7 +762,6 @@ def calculate_atr(
     klines,
     period=14,
 ):
-
     if len(klines) < period + 1:
         return None
 
@@ -1049,8 +792,7 @@ def calculate_atr(
     for value in trs[period:]:
 
         atr = (
-            atr
-            * (period - 1)
+            atr * (period - 1)
             + value
         ) / period
 
@@ -1061,10 +803,7 @@ def calculate_volume_ratio(
     volumes,
     period=20,
 ):
-
-    if len(volumes) < (
-        period + 4
-    ):
+    if len(volumes) < period + 4:
         return 1.0
 
     recent = volumes[-4:-1]
@@ -1107,7 +846,6 @@ def calculate_volume_trend(
     short_period=5,
     long_period=20,
 ):
-
     if len(volumes) < (
         long_period
         + short_period
@@ -1120,9 +858,7 @@ def calculate_volume_trend(
     ]
 
     previous = volumes[
-        -long_period
-        - short_period
-        - 1:
+        -long_period - short_period - 1:
         -short_period - 1
     ]
 
@@ -1150,7 +886,6 @@ def percentage_change(
     old_price,
     new_price,
 ):
-
     if not old_price:
         return 0.0
 
@@ -1170,7 +905,6 @@ def percentage_change(
 def calculate_support_resistance(
     klines,
 ):
-
     if not klines:
         return 0.0, 0.0
 
@@ -1223,7 +957,6 @@ def calculate_support_resistance(
 # =========================================================
 
 def _candle_direction(k):
-
     if k[4] > k[1]:
         return "BULLISH"
 
@@ -1250,9 +983,7 @@ def detect_order_blocks(
     klines,
     lookback=100,
 ):
-
     if len(klines) < 30:
-
         return {
             "bullish": [],
             "bearish": [],
@@ -1274,10 +1005,7 @@ def detect_order_blocks(
         base = klines[i]
         displacement = klines[i + 1]
 
-        base_range = _candle_range(
-            base
-        )
-
+        base_range = _candle_range(base)
         disp_range = _candle_range(
             displacement
         )
@@ -1313,16 +1041,14 @@ def detect_order_blocks(
             ]
         )
 
-        displacement_change = (
-            percentage_change(
-                displacement[1],
-                displacement[4],
-            )
+        displacement_change = percentage_change(
+            displacement[1],
+            displacement[4],
         )
 
-        # -------------------------------------------------
-        # BULLISH OB
-        # -------------------------------------------------
+        # =================================================
+        # BULLISH ORDER BLOCK
+        # =================================================
 
         if (
             _candle_direction(base)
@@ -1330,7 +1056,8 @@ def detect_order_blocks(
             and
             _candle_direction(
                 displacement
-            ) == "BULLISH"
+            )
+            == "BULLISH"
             and
             displacement[4]
             > previous_high
@@ -1376,9 +1103,9 @@ def detect_order_blocks(
                 ),
             })
 
-        # -------------------------------------------------
-        # BEARISH OB
-        # -------------------------------------------------
+        # =================================================
+        # BEARISH ORDER BLOCK
+        # =================================================
 
         if (
             _candle_direction(base)
@@ -1386,7 +1113,8 @@ def detect_order_blocks(
             and
             _candle_direction(
                 displacement
-            ) == "BEARISH"
+            )
+            == "BEARISH"
             and
             displacement[4]
             < previous_low
@@ -1461,7 +1189,6 @@ def price_inside_ob(
     ob,
     tolerance=0.003,
 ):
-
     if not ob:
         return False
 
@@ -1485,7 +1212,6 @@ def ob_distance_percent(
     price,
     ob,
 ):
-
     if not ob or price <= 0:
         return 999.0
 
@@ -1496,7 +1222,6 @@ def ob_distance_percent(
         return 0.0
 
     if price < ob["low"]:
-
         return (
             (
                 ob["low"]
@@ -1519,7 +1244,6 @@ def find_active_order_block(
     direction,
     current_price,
 ):
-
     if not klines:
         return None
 
@@ -1540,11 +1264,9 @@ def find_active_order_block(
 
     for ob in candidates:
 
-        distance = (
-            ob_distance_percent(
-                current_price,
-                ob,
-            )
+        distance = ob_distance_percent(
+            current_price,
+            ob,
         )
 
         if distance > 8.0:
@@ -1594,7 +1316,6 @@ def detect_ob_retest(
     ob,
     direction,
 ):
-
     if (
         not ob
         or len(klines) < 3
@@ -1632,13 +1353,11 @@ def detect_ob_retest(
                     rejected = True
 
     if touched:
-
         reasons.append(
             "السعر أعاد اختبار Order Block"
         )
 
     if rejected:
-
         reasons.append(
             "ظهر رفض من منطقة Order Block"
         )
@@ -1650,15 +1369,13 @@ def detect_ob_retest(
 
 
 # =========================================================
-# MARKET STRUCTURE / BOS
+# MARKET STRUCTURE
 # =========================================================
 
 def detect_market_structure(
     klines,
 ):
-
     if len(klines) < 25:
-
         return {
             "structure": "UNKNOWN",
             "bos": "NONE",
@@ -1694,7 +1411,6 @@ def detect_market_structure(
 
     bos = "NONE"
     structure = "MIXED"
-
     reasons = []
 
     if (
@@ -1750,13 +1466,17 @@ def detect_market_structure(
     )
 
     low_distance = (
-        abs(current - rl)
+        abs(
+            current - rl
+        )
         / current
         * 100
     )
 
     high_distance = (
-        abs(current - rh)
+        abs(
+            current - rh
+        )
         / current
         * 100
     )
@@ -1794,9 +1514,7 @@ def detect_market_structure(
 def detect_liquidity_flow(
     klines,
 ):
-
     if len(klines) < 25:
-
         return (
             "NEUTRAL",
             0,
@@ -1828,7 +1546,6 @@ def detect_liquidity_flow(
     )
 
     recent = volumes[-5:]
-
     previous = volumes[-15:-5]
 
     rv = (
@@ -1922,7 +1639,6 @@ def detect_liquidity_flow(
         )
 
     if score >= 2:
-
         return (
             "INFLOW",
             score,
@@ -1930,7 +1646,6 @@ def detect_liquidity_flow(
         )
 
     if score <= -2:
-
         return (
             "OUTFLOW",
             score,
@@ -1951,7 +1666,6 @@ def detect_liquidity_flow(
 def calculate_timeframe_trend(
     klines,
 ):
-
     if not klines:
         return "UNKNOWN"
 
@@ -2006,9 +1720,7 @@ def calculate_timeframe_trend(
 def detect_bottom_accumulation(
     klines,
 ):
-
     if len(klines) < 40:
-
         return (
             False,
             0,
@@ -2034,13 +1746,11 @@ def detect_bottom_accumulation(
         -split * 2:-split
     ]
 
-    recent = closes[-split:]
+    recent = closes[
+        -split:
+    ]
 
-    if (
-        not old
-        or not recent
-    ):
-
+    if not old or not recent:
         return (
             False,
             0,
@@ -2048,7 +1758,6 @@ def detect_bottom_accumulation(
         )
 
     old_high = max(old)
-
     recent_low = min(recent)
     recent_high = max(recent)
 
@@ -2078,12 +1787,16 @@ def detect_bottom_accumulation(
                 -split * 2:-split
             ]
         )
-        / max(len(old), 1)
+        / max(
+            len(old),
+            1,
+        )
     )
 
     recent_volume = (
         sum(volumes[-10:])
-        / max(
+        /
+        max(
             min(
                 10,
                 len(volumes),
@@ -2096,17 +1809,13 @@ def detect_bottom_accumulation(
     reasons = []
 
     if drawdown <= -4:
-
         score += 1
-
         reasons.append(
             "هبوط سابق واضح"
         )
 
     if recent_range <= 18:
-
         score += 1
-
         reasons.append(
             "النطاق السعري بدأ يضيق"
         )
@@ -2124,7 +1833,6 @@ def detect_bottom_accumulation(
         )
 
     if score >= 2:
-
         return (
             True,
             score,
@@ -2143,7 +1851,6 @@ def detect_bottom_accumulation(
 # =========================================================
 
 def smart_round(value):
-
     if value is None:
         return 0
 
@@ -2175,7 +1882,7 @@ def smart_round(value):
 
 
 # =========================================================
-# SAFE DEFAULT
+# EMPTY ANALYSIS
 # =========================================================
 
 def _empty_analysis(
@@ -2183,11 +1890,6 @@ def _empty_analysis(
     current_price=None,
     reason="بيانات السوق غير مكتملة",
 ):
-
-    price = smart_round(
-        current_price
-    )
-
     return {
         "symbol": symbol,
         "direction": "WAIT",
@@ -2197,80 +1899,58 @@ def _empty_analysis(
             "WAIT - "
             + reason
         ),
-        "price": price,
-
+        "price": smart_round(
+            current_price
+        ),
         "rsi": 50.0,
         "volume_ratio": 1.0,
         "volume_trend": "NEUTRAL",
-
         "liquidity_state": "NEUTRAL",
         "liquidity_score": 0,
-
         "bottom_detected": False,
         "bottom_score": 0,
         "drawdown": 0,
-
         "buy_pressure": 50.0,
-
         "trend": "NEUTRAL",
-
         "trend_1d": "UNKNOWN",
         "trend_4h": "UNKNOWN",
         "trend_1h": "UNKNOWN",
         "trend_30m": "UNKNOWN",
         "trend_15m": "UNKNOWN",
-
         "structure": "UNKNOWN",
         "bos": "NONE",
         "liquidity_zone": "NONE",
-
         "bullish_ob": None,
         "bearish_ob": None,
-
         "bullish_ob_4h": None,
         "bearish_ob_4h": None,
-
         "bullish_ob_distance": 999.0,
         "bearish_ob_distance": 999.0,
-
         "bullish_ob_retest": False,
         "bearish_ob_retest": False,
-
         "recent_change_2": 0.0,
         "recent_change_6": 0.0,
-
         "crash_detected": False,
         "pump_detected": False,
-
         "entry_min": None,
         "entry_max": None,
-
         "stop_loss": None,
-
         "tp1": None,
         "tp2": None,
         "tp3": None,
-
         "support": 0,
         "resistance": 0,
-
         "support_distance": 999.0,
         "resistance_distance": 999.0,
-
         "long_score": 0,
         "short_score": 0,
-
         "analysis_lines": [],
         "liquidity_reasons": [],
         "bottom_reasons": [],
         "structure_reasons": [],
-
         "bullish_retest_reasons": [],
         "bearish_retest_reasons": [],
-
-        "rejection_reasons": [
-            reason
-        ],
+        "rejection_reasons": [reason],
     }
 
 
@@ -2279,23 +1959,19 @@ def _empty_analysis(
 # =========================================================
 
 def get_coin_analysis(symbol):
-
-    symbol = normalize_symbol(
-        symbol
-    )
+    symbol = normalize_symbol(symbol)
 
     logger.info(
-        "START ANALYSIS | %s",
+        "START FULL ANALYSIS | %s",
         symbol,
     )
 
     # -----------------------------------------------------
-    # SYMBOL CHECK
+    # SYMBOL
     # -----------------------------------------------------
 
     if not symbol_exists(symbol):
-
-        logger.info(
+        logger.warning(
             "SYMBOL NOT FOUND | %s",
             symbol,
         )
@@ -2303,7 +1979,7 @@ def get_coin_analysis(symbol):
         return _empty_analysis(
             symbol,
             None,
-            "العملة غير موجودة في BingX Futures",
+            "العملة غير موجودة في عقود BingX",
         )
 
     # -----------------------------------------------------
@@ -2312,11 +1988,10 @@ def get_coin_analysis(symbol):
 
     current_price = get_current_price(
         symbol,
-        force=True,
+        force=False,
     )
 
     if current_price is None:
-
         logger.error(
             "PRICE UNAVAILABLE | %s",
             symbol,
@@ -2325,18 +2000,17 @@ def get_coin_analysis(symbol):
         return _empty_analysis(
             symbol,
             None,
-            "تعذر الحصول على السعر الحالي من BingX",
+            "تعذر الحصول على سعر السوق",
         )
 
-    logger.info(
-        "PRICE OK | %s | %s",
-        symbol,
-        current_price,
-    )
-
-    # -----------------------------------------------------
+    # =====================================================
     # PRIMARY 1H
-    # -----------------------------------------------------
+    # =====================================================
+
+    logger.info(
+        "LOADING PRIMARY 1H | %s",
+        symbol,
+    )
 
     k1h = get_bingx_klines(
         symbol,
@@ -2344,10 +2018,7 @@ def get_coin_analysis(symbol):
         200,
     )
 
-    if (
-        not k1h
-        or len(k1h) < 30
-    ):
+    if not k1h or len(k1h) < 30:
 
         logger.error(
             "PRIMARY 1H DATA UNAVAILABLE | %s | rows=%s",
@@ -2364,14 +2035,16 @@ def get_coin_analysis(symbol):
         )
 
     logger.info(
-        "PRIMARY 1H OK | %s | rows=%s",
+        "PRIMARY 1H READY | %s | rows=%s",
         symbol,
         len(k1h),
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # OPTIONAL TIMEFRAMES
-    # -----------------------------------------------------
+    #
+    # These NEVER cancel the analysis.
+    # =====================================================
 
     k4h = get_bingx_klines(
         symbol,
@@ -2397,42 +2070,41 @@ def get_coin_analysis(symbol):
         160,
     )
 
-    logger.info(
-        "MTF DATA | %s | 4H=%s 1D=%s 30M=%s 15M=%s",
-        symbol,
-        len(k4h) if k4h else 0,
-        len(k1d) if k1d else 0,
-        len(k30) if k30 else 0,
-        len(k15) if k15 else 0,
-    )
-
-    # -----------------------------------------------------
+    # =====================================================
     # TRENDS
-    # -----------------------------------------------------
+    # =====================================================
 
-    trend_1d = calculate_timeframe_trend(
-        k1d
+    trend_1d = (
+        calculate_timeframe_trend(k1d)
+        if k1d
+        else "UNKNOWN"
     )
 
-    trend_4h = calculate_timeframe_trend(
-        k4h
+    trend_4h = (
+        calculate_timeframe_trend(k4h)
+        if k4h
+        else "UNKNOWN"
     )
 
-    trend_1h = calculate_timeframe_trend(
-        k1h
+    trend_1h = (
+        calculate_timeframe_trend(k1h)
     )
 
-    trend_30m = calculate_timeframe_trend(
-        k30
+    trend_30m = (
+        calculate_timeframe_trend(k30)
+        if k30
+        else "UNKNOWN"
     )
 
-    trend_15m = calculate_timeframe_trend(
-        k15
+    trend_15m = (
+        calculate_timeframe_trend(k15)
+        if k15
+        else "UNKNOWN"
     )
 
-    # -----------------------------------------------------
-    # 1H PRIMARY DATA
-    # -----------------------------------------------------
+    # =====================================================
+    # 1H DATA
+    # =====================================================
 
     closes = [
         k[4]
@@ -2487,9 +2159,9 @@ def get_coin_analysis(symbol):
         k1h
     )
 
-    # -----------------------------------------------------
-    # PRIMARY ORDER BLOCK
-    # -----------------------------------------------------
+    # =====================================================
+    # ORDER BLOCK
+    # =====================================================
 
     bullish_ob = find_active_order_block(
         k1h,
@@ -2503,9 +2175,9 @@ def get_coin_analysis(symbol):
         current_price,
     )
 
-    # -----------------------------------------------------
-    # 4H MTF ORDER BLOCK
-    # -----------------------------------------------------
+    # =====================================================
+    # 4H ORDER BLOCK
+    # =====================================================
 
     bullish_ob_4h = None
     bearish_ob_4h = None
@@ -2528,9 +2200,9 @@ def get_coin_analysis(symbol):
             )
         )
 
-    # -----------------------------------------------------
-    # OB DISTANCE
-    # -----------------------------------------------------
+    # =====================================================
+    # DISTANCE
+    # =====================================================
 
     bullish_ob_distance = (
         ob_distance_percent(
@@ -2550,9 +2222,9 @@ def get_coin_analysis(symbol):
         else 999.0
     )
 
-    # -----------------------------------------------------
-    # OB RETEST
-    # -----------------------------------------------------
+    # =====================================================
+    # RETEST
+    # =====================================================
 
     (
         bullish_retest,
@@ -2579,7 +2251,7 @@ def get_coin_analysis(symbol):
     rejection_reasons = []
 
     # =====================================================
-    # LONG - ORDER BLOCK PRIMARY
+    # LONG ORDER BLOCK
     # =====================================================
 
     if bullish_ob:
@@ -2619,7 +2291,7 @@ def get_coin_analysis(symbol):
         )
 
     # =====================================================
-    # SHORT - ORDER BLOCK PRIMARY
+    # SHORT ORDER BLOCK
     # =====================================================
 
     if bearish_ob:
@@ -2698,14 +2370,8 @@ def get_coin_analysis(symbol):
                 "4H هابط لكن لا يوجد Bearish MTF OB واضح"
             )
 
-    else:
-
-        rejection_reasons.append(
-            "4H غير متاح أو محايد؛ تم تخفيف الاعتماد عليه"
-        )
-
     # =====================================================
-    # LOWER TIMEFRAME CONFIRMATION
+    # LOWER TIMEFRAME
     # =====================================================
 
     if trend_1h == "LONG":
@@ -2789,18 +2455,16 @@ def get_coin_analysis(symbol):
         trend_4h == "LONG"
         and 38 <= rsi <= 68
     ):
-
         long_score += 4
 
     elif (
         trend_4h == "SHORT"
         and 32 <= rsi <= 65
     ):
-
         short_score += 4
 
     # =====================================================
-    # SUPPORT / RESISTANCE
+    # S/R
     # =====================================================
 
     if current_price > 0:
@@ -2829,7 +2493,7 @@ def get_coin_analysis(symbol):
         resistance_distance = 999.0
 
     # =====================================================
-    # RECENT MOVEMENT
+    # MOVEMENT
     # =====================================================
 
     recent_change_2 = percentage_change(
@@ -2870,20 +2534,15 @@ def get_coin_analysis(symbol):
         )
 
     # =====================================================
-    # FINAL DIRECTION
+    # FINAL DECISION
     # =====================================================
 
     direction = "NO TRADE"
-
     state = (
         "NO TRADE - Order Block غير مكتمل"
     )
 
     entry_score = 0
-
-    # -----------------------------------------------------
-    # MTF CONDITIONS
-    # -----------------------------------------------------
 
     long_mtf_ok = (
         trend_4h
@@ -2903,35 +2562,23 @@ def get_coin_analysis(symbol):
         )
     )
 
-    # -----------------------------------------------------
-    # LOCAL CONFIRMATION
-    # -----------------------------------------------------
-
     long_confirmation = (
         bullish_retest
-        or
-        (
+        or (
             structure["bos"]
             == "BULLISH_BOS"
-            and trend_1h
-            == "LONG"
+            and trend_1h == "LONG"
         )
     )
 
     short_confirmation = (
         bearish_retest
-        or
-        (
+        or (
             structure["bos"]
             == "BEARISH_BOS"
-            and trend_1h
-            == "SHORT"
+            and trend_1h == "SHORT"
         )
     )
-
-    # -----------------------------------------------------
-    # ENTRY READY
-    # -----------------------------------------------------
 
     long_ready = (
         bullish_ob is not None
@@ -2964,13 +2611,15 @@ def get_coin_analysis(symbol):
         if trend_4h == "LONG":
 
             state = (
-                "ENTRY READY - Bullish Order Block + Retest + MTF Confirmation"
+                "ENTRY READY - "
+                "Bullish Order Block + Retest + MTF Confirmation"
             )
 
         else:
 
             state = (
-                "ENTRY READY - Bullish Order Block + Local Confirmation"
+                "ENTRY READY - "
+                "Bullish Order Block + Local Confirmation"
             )
 
     elif (
@@ -2984,28 +2633,25 @@ def get_coin_analysis(symbol):
         if trend_4h == "SHORT":
 
             state = (
-                "ENTRY READY - Bearish Order Block + Retest + MTF Confirmation"
+                "ENTRY READY - "
+                "Bearish Order Block + Retest + MTF Confirmation"
             )
 
         else:
 
             state = (
-                "ENTRY READY - Bearish Order Block + Local Confirmation"
+                "ENTRY READY - "
+                "Bearish Order Block + Local Confirmation"
             )
 
     else:
-
-        # -------------------------------------------------
-        # REVERSAL WATCH
-        # -------------------------------------------------
 
         if (
             bullish_ob
             and long_score >= 55
             and resistance_distance > 0.20
             and not crash_detected
-            and trend_4h
-            in (
+            and trend_4h in (
                 "LONG",
                 "UNKNOWN",
                 "NEUTRAL",
@@ -3013,11 +2659,11 @@ def get_coin_analysis(symbol):
         ):
 
             direction = "WAIT"
-
             entry_score = long_score
 
             state = (
-                "REVERSAL WATCH - Bullish OB موجود وننتظر Retest/BOS"
+                "REVERSAL WATCH - "
+                "Bullish OB موجود وننتظر Retest/BOS"
             )
 
             rejection_reasons.append(
@@ -3029,8 +2675,7 @@ def get_coin_analysis(symbol):
             and short_score >= 55
             and support_distance > 0.20
             and not crash_detected
-            and trend_4h
-            in (
+            and trend_4h in (
                 "SHORT",
                 "UNKNOWN",
                 "NEUTRAL",
@@ -3038,11 +2683,11 @@ def get_coin_analysis(symbol):
         ):
 
             direction = "WAIT"
-
             entry_score = short_score
 
             state = (
-                "REVERSAL WATCH - Bearish OB موجود وننتظر Retest/BOS"
+                "REVERSAL WATCH - "
+                "Bearish OB موجود وننتظر Retest/BOS"
             )
 
             rejection_reasons.append(
@@ -3059,7 +2704,8 @@ def get_coin_analysis(symbol):
             )
 
             state = (
-                "ACCUMULATION WATCH - تجميع محتمل وننتظر Order Block/BOS"
+                "ACCUMULATION WATCH - "
+                "تجميع محتمل وننتظر Order Block/BOS"
             )
 
         else:
@@ -3071,7 +2717,8 @@ def get_coin_analysis(symbol):
             )
 
             state = (
-                "NO TRADE - Order Block غير مكتمل التأكيد"
+                "NO TRADE - "
+                "Order Block غير مكتمل التأكيد"
             )
 
     # =====================================================
@@ -3094,9 +2741,9 @@ def get_coin_analysis(symbol):
     tp2 = None
     tp3 = None
 
-    # -----------------------------------------------------
+    # =====================================================
     # LONG
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         direction == "LONG"
@@ -3135,15 +2782,14 @@ def get_coin_analysis(symbol):
         )
 
         if resistance > current_price:
-
             tp1 = min(
                 tp1,
                 resistance,
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # SHORT
-    # -----------------------------------------------------
+    # =====================================================
 
     elif (
         direction == "SHORT"
@@ -3182,14 +2828,13 @@ def get_coin_analysis(symbol):
         )
 
         if support < current_price:
-
             tp1 = max(
                 tp1,
                 support,
             )
 
     # =====================================================
-    # INVALIDATE BAD ENTRY
+    # INVALIDATE
     # =====================================================
 
     if direction == "LONG":
@@ -3203,14 +2848,13 @@ def get_coin_analysis(symbol):
             direction = "WAIT"
 
             state = (
-                "REVERSAL WATCH - السعر قريب من المقاومة"
+                "REVERSAL WATCH - "
+                "السعر قريب من المقاومة"
             )
 
             entry_min = None
             entry_max = None
-
             stop_loss = None
-
             tp1 = None
             tp2 = None
             tp3 = None
@@ -3226,14 +2870,13 @@ def get_coin_analysis(symbol):
             direction = "WAIT"
 
             state = (
-                "REVERSAL WATCH - السعر قريب من الدعم"
+                "REVERSAL WATCH - "
+                "السعر قريب من الدعم"
             )
 
             entry_min = None
             entry_max = None
-
             stop_loss = None
-
             tp1 = None
             tp2 = None
             tp3 = None
@@ -3291,21 +2934,11 @@ def get_coin_analysis(symbol):
         )
     )
 
-    logger.info(
-        "ANALYSIS COMPLETE | %s | direction=%s | score=%s | L=%s | S=%s",
-        symbol,
-        direction,
-        final_score,
-        long_score,
-        short_score,
-    )
-
     # =====================================================
     # RETURN
     # =====================================================
 
     return {
-
         "symbol": symbol,
 
         "direction": direction,
@@ -3349,13 +2982,9 @@ def get_coin_analysis(symbol):
         ),
 
         "trend_1d": trend_1d,
-
         "trend_4h": trend_4h,
-
         "trend_1h": trend_1h,
-
         "trend_30m": trend_30m,
-
         "trend_15m": trend_15m,
 
         "structure": structure[
@@ -3386,9 +3015,13 @@ def get_coin_analysis(symbol):
             2,
         ),
 
-        "bullish_ob_retest": bullish_retest,
+        "bullish_ob_retest": (
+            bullish_retest
+        ),
 
-        "bearish_ob_retest": bearish_retest,
+        "bearish_ob_retest": (
+            bearish_retest
+        ),
 
         "recent_change_2": round(
             recent_change_2,
@@ -3400,9 +3033,13 @@ def get_coin_analysis(symbol):
             2,
         ),
 
-        "crash_detected": crash_detected,
+        "crash_detected": (
+            crash_detected
+        ),
 
-        "pump_detected": pump_detected,
+        "pump_detected": (
+            pump_detected
+        ),
 
         "entry_min": (
             smart_round(
@@ -3484,15 +3121,21 @@ def get_coin_analysis(symbol):
             )
         ),
 
-        "analysis_lines": analysis_lines,
+        "analysis_lines": (
+            analysis_lines
+        ),
 
-        "liquidity_reasons": liquidity_reasons,
+        "liquidity_reasons": (
+            liquidity_reasons
+        ),
 
-        "bottom_reasons": bottom_reasons,
+        "bottom_reasons": (
+            bottom_reasons
+        ),
 
-        "structure_reasons": structure[
-            "reasons"
-        ],
+        "structure_reasons": (
+            structure["reasons"]
+        ),
 
         "bullish_retest_reasons": (
             bullish_retest_reasons
@@ -3515,24 +3158,21 @@ def get_coin_analysis(symbol):
 # =========================================================
 
 def get_top_futures_symbols(
-    limit=30,
+    limit=20,
 ):
-
     symbols = get_futures_symbols()
 
     if not symbols:
         return []
 
     data = bingx_get(
-        "/openApi/swap/v2/quote/ticker",
-        timeout=12,
-        retries=2,
+        "/openApi/swap/v2/quote/ticker"
     )
 
     if not data:
 
         logger.warning(
-            "TICKER UNAVAILABLE - using contract list"
+            "TICKER FAILED - using contract list"
         )
 
         return list(symbols)[:limit]
@@ -3540,6 +3180,10 @@ def get_top_futures_symbols(
     rows = data.get("data")
 
     if not isinstance(rows, list):
+
+        logger.warning(
+            "TICKER DATA INVALID - using contract list"
+        )
 
         return list(symbols)[:limit]
 
@@ -3631,56 +3275,41 @@ def get_top_futures_symbols(
         in candidates[:limit]
     ]
 
-    # -------------------------------------------------
-    # If ticker parsing gives nothing,
-    # don't stop the scanner.
-    # -------------------------------------------------
-
-    if not result:
-
-        logger.warning(
-            "TOP FUTURES TICKER PARSE EMPTY - fallback contracts"
-        )
-
-        return list(symbols)[:limit]
+    logger.info(
+        "TOP FUTURES SELECTED | %s",
+        result,
+    )
 
     return result
 
 
 # =========================================================
 # FAST STAGE
+#
+# IMPORTANT:
+# Only 1H is used here.
+# This prevents 4H duplicate requests before full analysis.
+# ORDER BLOCK remains the primary filter.
 # =========================================================
 
 def _stage1_score(symbol):
-
     try:
 
         current = get_current_price(
-            symbol
+            symbol,
+            force=False,
         )
 
         if current is None:
-
-            logger.warning(
-                "STAGE1 PRICE FAILED | %s",
-                symbol,
-            )
-
             return None
-
-        k4h = get_bingx_klines(
-            symbol,
-            "4h",
-            80,
-        )
 
         k1h = get_bingx_klines(
             symbol,
             "1h",
-            100,
+            200,
         )
 
-        if not k1h:
+        if not k1h or len(k1h) < 30:
 
             logger.warning(
                 "STAGE1 1H FAILED | %s",
@@ -3689,73 +3318,65 @@ def _stage1_score(symbol):
 
             return None
 
-        t4 = calculate_timeframe_trend(
-            k4h
-        )
-
-        t1 = calculate_timeframe_trend(
-            k1h
+        trend_1h = (
+            calculate_timeframe_trend(
+                k1h
+            )
         )
 
         obs = detect_order_blocks(
             k1h
         )
 
-        bullish = obs[
-            "bullish"
-        ]
+        bullish = obs["bullish"]
+        bearish = obs["bearish"]
 
-        bearish = obs[
-            "bearish"
-        ]
+        # -------------------------------------------------
+        # OB IS THE PRIMARY FILTER
+        # -------------------------------------------------
 
-        ob_score = 0
+        bullish_strength = (
+            bullish[0]["strength"]
+            if bullish
+            else 0
+        )
 
-        if bullish:
+        bearish_strength = (
+            bearish[0]["strength"]
+            if bearish
+            else 0
+        )
 
-            ob_score = max(
-                ob_score,
-                bullish[0][
-                    "strength"
-                ],
-            )
-
-        if bearish:
-
-            ob_score = max(
-                ob_score,
-                bearish[0][
-                    "strength"
-                ],
-            )
+        ob_score = max(
+            bullish_strength,
+            bearish_strength,
+        )
 
         score = 0
 
         if bullish:
-            score += 45
+            score += 50
 
         if bearish:
-            score += 45
+            score += 50
 
-        if t4 in (
-            "LONG",
-            "SHORT",
-        ):
-            score += 20
-
-        if t1 in (
+        if trend_1h in (
             "LONG",
             "SHORT",
         ):
             score += 10
 
+        final = (
+            score
+            + ob_score
+        )
+
         return (
             symbol,
-            score + ob_score,
+            final,
             bool(bullish),
             bool(bearish),
-            t4,
-            t1,
+            trend_1h,
         )
 
     except Exception as exc:
@@ -3776,27 +3397,25 @@ def _stage1_score(symbol):
 def scan_market(
     limit=5,
 ):
-
     logger.info(
         "========== MARKET SCAN START =========="
     )
 
+    # -----------------------------------------------------
+    # Smaller universe to protect BingX.
+    # -----------------------------------------------------
+
     universe = get_top_futures_symbols(
-        30
+        15
     )
 
     if not universe:
 
         logger.error(
-            "MARKET SCAN FAILED - NO UNIVERSE"
+            "SCAN ABORTED - NO FUTURES SYMBOLS"
         )
 
         return []
-
-    logger.info(
-        "SCAN UNIVERSE | %s symbols",
-        len(universe),
-    )
 
     stage1 = []
 
@@ -3809,7 +3428,7 @@ def scan_market(
                 < _RATE_LIMIT_UNTIL
             ):
                 logger.warning(
-                    "SCAN STOPPED BY RATE LIMIT"
+                    "RATE LIMIT ACTIVE - stopping stage1"
                 )
                 break
 
@@ -3818,43 +3437,32 @@ def scan_market(
         )
 
         if item:
+            stage1.append(item)
 
-            stage1.append(
-                item
-            )
+    if not stage1:
+
+        logger.error(
+            "SCAN ABORTED - STAGE1 RETURNED ZERO CANDIDATES"
+        )
+
+        return []
 
     stage1.sort(
         key=lambda x: x[1],
         reverse=True,
     )
 
-    # -------------------------------------------------
-    # If stage1 failed completely,
-    # directly test first symbols.
-    # -------------------------------------------------
+    # -----------------------------------------------------
+    # Only analyze top 5.
+    # -----------------------------------------------------
 
-    if not stage1:
-
-        logger.warning(
-            "STAGE1 EMPTY - DIRECT ANALYSIS FALLBACK"
-        )
-
-        shortlist = universe[
-            :min(
-                5,
-                len(universe),
-            )
-        ]
-
-    else:
-
-        shortlist = [
-            item[0]
-            for item in stage1[:10]
-        ]
+    shortlist = [
+        item[0]
+        for item in stage1[:5]
+    ]
 
     logger.info(
-        "FINAL SHORTLIST | %s",
+        "FULL ANALYSIS SHORTLIST | %s",
         shortlist,
     )
 
@@ -3869,11 +3477,16 @@ def scan_market(
                 < _RATE_LIMIT_UNTIL
             ):
                 logger.warning(
-                    "FULL SCAN STOPPED BY RATE LIMIT"
+                    "RATE LIMIT ACTIVE - stopping full analysis"
                 )
                 break
 
         try:
+
+            logger.info(
+                "FULL ANALYSIS START | %s",
+                symbol,
+            )
 
             data = get_coin_analysis(
                 symbol
@@ -3882,7 +3495,7 @@ def scan_market(
             if not data:
 
                 logger.warning(
-                    "NO ANALYSIS RESULT | %s",
+                    "FULL ANALYSIS RETURNED NONE | %s",
                     symbol,
                 )
 
@@ -3924,6 +3537,16 @@ def scan_market(
                 data
             )
 
+            logger.info(
+                "FULL ANALYSIS READY | %s | %s | score=%s",
+                symbol,
+                direction,
+                data.get(
+                    "entry_score",
+                    0,
+                ),
+            )
+
         except Exception as exc:
 
             logger.exception(
@@ -3939,22 +3562,13 @@ def scan_market(
             "",
         )
 
-        if (
-            "ENTRY READY"
-            in state
-        ):
+        if "ENTRY READY" in state:
             state_rank = 3
 
-        elif (
-            "REVERSAL WATCH"
-            in state
-        ):
+        elif "REVERSAL WATCH" in state:
             state_rank = 2
 
-        elif (
-            "ACCUMULATION WATCH"
-            in state
-        ):
+        elif "ACCUMULATION WATCH" in state:
             state_rank = 1
 
         else:
@@ -3986,7 +3600,7 @@ def scan_market(
     )
 
     logger.info(
-        "========== MARKET SCAN COMPLETE | results=%s ==========",
+        "========== MARKET SCAN END | results=%s ==========",
         len(results),
     )
 
@@ -3994,11 +3608,10 @@ def scan_market(
 
 
 # =========================================================
-# REPORT HELPERS
+# REPORT
 # =========================================================
 
 def _ob_text(ob):
-
     if not ob:
         return "غير موجود"
 
@@ -4008,14 +3621,9 @@ def _ob_text(ob):
     )
 
 
-# =========================================================
-# REPORT
-# =========================================================
-
 def generate_evidence_report(
     data,
 ):
-
     if not data:
 
         return (
@@ -4043,19 +3651,16 @@ def generate_evidence_report(
     )
 
     if liquidity_state == "INFLOW":
-
         liquidity = (
             "🟢 دخول سيولة محتمل"
         )
 
     elif liquidity_state == "OUTFLOW":
-
         liquidity = (
             "🔴 خروج سيولة محتمل"
         )
 
     else:
-
         liquidity = (
             "🟡 سيولة محايدة"
         )
@@ -4066,15 +3671,12 @@ def generate_evidence_report(
     )
 
     if bos == "BULLISH_BOS":
-
         bos_text = "🟢 BULLISH"
 
     elif bos == "BEARISH_BOS":
-
         bos_text = "🔴 BEARISH"
 
     else:
-
         bos_text = "⚪ NONE"
 
     bottom = (
@@ -4090,110 +3692,60 @@ def generate_evidence_report(
         "LONG",
         "SHORT",
     ):
-
         decision = "جاهز للدخول"
 
     else:
-
         decision = (
             "انتظار Retest/BOS"
         )
 
     lines = [
-
         "🤖 BingX AI Scanner",
         "",
-
         f"💎 العملة: {data.get('symbol', '-')}",
-
         f"💰 السعر الحالي: {data.get('price', '-')}",
-
         f"📈 الاتجاه النهائي: {emoji} {direction}",
-
         f"⭐ Entry Score: {data.get('entry_score', 0)}/100",
-
         "",
-
         f"🧠 الحالة: {data.get('state', '-')}",
-
         f"🧭 القرار: {decision}",
-
         "",
-
         "🏦 ORDER BLOCK = المحرك الأساسي",
-
         f"🟢 Bullish OB 1H: {_ob_text(data.get('bullish_ob'))}",
-
         f"🔴 Bearish OB 1H: {_ob_text(data.get('bearish_ob'))}",
-
         f"📊 Bullish OB 4H: {_ob_text(data.get('bullish_ob_4h'))}",
-
         f"📊 Bearish OB 4H: {_ob_text(data.get('bearish_ob_4h'))}",
-
         f"🔄 Bullish OB Retest: {'YES' if data.get('bullish_ob_retest') else 'NO'}",
-
         f"🔄 Bearish OB Retest: {'YES' if data.get('bearish_ob_retest') else 'NO'}",
-
         "",
-
         "📊 Context",
-
         f"1D: {data.get('trend_1d', 'UNKNOWN')}",
-
         f"4H: {data.get('trend_4h', 'UNKNOWN')}",
-
         "",
-
         "⏱️ Confirmation",
-
         f"1H: {data.get('trend_1h', 'UNKNOWN')}",
-
         f"30m: {data.get('trend_30m', 'UNKNOWN')}",
-
         f"15m: {data.get('trend_15m', 'UNKNOWN')}",
-
         "",
-
         "🏗️ Market Structure",
-
         f"Structure: {data.get('structure', 'UNKNOWN')}",
-
         f"BOS: {bos_text}",
-
         "",
-
         f"💧 Liquidity: {liquidity}",
-
         f"📊 Volume: {data.get('volume_ratio', 1.0)}x",
-
         f"📈 Volume Trend: {data.get('volume_trend', 'NEUTRAL')}",
-
         f"💪 Buy Pressure: {data.get('buy_pressure', 50)}%",
-
         f"📊 RSI: {data.get('rsi', 50)}",
-
         "",
-
         f"🎯 Accumulation: {bottom}",
-
         "",
-
         "🛡️ Support / Resistance",
-
         f"🟢 Support: {data.get('support', 0)}",
-
         f"🔴 Resistance: {data.get('resistance', 0)}",
-
         f"📏 Support Distance: {data.get('support_distance', 999)}%",
-
         f"📏 Resistance Distance: {data.get('resistance_distance', 999)}%",
-
         "",
     ]
-
-    # -----------------------------------------------------
-    # ENTRY
-    # -----------------------------------------------------
 
     if direction in (
         "LONG",
@@ -4201,67 +3753,38 @@ def generate_evidence_report(
     ):
 
         lines += [
-
             "📍 منطقة الدخول",
-
             f"{data.get('entry_min')} - {data.get('entry_max')}",
-
             "",
-
             f"🛑 Stop Loss: {data.get('stop_loss')}",
-
             "",
-
             "🎯 الأهداف",
-
             f"TP1: {data.get('tp1')}",
-
             f"TP2: {data.get('tp2')}",
-
             f"TP3: {data.get('tp3')}",
-
             "",
         ]
 
     else:
 
         lines += [
-
             "📍 منطقة الدخول",
-
             "⏳ انتظار Retest / BOS",
-
             "",
-
             "🛑 Stop Loss: غير محدد",
-
             "",
-
             "🎯 الأهداف",
-
             "TP1: غير محدد",
-
             "TP2: غير محدد",
-
             "TP3: غير محدد",
-
             "",
         ]
 
-    # -----------------------------------------------------
-    # MOVEMENT
-    # -----------------------------------------------------
-
     lines += [
-
         "📊 الحركة الأخيرة",
-
         f"آخر شمعتين تقريباً: {data.get('recent_change_2', 0)}%",
-
         f"آخر 6 شموع تقريباً: {data.get('recent_change_6', 0)}%",
-
         "",
-
         "🔍 أسباب القرار",
     ]
 
@@ -4273,10 +3796,6 @@ def generate_evidence_report(
         lines.append(
             f"• {line}"
         )
-
-    # -----------------------------------------------------
-    # RETEST
-    # -----------------------------------------------------
 
     retest_reasons = (
         data.get(
@@ -4298,14 +3817,9 @@ def generate_evidence_report(
         ]
 
         for reason in retest_reasons[:4]:
-
             lines.append(
                 f"• {reason}"
             )
-
-    # -----------------------------------------------------
-    # STRUCTURE
-    # -----------------------------------------------------
 
     structure_reasons = data.get(
         "structure_reasons",
@@ -4320,14 +3834,9 @@ def generate_evidence_report(
         ]
 
         for reason in structure_reasons[:4]:
-
             lines.append(
                 f"• {reason}"
             )
-
-    # -----------------------------------------------------
-    # LIQUIDITY
-    # -----------------------------------------------------
 
     liquidity_reasons = data.get(
         "liquidity_reasons",
@@ -4342,14 +3851,9 @@ def generate_evidence_report(
         ]
 
         for reason in liquidity_reasons[:4]:
-
             lines.append(
                 f"• {reason}"
             )
-
-    # -----------------------------------------------------
-    # REJECTION
-    # -----------------------------------------------------
 
     rejection_reasons = data.get(
         "rejection_reasons",
@@ -4364,33 +3868,19 @@ def generate_evidence_report(
         ]
 
         for reason in rejection_reasons[:8]:
-
             lines.append(
                 f"• {reason}"
             )
 
-    # -----------------------------------------------------
-    # FOOTER
-    # -----------------------------------------------------
-
     lines += [
-
         "",
-
         "🛡️ ORDER BLOCK هو العامل الأساسي.",
-
         "⚠️ 1D = Context.",
-
         "⚠️ 4H = MTF Order Block.",
-
         "⚠️ 1H = Primary Order Block.",
-
         "⚠️ 30m + 15m = Confirmation.",
-
         "⚠️ BOS + Liquidity + Volume = تأكيدات.",
-
         "⚠️ لا يتم اعتبار الشموع وحدها سبباً للدخول.",
-
         "⚠️ الإشارة تحليلية وليست ضماناً للربح.",
     ]
 
