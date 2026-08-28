@@ -3,13 +3,14 @@
 # BingX Futures AI Scanner
 # ORDER BLOCK PRIMARY ENGINE
 # Price + OB + Retest + BOS + Liquidity + MTF Confirmation
-# Scanner v14.0 - RESILIENT DATA + ORDER BLOCK PRIMARY
+# Scanner v15.0 - RESILIENT DATA + ORDER BLOCK PRIMARY
 # =========================================================
 
 import time
 import logging
 import threading
 import requests
+
 
 # =========================================================
 # CONFIG
@@ -19,7 +20,7 @@ BINGX_URL = "https://open-api.bingx.com"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal-BingX-OB-Scanner/14.0",
+    "User-Agent": "CryptoZeroReversal-BingX-OB-Scanner/15.0",
     "Accept": "application/json",
 })
 
@@ -49,6 +50,7 @@ MIN_REQUEST_INTERVAL = 0.25
 # =========================================================
 
 def bingx_get(path, params=None, timeout=12):
+
     global _RATE_LIMIT_UNTIL
     global _LAST_REQUEST_TIME
 
@@ -57,7 +59,11 @@ def bingx_get(path, params=None, timeout=12):
             return None
 
     with _REQUEST_LOCK:
-        wait = MIN_REQUEST_INTERVAL - (time.time() - _LAST_REQUEST_TIME)
+
+        wait = (
+            MIN_REQUEST_INTERVAL
+            - (time.time() - _LAST_REQUEST_TIME)
+        )
 
         if wait > 0:
             time.sleep(wait)
@@ -65,6 +71,7 @@ def bingx_get(path, params=None, timeout=12):
         _LAST_REQUEST_TIME = time.time()
 
     try:
+
         url = BINGX_URL + path
 
         response = SESSION.get(
@@ -74,22 +81,27 @@ def bingx_get(path, params=None, timeout=12):
         )
 
         if response.status_code != 200:
+
             logger.warning(
                 "BingX HTTP %s | %s | %s",
                 response.status_code,
                 path,
                 response.text[:250],
             )
+
             return None
 
         try:
             data = response.json()
+
         except ValueError:
+
             logger.warning(
                 "BingX INVALID JSON | %s | %s",
                 path,
                 response.text[:250],
             )
+
             return None
 
         if not isinstance(data, dict):
@@ -98,40 +110,51 @@ def bingx_get(path, params=None, timeout=12):
         code = data.get("code")
 
         if code in (109429, 109400):
-            logger.warning("BingX RATE LIMIT | code=%s", code)
+
+            logger.warning(
+                "BingX RATE LIMIT | code=%s",
+                code,
+            )
 
             with _RATE_LOCK:
+
                 _RATE_LIMIT_UNTIL = max(
                     _RATE_LIMIT_UNTIL,
-                    time.time() + 90,
+                    time.time() + 60,
                 )
 
             return None
 
         if code not in (0, None):
+
             logger.warning(
                 "BingX API ERROR | code=%s | %s",
                 code,
                 str(data)[:400],
             )
+
             return None
 
         return data
 
     except requests.RequestException as exc:
+
         logger.warning(
             "BingX REQUEST FAILED | %s | %s",
             path,
             exc,
         )
+
         return None
 
     except Exception as exc:
+
         logger.exception(
             "BingX UNKNOWN ERROR | %s | %s",
             path,
             exc,
         )
+
         return None
 
 
@@ -140,6 +163,7 @@ def bingx_get(path, params=None, timeout=12):
 # =========================================================
 
 def normalize_symbol(text):
+
     text = (
         str(text)
         .strip()
@@ -160,6 +184,7 @@ def normalize_symbol(text):
 
 
 def bingx_symbol(symbol):
+
     symbol = normalize_symbol(symbol)
 
     if symbol.endswith("USDT"):
@@ -176,6 +201,7 @@ def bingx_symbol(symbol):
 # =========================================================
 
 def get_futures_symbols(force_refresh=False):
+
     global _SYMBOL_CACHE
     global _SYMBOL_CACHE_TIME
 
@@ -184,55 +210,76 @@ def get_futures_symbols(force_refresh=False):
     if (
         not force_refresh
         and _SYMBOL_CACHE
-        and now - _SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS
+        and now - _SYMBOL_CACHE_TIME
+        < SYMBOL_CACHE_SECONDS
     ):
         return set(_SYMBOL_CACHE)
 
     endpoints = [
         "/openApi/swap/v2/quote/contracts",
         "/openApi/swap/v2/quote/contracts/",
+        "/openApi/swap/v3/quote/contracts",
     ]
 
     data = None
 
     for endpoint in endpoints:
+
         data = bingx_get(endpoint)
 
         if data:
             break
 
     if not data:
-        logger.warning("Unable to load BingX futures contracts")
+
+        logger.warning(
+            "Unable to load BingX futures contracts"
+        )
+
         return set(_SYMBOL_CACHE)
 
     rows = data.get("data")
 
     if not isinstance(rows, list):
+
         logger.warning(
             "BingX contracts invalid data: %s",
             str(data)[:400],
         )
+
         return set(_SYMBOL_CACHE)
 
     symbols = set()
 
     for item in rows:
+
         if not isinstance(item, dict):
             continue
 
-        raw = str(item.get("symbol", "")).upper()
+        raw = str(
+            item.get("symbol", "")
+        ).upper()
 
-        if not raw.endswith("-USDT"):
+        raw = raw.replace("-", "")
+
+        if not raw.endswith("USDT"):
             continue
 
         status = item.get("status")
 
-        if status not in (1, "1", None):
+        if status not in (
+            1,
+            "1",
+            None,
+            "NORMAL",
+            "normal",
+        ):
             continue
 
-        symbols.add(raw.replace("-", ""))
+        symbols.add(raw)
 
     if symbols:
+
         _SYMBOL_CACHE = symbols
         _SYMBOL_CACHE_TIME = now
 
@@ -245,7 +292,23 @@ def get_futures_symbols(force_refresh=False):
 
 
 def symbol_exists(symbol):
-    return normalize_symbol(symbol) in get_futures_symbols()
+
+    symbol = normalize_symbol(symbol)
+
+    symbols = get_futures_symbols()
+
+    if symbol in symbols:
+        return True
+
+    # -----------------------------------------------------
+    # If cache is unavailable, do not immediately kill
+    # a direct analysis request.
+    # -----------------------------------------------------
+
+    if not symbols:
+        return True
+
+    return False
 
 
 # =========================================================
@@ -253,12 +316,6 @@ def symbol_exists(symbol):
 # =========================================================
 
 def get_current_price(symbol, force=False):
-    """
-    Current price is deliberately separated from Klines.
-
-    This prevents a Kline failure from making the whole
-    symbol analysis fail.
-    """
 
     symbol = normalize_symbol(symbol)
 
@@ -269,61 +326,84 @@ def get_current_price(symbol, force=False):
     if (
         not force
         and cached
-        and now - cached[0] < PRICE_CACHE_SECONDS
+        and now - cached[0]
+        < PRICE_CACHE_SECONDS
     ):
         return cached[1]
 
-    endpoints = [
-        "/openApi/swap/v2/quote/price",
-        "/openApi/swap/v2/quote/ticker",
-    ]
-
     # -----------------------------------------------------
-    # PRICE ENDPOINT
+    # PRIMARY
     # -----------------------------------------------------
 
     data = bingx_get(
-        endpoints[0],
+        "/openApi/swap/v2/quote/price",
         {
             "symbol": bingx_symbol(symbol),
         },
     )
 
     if data:
+
         row = data.get("data")
 
         if isinstance(row, dict):
+
             for key in (
                 "price",
                 "lastPrice",
                 "last",
                 "close",
             ):
+
                 try:
-                    value = float(row.get(key))
+
+                    value = float(
+                        row.get(key)
+                    )
+
                     if value > 0:
-                        _PRICE_CACHE[symbol] = (now, value)
+
+                        _PRICE_CACHE[
+                            symbol
+                        ] = (
+                            now,
+                            value,
+                        )
+
                         return value
-                except (TypeError, ValueError):
+
+                except (
+                    TypeError,
+                    ValueError,
+                ):
                     pass
 
     # -----------------------------------------------------
     # TICKER FALLBACK
     # -----------------------------------------------------
 
-    data = bingx_get(endpoints[1])
+    data = bingx_get(
+        "/openApi/swap/v2/quote/ticker"
+    )
 
     if data:
+
         rows = data.get("data")
 
         if isinstance(rows, list):
 
             for row in rows:
+
                 if not isinstance(row, dict):
                     continue
 
                 raw = (
-                    str(row.get("symbol", ""))
+                    str(
+                        row.get(
+                            "symbol",
+                            "",
+                        )
+                    )
                     .replace("-", "")
                     .upper()
                 )
@@ -337,12 +417,28 @@ def get_current_price(symbol, force=False):
                     "last",
                     "close",
                 ):
+
                     try:
-                        value = float(row.get(key))
+
+                        value = float(
+                            row.get(key)
+                        )
+
                         if value > 0:
-                            _PRICE_CACHE[symbol] = (now, value)
+
+                            _PRICE_CACHE[
+                                symbol
+                            ] = (
+                                now,
+                                value,
+                            )
+
                             return value
-                    except (TypeError, ValueError):
+
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
                         pass
 
     logger.warning(
@@ -354,10 +450,11 @@ def get_current_price(symbol, force=False):
 
 
 # =========================================================
-# KLINES
+# KLINE PARSER
 # =========================================================
 
 def _parse_kline_rows(rows):
+
     result = []
 
     if not isinstance(rows, list):
@@ -373,23 +470,49 @@ def _parse_kline_rows(rows):
                     row.get("time")
                     or row.get("timestamp")
                     or row.get("openTime")
+                    or row.get("ts")
+                )
+
+                open_price = (
+                    row.get("open")
+                    or row.get("o")
+                )
+
+                high_price = (
+                    row.get("high")
+                    or row.get("h")
+                )
+
+                low_price = (
+                    row.get("low")
+                    or row.get("l")
+                )
+
+                close_price = (
+                    row.get("close")
+                    or row.get("c")
+                )
+
+                volume = (
+                    row.get("volume")
+                    or row.get("vol")
+                    or row.get("v")
+                    or 0
                 )
 
                 result.append([
                     timestamp,
-                    float(row.get("open")),
-                    float(row.get("high")),
-                    float(row.get("low")),
-                    float(row.get("close")),
-                    float(
-                        row.get(
-                            "volume",
-                            row.get("vol", 0),
-                        )
-                    ),
+                    float(open_price),
+                    float(high_price),
+                    float(low_price),
+                    float(close_price),
+                    float(volume),
                 ])
 
-            elif isinstance(row, list) and len(row) >= 6:
+            elif (
+                isinstance(row, list)
+                and len(row) >= 6
+            ):
 
                 result.append([
                     row[0],
@@ -407,10 +530,28 @@ def _parse_kline_rows(rows):
         ):
             continue
 
-    result.sort(key=lambda x: x[0])
+    result = [
+        x for x in result
+        if x[1] > 0
+        and x[2] > 0
+        and x[3] > 0
+        and x[4] > 0
+    ]
+
+    result.sort(
+        key=lambda x: (
+            x[0]
+            if x[0] is not None
+            else 0
+        )
+    )
 
     return result
 
+
+# =========================================================
+# KLINES
+# =========================================================
 
 def get_bingx_klines(
     symbol,
@@ -432,28 +573,27 @@ def get_bingx_klines(
 
     if (
         cached
-        and now - cached[0] < KLINE_CACHE_SECONDS
+        and now - cached[0]
+        < KLINE_CACHE_SECONDS
     ):
         return cached[1]
-
-    # -----------------------------------------------------
-    # PRIMARY KLINE ENDPOINT
-    # -----------------------------------------------------
 
     endpoints = [
         "/openApi/swap/v2/quote/klines",
         "/openApi/swap/v3/quote/klines",
     ]
 
+    params = {
+        "symbol": bingx_symbol(symbol),
+        "interval": interval,
+        "limit": limit,
+    }
+
     for endpoint in endpoints:
 
         data = bingx_get(
             endpoint,
-            {
-                "symbol": bingx_symbol(symbol),
-                "interval": interval,
-                "limit": limit,
-            },
+            params,
         )
 
         if not data:
@@ -463,7 +603,13 @@ def get_bingx_klines(
 
         result = _parse_kline_rows(rows)
 
-        if len(result) >= 50:
+        # -------------------------------------------------
+        # Accept useful data even if slightly below 50.
+        # -------------------------------------------------
+
+        minimum_required = 35
+
+        if len(result) >= minimum_required:
 
             _KLINE_CACHE[key] = (
                 now,
@@ -473,11 +619,26 @@ def get_bingx_klines(
             return result
 
         logger.warning(
-            "KLINE EMPTY/INSUFFICIENT | %s %s | %s",
+            "KLINE EMPTY/INSUFFICIENT | %s %s | %s | rows=%s",
             symbol,
             interval,
             endpoint,
+            len(result),
         )
+
+    # -----------------------------------------------------
+    # Old cache fallback
+    # -----------------------------------------------------
+
+    if cached and cached[1]:
+
+        logger.warning(
+            "USING OLD KLINE CACHE | %s %s",
+            symbol,
+            interval,
+        )
+
+        return cached[1]
 
     logger.warning(
         "KLINE FAILED ALL ENDPOINTS | %s %s",
@@ -494,22 +655,32 @@ def get_bingx_klines(
 
 def calculate_ema(values, period):
 
+    if not values:
+        return None
+
     if len(values) < period:
         return None
 
     multiplier = 2 / (period + 1)
 
-    ema = sum(values[:period]) / period
+    ema = sum(
+        values[:period]
+    ) / period
 
     for price in values[period:]:
+
         ema = (
-            (price - ema) * multiplier
+            (price - ema)
+            * multiplier
         ) + ema
 
     return ema
 
 
-def calculate_rsi(closes, period=14):
+def calculate_rsi(
+    closes,
+    period=14,
+):
 
     if len(closes) < period + 1:
         return 50.0
@@ -517,32 +688,48 @@ def calculate_rsi(closes, period=14):
     gains = []
     losses = []
 
-    for i in range(1, len(closes)):
+    for i in range(
+        1,
+        len(closes),
+    ):
 
         change = (
-            closes[i] - closes[i - 1]
+            closes[i]
+            - closes[i - 1]
         )
 
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
+        gains.append(
+            max(change, 0)
+        )
+
+        losses.append(
+            max(-change, 0)
+        )
 
     avg_gain = (
-        sum(gains[:period]) / period
+        sum(gains[:period])
+        / period
     )
 
     avg_loss = (
-        sum(losses[:period]) / period
+        sum(losses[:period])
+        / period
     )
 
-    for i in range(period, len(gains)):
+    for i in range(
+        period,
+        len(gains),
+    ):
 
         avg_gain = (
-            avg_gain * (period - 1)
+            avg_gain
+            * (period - 1)
             + gains[i]
         ) / period
 
         avg_loss = (
-            avg_loss * (period - 1)
+            avg_loss
+            * (period - 1)
             + losses[i]
         ) / period
 
@@ -552,7 +739,11 @@ def calculate_rsi(closes, period=14):
     rs = avg_gain / avg_loss
 
     return round(
-        100 - (100 / (1 + rs)),
+        100
+        - (
+            100
+            / (1 + rs)
+        ),
         2,
     )
 
@@ -567,7 +758,10 @@ def calculate_atr(
 
     trs = []
 
-    for i in range(1, len(klines)):
+    for i in range(
+        1,
+        len(klines),
+    ):
 
         h = klines[i][2]
         l = klines[i][3]
@@ -582,13 +776,15 @@ def calculate_atr(
         )
 
     atr = (
-        sum(trs[:period]) / period
+        sum(trs[:period])
+        / period
     )
 
     for value in trs[period:]:
 
         atr = (
-            atr * (period - 1)
+            atr
+            * (period - 1)
             + value
         ) / period
 
@@ -609,12 +805,17 @@ def calculate_volume_ratio(
         -period - 4:-4
     ]
 
+    if not baseline:
+        return 1.0
+
     recent_avg = (
-        sum(recent) / len(recent)
+        sum(recent)
+        / len(recent)
     )
 
     baseline_avg = (
-        sum(baseline) / len(baseline)
+        sum(baseline)
+        / len(baseline)
     )
 
     if baseline_avg <= 0:
@@ -625,7 +826,8 @@ def calculate_volume_ratio(
             0.05,
             min(
                 5.0,
-                recent_avg / baseline_avg,
+                recent_avg
+                / baseline_avg,
             ),
         ),
         2,
@@ -646,15 +848,19 @@ def calculate_volume_trend(
         return "NEUTRAL"
 
     short = volumes[
-        -short_period - 1:-1
+        -short_period - 1:
+        -1
     ]
 
     previous = volumes[
         -long_period
-        - short_period
-        - 1:
+        -short_period
+        -1:
         -short_period - 1
     ]
+
+    if not short or not previous:
+        return "NEUTRAL"
 
     s = sum(short) / len(short)
     p = sum(previous) / len(previous)
@@ -682,7 +888,10 @@ def percentage_change(
         return 0.0
 
     return (
-        (new_price - old_price)
+        (
+            new_price
+            - old_price
+        )
         / old_price
     ) * 100
 
@@ -694,6 +903,9 @@ def percentage_change(
 def calculate_support_resistance(
     klines,
 ):
+
+    if not klines:
+        return 0, 0
 
     current = klines[-1][4]
 
@@ -713,12 +925,14 @@ def calculate_support_resistance(
     ]
 
     supports = [
-        x for x in lows
+        x
+        for x in lows
         if x < current
     ]
 
     resistances = [
-        x for x in highs
+        x
+        for x in highs
         if x > current
     ]
 
@@ -743,18 +957,20 @@ def calculate_support_resistance(
 
 def _candle_direction(k):
 
-    return (
-        "BULLISH"
-        if k[4] > k[1]
-        else "BEARISH"
-        if k[4] < k[1]
-        else "NEUTRAL"
-    )
+    if k[4] > k[1]:
+        return "BULLISH"
+
+    if k[4] < k[1]:
+        return "BEARISH"
+
+    return "NEUTRAL"
 
 
 def _candle_body(k):
 
-    return abs(k[4] - k[1])
+    return abs(
+        k[4] - k[1]
+    )
 
 
 def _candle_range(k):
@@ -770,25 +986,14 @@ def detect_order_blocks(
     lookback=80,
 ):
 
-    """
-    Order Block engine.
-
-    Bullish OB:
-      - Previous bearish candle
-      - followed by strong bullish displacement
-      - displacement breaks a nearby high
-      - zone = candle open -> low
-
-    Bearish OB:
-      - Previous bullish candle
-      - followed by strong bearish displacement
-      - displacement breaks a nearby low
-      - zone = high -> candle open
-
-    The OB is the PRIMARY setup.
-    """
+    if not klines:
+        return {
+            "bullish": [],
+            "bearish": [],
+        }
 
     if len(klines) < 30:
+
         return {
             "bullish": [],
             "bearish": [],
@@ -810,7 +1015,9 @@ def detect_order_blocks(
         base = klines[i]
         displacement = klines[i + 1]
 
-        base_range = _candle_range(base)
+        base_range = _candle_range(
+            base
+        )
 
         if base_range <= 0:
             continue
@@ -826,7 +1033,9 @@ def detect_order_blocks(
         if disp_range <= 0:
             continue
 
-        body_ratio = body / disp_range
+        body_ratio = (
+            body / disp_range
+        )
 
         if body_ratio < 0.55:
             continue
@@ -846,34 +1055,46 @@ def detect_order_blocks(
         )
 
         # -------------------------------------------------
-        # BULLISH ORDER BLOCK
+        # BULLISH
         # -------------------------------------------------
 
         if (
             _candle_direction(base)
             == "BEARISH"
             and
-            _candle_direction(displacement)
+            _candle_direction(
+                displacement
+            )
             == "BULLISH"
             and
-            displacement[4] > previous_high
+            displacement[4]
+            > previous_high
         ):
 
             zone_low = base[3]
             zone_high = base[1]
 
             if zone_high < zone_low:
+
                 zone_low, zone_high = (
                     zone_high,
                     zone_low,
                 )
 
+            displacement_change = (
+                percentage_change(
+                    displacement[1],
+                    displacement[4],
+                )
+            )
+
             strength = (
                 body_ratio * 50
-                + min(
-                    percentage_change(
-                        displacement[1],
-                        displacement[4],
+                +
+                min(
+                    max(
+                        displacement_change,
+                        0,
                     ),
                     5,
                 ) * 5
@@ -885,7 +1106,8 @@ def detect_order_blocks(
                 "low": zone_low,
                 "high": zone_high,
                 "mid": (
-                    zone_low + zone_high
+                    zone_low
+                    + zone_high
                 ) / 2,
                 "strength": round(
                     strength,
@@ -894,37 +1116,44 @@ def detect_order_blocks(
             })
 
         # -------------------------------------------------
-        # BEARISH ORDER BLOCK
+        # BEARISH
         # -------------------------------------------------
 
         if (
             _candle_direction(base)
             == "BULLISH"
             and
-            _candle_direction(displacement)
+            _candle_direction(
+                displacement
+            )
             == "BEARISH"
             and
-            displacement[4] < previous_low
+            displacement[4]
+            < previous_low
         ):
 
             zone_low = base[1]
             zone_high = base[2]
 
             if zone_high < zone_low:
+
                 zone_low, zone_high = (
                     zone_high,
                     zone_low,
                 )
 
+            displacement_change = abs(
+                percentage_change(
+                    displacement[1],
+                    displacement[4],
+                )
+            )
+
             strength = (
                 body_ratio * 50
-                + min(
-                    abs(
-                        percentage_change(
-                            displacement[1],
-                            displacement[4],
-                        )
-                    ),
+                +
+                min(
+                    displacement_change,
                     5,
                 ) * 5
             )
@@ -935,7 +1164,8 @@ def detect_order_blocks(
                 "low": zone_low,
                 "high": zone_high,
                 "mid": (
-                    zone_low + zone_high
+                    zone_low
+                    + zone_high
                 ) / 2,
                 "strength": round(
                     strength,
@@ -971,8 +1201,14 @@ def price_inside_ob(
     tolerance=0.003,
 ):
 
-    low = ob["low"]
-    high = ob["high"]
+    if not ob or price is None:
+        return False
+
+    low = ob.get("low")
+    high = ob.get("high")
+
+    if low is None or high is None:
+        return False
 
     margin = (
         (high - low)
@@ -991,20 +1227,34 @@ def ob_distance_percent(
     ob,
 ):
 
-    if price <= 0:
+    if (
+        price is None
+        or price <= 0
+        or not ob
+    ):
         return 999.0
 
-    if price_inside_ob(price, ob):
+    low = ob.get("low")
+    high = ob.get("high")
+
+    if low is None or high is None:
+        return 999.0
+
+    if price_inside_ob(
+        price,
+        ob,
+    ):
         return 0.0
 
-    if price < ob["low"]:
+    if price < low:
+
         return (
-            (ob["low"] - price)
+            (low - price)
             / price
         ) * 100
 
     return (
-        (price - ob["high"])
+        (price - high)
         / price
     ) * 100
 
@@ -1014,6 +1264,9 @@ def find_active_order_block(
     direction,
     current_price,
 ):
+
+    if not klines:
+        return None
 
     obs = detect_order_blocks(
         klines
@@ -1029,7 +1282,7 @@ def find_active_order_block(
         return None
 
     best = None
-    best_distance = 999999
+    best_score = -999999
 
     for ob in candidates:
 
@@ -1038,35 +1291,20 @@ def find_active_order_block(
             ob,
         )
 
-        # Do not accept an OB that is too far away.
         if distance > 6.0:
             continue
 
-        # Prefer current/recent blocks.
         score = (
             ob["strength"]
             - distance * 5
         )
 
-        if best is None:
-            best = (
-                score,
-                distance,
-                ob,
-            )
-            continue
+        if score > best_score:
 
-        if score > best[0]:
-            best = (
-                score,
-                distance,
-                ob,
-            )
+            best_score = score
+            best = ob
 
-    if not best:
-        return None
-
-    return best[2]
+    return best
 
 
 def detect_ob_retest(
@@ -1075,7 +1313,11 @@ def detect_ob_retest(
     direction,
 ):
 
-    if not ob or len(klines) < 5:
+    if (
+        not ob
+        or not klines
+        or len(klines) < 5
+    ):
         return False, []
 
     reasons = []
@@ -1095,6 +1337,7 @@ def detect_ob_retest(
             low <= ob["high"]
             and high >= ob["low"]
         ):
+
             touched = True
 
             if direction == "LONG":
@@ -1108,11 +1351,13 @@ def detect_ob_retest(
                     rejected = True
 
     if touched:
+
         reasons.append(
             "السعر أعاد اختبار Order Block"
         )
 
     if rejected:
+
         reasons.append(
             "ظهر رفض من منطقة Order Block"
         )
@@ -1131,7 +1376,10 @@ def detect_market_structure(
     klines,
 ):
 
-    if len(klines) < 50:
+    if (
+        not klines
+        or len(klines) < 30
+    ):
 
         return {
             "structure": "UNKNOWN",
@@ -1158,12 +1406,22 @@ def detect_market_structure(
     current = closes[-1]
     previous = closes[-2]
 
+    ref_start = max(
+        0,
+        len(klines) - 30,
+    )
+
+    ref_end = max(
+        ref_start + 1,
+        len(klines) - 5,
+    )
+
     ref_high = max(
-        highs[-30:-5]
+        highs[ref_start:ref_end]
     )
 
     ref_low = min(
-        lows[-30:-5]
+        lows[ref_start:ref_end]
     )
 
     bos = "NONE"
@@ -1205,9 +1463,11 @@ def detect_market_structure(
         )
 
         if current >= rh * 0.997:
+
             structure = "BULLISH"
 
         elif current <= rl * 1.003:
+
             structure = "BEARISH"
 
         reasons.append(
@@ -1268,7 +1528,10 @@ def detect_liquidity_flow(
     klines,
 ):
 
-    if len(klines) < 40:
+    if (
+        not klines
+        or len(klines) < 30
+    ):
         return "NEUTRAL", 0, []
 
     rows = klines[:-1]
@@ -1298,10 +1561,16 @@ def detect_liquidity_flow(
     recent = volumes[-5:]
     previous = volumes[-15:-5]
 
-    rv = sum(recent) / 5
+    rv = (
+        sum(recent)
+        / len(recent)
+        if recent
+        else 0
+    )
 
     pv = (
-        sum(previous) / 10
+        sum(previous)
+        / len(previous)
         if previous
         else rv
     )
@@ -1325,9 +1594,11 @@ def detect_liquidity_flow(
     ):
 
         if closes[i] > opens[i]:
+
             bull += volumes[i]
 
         elif closes[i] < opens[i]:
+
             bear += volumes[i]
 
     total = bull + bear
@@ -1456,7 +1727,10 @@ def detect_bottom_accumulation(
     klines,
 ):
 
-    if len(klines) < 60:
+    if (
+        not klines
+        or len(klines) < 40
+    ):
         return False, 0, []
 
     closes = [
@@ -1469,19 +1743,35 @@ def detect_bottom_accumulation(
         for k in klines
     ]
 
-    old = closes[-60:-30]
-    recent = closes[-30:]
+    split = max(
+        10,
+        len(closes) // 2,
+    )
+
+    old = closes[:split]
+    recent = closes[split:]
+
+    if not old or not recent:
+        return False, 0, []
 
     old_high = max(old)
     recent_low = min(recent)
     recent_high = max(recent)
 
     drawdown = (
-        recent_low - old_high
-    ) / old_high * 100
+        (
+            recent_low
+            - old_high
+        )
+        / old_high
+        * 100
+    )
 
     recent_range = (
-        (recent_high - recent_low)
+        (
+            recent_high
+            - recent_low
+        )
         / recent_low
         * 100
         if recent_low
@@ -1489,8 +1779,8 @@ def detect_bottom_accumulation(
     )
 
     old_volume = (
-        sum(volumes[-60:-30])
-        / 30
+        sum(volumes[:split])
+        / len(volumes[:split])
     )
 
     recent_volume = (
@@ -1502,20 +1792,25 @@ def detect_bottom_accumulation(
     reasons = []
 
     if drawdown <= -4:
+
         score += 1
+
         reasons.append(
             "هبوط سابق واضح"
         )
 
     if recent_range <= 18:
+
         score += 1
+
         reasons.append(
             "النطاق السعري بدأ يضيق"
         )
 
     if (
         old_volume > 0
-        and recent_volume >= old_volume * 0.65
+        and recent_volume
+        >= old_volume * 0.65
     ):
 
         score += 1
@@ -1525,6 +1820,7 @@ def detect_bottom_accumulation(
         )
 
     if score >= 2:
+
         return True, score, reasons
 
     return False, score, reasons
@@ -1539,7 +1835,14 @@ def smart_round(value):
     if value is None:
         return 0
 
-    value = float(value)
+    try:
+        value = float(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return 0
 
     if value >= 1000:
         return round(value, 2)
@@ -1560,6 +1863,45 @@ def smart_round(value):
 
 
 # =========================================================
+# SAFE KLINE LOADER
+# =========================================================
+
+def _load_timeframe(
+    symbol,
+    interval,
+    limit,
+    required=True,
+):
+
+    data = get_bingx_klines(
+        symbol,
+        interval,
+        limit,
+    )
+
+    if data:
+        return data
+
+    if required:
+
+        logger.warning(
+            "REQUIRED TIMEFRAME FAILED | %s %s",
+            symbol,
+            interval,
+        )
+
+    else:
+
+        logger.warning(
+            "OPTIONAL TIMEFRAME FAILED | %s %s",
+            symbol,
+            interval,
+        )
+
+    return None
+
+
+# =========================================================
 # FULL COIN ANALYSIS
 # =========================================================
 
@@ -1567,8 +1909,13 @@ def get_coin_analysis(symbol):
 
     symbol = normalize_symbol(symbol)
 
+    logger.info(
+        "START COIN ANALYSIS | %s",
+        symbol,
+    )
+
     # -----------------------------------------------------
-    # SYMBOL CHECK
+    # SYMBOL
     # -----------------------------------------------------
 
     if not symbol_exists(symbol):
@@ -1581,7 +1928,7 @@ def get_coin_analysis(symbol):
         return None
 
     # -----------------------------------------------------
-    # CURRENT PRICE FIRST
+    # CURRENT PRICE
     # -----------------------------------------------------
 
     current_price = get_current_price(
@@ -1599,92 +1946,160 @@ def get_coin_analysis(symbol):
         return None
 
     # -----------------------------------------------------
-    # MULTI TIMEFRAME
+    # REQUIRED:
+    # 4H + 1H
     # -----------------------------------------------------
 
-    k1d = get_bingx_klines(
-        symbol,
-        "1d",
-        120,
-    )
-
-    k4h = get_bingx_klines(
+    k4h = _load_timeframe(
         symbol,
         "4h",
         160,
+        required=True,
     )
 
-    k1h = get_bingx_klines(
+    k1h = _load_timeframe(
         symbol,
         "1h",
         200,
-    )
-
-    k30 = get_bingx_klines(
-        symbol,
-        "30m",
-        160,
-    )
-
-    k15 = get_bingx_klines(
-        symbol,
-        "15m",
-        160,
+        required=True,
     )
 
     # -----------------------------------------------------
-    # DATA VALIDATION
+    # FALLBACK:
+    # If 1H fails but 4H exists, use 4H as analysis base.
+    # If 4H fails but 1H exists, use 1H as MTF base.
     # -----------------------------------------------------
 
-    if not all(
-        (
-            k1d,
-            k4h,
-            k1h,
-            k30,
-            k15,
-        )
-    ):
+    if not k1h and not k4h:
 
         logger.error(
-            "MTF DATA INCOMPLETE | %s | 1D=%s 4H=%s 1H=%s 30m=%s 15m=%s",
+            "NO PRIMARY KLINE DATA | %s",
             symbol,
-            bool(k1d),
-            bool(k4h),
-            bool(k1h),
-            bool(k30),
-            bool(k15),
         )
 
         return None
 
-    # -----------------------------------------------------
-    # TIMEFRAME TRENDS
-    # -----------------------------------------------------
-
-    trend_1d = calculate_timeframe_trend(k1d)
-    trend_4h = calculate_timeframe_trend(k4h)
-    trend_1h = calculate_timeframe_trend(k1h)
-    trend_30m = calculate_timeframe_trend(k30)
-    trend_15m = calculate_timeframe_trend(k15)
+    analysis_klines = (
+        k1h
+        if k1h
+        else k4h
+    )
 
     # -----------------------------------------------------
-    # 1H DATA
+    # OPTIONAL MTF
+    # -----------------------------------------------------
+
+    k1d = _load_timeframe(
+        symbol,
+        "1d",
+        120,
+        required=False,
+    )
+
+    k30 = _load_timeframe(
+        symbol,
+        "30m",
+        160,
+        required=False,
+    )
+
+    k15 = _load_timeframe(
+        symbol,
+        "15m",
+        160,
+        required=False,
+    )
+
+    # -----------------------------------------------------
+    # MISSING TIMEFRAME FLAGS
+    # -----------------------------------------------------
+
+    missing_timeframes = []
+
+    if not k1d:
+        missing_timeframes.append("1D")
+
+    if not k4h:
+        missing_timeframes.append("4H")
+
+    if not k1h:
+        missing_timeframes.append("1H")
+
+    if not k30:
+        missing_timeframes.append("30m")
+
+    if not k15:
+        missing_timeframes.append("15m")
+
+    # -----------------------------------------------------
+    # TRENDS
+    # -----------------------------------------------------
+
+    trend_1d = (
+        calculate_timeframe_trend(k1d)
+        if k1d
+        else "UNKNOWN"
+    )
+
+    trend_4h = (
+        calculate_timeframe_trend(k4h)
+        if k4h
+        else calculate_timeframe_trend(
+            k1h
+        )
+        if k1h
+        else "UNKNOWN"
+    )
+
+    trend_1h = (
+        calculate_timeframe_trend(k1h)
+        if k1h
+        else "UNKNOWN"
+    )
+
+    trend_30m = (
+        calculate_timeframe_trend(k30)
+        if k30
+        else "UNKNOWN"
+    )
+
+    trend_15m = (
+        calculate_timeframe_trend(k15)
+        if k15
+        else "UNKNOWN"
+    )
+
+    # -----------------------------------------------------
+    # BASE DATA
     # -----------------------------------------------------
 
     closes = [
         k[4]
-        for k in k1h
+        for k in analysis_klines
     ]
 
     volumes = [
         k[5]
-        for k in k1h
+        for k in analysis_klines
     ]
 
-    rsi = calculate_rsi(closes)
+    if len(closes) < 20:
 
-    atr = calculate_atr(k1h)
+        logger.error(
+            "NOT ENOUGH BASE DATA | %s | rows=%s",
+            symbol,
+            len(closes),
+        )
+
+        return None
+
+    rsi = calculate_rsi(
+        closes
+    )
+
+    atr = calculate_atr(
+        analysis_klines
+    )
 
     volume_ratio = calculate_volume_ratio(
         volumes,
@@ -1696,19 +2111,25 @@ def get_coin_analysis(symbol):
     )
 
     support, resistance = (
-        calculate_support_resistance(k1h)
+        calculate_support_resistance(
+            analysis_klines
+        )
     )
 
     structure = detect_market_structure(
-        k1h
+        analysis_klines
     )
 
     liquidity_state, liquidity_score, liquidity_reasons = (
-        detect_liquidity_flow(k1h)
+        detect_liquidity_flow(
+            analysis_klines
+        )
     )
 
     bottom_detected, bottom_score, bottom_reasons = (
-        detect_bottom_accumulation(k1h)
+        detect_bottom_accumulation(
+            analysis_klines
+        )
     )
 
     # -----------------------------------------------------
@@ -1716,33 +2137,40 @@ def get_coin_analysis(symbol):
     # -----------------------------------------------------
 
     bullish_ob = find_active_order_block(
-        k1h,
+        analysis_klines,
         "LONG",
         current_price,
     )
 
     bearish_ob = find_active_order_block(
-        k1h,
-        "SHORT",
-        current_price,
-    )
-
-    # 4H MTF Order Blocks
-
-    bullish_ob_4h = find_active_order_block(
-        k4h,
-        "LONG",
-        current_price,
-    )
-
-    bearish_ob_4h = find_active_order_block(
-        k4h,
+        analysis_klines,
         "SHORT",
         current_price,
     )
 
     # -----------------------------------------------------
-    # OB DISTANCES
+    # 4H OB
+    # -----------------------------------------------------
+
+    bullish_ob_4h = None
+    bearish_ob_4h = None
+
+    if k4h:
+
+        bullish_ob_4h = find_active_order_block(
+            k4h,
+            "LONG",
+            current_price,
+        )
+
+        bearish_ob_4h = find_active_order_block(
+            k4h,
+            "SHORT",
+            current_price,
+        )
+
+    # -----------------------------------------------------
+    # OB DISTANCE
     # -----------------------------------------------------
 
     bullish_ob_distance = (
@@ -1764,12 +2192,12 @@ def get_coin_analysis(symbol):
     )
 
     # -----------------------------------------------------
-    # OB RETEST
+    # RETEST
     # -----------------------------------------------------
 
     bullish_retest, bullish_retest_reasons = (
         detect_ob_retest(
-            k1h,
+            analysis_klines,
             bullish_ob,
             "LONG",
         )
@@ -1777,14 +2205,14 @@ def get_coin_analysis(symbol):
 
     bearish_retest, bearish_retest_reasons = (
         detect_ob_retest(
-            k1h,
+            analysis_klines,
             bearish_ob,
             "SHORT",
         )
     )
 
     # -----------------------------------------------------
-    # OB SCORE
+    # SCORES
     # -----------------------------------------------------
 
     long_score = 0
@@ -1794,7 +2222,7 @@ def get_coin_analysis(symbol):
     rejection_reasons = []
 
     # =====================================================
-    # LONG ORDER BLOCK
+    # LONG OB
     # =====================================================
 
     if bullish_ob:
@@ -1802,7 +2230,7 @@ def get_coin_analysis(symbol):
         long_score += 35
 
         analysis_lines.append(
-            "يوجد Bullish Order Block فعال على 1H"
+            "يوجد Bullish Order Block فعال"
         )
 
         if bullish_ob["strength"] >= 55:
@@ -1834,7 +2262,7 @@ def get_coin_analysis(symbol):
         )
 
     # =====================================================
-    # SHORT ORDER BLOCK
+    # SHORT OB
     # =====================================================
 
     if bearish_ob:
@@ -1842,7 +2270,7 @@ def get_coin_analysis(symbol):
         short_score += 35
 
         analysis_lines.append(
-            "يوجد Bearish Order Block فعال على 1H"
+            "يوجد Bearish Order Block فعال"
         )
 
         if bearish_ob["strength"] >= 55:
@@ -1874,7 +2302,7 @@ def get_coin_analysis(symbol):
         )
 
     # =====================================================
-    # 4H MTF ORDER BLOCK
+    # 4H MTF
     # =====================================================
 
     if trend_4h == "LONG":
@@ -1886,13 +2314,13 @@ def get_coin_analysis(symbol):
             long_score += 15
 
             analysis_lines.append(
-                "4H يحتوي على Bullish MTF Order Block"
+                "4H يحتوي Bullish MTF Order Block"
             )
 
         else:
 
             rejection_reasons.append(
-                "4H صاعد لكن لا يوجد Bullish MTF OB واضح"
+                "4H صاعد لكن بدون Bullish MTF OB واضح"
             )
 
     elif trend_4h == "SHORT":
@@ -1904,17 +2332,17 @@ def get_coin_analysis(symbol):
             short_score += 15
 
             analysis_lines.append(
-                "4H يحتوي على Bearish MTF Order Block"
+                "4H يحتوي Bearish MTF Order Block"
             )
 
         else:
 
             rejection_reasons.append(
-                "4H هابط لكن لا يوجد Bearish MTF OB واضح"
+                "4H هابط لكن بدون Bearish MTF OB واضح"
             )
 
     # =====================================================
-    # LOWER TIMEFRAME CONFIRMATION
+    # LOWER TIMEFRAMES
     # =====================================================
 
     if trend_1h == "LONG":
@@ -1988,8 +2416,11 @@ def get_coin_analysis(symbol):
     if volume_ratio >= 1.15:
 
         if long_score >= short_score:
+
             long_score += 5
+
         else:
+
             short_score += 5
 
         analysis_lines.append(
@@ -1997,7 +2428,7 @@ def get_coin_analysis(symbol):
         )
 
     # =====================================================
-    # RSI - CONFIRMATION ONLY
+    # RSI CONFIRMATION
     # =====================================================
 
     if (
@@ -2018,35 +2449,60 @@ def get_coin_analysis(symbol):
     # SUPPORT / RESISTANCE
     # =====================================================
 
-    support_distance = (
-        abs(current_price - support)
-        / current_price
-        * 100
-    )
+    if current_price > 0:
 
-    resistance_distance = (
-        abs(resistance - current_price)
-        / current_price
-        * 100
-    )
+        support_distance = (
+            abs(
+                current_price
+                - support
+            )
+            / current_price
+            * 100
+        )
+
+        resistance_distance = (
+            abs(
+                resistance
+                - current_price
+            )
+            / current_price
+            * 100
+        )
+
+    else:
+
+        support_distance = 999
+        resistance_distance = 999
 
     # =====================================================
     # RECENT MOVEMENT
     # =====================================================
 
-    recent_change_2 = (
-        percentage_change(
+    if len(closes) >= 7:
+
+        recent_change_2 = percentage_change(
             closes[-3],
             current_price,
         )
-    )
 
-    recent_change_6 = (
-        percentage_change(
+        recent_change_6 = percentage_change(
             closes[-7],
             current_price,
         )
-    )
+
+    elif len(closes) >= 3:
+
+        recent_change_2 = percentage_change(
+            closes[-3],
+            current_price,
+        )
+
+        recent_change_6 = recent_change_2
+
+    else:
+
+        recent_change_2 = 0
+        recent_change_6 = 0
 
     crash_detected = (
         recent_change_2 <= -8
@@ -2088,7 +2544,7 @@ def get_coin_analysis(symbol):
     entry_score = 0
 
     # =====================================================
-    # LONG DECISION
+    # LONG READY
     # =====================================================
 
     long_ready = (
@@ -2104,7 +2560,8 @@ def get_coin_analysis(symbol):
             (
                 structure["bos"]
                 == "BULLISH_BOS"
-                and trend_1h == "LONG"
+                and
+                trend_1h == "LONG"
             )
         )
         and
@@ -2116,7 +2573,7 @@ def get_coin_analysis(symbol):
     )
 
     # =====================================================
-    # SHORT DECISION
+    # SHORT READY
     # =====================================================
 
     short_ready = (
@@ -2132,7 +2589,8 @@ def get_coin_analysis(symbol):
             (
                 structure["bos"]
                 == "BEARISH_BOS"
-                and trend_1h == "SHORT"
+                and
+                trend_1h == "SHORT"
             )
         )
         and
@@ -2147,7 +2605,11 @@ def get_coin_analysis(symbol):
     # CHOOSE
     # =====================================================
 
-    if long_ready and long_score >= short_score:
+    if (
+        long_ready
+        and
+        long_score >= short_score
+    ):
 
         direction = "LONG"
 
@@ -2157,7 +2619,11 @@ def get_coin_analysis(symbol):
             "ENTRY READY - Bullish Order Block + Retest + MTF Confirmation"
         )
 
-    elif short_ready and short_score > long_score:
+    elif (
+        short_ready
+        and
+        short_score > long_score
+    ):
 
         direction = "SHORT"
 
@@ -2170,7 +2636,7 @@ def get_coin_analysis(symbol):
     else:
 
         # -------------------------------------------------
-        # REVERSAL WATCH
+        # REVERSAL WATCH LONG
         # -------------------------------------------------
 
         if (
@@ -2199,6 +2665,10 @@ def get_coin_analysis(symbol):
                 "انتظار Retest أو BOS لتأكيد الدخول"
             )
 
+        # -------------------------------------------------
+        # REVERSAL WATCH SHORT
+        # -------------------------------------------------
+
         elif (
             bearish_ob
             and
@@ -2224,6 +2694,10 @@ def get_coin_analysis(symbol):
             rejection_reasons.append(
                 "انتظار Retest أو BOS لتأكيد الدخول"
             )
+
+        # -------------------------------------------------
+        # ACCUMULATION
+        # -------------------------------------------------
 
         elif bottom_detected:
 
@@ -2254,11 +2728,18 @@ def get_coin_analysis(symbol):
     # ATR
     # =====================================================
 
-    if not atr or atr <= 0:
-        atr = current_price * 0.01
+    if (
+        not atr
+        or atr <= 0
+    ):
+
+        atr = (
+            current_price
+            * 0.01
+        )
 
     # =====================================================
-    # ENTRY / SL / TP
+    # LEVELS
     # =====================================================
 
     entry_min = None
@@ -2271,35 +2752,50 @@ def get_coin_analysis(symbol):
     tp3 = None
 
     # =====================================================
-    # LONG LEVELS BASED ON ORDER BLOCK
+    # LONG LEVELS
     # =====================================================
 
-    if direction == "LONG" and bullish_ob:
+    if (
+        direction == "LONG"
+        and
+        bullish_ob
+    ):
 
         entry_min = bullish_ob["low"]
         entry_max = bullish_ob["high"]
 
-        # If price is already above OB, entry is pullback.
-        if current_price > entry_max:
-
-            entry_min = bullish_ob["low"]
-            entry_max = bullish_ob["high"]
-
         stop_loss = min(
-            bullish_ob["low"] - atr * 0.35,
-            current_price - atr * 0.80,
+            bullish_ob["low"]
+            - atr * 0.35,
+            current_price
+            - atr * 0.80,
         )
 
         risk = max(
-            current_price - stop_loss,
+            current_price
+            - stop_loss,
             atr * 0.50,
         )
 
-        tp1 = current_price + risk * 1.20
-        tp2 = current_price + risk * 2.00
-        tp3 = current_price + risk * 3.00
+        tp1 = (
+            current_price
+            + risk * 1.20
+        )
 
-        if resistance > current_price:
+        tp2 = (
+            current_price
+            + risk * 2.00
+        )
+
+        tp3 = (
+            current_price
+            + risk * 3.00
+        )
+
+        if (
+            resistance
+            > current_price
+        ):
 
             tp1 = min(
                 tp1,
@@ -2307,29 +2803,50 @@ def get_coin_analysis(symbol):
             )
 
     # =====================================================
-    # SHORT LEVELS BASED ON ORDER BLOCK
+    # SHORT LEVELS
     # =====================================================
 
-    elif direction == "SHORT" and bearish_ob:
+    elif (
+        direction == "SHORT"
+        and
+        bearish_ob
+    ):
 
         entry_min = bearish_ob["low"]
         entry_max = bearish_ob["high"]
 
         stop_loss = max(
-            bearish_ob["high"] + atr * 0.35,
-            current_price + atr * 0.80,
+            bearish_ob["high"]
+            + atr * 0.35,
+            current_price
+            + atr * 0.80,
         )
 
         risk = max(
-            stop_loss - current_price,
+            stop_loss
+            - current_price,
             atr * 0.50,
         )
 
-        tp1 = current_price - risk * 1.20
-        tp2 = current_price - risk * 2.00
-        tp3 = current_price - risk * 3.00
+        tp1 = (
+            current_price
+            - risk * 1.20
+        )
 
-        if support < current_price:
+        tp2 = (
+            current_price
+            - risk * 2.00
+        )
+
+        tp3 = (
+            current_price
+            - risk * 3.00
+        )
+
+        if (
+            support
+            < current_price
+        ):
 
             tp1 = max(
                 tp1,
@@ -2337,7 +2854,7 @@ def get_coin_analysis(symbol):
             )
 
     # =====================================================
-    # INVALIDATE BAD ENTRY
+    # INVALIDATE BAD LONG
     # =====================================================
 
     if direction == "LONG":
@@ -2362,6 +2879,10 @@ def get_coin_analysis(symbol):
             tp1 = None
             tp2 = None
             tp3 = None
+
+    # =====================================================
+    # INVALIDATE BAD SHORT
+    # =====================================================
 
     elif direction == "SHORT":
 
@@ -2440,6 +2961,16 @@ def get_coin_analysis(symbol):
     )
 
     # =====================================================
+    # ADD DATA QUALITY
+    # =====================================================
+
+    if missing_timeframes:
+
+        analysis_lines.append(
+            "تم استخدام fallback لأن بعض الفريمات لم تُرجع بيانات"
+        )
+
+    # =====================================================
     # RETURN
     # =====================================================
 
@@ -2497,6 +3028,8 @@ def get_coin_analysis(symbol):
 
         "trend_15m": trend_15m,
 
+        "missing_timeframes": missing_timeframes,
+
         "structure": structure[
             "structure"
         ],
@@ -2534,6 +3067,10 @@ def get_coin_analysis(symbol):
         "bullish_ob_retest": bullish_retest,
 
         "bearish_ob_retest": bearish_retest,
+
+        # -------------------------------------------------
+        # MOVEMENT
+        # -------------------------------------------------
 
         "recent_change_2": round(
             recent_change_2,
@@ -2790,19 +3327,33 @@ def _stage1_score(symbol):
             120,
         )
 
-        if not k4h or not k1h:
+        if not k4h and not k1h:
             return None
 
-        t4 = calculate_timeframe_trend(
-            k4h
+        base = (
+            k1h
+            if k1h
+            else k4h
         )
 
-        t1 = calculate_timeframe_trend(
-            k1h
+        t4 = (
+            calculate_timeframe_trend(
+                k4h
+            )
+            if k4h
+            else "UNKNOWN"
+        )
+
+        t1 = (
+            calculate_timeframe_trend(
+                k1h
+            )
+            if k1h
+            else "UNKNOWN"
         )
 
         obs = detect_order_blocks(
-            k1h
+            base
         )
 
         bullish = obs["bullish"]
@@ -2811,12 +3362,14 @@ def _stage1_score(symbol):
         ob_score = 0
 
         if bullish:
+
             ob_score = max(
                 ob_score,
                 bullish[0]["strength"],
             )
 
         if bearish:
+
             ob_score = max(
                 ob_score,
                 bearish[0]["strength"],
@@ -2824,12 +3377,19 @@ def _stage1_score(symbol):
 
         score = 0
 
-        # ORDER BLOCK HAS HIGHEST WEIGHT
+        # -------------------------------------------------
+        # OB PRIMARY
+        # -------------------------------------------------
+
         if bullish:
             score += 45
 
         if bearish:
             score += 45
+
+        # -------------------------------------------------
+        # TREND
+        # -------------------------------------------------
 
         if t4 in (
             "LONG",
@@ -2902,7 +3462,6 @@ def scan_market(
         reverse=True,
     )
 
-    # Only best OB candidates.
     shortlist = [
         item[0]
         for item in stage1[:10]
@@ -2970,9 +3529,9 @@ def scan_market(
                 exc,
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # RANK
-    # -----------------------------------------------------
+    # =====================================================
 
     def rank(item):
 
@@ -2982,15 +3541,19 @@ def scan_market(
         )
 
         if "ENTRY READY" in state:
+
             state_rank = 3
 
         elif "REVERSAL WATCH" in state:
+
             state_rank = 2
 
         elif "ACCUMULATION WATCH" in state:
+
             state_rank = 1
 
         else:
+
             state_rank = 0
 
         return (
@@ -3040,58 +3603,77 @@ def generate_evidence_report(
     data
 ):
 
-    direction = data[
-        "direction"
-    ]
+    if not data:
+        return "❌ لا توجد بيانات للتحليل."
+
+    direction = data.get(
+        "direction",
+        "NO TRADE",
+    )
 
     if direction == "LONG":
+
         emoji = "🟢"
 
     elif direction == "SHORT":
+
         emoji = "🔴"
 
     else:
+
         emoji = "🟡"
 
     if (
-        data["liquidity_state"]
+        data.get(
+            "liquidity_state"
+        )
         == "INFLOW"
     ):
+
         liquidity = (
             "🟢 دخول سيولة محتمل"
         )
 
     elif (
-        data["liquidity_state"]
+        data.get(
+            "liquidity_state"
+        )
         == "OUTFLOW"
     ):
+
         liquidity = (
             "🔴 خروج سيولة محتمل"
         )
 
     else:
+
         liquidity = (
             "🟡 سيولة محايدة"
         )
 
     if (
-        data["bos"]
+        data.get("bos")
         == "BULLISH_BOS"
     ):
+
         bos_text = "🟢 BULLISH"
 
     elif (
-        data["bos"]
+        data.get("bos")
         == "BEARISH_BOS"
     ):
+
         bos_text = "🔴 BEARISH"
 
     else:
+
         bos_text = "⚪ NONE"
 
     bottom = (
         "🟢 نعم"
-        if data["bottom_detected"]
+        if data.get(
+            "bottom_detected"
+        )
         else
         "🟡 غير مؤكد"
     )
@@ -3100,11 +3682,19 @@ def generate_evidence_report(
         "LONG",
         "SHORT",
     ):
+
         decision = "جاهز للدخول"
 
-    else:
+    elif direction == "WAIT":
+
         decision = (
-            "انتظار Retest/BOS"
+            "انتظار التأكيد"
+        )
+
+    else:
+
+        decision = (
+            "لا توجد صفقة حالياً"
         )
 
     lines = [
@@ -3112,15 +3702,15 @@ def generate_evidence_report(
         "🤖 BingX AI Scanner",
         "",
 
-        f"💎 العملة: {data['symbol']}",
+        f"💎 العملة: {data.get('symbol')}",
 
         f"📈 الاتجاه النهائي: {emoji} {direction}",
 
-        f"⭐ Entry Score: {data['entry_score']}/100",
+        f"⭐ Entry Score: {data.get('entry_score', 0)}/100",
 
         "",
 
-        f"🧠 الحالة: {data['state']}",
+        f"🧠 الحالة: {data.get('state', 'UNKNOWN')}",
 
         f"🧭 القرار: {decision}",
 
@@ -3144,25 +3734,25 @@ def generate_evidence_report(
 
         "📊 Context",
 
-        f"1D: {data['trend_1d']}",
+        f"1D: {data.get('trend_1d')}",
 
-        f"4H: {data['trend_4h']}",
+        f"4H: {data.get('trend_4h')}",
 
         "",
 
         "⏱️ Confirmation",
 
-        f"1H: {data['trend_1h']}",
+        f"1H: {data.get('trend_1h')}",
 
-        f"30m: {data['trend_30m']}",
+        f"30m: {data.get('trend_30m')}",
 
-        f"15m: {data['trend_15m']}",
+        f"15m: {data.get('trend_15m')}",
 
         "",
 
         "🏗️ Market Structure",
 
-        f"Structure: {data['structure']}",
+        f"Structure: {data.get('structure')}",
 
         f"BOS: {bos_text}",
 
@@ -3170,13 +3760,13 @@ def generate_evidence_report(
 
         f"💧 Liquidity: {liquidity}",
 
-        f"📊 Volume: {data['volume_ratio']}x",
+        f"📊 Volume: {data.get('volume_ratio')}x",
 
-        f"📈 Volume Trend: {data['volume_trend']}",
+        f"📈 Volume Trend: {data.get('volume_trend')}",
 
-        f"💪 Buy Pressure: {data['buy_pressure']}%",
+        f"💪 Buy Pressure: {data.get('buy_pressure')}%",
 
-        f"📊 RSI: {data['rsi']}",
+        f"📊 RSI: {data.get('rsi')}",
 
         "",
 
@@ -3186,17 +3776,42 @@ def generate_evidence_report(
 
         "🛡️ Support / Resistance",
 
-        f"🟢 Support: {data['support']}",
+        f"🟢 Support: {data.get('support')}",
 
-        f"🔴 Resistance: {data['resistance']}",
+        f"🔴 Resistance: {data.get('resistance')}",
 
-        f"📏 Support Distance: {data['support_distance']}%",
+        f"📏 Support Distance: {data.get('support_distance')}%",
 
-        f"📏 Resistance Distance: {data['resistance_distance']}%",
+        f"📏 Resistance Distance: {data.get('resistance_distance')}%",
 
         "",
 
     ]
+
+    # -----------------------------------------------------
+    # DATA QUALITY
+    # -----------------------------------------------------
+
+    missing = data.get(
+        "missing_timeframes",
+        [],
+    )
+
+    if missing:
+
+        lines += [
+
+            "⚠️ Data Quality",
+
+            "الفريمات التي لم تتوفر:",
+
+            ", ".join(missing),
+
+            "تم استخدام البيانات المتاحة ولم يتم اختراع بيانات.",
+
+            "",
+
+        ]
 
     # -----------------------------------------------------
     # ENTRY
@@ -3211,21 +3826,47 @@ def generate_evidence_report(
 
             "📍 منطقة الدخول",
 
-            f"{data['entry_min']} - {data['entry_max']}",
+            f"{data.get('entry_min')} - {data.get('entry_max')}",
 
             "",
 
-            f"🛑 Stop Loss: {data['stop_loss']}",
+            f"🛑 Stop Loss: {data.get('stop_loss')}",
 
             "",
 
             "🎯 الأهداف",
 
-            f"TP1: {data['tp1']}",
+            f"TP1: {data.get('tp1')}",
 
-            f"TP2: {data['tp2']}",
+            f"TP2: {data.get('tp2')}",
 
-            f"TP3: {data['tp3']}",
+            f"TP3: {data.get('tp3')}",
+
+            "",
+
+        ]
+
+    elif direction == "WAIT":
+
+        lines += [
+
+            "📍 منطقة الدخول",
+
+            "⏳ انتظار Retest / BOS",
+
+            "",
+
+            "🛑 Stop Loss: غير محدد",
+
+            "",
+
+            "🎯 الأهداف",
+
+            "TP1: غير محدد",
+
+            "TP2: غير محدد",
+
+            "TP3: غير محدد",
 
             "",
 
@@ -3237,7 +3878,7 @@ def generate_evidence_report(
 
             "📍 منطقة الدخول",
 
-            "⏳ انتظار Retest / BOS",
+            "❌ لا توجد صفقة مؤكدة",
 
             "",
 
@@ -3265,9 +3906,9 @@ def generate_evidence_report(
 
         "📊 الحركة الأخيرة",
 
-        f"آخر شمعتين تقريباً: {data['recent_change_2']}%",
+        f"آخر شمعتين تقريباً: {data.get('recent_change_2')}%",
 
-        f"آخر 6 شموع تقريباً: {data['recent_change_6']}%",
+        f"آخر 6 شموع تقريباً: {data.get('recent_change_6')}%",
 
         "",
 
@@ -3275,16 +3916,17 @@ def generate_evidence_report(
 
     ]
 
-    for line in data[
-        "analysis_lines"
-    ][:10]:
+    for line in data.get(
+        "analysis_lines",
+        [],
+    )[:10]:
 
         lines.append(
             f"• {line}"
         )
 
     # -----------------------------------------------------
-    # OB RETEST REASONS
+    # RETEST
     # -----------------------------------------------------
 
     retest_reasons = (
@@ -3316,18 +3958,19 @@ def generate_evidence_report(
     # STRUCTURE
     # -----------------------------------------------------
 
-    if data[
-        "structure_reasons"
-    ]:
+    structure_reasons = data.get(
+        "structure_reasons",
+        [],
+    )
+
+    if structure_reasons:
 
         lines += [
             "",
             "🏗️ أدلة الهيكل",
         ]
 
-        for reason in data[
-            "structure_reasons"
-        ][:4]:
+        for reason in structure_reasons[:4]:
 
             lines.append(
                 f"• {reason}"
@@ -3337,18 +3980,19 @@ def generate_evidence_report(
     # LIQUIDITY
     # -----------------------------------------------------
 
-    if data[
-        "liquidity_reasons"
-    ]:
+    liquidity_reasons = data.get(
+        "liquidity_reasons",
+        [],
+    )
+
+    if liquidity_reasons:
 
         lines += [
             "",
             "💧 أدلة السيولة",
         ]
 
-        for reason in data[
-            "liquidity_reasons"
-        ][:4]:
+        for reason in liquidity_reasons[:4]:
 
             lines.append(
                 f"• {reason}"
@@ -3358,18 +4002,19 @@ def generate_evidence_report(
     # REJECTION
     # -----------------------------------------------------
 
-    if data[
-        "rejection_reasons"
-    ]:
+    rejection_reasons = data.get(
+        "rejection_reasons",
+        [],
+    )
+
+    if rejection_reasons:
 
         lines += [
             "",
             "🚫 لماذا لم يدخل؟",
         ]
 
-        for reason in data[
-            "rejection_reasons"
-        ][:8]:
+        for reason in rejection_reasons[:8]:
 
             lines.append(
                 f"• {reason}"
@@ -3396,6 +4041,8 @@ def generate_evidence_report(
         "⚠️ BOS + Liquidity + Volume = تأكيدات.",
 
         "⚠️ لا يتم اعتبار الشموع وحدها سبباً للدخول.",
+
+        "⚠️ لا يتم اختراع صفقة عند نقص البيانات.",
 
         "⚠️ الإشارة تحليلية وليست ضماناً للربح.",
 
