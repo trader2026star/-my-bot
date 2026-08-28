@@ -40,6 +40,16 @@ def _rows(d):
  if not isinstance(d,dict):return []
  x=d.get('data'); return x if isinstance(x,list) else ([x] if isinstance(x,dict) else [])
 
+def _is_crypto_usdt_symbol(s):
+ # BingX also exposes indices/FX/commodities as synthetic symbols ending in USDT.
+ # The scanner is crypto-only, so remove those instruments before ranking.
+ s=str(s).upper().replace('-','')
+ if not s.endswith('USDT'):return False
+ base=s[:-4]
+ blocked=('SP500','NASDAQ','DJI','US30','DXY','GOLD','SILVER','XAU','XAG','OIL','BRENT','WTI','COPPER','PLATINUM','PALLADIUM')
+ if base.endswith('USD') or any(x in base for x in blocked):return False
+ return True
+
 def get_futures_symbols(force_refresh=False):
  global _SYMBOL_CACHE,_SYMBOL_CACHE_TIME
  if not force_refresh and _SYMBOL_CACHE and time.time()-_SYMBOL_CACHE_TIME<SYMBOL_CACHE_SECONDS:return set(_SYMBOL_CACHE)
@@ -48,7 +58,7 @@ def get_futures_symbols(force_refresh=False):
  for x in _rows(d):
   if isinstance(x,dict):
    s=str(x.get('symbol','')).replace('-','').upper()
-   if s.endswith('USDT') and x.get('status') in (1,'1',None):out.add(s)
+   if _is_crypto_usdt_symbol(s) and x.get('status') in (1,'1',None):out.add(s)
  if out:_SYMBOL_CACHE=out;_SYMBOL_CACHE_TIME=time.time()
  return set(_SYMBOL_CACHE)
 def symbol_exists(s):
@@ -71,14 +81,23 @@ def _ticker_rows(force=False):
 def get_current_price(s,force=False):
  s=normalize_symbol(s); now=time.time(); c=_PRICE_CACHE.get(s)
  if not force and c and now-c[0]<PRICE_CACHE_SECONDS:return c[1]
+ # 1) Bulk futures ticker — fastest and normally most reliable.
  for x in _ticker_rows(force):
   if isinstance(x,dict) and str(x.get('symbol','')).replace('-','').upper()==s:
    p=_price_row(x)
    if p:_PRICE_CACHE[s]=(now,p);return p
- for ep in ('/openApi/swap/v1/ticker/price','/openApi/swap/v2/quote/price','/openApi/swap/v3/quote/price'):
+ # 2) Dedicated price endpoints — try all supported public variants.
+ for ep in ('/openApi/swap/v2/quote/price','/openApi/swap/v1/ticker/price','/openApi/swap/v3/quote/price'):
   for x in _rows(bingx_get(ep,{'symbol':bingx_symbol(s)})):
    p=_price_row(x)
    if p:_PRICE_CACHE[s]=(now,p);return p
+ # 3) Last completed 1H candle close is a safe fallback when ticker is unavailable.
+ k=get_bingx_klines(s,'1h',60)
+ if k:
+  try:
+   p=float(k[-1][4])
+   if p>0:_PRICE_CACHE[s]=(now,p);return p
+  except Exception:pass
  return None
 
 def _parse(rows):
@@ -234,9 +253,14 @@ def _empty_analysis(symbol,price=None,reason='بيانات السوق غير م�
 def get_coin_analysis(symbol):
  symbol=normalize_symbol(symbol)
  if not symbol_exists(symbol):return None
- p=get_current_price(symbol,True)
- if p is None:return None
+ # Load 1H first so the scanner can still show a real market price if the
+ # ticker endpoint is temporarily empty/rate-limited.
  k1=get_bingx_klines(symbol,'1h',200)
+ p=get_current_price(symbol,True)
+ if p is None and k1:
+  try:p=float(k1[-1][4])
+  except Exception:p=None
+ if p is None:return None
  if not k1 or len(k1)<30:return _empty_analysis(symbol,p,'بيانات 1H الأساسية غير متاحة حالياً')
  k4=get_bingx_klines(symbol,'4h',160);kd=get_bingx_klines(symbol,'1d',120);k30=get_bingx_klines(symbol,'30m',160);k15=get_bingx_klines(symbol,'15m',160)
  t1=calculate_timeframe_trend(k1);t4=calculate_timeframe_trend(k4);td=calculate_timeframe_trend(kd);t30=calculate_timeframe_trend(k30);t15=calculate_timeframe_trend(k15)
