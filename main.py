@@ -1,17 +1,15 @@
 import os
 import logging
 import threading
-import time
 
 from flask import Flask
 from telegram import Update
-from telegram.error import Conflict, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
     MessageHandler,
-    filters,
+    filters
 )
 
 from analysis import (
@@ -19,356 +17,120 @@ from analysis import (
     get_coin_analysis,
     generate_evidence_report,
     normalize_symbol,
+    get_current_price,
 )
-
-
-# =========================================================
-# LOGGING
-# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.INFO
 )
-
 logger = logging.getLogger(__name__)
 
-
-# =========================================================
-# BOT TOKEN
-# =========================================================
-
 TOKEN = os.getenv("BOT_TOKEN")
-
 if not TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN غير موجود في Environment Variables"
-    )
-
-
-# =========================================================
-# FLASK / RENDER
-# =========================================================
+    raise RuntimeError("BOT_TOKEN غير موجود في Environment Variables")
 
 app = Flask(__name__)
 
-
 @app.route("/")
 def home():
-    return "BingX AI Scanner - ORDER BLOCK ENGINE is running.", 200
-
+    return "BingX AI Scanner is running."
 
 @app.route("/health")
 def health():
-    return "OK", 200
-
+    return "OK"
 
 def run_flask():
     port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
-    logger.info(
-        "Starting Flask server on 0.0.0.0:%s",
-        port,
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False,
-        threaded=True,
-    )
-
-
-# =========================================================
-# TELEGRAM MESSAGE HELPER
-# =========================================================
-
-async def send_long_message(
-    update: Update,
-    text: str,
-):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-
-    if not text:
-        return
-
-    max_length = 3900
-
-    if len(text) <= max_length:
-        await update.message.reply_text(text)
-        return
-
-    current = ""
-
-    for line in text.split("\n"):
-
-        if len(line) > max_length:
-
-            if current:
-                await update.message.reply_text(current)
-                current = ""
-
-            for i in range(0, len(line), max_length):
-                await update.message.reply_text(
-                    line[i:i + max_length]
-                )
-
-            continue
-
-        if (
-            len(current)
-            + len(line)
-            + 1
-            > max_length
-        ):
-
-            if current:
-                await update.message.reply_text(current)
-
-            current = ""
-
-        current += line + "\n"
-
-    if current:
-        await update.message.reply_text(current)
-
-
-# =========================================================
-# START
-# =========================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not update.message:
-        return
-
     await update.message.reply_text(
-        "🤖 BingX AI Scanner\n\n"
-
-        "🏦 المحرك الأساسي:\n"
-        "ORDER BLOCK\n\n"
-
+        "🤖 أهلاً بك في BingX AI Scanner\n\n"
         "📌 أرسل اسم العملة للتحليل:\n"
-        "BTC\n"
-        "ETH\n"
-        "SOL\n"
-        "XRP\n\n"
-
+        "BTC\nETH\nSOL\nXRP\n\n"
         "أو أي زوج USDT موجود على BingX Futures.\n\n"
-
-        "📌 للفحص الكامل للسوق:\n"
+        "📌 أمر الفحص الكامل:\n"
         "/scan\n\n"
-
-        "🧠 منهج التحليل:\n"
-        "• 1D = Context\n"
-        "• 4H = MTF Order Block\n"
-        "• 1H = Primary Order Block\n"
-        "• 30m + 15m = Confirmation\n"
+        "🔎 النظام يعتمد على:\n"
+        "• 1D = الاتجاه العام\n"
+        "• 4H = الاتجاه الرئيسي\n"
+        "• 1H = بوابة الدخول\n"
+        "• 30m + 15m = تأكيد إضافي\n"
+        "• Order Block + Retest\n"
         "• BOS + Market Structure\n"
-        "• Liquidity + Volume\n"
-        "• Retest\n"
-        "• Accumulation / Distribution\n"
-        "• ATR + Entry / SL / TP\n\n"
-
-        "🟢 ENTRY READY\n"
-        "🟡 REVERSAL WATCH\n"
-        "🔵 ACCUMULATION WATCH\n\n"
-
-        "🛡️ Order Block هو العامل الأساسي.\n"
-        "الشموع لا يتم استخدامها وحدها لتحديد LONG أو SHORT."
+        "• السيولة والحجم\n"
+        "• RSI + EMA\n"
+        "• القاع والتجميع\n"
+        "• Support / Resistance\n"
+        "• ATR\n"
+        "• Entry / SL / TP\n\n"
+        "🛡️ ORDER BLOCK هو المحرك الأساسي."
     )
 
-
-# =========================================================
-# SCAN
-# =========================================================
-
-async def scan_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-
-    started = time.time()
-
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
-
-        "🏦 ORDER BLOCK هو المحرك الأساسي.\n\n"
-
-        "⚡ فلترة سريعة للسوق أولاً.\n"
-        "🧠 ثم تحليل أفضل المرشحين فقط.\n\n"
-
-        "🟢 ENTRY READY\n"
-        "🟡 REVERSAL WATCH\n"
-        "🔵 ACCUMULATION WATCH\n\n"
-
-        "⏳ انتظر..."
+        "🏦 ORDER BLOCK = المحرك الأساسي\n"
+        "📡 الأسعار تُسحب مباشرة من BingX Futures\n"
+        "🧠 1D + 4H Context | 1H Primary OB | 30m + 15m Confirmation\n"
+        "💧 Liquidity + Volume + BOS\n\n"
+        "⏳ انتظر النتيجة..."
     )
-
     try:
         results = scan_market(limit=5)
-
     except Exception as exc:
-
-        logger.exception(
-            "Market scan failed: %s",
-            exc,
-        )
-
-        elapsed = time.time() - started
-
+        logger.exception("Scanner error: %s", exc)
         await update.message.reply_text(
-            "❌ حدث خطأ أثناء فحص السوق.\n\n"
-            f"⏱️ وقت الفحص: {elapsed:.1f} ثانية\n\n"
-            "راجع Logs في Render."
+            "❌ حدث خطأ أثناء فحص السوق.\n\nراجع Logs وحاول مرة أخرى."
         )
-
         return
 
-    elapsed = time.time() - started
-
     if not results:
-
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
-
-            "لم يتم العثور حالياً على "
-            "Order Block قوي ومؤكد.\n\n"
-
-            "🛡️ البوت فضّل الانتظار "
-            "بدلاً من إعطاء صفقة ضعيفة.\n\n"
-
-            f"⏱️ وقت الفحص: {elapsed:.1f} ثانية"
+            "لم يتم العثور حالياً على فرصة قوية بالشروط النهائية.\n\n"
+            "🛡️ البوت فضّل الانتظار بدلاً من إعطاء صفقة ضعيفة."
         )
-
         return
 
     await update.message.reply_text(
-        "✅ انتهى الفحص.\n\n"
-        f"🎯 عدد المرشحين: {len(results)}\n"
-        f"⏱️ وقت الفحص: {elapsed:.1f} ثانية\n\n"
-        "🏦 أفضل مناطق Order Block:"
+        f"✅ انتهى الفحص.\n\n"
+        f"🎯 تم العثور على {len(results)} فرص.\n"
+        f"💰 كل نتيجة تتضمن السعر الحالي من BingX.\n"
+        f"🏦 سيتم إرسال أفضل مناطق Order Block."
     )
-
-    for index, data in enumerate(
-        results,
-        start=1,
-    ):
-
+    for data in results:
         try:
-
-            symbol = data.get(
-                "symbol",
-                "UNKNOWN",
-            )
-
-            direction = data.get(
-                "direction",
-                "WAIT",
-            )
-
-            state = data.get(
-                "state",
-                "NO TRADE",
-            )
-
-            score = data.get(
-                "score",
-                0,
-            )
-
-            ob_direction = data.get(
-                "order_block_direction",
-                "NEUTRAL",
-            )
-
-            ob_score = data.get(
-                "order_block_score",
-                0,
-            )
-
-            logger.info(
-                "SCAN RESULT %s | %s | direction=%s | "
-                "state=%s | score=%s | OB=%s/%s",
-                index,
-                symbol,
-                direction,
-                state,
-                score,
-                ob_direction,
-                ob_score,
-            )
-
-            report = generate_evidence_report(data)
-
-            await send_long_message(
-                update,
-                report,
-            )
-
+            await update.message.reply_text(generate_evidence_report(data))
         except Exception as exc:
+            logger.exception("Report error: %s", exc)
 
-            logger.exception(
-                "Failed sending scan result: %s",
-                exc,
-            )
-
-            await update.message.reply_text(
-                "⚠️ تعذر إرسال تقرير إحدى النتائج."
-            )
-
-
-# =========================================================
-# COIN ANALYSIS
-# =========================================================
-
-async def handle_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if (
-        not update.message
-        or not update.message.text
-    ):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
         return
-
     text = update.message.text.strip()
-
     if not text:
         return
-
-    if text.startswith("/"):
-        return
-
     symbol = normalize_symbol(text)
 
-    if not symbol:
-
-        await update.message.reply_text(
-            "❌ اكتب اسم العملة مثل BTC أو ETH."
-        )
-
-        return
+    # Fetch the price before the progress message so the user sees that the
+    # scanner has real market data, not just a symbol name.
+    price = get_current_price(symbol, True)
+    price_text = f"💰 السعر الحالي: {price}\n" if price is not None else "💰 السعر الحالي: جاري جلبه من BingX...\n"
 
     await update.message.reply_text(
         f"🔍 جاري تحليل {symbol}...\n\n"
-
-        "🏦 ORDER BLOCK = المحرك الأساسي\n\n"
-
+        f"{price_text}"
+        "🏦 ORDER BLOCK = المحرك الأساسي\n"
         "📊 1D = Context\n"
         "📊 4H = MTF Order Block\n"
         "⏱️ 1H = Primary Entry Zone\n"
         "⏱️ 30m + 15m = Confirmation\n\n"
-
         "🧠 جاري فحص:\n"
         "Order Block\n"
         "OB Retest\n"
@@ -377,307 +139,44 @@ async def handle_message(
         "Accumulation / Distribution\n"
         "MTF Order Blocks\n"
         "ATR + Entry / SL / TP\n\n"
-
         "⏳ انتظر النتيجة..."
     )
-
-    # =====================================================
-    # DIRECT COIN ANALYSIS
-    #
-    # IMPORTANT:
-    # Do NOT require analysis_ok.
-    #
-    # get_coin_analysis() already returns a complete
-    # analysis dictionary when data is available.
-    #
-    # The old code was doing:
-    #
-    # if not data.get("analysis_ok", False):
-    #
-    # But analysis.py did not return analysis_ok.
-    #
-    # Therefore every valid analysis was rejected.
-    # =====================================================
-
     try:
-
-        logger.info(
-            "COIN ANALYSIS START | %s",
-            symbol,
-        )
-
         data = get_coin_analysis(symbol)
-
-        logger.info(
-            "COIN ANALYSIS RETURNED | %s | type=%s | data=%s",
-            symbol,
-            type(data).__name__,
-            bool(data),
-        )
-
     except Exception as exc:
-
-        logger.exception(
-            "Coin analysis exception for %s: %s",
-            symbol,
-            exc,
-        )
-
+        logger.exception("Coin analysis error for %s", symbol)
         await update.message.reply_text(
-            f"❌ حدث خطأ أثناء تحليل {symbol}.\n\n"
-            f"🧾 السبب: {str(exc)[:500]}\n\n"
-            "حاول مرة أخرى بعد قليل."
+            f"❌ حدث خطأ أثناء تحليل {symbol}.\n\nحاول مرة أخرى بعد قليل."
         )
-
         return
-
-    # =====================================================
-    # ONLY NONE MEANS THAT ANALYSIS DID NOT RETURN DATA
-    # =====================================================
-
-    if data is None:
-
+    if not data:
         await update.message.reply_text(
-            f"❌ لم تصل بيانات تحليل {symbol}.\n\n"
-            "تعذر الحصول على بيانات السوق من BingX "
-            "لهذا الزوج حالياً.\n\n"
-            "🛡️ لم يتم إنشاء صفقة وهمية."
+            f"❌ لم أستطع تحليل {symbol} حالياً.\n\n"
+            "تأكد أن الزوج موجود على BingX Futures وأنه USDT."
         )
-
-        logger.warning(
-            "COIN ANALYSIS RETURNED NONE | %s",
-            symbol,
-        )
-
         return
-
-    # =====================================================
-    # EMPTY / INVALID RESULT PROTECTION
-    # =====================================================
-
-    if not isinstance(data, dict):
-
-        await update.message.reply_text(
-            f"❌ نتيجة تحليل {symbol} غير صالحة.\n\n"
-            "🛡️ لم يتم إنشاء صفقة وهمية."
-        )
-
-        logger.error(
-            "INVALID COIN ANALYSIS RESULT | %s | %r",
-            symbol,
-            data,
-        )
-
-        return
-
-    # =====================================================
-    # SHOW ANALYSIS
-    #
-    # Even WAIT / NO TRADE is a valid analysis.
-    # It must NOT be reported as a data-fetch failure.
-    # =====================================================
-
     try:
-
-        report = generate_evidence_report(data)
-
-        await send_long_message(
-            update,
-            report,
-        )
-
-        logger.info(
-            "COIN ANALYSIS REPORT SENT | %s | direction=%s | "
-            "state=%s | score=%s",
-            symbol,
-            data.get("direction", "WAIT"),
-            data.get("state", "UNKNOWN"),
-            data.get("score", 0),
-        )
-
+        await update.message.reply_text(generate_evidence_report(data))
     except Exception as exc:
+        logger.exception("Report error for %s", symbol)
+        await update.message.reply_text("❌ حدث خطأ أثناء إنشاء التقرير.")
 
-        logger.exception(
-            "Report generation failed for %s: %s",
-            symbol,
-            exc,
-        )
-
-        await update.message.reply_text(
-            f"❌ حدث خطأ أثناء إنشاء تقرير {symbol}."
-        )
-
-
-# =========================================================
-# ERROR HANDLER
-# =========================================================
-
-async def error_handler(
-    update,
-    context,
-):
-
-    error = context.error
-
-    if isinstance(error, Conflict):
-
-        logger.error(
-            "TELEGRAM CONFLICT: another getUpdates "
-            "polling instance is active."
-        )
-
-        return
-
-    logger.error(
-        "Telegram error: %s",
-        error,
-        exc_info=True,
-    )
-
-
-# =========================================================
-# TELEGRAM BOT
-# =========================================================
-
-def run_bot():
-
-    logger.info(
-        "Creating Telegram application..."
-    )
-
-    application = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .build()
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "scan",
-            scan_command,
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_message,
-        )
-    )
-
-    application.add_error_handler(
-        error_handler
-    )
-
-    logger.info(
-        "Telegram bot is starting..."
-    )
-
-    try:
-
-        # تنظيف أي Webhook قديم قبل استخدام Polling
-        logger.info(
-            "Removing Telegram webhook..."
-        )
-
-        application.bot.delete_webhook(
-            drop_pending_updates=True
-        )
-
-    except Exception as exc:
-
-        logger.warning(
-            "Could not remove Telegram webhook: %s",
-            exc,
-        )
-
-    try:
-
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            stop_signals=None,
-        )
-
-    except Conflict:
-
-        logger.error(
-            "TELEGRAM CONFLICT: another bot instance "
-            "is already using this BOT_TOKEN."
-        )
-
-        logger.error(
-            "Stop the other instance or change BOT_TOKEN."
-        )
-
-    except TelegramError as exc:
-
-        logger.exception(
-            "Telegram startup/runtime error: %s",
-            exc,
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Unexpected Telegram error: %s",
-            exc,
-        )
-
-
-# =========================================================
-# MAIN
-# =========================================================
+async def error_handler(update, context):
+    logger.error("Telegram error: %s", context.error)
 
 def main():
-
-    logger.info("=" * 70)
-
-    logger.info(
-        "BingX AI Scanner starting..."
+    threading.Thread(target=run_flask, daemon=True).start()
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("scan", scan_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_error_handler(error_handler)
+    print("Telegram bot is starting...")
+    print("Flask server is starting...")
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
     )
-
-    logger.info(
-        "ENGINE: ORDER BLOCK PRIMARY"
-    )
-
-    logger.info(
-        "DIRECTION: OB + MTF OB + BOS + LIQUIDITY"
-    )
-
-    logger.info(
-        "CANDLE COLOR IS NOT A PRIMARY DIRECTION SIGNAL"
-    )
-
-    logger.info("=" * 70)
-
-    flask_thread = threading.Thread(
-        target=run_flask,
-        name="FlaskServer",
-        daemon=True,
-    )
-
-    flask_thread.start()
-
-    logger.info(
-        "Flask thread started."
-    )
-
-    time.sleep(1)
-
-    run_bot()
-
-
-# =========================================================
-# ENTRY POINT
-# =========================================================
 
 if __name__ == "__main__":
     main()
