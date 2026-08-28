@@ -1,7 +1,8 @@
 # =========================================================
 # analysis.py
 # BingX Futures AI Scanner
-# Liquidity First + Accumulation + Distribution + Reversal
+# ORDER BLOCK PRIMARY ENGINE
+# Liquidity + BOS + Retest + MTF Confirmation
 # Scanner v11.0
 # =========================================================
 
@@ -11,7 +12,6 @@ import threading
 import requests
 from statistics import mean
 
-
 # =========================================================
 # CONFIG
 # =========================================================
@@ -19,9 +19,8 @@ from statistics import mean
 BINGX_URL = "https://open-api.bingx.com"
 
 SESSION = requests.Session()
-
 SESSION.headers.update({
-    "User-Agent": "CryptoZeroReversal-BingX-Scanner/11.0",
+    "User-Agent": "CryptoZeroReversal-BingX-OB-Scanner/11.0",
     "Accept": "application/json",
 })
 
@@ -50,20 +49,14 @@ _RATE_LIMIT_UNTIL = 0.0
 # =========================================================
 
 def safe_float(value, default=0.0):
-
     try:
         return float(value)
-
     except Exception:
         return default
 
 
 def clamp(value, low, high):
-
-    return max(
-        low,
-        min(high, value)
-    )
+    return max(low, min(high, value))
 
 
 def normalize_symbol(symbol):
@@ -98,7 +91,6 @@ def normalize_symbol(symbol):
 
 
 def bingx_symbol(symbol):
-
     return normalize_symbol(symbol)
 
 
@@ -152,9 +144,7 @@ def _get_json(path, params=None):
 
             if response.status_code == 429:
 
-                _RATE_LIMIT_UNTIL = (
-                    time.time() + 5
-                )
+                _RATE_LIMIT_UNTIL = time.time() + 5
 
                 time.sleep(1.5)
 
@@ -215,7 +205,6 @@ def get_futures_symbols():
         and now - _SYMBOL_CACHE_TIME
         < SYMBOL_CACHE_SECONDS
     ):
-
         return list(_SYMBOL_CACHE)
 
     data = _get_json(
@@ -303,7 +292,6 @@ def get_klines(
             now - timestamp
             < KLINE_CACHE_SECONDS
         ):
-
             return values
 
     params = {
@@ -348,9 +336,7 @@ def get_klines(
                     ),
                     "volume": safe_float(
                         item.get("volume")
-                        or item.get(
-                            "quoteVolume"
-                        )
+                        or item.get("quoteVolume")
                     ),
                     "time": item.get(
                         "time"
@@ -366,21 +352,11 @@ def get_klines(
             ):
 
                 candles.append({
-                    "open": safe_float(
-                        item[1]
-                    ),
-                    "high": safe_float(
-                        item[2]
-                    ),
-                    "low": safe_float(
-                        item[3]
-                    ),
-                    "close": safe_float(
-                        item[4]
-                    ),
-                    "volume": safe_float(
-                        item[5]
-                    ),
+                    "open": safe_float(item[1]),
+                    "high": safe_float(item[2]),
+                    "low": safe_float(item[3]),
+                    "close": safe_float(item[4]),
+                    "volume": safe_float(item[5]),
                     "time": item[0],
                 })
 
@@ -394,6 +370,14 @@ def get_klines(
         )
 
     if candles:
+
+        # BingX normally returns chronological data,
+        # but sorting protects the OB calculations.
+        candles.sort(
+            key=lambda x: safe_float(
+                x.get("time", 0)
+            )
+        )
 
         _KLINE_CACHE[
             cache_key
@@ -417,9 +401,7 @@ def calculate_ema(values, period):
     if len(values) < period:
         return mean(values)
 
-    multiplier = 2 / (
-        period + 1
-    )
+    multiplier = 2 / (period + 1)
 
     ema = mean(
         values[:period]
@@ -524,9 +506,7 @@ def calculate_atr(
         high = current["high"]
         low = current["low"]
 
-        prev_close = (
-            previous["close"]
-        )
+        prev_close = previous["close"]
 
         tr = max(
             high - low,
@@ -557,32 +537,23 @@ def calculate_volume_ratio(
     if len(klines) < period + 1:
         return 1.0
 
-    recent = klines[-1][
-        "volume"
-    ]
+    recent = klines[-1]["volume"]
 
     previous = [
         x["volume"]
-        for x in klines[
-            -period - 1:-1
-        ]
+        for x in klines[-period - 1:-1]
         if x["volume"] > 0
     ]
 
     if not previous:
         return 1.0
 
-    avg_volume = mean(
-        previous
-    )
+    avg_volume = mean(previous)
 
     if avg_volume <= 0:
         return 1.0
 
-    return (
-        recent
-        / avg_volume
-    )
+    return recent / avg_volume
 
 
 def calculate_volume_trend(
@@ -595,16 +566,13 @@ def calculate_volume_trend(
 
     recent = [
         x["volume"]
-        for x in klines[
-            -lookback:
-        ]
+        for x in klines[-lookback:]
     ]
 
     previous = [
         x["volume"]
         for x in klines[
-            -lookback * 2:
-            -lookback
+            -lookback * 2:-lookback
         ]
     ]
 
@@ -633,116 +601,621 @@ def calculate_volume_trend(
 
 
 # =========================================================
-# SUPPORT / RESISTANCE
+# ORDER BLOCK ENGINE
 # =========================================================
 
-def calculate_support_resistance(
+def _candle_body(candle):
+
+    return abs(
+        candle["close"]
+        - candle["open"]
+    )
+
+
+def _candle_range(candle):
+
+    return max(
+        candle["high"]
+        - candle["low"],
+        0.0,
+    )
+
+
+def _is_bullish(candle):
+
+    return candle["close"] > candle["open"]
+
+
+def _is_bearish(candle):
+
+    return candle["close"] < candle["open"]
+
+
+def _impulse_after(
     klines,
+    index,
+    direction,
+    bars=4,
 ):
 
-    if not klines:
-        return 0.0, 0.0
+    if index + 1 >= len(klines):
+        return 0.0
 
-    lookback = min(
-        80,
+    end = min(
         len(klines),
+        index + 1 + bars,
     )
 
-    recent = klines[
-        -lookback:
+    block = klines[
+        index + 1:end
     ]
 
-    support = min(
-        x["low"]
-        for x in recent
-    )
-
-    resistance = max(
-        x["high"]
-        for x in recent
-    )
-
-    return (
-        support,
-        resistance,
-    )
-
-
-# =========================================================
-# DRAW DOWN / RALLY
-# =========================================================
-
-def recent_drawdown(
-    klines,
-    lookback=30,
-):
-
-    if len(klines) < 5:
+    if not block:
         return 0.0
 
-    data = klines[
-        -lookback:
-    ]
+    ob = klines[index]
 
-    highest = max(
-        x["high"]
-        for x in data
-    )
+    if direction == "BULLISH":
 
-    current = data[-1][
-        "close"
-    ]
+        highest = max(
+            x["high"]
+            for x in block
+        )
 
-    if highest <= 0:
-        return 0.0
+        if ob["high"] <= 0:
+            return 0.0
 
-    return (
-        (current - highest)
-        / highest
-        * 100
-    )
-
-
-def recent_rally(
-    klines,
-    lookback=30,
-):
-
-    if len(klines) < 5:
-        return 0.0
-
-    data = klines[
-        -lookback:
-    ]
+        return (
+            highest
+            - ob["high"]
+        ) / ob["high"] * 100
 
     lowest = min(
         x["low"]
-        for x in data
+        for x in block
     )
 
-    current = data[-1][
-        "close"
-    ]
-
-    if lowest <= 0:
+    if ob["low"] <= 0:
         return 0.0
 
     return (
-        (current - lowest)
-        / lowest
+        ob["low"]
+        - lowest
+    ) / ob["low"] * 100
+
+
+def _future_break(
+    klines,
+    index,
+    direction,
+    bars=6,
+):
+
+    if index + 1 >= len(klines):
+        return False
+
+    end = min(
+        len(klines),
+        index + 1 + bars,
+    )
+
+    future = klines[
+        index + 1:end
+    ]
+
+    if not future:
+        return False
+
+    if index < 5:
+        return False
+
+    previous = klines[
+        max(0, index - 12):index
+    ]
+
+    if not previous:
+        return False
+
+    if direction == "BULLISH":
+
+        previous_high = max(
+            x["high"]
+            for x in previous
+        )
+
+        return any(
+            x["close"] > previous_high
+            for x in future
+        )
+
+    previous_low = min(
+        x["low"]
+        for x in previous
+    )
+
+    return any(
+        x["close"] < previous_low
+        for x in future
+    )
+
+
+def detect_order_blocks(
+    klines,
+    lookback=80,
+):
+
+    result = {
+        "bullish": [],
+        "bearish": [],
+    }
+
+    if len(klines) < 30:
+        return result
+
+    start = max(
+        5,
+        len(klines) - lookback - 8,
+    )
+
+    end = len(klines) - 5
+
+    for i in range(
+        start,
+        end,
+    ):
+
+        candle = klines[i]
+
+        rng = _candle_range(candle)
+
+        if rng <= 0:
+            continue
+
+        body = _candle_body(candle)
+
+        body_ratio = (
+            body / rng
+        )
+
+        volume = candle["volume"]
+
+        surrounding = klines[
+            max(0, i - 10):i
+        ]
+
+        avg_volume = mean([
+            x["volume"]
+            for x in surrounding
+            if x["volume"] > 0
+        ]) if surrounding else 0
+
+        volume_factor = (
+            volume / avg_volume
+            if avg_volume > 0
+            else 1.0
+        )
+
+        # -------------------------------------------------
+        # BULLISH ORDER BLOCK
+        #
+        # آخر منطقة بيع قبل impulse صاعد
+        # -------------------------------------------------
+
+        if _is_bearish(candle):
+
+            impulse = _impulse_after(
+                klines,
+                i,
+                "BULLISH",
+                5,
+            )
+
+            broke = _future_break(
+                klines,
+                i,
+                "BULLISH",
+                8,
+            )
+
+            if (
+                impulse >= 1.0
+                and (
+                    broke
+                    or impulse >= 2.0
+                )
+            ):
+
+                strength = 35
+
+                if impulse >= 2:
+                    strength += 10
+
+                if impulse >= 4:
+                    strength += 10
+
+                if broke:
+                    strength += 15
+
+                if volume_factor >= 1.2:
+                    strength += 10
+
+                if body_ratio <= 0.65:
+                    strength += 5
+
+                zone_low = candle["low"]
+                zone_high = max(
+                    candle["open"],
+                    candle["close"],
+                )
+
+                result["bullish"].append({
+                    "index": i,
+                    "low": zone_low,
+                    "high": zone_high,
+                    "strength": int(
+                        clamp(
+                            strength,
+                            0,
+                            100,
+                        )
+                    ),
+                    "impulse": impulse,
+                    "volume_factor":
+                        volume_factor,
+                    "broken": broke,
+                    "time": candle.get(
+                        "time"
+                    ),
+                })
+
+        # -------------------------------------------------
+        # BEARISH ORDER BLOCK
+        #
+        # آخر منطقة شراء قبل impulse هابط
+        # -------------------------------------------------
+
+        if _is_bullish(candle):
+
+            impulse = _impulse_after(
+                klines,
+                i,
+                "BEARISH",
+                5,
+            )
+
+            broke = _future_break(
+                klines,
+                i,
+                "BEARISH",
+                8,
+            )
+
+            if (
+                impulse >= 1.0
+                and (
+                    broke
+                    or impulse >= 2.0
+                )
+            ):
+
+                strength = 35
+
+                if impulse >= 2:
+                    strength += 10
+
+                if impulse >= 4:
+                    strength += 10
+
+                if broke:
+                    strength += 15
+
+                if volume_factor >= 1.2:
+                    strength += 10
+
+                if body_ratio <= 0.65:
+                    strength += 5
+
+                zone_low = min(
+                    candle["open"],
+                    candle["close"],
+                )
+
+                zone_high = candle["high"]
+
+                result["bearish"].append({
+                    "index": i,
+                    "low": zone_low,
+                    "high": zone_high,
+                    "strength": int(
+                        clamp(
+                            strength,
+                            0,
+                            100,
+                        )
+                    ),
+                    "impulse": impulse,
+                    "volume_factor":
+                        volume_factor,
+                    "broken": broke,
+                    "time": candle.get(
+                        "time"
+                    ),
+                })
+
+    # الأحدث أولاً
+    result["bullish"].sort(
+        key=lambda x: (
+            x["strength"],
+            x["index"],
+        ),
+        reverse=True,
+    )
+
+    result["bearish"].sort(
+        key=lambda x: (
+            x["strength"],
+            x["index"],
+        ),
+        reverse=True,
+    )
+
+    return result
+
+
+# =========================================================
+# ORDER BLOCK RETEST
+# =========================================================
+
+def _price_in_zone(
+    price,
+    zone,
+    tolerance=0.006,
+):
+
+    low = zone["low"]
+    high = zone["high"]
+
+    expanded_low = (
+        low * (1 - tolerance)
+    )
+
+    expanded_high = (
+        high * (1 + tolerance)
+    )
+
+    return (
+        expanded_low
+        <= price
+        <= expanded_high
+    )
+
+
+def _distance_to_zone(
+    price,
+    zone,
+):
+
+    low = zone["low"]
+    high = zone["high"]
+
+    if low <= price <= high:
+        return 0.0
+
+    if price < low:
+        return (
+            (low - price)
+            / price
+            * 100
+        )
+
+    return (
+        (price - high)
+        / price
         * 100
     )
 
 
+def find_best_order_block(
+    klines,
+    direction,
+):
+
+    blocks = detect_order_blocks(
+        klines
+    )
+
+    if not klines:
+        return None
+
+    price = klines[-1]["close"]
+
+    if direction == "LONG":
+
+        candidates = blocks[
+            "bullish"
+        ]
+
+    else:
+
+        candidates = blocks[
+            "bearish"
+        ]
+
+    if not candidates:
+        return None
+
+    best = None
+    best_score = -999
+
+    for block in candidates:
+
+        distance = _distance_to_zone(
+            price,
+            block,
+        )
+
+        # لا نعتبر OB قديم بعيد جداً صالحاً للدخول.
+        if distance > 12:
+            continue
+
+        retest = _price_in_zone(
+            price,
+            block,
+            tolerance=0.006,
+        )
+
+        score = block["strength"]
+
+        if retest:
+            score += 30
+
+        elif distance <= 2:
+            score += 20
+
+        elif distance <= 5:
+            score += 10
+
+        # الأفضل هو الأقرب والأقوى
+        score -= min(
+            distance * 2,
+            20,
+        )
+
+        if score > best_score:
+
+            best_score = score
+
+            best = {
+                **block,
+                "distance": distance,
+                "retest": retest,
+                "score": int(
+                    clamp(
+                        score,
+                        0,
+                        100,
+                    )
+                ),
+            }
+
+    return best
+
+
 # =========================================================
-# MARKET STRUCTURE
+# ORDER BLOCK STATE
+# =========================================================
+
+def get_order_block_state(
+    klines,
+):
+
+    if len(klines) < 30:
+
+        return {
+            "state": "NONE",
+            "direction": "NEUTRAL",
+            "score": 0,
+            "bullish": None,
+            "bearish": None,
+        }
+
+    bullish = find_best_order_block(
+        klines,
+        "LONG",
+    )
+
+    bearish = find_best_order_block(
+        klines,
+        "SHORT",
+    )
+
+    bull_score = (
+        bullish["score"]
+        if bullish
+        else 0
+    )
+
+    bear_score = (
+        bearish["score"]
+        if bearish
+        else 0
+    )
+
+    if (
+        bull_score >= 55
+        and bull_score
+        >= bear_score + 10
+    ):
+
+        state = (
+            "BULLISH_ORDER_BLOCK"
+        )
+
+        direction = "LONG"
+
+    elif (
+        bear_score >= 55
+        and bear_score
+        >= bull_score + 10
+    ):
+
+        state = (
+            "BEARISH_ORDER_BLOCK"
+        )
+
+        direction = "SHORT"
+
+    elif (
+        bull_score >= 50
+        and bull_score > bear_score
+    ):
+
+        state = (
+            "BULLISH_OB_WATCH"
+        )
+
+        direction = "LONG"
+
+    elif (
+        bear_score >= 50
+        and bear_score > bull_score
+    ):
+
+        state = (
+            "BEARISH_OB_WATCH"
+        )
+
+        direction = "SHORT"
+
+    else:
+
+        state = "NEUTRAL"
+
+        direction = "NEUTRAL"
+
+    return {
+        "state": state,
+        "direction": direction,
+        "score": max(
+            bull_score,
+            bear_score,
+        ),
+        "bull_score": bull_score,
+        "bear_score": bear_score,
+        "bullish": bullish,
+        "bearish": bearish,
+    }
+
+
+# =========================================================
+# MARKET STRUCTURE / BOS
 # =========================================================
 
 def detect_market_structure(
     klines,
 ):
 
-    if len(klines) < 25:
+    if len(klines) < 30:
 
         return {
             "structure": "MIXED",
@@ -751,180 +1224,196 @@ def detect_market_structure(
             "bearish": False,
         }
 
+    lookback = 25
+
     recent = klines[
-        -25:
+        -lookback:
     ]
-
-    highs = [
-        x["high"]
-        for x in recent
-    ]
-
-    lows = [
-        x["low"]
-        for x in recent
-    ]
-
-    previous_high = max(
-        highs[:-5]
-    )
-
-    previous_low = min(
-        lows[:-5]
-    )
 
     current_close = (
         recent[-1]["close"]
     )
 
+    # -----------------------------------------------------
+    # استخدم swing levels وليس لون الشموع
+    # -----------------------------------------------------
+
+    swing_high = max(
+        x["high"]
+        for x in recent[:-5]
+    )
+
+    swing_low = min(
+        x["low"]
+        for x in recent[:-5]
+    )
+
     bullish = (
         current_close
-        > previous_high
+        > swing_high
     )
 
     bearish = (
         current_close
-        < previous_low
+        < swing_low
     )
 
     if bullish:
 
-        structure = "BULLISH"
-        bos = "BULLISH"
+        return {
+            "structure": "BULLISH",
+            "bos": "BULLISH",
+            "bullish": True,
+            "bearish": False,
+        }
 
-    elif bearish:
+    if bearish:
 
-        structure = "BEARISH"
-        bos = "BEARISH"
-
-    else:
-
-        structure = "MIXED"
-        bos = "NONE"
+        return {
+            "structure": "BEARISH",
+            "bos": "BEARISH",
+            "bullish": False,
+            "bearish": True,
+        }
 
     return {
-        "structure": structure,
-        "bos": bos,
-        "bullish": bullish,
-        "bearish": bearish,
+        "structure": "MIXED",
+        "bos": "NONE",
+        "bullish": False,
+        "bearish": False,
     }
 
 
 # =========================================================
-# LIQUIDITY FLOW
+# LIQUIDITY
+# =========================================================
 #
-# ملاحظة:
-# هذا تقدير من بيانات الشموع والحجم وليس Order Book حقيقي.
-# لذلك لا نعتبره وحده كافيًا لدخول الصفقة.
+# مهم:
+# السيولة هنا ليست مبنية على:
+# green candles = inflow
+# red candles   = outflow
+#
+# بل تعتمد على:
+# OB + price reaction + volume confirmation
 # =========================================================
 
 def detect_liquidity_flow(
     klines,
 ):
 
-    if len(klines) < 20:
+    result = {
+        "state": "NEUTRAL",
+        "bullish_volume": 0.0,
+        "bearish_volume": 0.0,
+        "ratio": 1.0,
+        "confidence": 0,
+    }
 
-        return {
-            "state": "NEUTRAL",
-            "bullish_volume": 0.0,
-            "bearish_volume": 0.0,
-            "ratio": 1.0,
-            "confidence": 0,
-        }
+    if len(klines) < 30:
+        return result
 
-    recent = klines[
-        -20:
-    ]
-
-    bullish_volume = 0.0
-    bearish_volume = 0.0
-
-    for candle in recent:
-
-        o = candle["open"]
-        c = candle["close"]
-        v = candle["volume"]
-
-        if v <= 0:
-            continue
-
-        candle_range = max(
-            candle["high"]
-            - candle["low"],
-            1e-12,
-        )
-
-        body = abs(c - o)
-
-        # -------------------------------------------------
-        # وزن جسم الشمعة
-        # -------------------------------------------------
-
-        body_factor = clamp(
-            body / candle_range,
-            0.15,
-            1.0,
-        )
-
-        if c > o:
-
-            bullish_volume += (
-                v * (
-                    0.60
-                    + 0.40
-                    * body_factor
-                )
-            )
-
-        elif c < o:
-
-            bearish_volume += (
-                v * (
-                    0.60
-                    + 0.40
-                    * body_factor
-                )
-            )
-
-        else:
-
-            bullish_volume += (
-                v * 0.5
-            )
-
-            bearish_volume += (
-                v * 0.5
-            )
-
-    if bearish_volume <= 0:
-
-        ratio = 99.0
-
-    else:
-
-        ratio = (
-            bullish_volume
-            / bearish_volume
-        )
-
-    total = (
-        bullish_volume
-        + bearish_volume
+    ob = get_order_block_state(
+        klines
     )
 
-    if total > 0:
-
-        imbalance = (
-            abs(
-                bullish_volume
-                - bearish_volume
-            )
-            / total
+    volume_ratio = (
+        calculate_volume_ratio(
+            klines
         )
+    )
+
+    structure = (
+        detect_market_structure(
+            klines
+        )
+    )
+
+    price = klines[-1]["close"]
+
+    bull_ob = ob.get(
+        "bullish"
+    )
+
+    bear_ob = ob.get(
+        "bearish"
+    )
+
+    bull_confirmation = 0
+    bear_confirmation = 0
+
+    if bull_ob:
+
+        if _price_in_zone(
+            price,
+            bull_ob,
+            0.008,
+        ):
+            bull_confirmation += 2
+
+        elif bull_ob["distance"] <= 3:
+            bull_confirmation += 1
+
+        if bull_ob["strength"] >= 70:
+            bull_confirmation += 1
+
+    if bear_ob:
+
+        if _price_in_zone(
+            price,
+            bear_ob,
+            0.008,
+        ):
+            bear_confirmation += 2
+
+        elif bear_ob["distance"] <= 3:
+            bear_confirmation += 1
+
+        if bear_ob["strength"] >= 70:
+            bear_confirmation += 1
+
+    if structure["bullish"]:
+        bull_confirmation += 1
+
+    if structure["bearish"]:
+        bear_confirmation += 1
+
+    if volume_ratio >= 1.10:
+
+        if bull_confirmation > bear_confirmation:
+            bull_confirmation += 1
+
+        elif bear_confirmation > bull_confirmation:
+            bear_confirmation += 1
+
+    if (
+        bull_confirmation >= 3
+        and bull_confirmation
+        >= bear_confirmation + 1
+    ):
+
+        state = "INFLOW"
 
         confidence = int(
             clamp(
-                imbalance * 100,
+                55
+                + bull_confirmation * 10,
+                0,
+                100,
+            )
+        )
+
+    elif (
+        bear_confirmation >= 3
+        and bear_confirmation
+        >= bull_confirmation + 1
+    ):
+
+        state = "OUTFLOW"
+
+        confidence = int(
+            clamp(
+                55
+                + bear_confirmation * 10,
                 0,
                 100,
             )
@@ -932,38 +1421,19 @@ def detect_liquidity_flow(
 
     else:
 
-        confidence = 0
-
-    # -----------------------------------------------------
-    # يحتاج فرقًا واضحًا
-    # -----------------------------------------------------
-
-    if (
-        bullish_volume
-        >= bearish_volume * 1.20
-        and ratio >= 1.05
-    ):
-
-        state = "INFLOW"
-
-    elif (
-        bearish_volume
-        >= bullish_volume * 1.20
-        and ratio <= 0.95
-    ):
-
-        state = "OUTFLOW"
-
-    else:
-
         state = "NEUTRAL"
+        confidence = 0
 
     return {
         "state": state,
-        "bullish_volume": bullish_volume,
-        "bearish_volume": bearish_volume,
-        "ratio": ratio,
-        "confidence": confidence,
+        "bullish_volume":
+            float(bull_confirmation),
+        "bearish_volume":
+            float(bear_confirmation),
+        "ratio":
+            volume_ratio,
+        "confidence":
+            confidence,
     }
 
 
@@ -986,54 +1456,74 @@ def detect_bottom_accumulation(
     if len(klines) < 30:
         return result
 
-    recent = klines[
-        -30:
-    ]
+    ob = get_order_block_state(
+        klines
+    )
 
-    highs = [
+    bullish_ob = ob.get(
+        "bullish"
+    )
+
+    price = klines[-1]["close"]
+
+    if bullish_ob:
+
+        if bullish_ob["strength"] >= 55:
+
+            result["score"] += 3
+
+            result["reasons"].append(
+                "Bullish Order Block قوي"
+            )
+
+        if _price_in_zone(
+            price,
+            bullish_ob,
+            0.008,
+        ):
+
+            result["score"] += 2
+
+            result["reasons"].append(
+                "السعر داخل Bullish OB"
+            )
+
+        elif bullish_ob["distance"] <= 3:
+
+            result["score"] += 1
+
+            result["reasons"].append(
+                "السعر قريب من Bullish OB"
+            )
+
+    # -----------------------------------------------------
+    # السعر السابق فقط كـ context
+    # وليس لتحديد الاتجاه
+    # -----------------------------------------------------
+
+    recent = klines[-30:]
+
+    highest = max(
         x["high"]
         for x in recent
-    ]
+    )
 
-    lows = [
+    lowest = min(
         x["low"]
         for x in recent
-    ]
-
-    highest = max(highs)
-    lowest = min(lows)
-
-    current = recent[-1][
-        "close"
-    ]
-
-    if highest <= 0:
-        return result
-
-    drawdown = (
-        (current - highest)
-        / highest
-        * 100
     )
 
     if lowest > 0:
 
-        recent_range = (
+        result["range"] = (
             (highest - lowest)
             / lowest
             * 100
         )
 
-    else:
-
-        recent_range = 999
-
-    result["drawdown"] = drawdown
-    result["range"] = recent_range
-
-    flow = detect_liquidity_flow(
-        klines
-    )
+    # -----------------------------------------------------
+    # volume confirmation
+    # -----------------------------------------------------
 
     volume_ratio = (
         calculate_volume_ratio(
@@ -1041,116 +1531,35 @@ def detect_bottom_accumulation(
         )
     )
 
-    volume_trend = (
-        calculate_volume_trend(
+    if volume_ratio >= 1.10:
+
+        result["score"] += 1
+
+        result["reasons"].append(
+            "الحجم يؤكد منطقة الـ OB"
+        )
+
+    structure = (
+        detect_market_structure(
             klines
         )
     )
 
-    # -----------------------------------------------------
-    # هبوط سابق
-    # -----------------------------------------------------
-
-    if drawdown <= -5:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "هبوط سابق"
-        )
-
-    if drawdown <= -10:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "هبوط قوي سابق"
-        )
-
-    # -----------------------------------------------------
-    # نطاق تجميع
-    # -----------------------------------------------------
-
-    if recent_range <= 18:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "تجميع داخل نطاق"
-        )
-
-    # -----------------------------------------------------
-    # دخول السيولة
-    # -----------------------------------------------------
-
-    if flow["state"] == "INFLOW":
+    if structure["bullish"]:
 
         result["score"] += 2
 
         result["reasons"].append(
-            "دخول سيولة"
+            "BOS صاعد من منطقة الطلب"
         )
 
-    # -----------------------------------------------------
-    # الحجم
-    # -----------------------------------------------------
-
-    if volume_ratio >= 1.03:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "الحجم أعلى من المتوسط"
-        )
-
-    if volume_trend == "RISING":
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "الحجم يتزايد"
-        )
-
-    # -----------------------------------------------------
-    # ثبات القاع
-    # -----------------------------------------------------
-
-    last_lows = [
-        x["low"]
-        for x in recent[-8:]
-    ]
-
-    if len(last_lows) >= 6:
-
-        old_low = min(
-            last_lows[:3]
-        )
-
-        new_low = min(
-            last_lows[3:]
-        )
-
-        if new_low >= (
-            old_low * 0.997
-        ):
-
-            result["score"] += 1
-
-            result["reasons"].append(
-                "القاع ثابت"
-            )
-
-    # -----------------------------------------------------
-    # النتيجة
-    # -----------------------------------------------------
-
-    if result["score"] >= 5:
+    if result["score"] >= 6:
 
         result["state"] = (
             "STRONG_ACCUMULATION"
         )
 
-    elif result["score"] >= 3:
+    elif result["score"] >= 4:
 
         result["state"] = (
             "ACCUMULATION"
@@ -1184,48 +1593,65 @@ def detect_distribution(
     if len(klines) < 30:
         return result
 
-    recent = klines[
-        -30:
-    ]
-
-    highs = [
-        x["high"]
-        for x in recent
-    ]
-
-    lows = [
-        x["low"]
-        for x in recent
-    ]
-
-    highest = max(highs)
-    lowest = min(lows)
-
-    current = recent[-1][
-        "close"
-    ]
-
-    if lowest <= 0:
-        return result
-
-    rally = (
-        (current - lowest)
-        / lowest
-        * 100
-    )
-
-    recent_range = (
-        (highest - lowest)
-        / lowest
-        * 100
-    )
-
-    result["rally"] = rally
-    result["range"] = recent_range
-
-    flow = detect_liquidity_flow(
+    ob = get_order_block_state(
         klines
     )
+
+    bearish_ob = ob.get(
+        "bearish"
+    )
+
+    price = klines[-1]["close"]
+
+    if bearish_ob:
+
+        if bearish_ob["strength"] >= 55:
+
+            result["score"] += 3
+
+            result["reasons"].append(
+                "Bearish Order Block قوي"
+            )
+
+        if _price_in_zone(
+            price,
+            bearish_ob,
+            0.008,
+        ):
+
+            result["score"] += 2
+
+            result["reasons"].append(
+                "السعر داخل Bearish OB"
+            )
+
+        elif bearish_ob["distance"] <= 3:
+
+            result["score"] += 1
+
+            result["reasons"].append(
+                "السعر قريب من Bearish OB"
+            )
+
+    recent = klines[-30:]
+
+    highest = max(
+        x["high"]
+        for x in recent
+    )
+
+    lowest = min(
+        x["low"]
+        for x in recent
+    )
+
+    if lowest > 0:
+
+        result["range"] = (
+            (highest - lowest)
+            / lowest
+            * 100
+        )
 
     volume_ratio = (
         calculate_volume_ratio(
@@ -1233,93 +1659,35 @@ def detect_distribution(
         )
     )
 
-    volume_trend = (
-        calculate_volume_trend(
+    if volume_ratio >= 1.10:
+
+        result["score"] += 1
+
+        result["reasons"].append(
+            "الحجم يؤكد منطقة العرض"
+        )
+
+    structure = (
+        detect_market_structure(
             klines
         )
     )
 
-    # -----------------------------------------------------
-    # صعود سابق
-    # -----------------------------------------------------
-
-    if rally >= 8:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "صعود سابق قوي"
-        )
-
-    if rally >= 15:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "صعود ممتد"
-        )
-
-    # -----------------------------------------------------
-    # قرب القمة
-    # -----------------------------------------------------
-
-    distance_from_high = (
-        (highest - current)
-        / highest
-        * 100
-    )
-
-    if distance_from_high <= 5:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "قريب من القمة"
-        )
-
-    # -----------------------------------------------------
-    # خروج السيولة
-    # -----------------------------------------------------
-
-    if flow["state"] == "OUTFLOW":
+    if structure["bearish"]:
 
         result["score"] += 2
 
         result["reasons"].append(
-            "خروج سيولة"
+            "BOS هابط من منطقة العرض"
         )
 
-    # -----------------------------------------------------
-    # الحجم
-    # -----------------------------------------------------
-
-    if volume_ratio >= 1.03:
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "الحجم مرتفع"
-        )
-
-    if volume_trend == "RISING":
-
-        result["score"] += 1
-
-        result["reasons"].append(
-            "الحجم يتزايد"
-        )
-
-    # -----------------------------------------------------
-    # النتيجة
-    # -----------------------------------------------------
-
-    if result["score"] >= 5:
+    if result["score"] >= 6:
 
         result["state"] = (
             "STRONG_DISTRIBUTION"
         )
 
-    elif result["score"] >= 3:
+    elif result["score"] >= 4:
 
         result["state"] = (
             "DISTRIBUTION"
@@ -1389,55 +1757,6 @@ def calculate_timeframe_trend(
 
 
 # =========================================================
-# LIQUIDITY BIAS
-#
-# السيولة لها الأولوية.
-# =========================================================
-
-def calculate_liquidity_bias(
-    flow_state,
-    accumulation_state,
-    distribution_state,
-):
-
-    accumulation_states = (
-        "ACCUMULATION",
-        "STRONG_ACCUMULATION",
-    )
-
-    distribution_states = (
-        "DISTRIBUTION",
-        "STRONG_DISTRIBUTION",
-    )
-
-    bullish = (
-        flow_state == "INFLOW"
-        and accumulation_state
-        in accumulation_states
-    )
-
-    bearish = (
-        flow_state == "OUTFLOW"
-        and distribution_state
-        in distribution_states
-    )
-
-    if bullish:
-        return "LONG"
-
-    if bearish:
-        return "SHORT"
-
-    if flow_state == "INFLOW":
-        return "LONG WATCH"
-
-    if flow_state == "OUTFLOW":
-        return "SHORT WATCH"
-
-    return "NEUTRAL"
-
-
-# =========================================================
 # REVERSAL
 # =========================================================
 
@@ -1455,6 +1774,10 @@ def detect_reversal(
     if len(klines) < 30:
         return result
 
+    ob = get_order_block_state(
+        klines
+    )
+
     structure = (
         detect_market_structure(
             klines
@@ -1467,124 +1790,77 @@ def detect_reversal(
         )
     )
 
-    accumulation = (
-        detect_bottom_accumulation(
-            klines
-        )
-    )
+    # -----------------------------------------------------
+    # BULLISH REVERSAL
+    # -----------------------------------------------------
 
-    distribution = (
-        detect_distribution(
-            klines
-        )
-    )
-
-    closes = [
-        x["close"]
-        for x in klines
-    ]
-
-    rsi = calculate_rsi(
-        closes
-    )
-
-    drawdown = recent_drawdown(
-        klines
-    )
-
-    rally = recent_rally(
-        klines
-    )
-
-    # =====================================================
-    # BULL
-    # =====================================================
-
-    if accumulation["state"] in (
-        "ACCUMULATION",
-        "STRONG_ACCUMULATION",
-    ):
+    if ob["direction"] == "LONG":
 
         result["bull_score"] += 3
+
+        result["reasons"].append(
+            "Bullish Order Block"
+        )
+
+    if ob.get("bullish"):
+
+        if ob["bullish"]["retest"]:
+
+            result["bull_score"] += 2
+
+            result["reasons"].append(
+                "Retest للـ Bullish OB"
+            )
+
+        if ob["bullish"]["strength"] >= 70:
+
+            result["bull_score"] += 1
 
     if flow["state"] == "INFLOW":
 
-        result["bull_score"] += 3
+        result["bull_score"] += 2
 
     if structure["bullish"]:
 
         result["bull_score"] += 2
 
-    if rsi <= 45:
+    # -----------------------------------------------------
+    # BEARISH REVERSAL
+    # -----------------------------------------------------
 
-        result["bull_score"] += 1
-
-    if drawdown <= -8:
-
-        result["bull_score"] += 1
-
-    # =====================================================
-    # BEAR
-    # =====================================================
-
-    if distribution["state"] in (
-        "DISTRIBUTION",
-        "STRONG_DISTRIBUTION",
-    ):
+    if ob["direction"] == "SHORT":
 
         result["bear_score"] += 3
+
+        result["reasons"].append(
+            "Bearish Order Block"
+        )
+
+    if ob.get("bearish"):
+
+        if ob["bearish"]["retest"]:
+
+            result["bear_score"] += 2
+
+            result["reasons"].append(
+                "Retest للـ Bearish OB"
+            )
+
+        if ob["bearish"]["strength"] >= 70:
+
+            result["bear_score"] += 1
 
     if flow["state"] == "OUTFLOW":
 
-        result["bear_score"] += 3
+        result["bear_score"] += 2
 
     if structure["bearish"]:
 
         result["bear_score"] += 2
 
-    if rsi >= 55:
-
-        result["bear_score"] += 1
-
-    if rally >= 10:
-
-        result["bear_score"] += 1
-
-    # =====================================================
-    # HARD LIQUIDITY PROTECTION
-    # =====================================================
-
-    if (
-        flow["state"] == "INFLOW"
-        and accumulation["state"]
-        in (
-            "ACCUMULATION",
-            "STRONG_ACCUMULATION",
-        )
-    ):
-
-        result["bear_score"] = min(
-            result["bear_score"],
-            2,
-        )
-
-    if (
-        flow["state"] == "OUTFLOW"
-        and distribution["state"]
-        in (
-            "DISTRIBUTION",
-            "STRONG_DISTRIBUTION",
-        )
-    ):
-
-        result["bull_score"] = min(
-            result["bull_score"],
-            2,
-        )
-
-    # =====================================================
+    # -----------------------------------------------------
     # FINAL
-    # =====================================================
+    # -----------------------------------------------------
 
     if (
         result["bull_score"] >= 5
@@ -1594,10 +1870,6 @@ def detect_reversal(
 
         result["state"] = (
             "BULLISH_REVERSAL"
-        )
-
-        result["reasons"].append(
-            "سيطرة عوامل الانعكاس الصاعد"
         )
 
     elif (
@@ -1610,54 +1882,184 @@ def detect_reversal(
             "BEARISH_REVERSAL"
         )
 
-        result["reasons"].append(
-            "سيطرة عوامل الانعكاس الهابط"
-        )
-
     return result
 
 
 # =========================================================
-# CONFIRMATION
+# LATE PUMP / DUMP
+# =========================================================
+#
+# لا تستخدم لتحديد الاتجاه.
+# فقط تحمي من مطاردة الحركة.
 # =========================================================
 
-def confirmation_bias(
-    tf_15m,
-    tf_30m,
+def detect_late_pump(
+    klines,
 ):
 
-    score_long = 0
-    score_short = 0
+    if len(klines) < 30:
+        return False
 
-    if tf_15m == "LONG":
-        score_long += 1
+    closes = [
+        x["close"]
+        for x in klines
+    ]
 
-    elif tf_15m == "SHORT":
-        score_short += 1
+    ema9 = calculate_ema(
+        closes,
+        9,
+    )
 
-    if tf_30m == "LONG":
-        score_long += 1
+    ema20 = calculate_ema(
+        closes,
+        20,
+    )
 
-    elif tf_30m == "SHORT":
-        score_short += 1
+    price = closes[-1]
 
-    if score_long >= 2:
-        return "LONG"
+    atr = calculate_atr(
+        klines
+    )
 
-    if score_short >= 2:
-        return "SHORT"
+    if atr <= 0:
+        return False
 
-    if score_long > score_short:
-        return "LONG WATCH"
+    extension = (
+        price - ema20
+    ) / atr
 
-    if score_short > score_long:
-        return "SHORT WATCH"
+    return (
+        extension >= 4
+        and price > ema9
+    )
 
-    return "NEUTRAL"
+
+def detect_late_dump(
+    klines,
+):
+
+    if len(klines) < 30:
+        return False
+
+    closes = [
+        x["close"]
+        for x in klines
+    ]
+
+    ema9 = calculate_ema(
+        closes,
+        9,
+    )
+
+    ema20 = calculate_ema(
+        closes,
+        20,
+    )
+
+    price = closes[-1]
+
+    atr = calculate_atr(
+        klines
+    )
+
+    if atr <= 0:
+        return False
+
+    extension = (
+        ema20 - price
+    ) / atr
+
+    return (
+        extension >= 4
+        and price < ema9
+    )
 
 
 # =========================================================
-# EXTENDED SETUP CLASSIFICATION
+# MTF ORDER BLOCK DIRECTION
+# =========================================================
+
+def get_mtf_ob_direction(
+    tf_15m,
+    tf_30m,
+    tf_1h,
+    tf_4h,
+):
+
+    scores = {
+        "LONG": 0,
+        "SHORT": 0,
+    }
+
+    details = {}
+
+    for name, data in (
+        ("15m", tf_15m),
+        ("30m", tf_30m),
+        ("1h", tf_1h),
+        ("4h", tf_4h),
+    ):
+
+        ob = get_order_block_state(
+            data
+        )
+
+        details[name] = ob
+
+        if ob["direction"] == "LONG":
+
+            weight = {
+                "15m": 1,
+                "30m": 2,
+                "1h": 3,
+                "4h": 3,
+            }[name]
+
+            scores["LONG"] += (
+                ob["score"] / 100
+            ) * weight
+
+        elif ob["direction"] == "SHORT":
+
+            weight = {
+                "15m": 1,
+                "30m": 2,
+                "1h": 3,
+                "4h": 3,
+            }[name]
+
+            scores["SHORT"] += (
+                ob["score"] / 100
+            ) * weight
+
+    if (
+        scores["LONG"]
+        >= scores["SHORT"] + 2
+    ):
+
+        direction = "LONG"
+
+    elif (
+        scores["SHORT"]
+        >= scores["LONG"] + 2
+    ):
+
+        direction = "SHORT"
+
+    else:
+
+        direction = "NEUTRAL"
+
+    return {
+        "direction": direction,
+        "long_score": scores["LONG"],
+        "short_score": scores["SHORT"],
+        "details": details,
+    }
+
+
+# =========================================================
+# CLASSIFICATION
 # =========================================================
 
 def classify_setup(
@@ -1671,71 +2073,39 @@ def classify_setup(
     structure,
     late_pump,
     late_dump,
-    confirmation="NEUTRAL",
+    ob_direction="NEUTRAL",
+    ob_score=0,
+    mtf_ob_direction="NEUTRAL",
 ):
 
-    accumulation_states = (
-        "ACCUMULATION",
-        "STRONG_ACCUMULATION",
-    )
-
-    distribution_states = (
-        "DISTRIBUTION",
-        "STRONG_DISTRIBUTION",
-    )
-
     # =====================================================
-    # HARD LIQUIDITY DIRECTION
+    # HARD ORDER BLOCK PRIORITY
     # =====================================================
 
-    bullish_liquidity = (
-        flow == "INFLOW"
-        and accumulation
-        in accumulation_states
-    )
+    if ob_direction == "LONG":
 
-    bearish_liquidity = (
-        flow == "OUTFLOW"
-        and distribution
-        in distribution_states
-    )
+        if mtf_ob_direction == "LONG":
 
-    # =====================================================
-    # LONG LIQUIDITY SETUP
-    # =====================================================
+            if reversal == "BULLISH_REVERSAL":
 
-    if bullish_liquidity:
+                return (
+                    "LONG",
+                    "ENTRY READY",
+                )
 
-        # ممنوع تحويله إلى SHORT
-        if late_pump:
+            if (
+                structure == "BULLISH"
+                or flow == "INFLOW"
+            ):
+
+                return (
+                    "LONG",
+                    "ENTRY READY",
+                )
 
             return (
                 "LONG WATCH",
                 "ACCUMULATION WATCH",
-            )
-
-        if (
-            reversal == "BULLISH_REVERSAL"
-            and confirmation == "LONG"
-        ):
-
-            return (
-                "LONG",
-                "ENTRY READY",
-            )
-
-        if (
-            structure == "BULLISH"
-            and confirmation
-            in (
-                "LONG",
-                "LONG WATCH",
-            )
-        ):
-
-            return (
-                "LONG",
-                "ENTRY READY",
             )
 
         return (
@@ -1743,144 +2113,40 @@ def classify_setup(
             "ACCUMULATION WATCH",
         )
 
-    # =====================================================
-    # SHORT LIQUIDITY SETUP
-    # =====================================================
+    if ob_direction == "SHORT":
 
-    if bearish_liquidity:
+        if mtf_ob_direction == "SHORT":
 
-        # ممنوع تحويله إلى LONG
-        if late_dump:
+            if reversal == "BEARISH_REVERSAL":
+
+                return (
+                    "SHORT",
+                    "ENTRY READY",
+                )
+
+            if (
+                structure == "BEARISH"
+                or flow == "OUTFLOW"
+            ):
+
+                return (
+                    "SHORT",
+                    "ENTRY READY",
+                )
 
             return (
                 "SHORT WATCH",
                 "REVERSAL WATCH",
             )
 
-        if (
-            reversal == "BEARISH_REVERSAL"
-            and confirmation == "SHORT"
-        ):
-
-            return (
-                "SHORT",
-                "ENTRY READY",
-            )
-
-        if (
-            structure == "BEARISH"
-            and confirmation
-            in (
-                "SHORT",
-                "SHORT WATCH",
-            )
-        ):
-
-            return (
-                "SHORT",
-                "ENTRY READY",
-            )
-
         return (
             "SHORT WATCH",
             "REVERSAL WATCH",
         )
 
     # =====================================================
-    # REVERSAL WITHOUT FULL ACCUMULATION/DISTRIBUTION
+    # NO STRONG OB
     # =====================================================
-
-    if reversal == "BULLISH_REVERSAL":
-
-        if confirmation == "LONG":
-
-            return (
-                "LONG",
-                "ENTRY READY",
-            )
-
-        return (
-            "LONG WATCH",
-            "REVERSAL WATCH",
-        )
-
-    if reversal == "BEARISH_REVERSAL":
-
-        if confirmation == "SHORT":
-
-            return (
-                "SHORT",
-                "ENTRY READY",
-            )
-
-        return (
-            "SHORT WATCH",
-            "REVERSAL WATCH",
-        )
-
-    # =====================================================
-    # TREND CONTINUATION
-    # =====================================================
-
-    bullish_alignment = (
-        trend_1d == "LONG"
-        and trend_4h == "LONG"
-        and trend_1h == "LONG"
-        and flow == "INFLOW"
-    )
-
-    bearish_alignment = (
-        trend_1d == "SHORT"
-        and trend_4h == "SHORT"
-        and trend_1h == "SHORT"
-        and flow == "OUTFLOW"
-    )
-
-    if bullish_alignment and not late_pump:
-
-        if confirmation == "LONG":
-
-            return (
-                "LONG",
-                "ENTRY READY",
-            )
-
-        return (
-            "LONG WATCH",
-            "REVERSAL WATCH",
-        )
-
-    if bearish_alignment and not late_dump:
-
-        if confirmation == "SHORT":
-
-            return (
-                "SHORT",
-                "ENTRY READY",
-            )
-
-        return (
-            "SHORT WATCH",
-            "REVERSAL WATCH",
-        )
-
-    # =====================================================
-    # LATE MOVEMENT
-    # =====================================================
-
-    if late_pump:
-
-        return (
-            "WAIT",
-            "LATE PUMP - WAIT",
-        )
-
-    if late_dump:
-
-        return (
-            "WAIT",
-            "LATE DUMP - WAIT",
-        )
 
     return (
         "WAIT",
@@ -1889,7 +2155,7 @@ def classify_setup(
 
 
 # =========================================================
-# SCORE
+# ENTRY SCORE
 # =========================================================
 
 def calculate_entry_score(
@@ -1902,125 +2168,114 @@ def calculate_entry_score(
     reversal,
     late_pump,
     late_dump,
+    ob_direction="NEUTRAL",
+    ob_score=0,
+    mtf_ob_direction="NEUTRAL",
+    mtf_long_score=0,
+    mtf_short_score=0,
 ):
 
     long_score = 0
     short_score = 0
 
-    accumulation_states = (
-        "ACCUMULATION",
-        "STRONG_ACCUMULATION",
-    )
+    # =====================================================
+    # ORDER BLOCK = 50%+ OF SCORE
+    # =====================================================
 
-    distribution_states = (
-        "DISTRIBUTION",
-        "STRONG_DISTRIBUTION",
-    )
+    if ob_direction == "LONG":
+
+        long_score += 40
+
+        long_score += int(
+            clamp(
+                ob_score * 0.15,
+                0,
+                15,
+            )
+        )
+
+    elif ob_direction == "SHORT":
+
+        short_score += 40
+
+        short_score += int(
+            clamp(
+                ob_score * 0.15,
+                0,
+                15,
+            )
+        )
 
     # =====================================================
-    # LONG
+    # MTF OB
+    # =====================================================
+
+    if mtf_ob_direction == "LONG":
+
+        long_score += 15
+
+    elif mtf_ob_direction == "SHORT":
+
+        short_score += 15
+
+    # =====================================================
+    # BOS
+    # =====================================================
+
+    if reversal == "BULLISH_REVERSAL":
+
+        long_score += 15
+
+    elif reversal == "BEARISH_REVERSAL":
+
+        short_score += 15
+
+    # =====================================================
+    # LIQUIDITY CONFIRMATION
     # =====================================================
 
     if flow == "INFLOW":
-        long_score += 25
 
-    if accumulation in accumulation_states:
-        long_score += 25
-
-    if reversal == "BULLISH_REVERSAL":
-        long_score += 20
-
-    if trend_1d == "LONG":
-        long_score += 8
-
-    if trend_4h == "LONG":
         long_score += 10
 
-    if trend_1h == "LONG":
+    elif flow == "OUTFLOW":
+
+        short_score += 10
+
+    # =====================================================
+    # ACCUMULATION / DISTRIBUTION
+    # =====================================================
+
+    if accumulation in (
+        "ACCUMULATION",
+        "STRONG_ACCUMULATION",
+    ):
+
         long_score += 10
 
-    if late_dump:
-        long_score += 2
-
-    # =====================================================
-    # SHORT
-    # =====================================================
-
-    if flow == "OUTFLOW":
-        short_score += 25
-
-    if distribution in distribution_states:
-        short_score += 25
-
-    if reversal == "BEARISH_REVERSAL":
-        short_score += 20
-
-    if trend_1d == "SHORT":
-        short_score += 8
-
-    if trend_4h == "SHORT":
-        short_score += 10
-
-    if trend_1h == "SHORT":
-        short_score += 10
-
-    if late_pump:
-        short_score += 2
-
-    # =====================================================
-    # HARD LIQUIDITY PROTECTION
-    # =====================================================
-
-    if (
-        flow == "INFLOW"
-        and accumulation
-        in accumulation_states
+    if distribution in (
+        "DISTRIBUTION",
+        "STRONG_DISTRIBUTION",
     ):
 
-        # لا يمكن أن يفوز SHORT بسبب EMA
-        short_score = min(
-            short_score,
-            20,
-        )
-
-        long_score = max(
-            long_score,
-            55,
-        )
-
-    if (
-        flow == "OUTFLOW"
-        and distribution
-        in distribution_states
-    ):
-
-        # لا يمكن أن يفوز LONG بسبب EMA
-        long_score = min(
-            long_score,
-            20,
-        )
-
-        short_score = max(
-            short_score,
-            55,
-        )
+        short_score += 10
 
     # =====================================================
-    # REVERSAL PROTECTION
+    # HARD PROTECTION
     # =====================================================
 
-    if reversal == "BULLISH_REVERSAL":
+    if ob_direction == "LONG":
 
         short_score = min(
             short_score,
-            25,
+            30,
         )
 
-    if reversal == "BEARISH_REVERSAL":
+    if ob_direction == "SHORT":
 
         long_score = min(
             long_score,
-            25,
+            30,
         )
 
     return (
@@ -2031,7 +2286,6 @@ def calculate_entry_score(
                 100,
             )
         ),
-
         int(
             clamp(
                 short_score,
@@ -2040,78 +2294,6 @@ def calculate_entry_score(
             )
         ),
     )
-
-
-# =========================================================
-# LATE PUMP
-# =========================================================
-
-def detect_late_pump(
-    klines,
-):
-
-    if len(klines) < 30:
-        return False
-
-    rally = recent_rally(
-        klines,
-        25,
-    )
-
-    rsi = calculate_rsi([
-        x["close"]
-        for x in klines
-    ])
-
-    volume_ratio = (
-        calculate_volume_ratio(
-            klines
-        )
-    )
-
-    if (
-        rally >= 18
-        and rsi >= 68
-    ):
-        return True
-
-    if (
-        rally >= 25
-        and volume_ratio >= 1.5
-    ):
-        return True
-
-    return False
-
-
-# =========================================================
-# LATE DUMP
-# =========================================================
-
-def detect_late_dump(
-    klines,
-):
-
-    if len(klines) < 30:
-        return False
-
-    drawdown = recent_drawdown(
-        klines,
-        25,
-    )
-
-    rsi = calculate_rsi([
-        x["close"]
-        for x in klines
-    ])
-
-    if (
-        drawdown <= -18
-        and rsi <= 28
-    ):
-        return True
-
-    return False
 
 
 # =========================================================
@@ -2127,10 +2309,6 @@ def get_coin_analysis(
     )
 
     try:
-
-        # =================================================
-        # DATA
-        # =================================================
 
         tf_15m = get_klines(
             symbol,
@@ -2179,7 +2357,7 @@ def get_coin_analysis(
             }
 
         # =================================================
-        # TRENDS
+        # MTF TREND
         # =================================================
 
         trend_1d = (
@@ -2213,7 +2391,30 @@ def get_coin_analysis(
         )
 
         # =================================================
-        # 1H CORE ANALYSIS
+        # PRIMARY ORDER BLOCK
+        # =================================================
+
+        ob_1h = get_order_block_state(
+            tf_1h
+        )
+
+        mtf_ob = get_mtf_ob_direction(
+            tf_15m,
+            tf_30m,
+            tf_1h,
+            tf_4h,
+        )
+
+        ob_direction = (
+            ob_1h["direction"]
+        )
+
+        ob_score = (
+            ob_1h["score"]
+        )
+
+        # =================================================
+        # CONFIRMATIONS
         # =================================================
 
         flow_data = (
@@ -2246,25 +2447,6 @@ def get_coin_analysis(
             )
         )
 
-        # =================================================
-        # CONFIRMATION
-        # =================================================
-
-        confirmation = (
-            confirmation_bias(
-                trend_15m,
-                trend_30m,
-            )
-        )
-
-        liquidity_bias = (
-            calculate_liquidity_bias(
-                flow_data["state"],
-                accumulation["state"],
-                distribution["state"],
-            )
-        )
-
         late_pump = (
             detect_late_pump(
                 tf_1h
@@ -2278,17 +2460,19 @@ def get_coin_analysis(
         )
 
         # =================================================
-        # PRICE / LEVELS
+        # PRICE
         # =================================================
 
-        price = tf_1h[-1][
-            "close"
-        ]
+        price = tf_1h[-1]["close"]
 
-        support, resistance = (
-            calculate_support_resistance(
-                tf_1h
-            )
+        support = min(
+            x["low"]
+            for x in tf_1h[-80:]
+        )
+
+        resistance = max(
+            x["high"]
+            for x in tf_1h[-80:]
         )
 
         atr = calculate_atr(
@@ -2321,25 +2505,7 @@ def get_coin_analysis(
         )
 
         # =================================================
-        # SCORE
-        # =================================================
-
-        long_score, short_score = (
-            calculate_entry_score(
-                trend_1d,
-                trend_4h,
-                trend_1h,
-                flow_data["state"],
-                accumulation["state"],
-                distribution["state"],
-                reversal["state"],
-                late_pump,
-                late_dump,
-            )
-        )
-
-        # =================================================
-        # CLASSIFICATION
+        # CLASSIFY
         # =================================================
 
         direction, state = (
@@ -2354,41 +2520,44 @@ def get_coin_analysis(
                 structure["structure"],
                 late_pump,
                 late_dump,
-                confirmation,
+                ob_direction,
+                ob_score,
+                mtf_ob["direction"],
             )
         )
 
         # =================================================
-        # HARD FINAL LIQUIDITY PROTECTION
-        #
-        # أهم جزء في النسخة.
+        # SCORE
         # =================================================
 
-        bullish_liquidity_setup = (
-            flow_data["state"]
-            == "INFLOW"
-            and accumulation["state"]
-            in (
-                "ACCUMULATION",
-                "STRONG_ACCUMULATION",
+        long_score, short_score = (
+            calculate_entry_score(
+                trend_1d,
+                trend_4h,
+                trend_1h,
+                flow_data["state"],
+                accumulation["state"],
+                distribution["state"],
+                reversal["state"],
+                late_pump,
+                late_dump,
+                ob_direction,
+                ob_score,
+                mtf_ob["direction"],
+                mtf_ob["long_score"],
+                mtf_ob["short_score"],
             )
         )
 
-        bearish_liquidity_setup = (
-            flow_data["state"]
-            == "OUTFLOW"
-            and distribution["state"]
-            in (
-                "DISTRIBUTION",
-                "STRONG_DISTRIBUTION",
-            )
-        )
+        # =================================================
+        # FINAL DIRECTION PROTECTION
+        # =================================================
 
-        # -------------------------------------------------
-        # INFLOW + ACCUMULATION
-        # -------------------------------------------------
-
-        if bullish_liquidity_setup:
+        # Bullish OB يمنع SHORT
+        if (
+            ob_direction == "LONG"
+            and ob_score >= 60
+        ):
 
             if direction in (
                 "SHORT",
@@ -2401,22 +2570,11 @@ def get_coin_analysis(
                     "ACCUMULATION WATCH"
                 )
 
-            # لا نسمح بإشارة SHORT
-            short_score = min(
-                short_score,
-                20,
-            )
-
-            long_score = max(
-                long_score,
-                55,
-            )
-
-        # -------------------------------------------------
-        # OUTFLOW + DISTRIBUTION
-        # -------------------------------------------------
-
-        if bearish_liquidity_setup:
+        # Bearish OB يمنع LONG
+        if (
+            ob_direction == "SHORT"
+            and ob_score >= 60
+        ):
 
             if direction in (
                 "LONG",
@@ -2429,78 +2587,57 @@ def get_coin_analysis(
                     "REVERSAL WATCH"
                 )
 
-            long_score = min(
-                long_score,
-                20,
-            )
-
-            short_score = max(
-                short_score,
-                55,
-            )
-
         # =================================================
-        # NO LIQUIDITY = NO AGGRESSIVE ENTRY
+        # NO OB = NO TRADE
         # =================================================
 
-        if (
-            flow_data["state"]
-            == "NEUTRAL"
-        ):
+        if ob_direction == "NEUTRAL":
 
-            if direction == "LONG":
+            direction = "WAIT"
 
-                direction = "LONG WATCH"
-
-                state = (
-                    "REVERSAL WATCH"
-                )
-
-            elif direction == "SHORT":
-
-                direction = "SHORT WATCH"
-
-                state = (
-                    "REVERSAL WATCH"
-                )
+            state = "NO TRADE"
 
         # =================================================
-        # LEVELS
+        # LEVELS BASED ON ORDER BLOCK
         # =================================================
 
         entry = price
+
+        active_ob = None
 
         if direction in (
             "LONG",
             "LONG WATCH",
         ):
 
-            if support > 0:
+            active_ob = (
+                ob_1h.get("bullish")
+            )
 
-                structural_sl = (
-                    support * 0.985
+            if active_ob:
+
+                sl = (
+                    active_ob["low"]
+                    - atr * 0.35
                 )
 
             else:
 
-                structural_sl = (
+                sl = (
                     price
                     - atr * 1.5
                 )
 
-            volatility_sl = (
-                price
-                - atr * 1.2
-            )
+            if sl >= price:
 
-            sl = min(
-                structural_sl,
-                volatility_sl,
-            )
+                sl = (
+                    price
+                    - atr * 1.5
+                )
 
             risk = max(
                 price - sl,
-                atr,
+                atr * 0.8,
             )
 
             tp1 = (
@@ -2523,32 +2660,34 @@ def get_coin_analysis(
             "SHORT WATCH",
         ):
 
-            if resistance > 0:
+            active_ob = (
+                ob_1h.get("bearish")
+            )
 
-                structural_sl = (
-                    resistance * 1.015
+            if active_ob:
+
+                sl = (
+                    active_ob["high"]
+                    + atr * 0.35
                 )
 
             else:
 
-                structural_sl = (
+                sl = (
                     price
                     + atr * 1.5
                 )
 
-            volatility_sl = (
-                price
-                + atr * 1.2
-            )
+            if sl <= price:
 
-            sl = max(
-                structural_sl,
-                volatility_sl,
-            )
+                sl = (
+                    price
+                    + atr * 1.5
+                )
 
             risk = max(
                 sl - price,
-                atr,
+                atr * 0.8,
             )
 
             tp1 = (
@@ -2574,70 +2713,63 @@ def get_coin_analysis(
             tp3 = 0.0
 
         # =================================================
-        # FINAL SCORE
-        # =================================================
-
-        score = max(
-            long_score,
-            short_score,
-        )
-
-        # =================================================
         # REASONS
         # =================================================
 
         reasons = []
 
-        if flow_data["state"] == "INFLOW":
+        if ob_direction == "LONG":
 
             reasons.append(
-                "🟢 دخول سيولة"
+                "🟢 Bullish Order Block"
             )
 
-        elif flow_data["state"] == "OUTFLOW":
+            if ob_1h.get("bullish"):
+
+                reasons.append(
+                    "📍 منطقة الطلب "
+                    f"{ob_1h['bullish']['low']:.8g}"
+                    " - "
+                    f"{ob_1h['bullish']['high']:.8g}"
+                )
+
+                if ob_1h["bullish"]["retest"]:
+
+                    reasons.append(
+                        "🔄 السعر داخل Retest للـ OB"
+                    )
+
+        elif ob_direction == "SHORT":
 
             reasons.append(
-                "🔴 خروج سيولة"
+                "🔴 Bearish Order Block"
             )
 
-        else:
+            if ob_1h.get("bearish"):
+
+                reasons.append(
+                    "📍 منطقة العرض "
+                    f"{ob_1h['bearish']['low']:.8g}"
+                    " - "
+                    f"{ob_1h['bearish']['high']:.8g}"
+                )
+
+                if ob_1h["bearish"]["retest"]:
+
+                    reasons.append(
+                        "🔄 السعر داخل Retest للـ OB"
+                    )
+
+        if mtf_ob["direction"] == "LONG":
 
             reasons.append(
-                "🟡 السيولة محايدة"
+                "🟢 MTF Order Blocks تميل للـ LONG"
             )
 
-        if accumulation["state"] in (
-            "ACCUMULATION",
-            "STRONG_ACCUMULATION",
-        ):
+        elif mtf_ob["direction"] == "SHORT":
 
             reasons.append(
-                "🔵 تجميع"
-            )
-
-        if distribution["state"] in (
-            "DISTRIBUTION",
-            "STRONG_DISTRIBUTION",
-        ):
-
-            reasons.append(
-                "🔴 توزيع"
-            )
-
-        if reversal["state"] == (
-            "BULLISH_REVERSAL"
-        ):
-
-            reasons.append(
-                "🟢 انعكاس صاعد"
-            )
-
-        elif reversal["state"] == (
-            "BEARISH_REVERSAL"
-        ):
-
-            reasons.append(
-                "🔴 انعكاس هابط"
+                "🔴 MTF Order Blocks تميل للـ SHORT"
             )
 
         if structure["bos"] == "BULLISH":
@@ -2652,28 +2784,34 @@ def get_coin_analysis(
                 "📉 BOS هابط"
             )
 
-        if confirmation == "LONG":
+        if flow_data["state"] == "INFLOW":
 
             reasons.append(
-                "✅ تأكيد 15m + 30m صاعد"
+                "💧 تأكيد سيولة للشراء"
             )
 
-        elif confirmation == "SHORT":
+        elif flow_data["state"] == "OUTFLOW":
 
             reasons.append(
-                "✅ تأكيد 15m + 30m هابط"
+                "💧 تأكيد سيولة للبيع"
             )
 
-        elif confirmation == "LONG WATCH":
+        if accumulation["state"] in (
+            "ACCUMULATION",
+            "STRONG_ACCUMULATION",
+        ):
 
             reasons.append(
-                "🟡 تأكيد قصير الأجل يميل للصعود"
+                "🔵 Accumulation"
             )
 
-        elif confirmation == "SHORT WATCH":
+        if distribution["state"] in (
+            "DISTRIBUTION",
+            "STRONG_DISTRIBUTION",
+        ):
 
             reasons.append(
-                "🟡 تأكيد قصير الأجل يميل للهبوط"
+                "🔴 Distribution"
             )
 
         # =================================================
@@ -2682,35 +2820,56 @@ def get_coin_analysis(
 
         warning = ""
 
-        if bullish_liquidity_setup:
+        if (
+            ob_direction == "LONG"
+            and flow_data["state"] == "OUTFLOW"
+        ):
 
             warning = (
-                "🛡️ حماية السيولة: "
-                "دخول سيولة + تجميع — "
-                "ممنوع مطاردة SHORT لمجرد أن السعر هبط."
+                "⚠️ Bullish OB موجود، "
+                "لكن تأكيد السيولة غير مكتمل. "
+                "لا تطارد LONG."
             )
 
-        elif bearish_liquidity_setup:
+        elif (
+            ob_direction == "SHORT"
+            and flow_data["state"] == "INFLOW"
+        ):
 
             warning = (
-                "🛡️ حماية السيولة: "
-                "خروج سيولة + توزيع — "
-                "ممنوع مطاردة LONG لمجرد أن السعر صعد."
-            )
-
-        elif late_pump:
-
-            warning = (
-                "⚠️ حركة صاعدة متأخرة — "
-                "لا تطارد السعر."
-            )
-
-        elif late_dump:
-
-            warning = (
-                "⚠️ حركة هابطة متأخرة — "
+                "⚠️ Bearish OB موجود، "
+                "لكن تأكيد السيولة غير مكتمل. "
                 "لا تطارد SHORT."
             )
+
+        if late_pump and direction in (
+            "LONG",
+            "LONG WATCH",
+        ):
+
+            warning = (
+                "⚠️ السعر ممتد عن منطقة الـ OB. "
+                "انتظر Retest."
+            )
+
+        if late_dump and direction in (
+            "SHORT",
+            "SHORT WATCH",
+        ):
+
+            warning = (
+                "⚠️ السعر ممتد هبوطاً عن منطقة الـ OB. "
+                "انتظر Retest."
+            )
+
+        # =================================================
+        # FINAL SCORE
+        # =================================================
+
+        score = max(
+            long_score,
+            short_score,
+        )
 
         # =================================================
         # RETURN
@@ -2732,21 +2891,9 @@ def get_coin_analysis(
                 )
             ),
 
-            "long_score": int(
-                clamp(
-                    long_score,
-                    0,
-                    100,
-                )
-            ),
+            "long_score": long_score,
 
-            "short_score": int(
-                clamp(
-                    short_score,
-                    0,
-                    100,
-                )
-            ),
+            "short_score": short_score,
 
             "price": price,
 
@@ -2770,10 +2917,6 @@ def get_coin_analysis(
 
             "trend_15m": trend_15m,
 
-            "confirmation": confirmation,
-
-            "liquidity_bias": liquidity_bias,
-
             "rsi_1h": rsi_1h,
 
             "rsi_15m": rsi_15m,
@@ -2787,9 +2930,6 @@ def get_coin_analysis(
 
             "liquidity_confidence":
                 flow_data["confidence"],
-
-            "liquidity_ratio":
-                flow_data["ratio"],
 
             "accumulation":
                 accumulation["state"],
@@ -2818,16 +2958,6 @@ def get_coin_analysis(
             "bear_reversal_score":
                 reversal["bear_score"],
 
-            "drawdown":
-                recent_drawdown(
-                    tf_1h
-                ),
-
-            "rally":
-                recent_rally(
-                    tf_1h
-                ),
-
             "support":
                 support,
 
@@ -2839,6 +2969,30 @@ def get_coin_analysis(
 
             "late_dump":
                 late_dump,
+
+            "order_block_direction":
+                ob_direction,
+
+            "order_block_state":
+                ob_1h["state"],
+
+            "order_block_score":
+                ob_score,
+
+            "mtf_ob_direction":
+                mtf_ob["direction"],
+
+            "mtf_ob_long_score":
+                mtf_ob["long_score"],
+
+            "mtf_ob_short_score":
+                mtf_ob["short_score"],
+
+            "bullish_ob":
+                ob_1h.get("bullish"),
+
+            "bearish_ob":
+                ob_1h.get("bearish"),
 
             "reasons":
                 reasons,
@@ -2884,9 +3038,9 @@ def scan_market(
 
     # =====================================================
     # FAST FILTER
+    # =====================================================
     #
-    # لا نستخدم أكبر هبوط/صعود كاتجاه.
-    # نستخدمه فقط كعامل مساعد.
+    # الفلترة هنا تعتمد على OB وليس أكبر ربح/خسارة.
     # =====================================================
 
     for symbol in symbols:
@@ -2896,50 +3050,71 @@ def scan_market(
             klines = get_klines(
                 symbol,
                 "1h",
-                45,
+                60,
             )
 
             if len(klines) < 30:
                 continue
 
-            current = klines[-1][
-                "close"
-            ]
+            current = klines[-1]["close"]
 
             if current <= 0:
                 continue
 
-            flow = (
-                detect_liquidity_flow(
-                    klines
-                )
+            ob = get_order_block_state(
+                klines
             )
 
-            accumulation = (
-                detect_bottom_accumulation(
-                    klines
-                )
+            flow = detect_liquidity_flow(
+                klines
             )
 
-            distribution = (
-                detect_distribution(
-                    klines
-                )
-            )
+            priority = 0
 
-            drawdown = (
-                recent_drawdown(
-                    klines,
-                    30,
-                )
-            )
+            # =================================================
+            # ORDER BLOCK PRIMARY
+            # =================================================
 
-            rally = (
-                recent_rally(
-                    klines,
-                    30,
+            if ob["direction"] in (
+                "LONG",
+                "SHORT",
+            ):
+
+                priority += 50
+
+                priority += int(
+                    ob["score"] * 0.35
                 )
-            )
+
+            # =================================================
+            # RETEST
+            # =================================================
+
+            if (
+                ob.get("bullish")
+                and ob["bullish"]["retest"]
+            ):
+
+                priority += 20
+
+            if (
+                ob.get("bearish")
+                and ob["bearish"]["retest"]
+            ):
+
+                priority += 20
+
+            # =================================================
+            # LIQUIDITY CONFIRMATION
+            # =================================================
+
+            if flow["state"] != "NEUTRAL":
+
+                priority += 10
+
+            # =================================================
+            # VOLUME فقط تأكيد
+            # =================================================
 
             volume_ratio = (
                 calculate_volume_ratio(
@@ -2947,97 +3122,24 @@ def scan_market(
                 )
             )
 
-            priority = 0
-
-            # =================================================
-            # LIQUIDITY
-            # =================================================
-
-            if flow["state"] in (
-                "INFLOW",
-                "OUTFLOW",
-            ):
-
-                priority += 40
-
-            # =================================================
-            # ACCUMULATION
-            # =================================================
-
-            if accumulation["state"] == (
-                "STRONG_ACCUMULATION"
-            ):
-
-                priority += 45
-
-            elif accumulation["state"] == (
-                "ACCUMULATION"
-            ):
-
-                priority += 35
-
-            elif accumulation["state"] == (
-                "POSSIBLE_ACCUMULATION"
-            ):
-
-                priority += 15
-
-            # =================================================
-            # DISTRIBUTION
-            # =================================================
-
-            if distribution["state"] == (
-                "STRONG_DISTRIBUTION"
-            ):
-
-                priority += 45
-
-            elif distribution["state"] == (
-                "DISTRIBUTION"
-            ):
-
-                priority += 35
-
-            elif distribution["state"] == (
-                "POSSIBLE_DISTRIBUTION"
-            ):
-
-                priority += 15
-
-            # =================================================
-            # VOLUME
-            # =================================================
-
             if volume_ratio >= 1.10:
 
-                priority += 10
+                priority += 5
 
             # =================================================
-            # PRICE MOVEMENT
-            #
-            # وزن ضعيف جدًا.
+            # NO OB = DROP
             # =================================================
 
-            if drawdown <= -10:
+            if ob["direction"] == "NEUTRAL":
 
-                priority += 3
-
-            if rally >= 10:
-
-                priority += 3
+                continue
 
             candidates.append({
                 "symbol": symbol,
                 "priority": priority,
             })
 
-        except Exception as exc:
-
-            logger.debug(
-                "Fast filter failed %s: %s",
-                symbol,
-                exc,
-            )
+        except Exception:
 
             continue
 
@@ -3045,9 +3147,7 @@ def scan_market(
         return []
 
     candidates.sort(
-        key=lambda x: x[
-            "priority"
-        ],
+        key=lambda x: x["priority"],
         reverse=True,
     )
 
@@ -3057,8 +3157,8 @@ def scan_market(
 
     deep_limit = min(
         max(
-            limit * 5,
-            25,
+            limit * 4,
+            20,
         ),
         len(candidates),
     )
@@ -3088,133 +3188,72 @@ def scan_market(
             result
         )
 
-    if not results:
-        return []
-
     # =====================================================
     # RANK
-    #
-    # الأولوية:
-    # 1. Liquidity + Accumulation/Distribution
-    # 2. ENTRY READY
-    # 3. WATCH
-    # 4. Score
     # =====================================================
 
-    def ranking_key(x):
+    state_rank = {
 
-        state = x.get(
-            "state",
-            "",
-        )
+        "ENTRY READY": 6,
 
-        liquidity = x.get(
-            "liquidity",
-            "NEUTRAL",
-        )
+        "ACCUMULATION WATCH": 5,
 
-        accumulation = x.get(
-            "accumulation",
-            "NONE",
-        )
+        "REVERSAL WATCH": 5,
 
-        distribution = x.get(
-            "distribution",
-            "NONE",
-        )
+        "LATE PUMP - WAIT": 2,
 
-        priority = 0
+        "LATE DUMP - WAIT": 2,
 
-        # =================================================
-        # STATE
-        # =================================================
+        "NO TRADE": 1,
+    }
 
-        if state == "ENTRY READY":
-            priority += 1000
+    results.sort(
+        key=lambda x: (
+            state_rank.get(
+                x.get(
+                    "state",
+                    "",
+                ),
+                0,
+            ),
 
-        elif state == "ACCUMULATION WATCH":
-            priority += 850
-
-        elif state == "REVERSAL WATCH":
-            priority += 800
-
-        elif state in (
-            "LATE PUMP - WAIT",
-            "LATE DUMP - WAIT",
-        ):
-            priority += 300
-
-        # =================================================
-        # LIQUIDITY
-        # =================================================
-
-        if (
-            liquidity == "INFLOW"
-            and accumulation
-            in (
-                "ACCUMULATION",
-                "STRONG_ACCUMULATION",
-            )
-        ):
-
-            priority += 500
-
-        if (
-            liquidity == "OUTFLOW"
-            and distribution
-            in (
-                "DISTRIBUTION",
-                "STRONG_DISTRIBUTION",
-            )
-        ):
-
-            priority += 500
-
-        if liquidity in (
-            "INFLOW",
-            "OUTFLOW",
-        ):
-
-            priority += 150
-
-        # =================================================
-        # SCORE
-        # =================================================
-
-        priority += (
             x.get(
                 "score",
                 0,
-            )
-            * 3
-        )
+            ),
 
-        priority += x.get(
-            "scan_priority",
-            0,
-        )
+            x.get(
+                "order_block_score",
+                0,
+            ),
 
-        return priority
-
-    results.sort(
-        key=ranking_key,
+            x.get(
+                "scan_priority",
+                0,
+            ),
+        ),
         reverse=True,
     )
 
     # =====================================================
-    # USEFUL RESULTS
+    # ONLY USEFUL OB RESULTS
     # =====================================================
 
     useful = []
 
     for result in results:
 
-        state = result.get(
-            "state",
-            "",
-        )
+        if result.get(
+            "order_block_direction"
+        ) not in (
+            "LONG",
+            "SHORT",
+        ):
+            continue
 
-        if state in (
+        if result.get(
+            "state"
+        ) in (
             "ENTRY READY",
             "ACCUMULATION WATCH",
             "REVERSAL WATCH",
@@ -3237,11 +3276,9 @@ def scan_market(
     for result in results:
 
         if result.get(
-            "liquidity"
-        ) in (
-            "INFLOW",
-            "OUTFLOW",
-        ):
+            "order_block_score",
+            0,
+        ) >= 55:
 
             fallback.append(
                 result
@@ -3251,7 +3288,7 @@ def scan_market(
 
         return fallback[:limit]
 
-    return results[:limit]
+    return []
 
 
 # =========================================================
@@ -3293,7 +3330,7 @@ def generate_evidence_report(
     lines = []
 
     lines.append(
-        "🤖 BingX AI Scanner v11"
+        "🤖 BingX AI Scanner — ORDER BLOCK"
     )
 
     lines.append("")
@@ -3302,39 +3339,25 @@ def generate_evidence_report(
         f"💎 العملة: {symbol}"
     )
 
-    # =====================================================
-    # DIRECTION
-    # =====================================================
-
     if direction == "LONG":
 
-        direction_text = (
-            "🟢 LONG"
-        )
+        direction_text = "🟢 LONG"
 
     elif direction == "SHORT":
 
-        direction_text = (
-            "🔴 SHORT"
-        )
+        direction_text = "🔴 SHORT"
 
     elif direction == "LONG WATCH":
 
-        direction_text = (
-            "🟡 LONG WATCH"
-        )
+        direction_text = "🟡 LONG WATCH"
 
     elif direction == "SHORT WATCH":
 
-        direction_text = (
-            "🟠 SHORT WATCH"
-        )
+        direction_text = "🟠 SHORT WATCH"
 
     else:
 
-        direction_text = (
-            "⚪ WAIT"
-        )
+        direction_text = "⚪ WAIT"
 
     lines.append(
         f"📌 الاتجاه: {direction_text}"
@@ -3351,7 +3374,105 @@ def generate_evidence_report(
     lines.append("")
 
     # =====================================================
-    # MULTI TIMEFRAME
+    # ORDER BLOCK
+    # =====================================================
+
+    lines.append(
+        "🏦 ORDER BLOCK — العامل الأساسي:"
+    )
+
+    ob_direction = result.get(
+        "order_block_direction",
+        "NEUTRAL",
+    )
+
+    ob_state = result.get(
+        "order_block_state",
+        "NEUTRAL",
+    )
+
+    ob_score = result.get(
+        "order_block_score",
+        0,
+    )
+
+    lines.append(
+        f"الاتجاه: {ob_direction}"
+    )
+
+    lines.append(
+        f"الحالة: {ob_state}"
+    )
+
+    lines.append(
+        f"قوة الـ OB: {ob_score}/100"
+    )
+
+    bullish_ob = result.get(
+        "bullish_ob"
+    )
+
+    bearish_ob = result.get(
+        "bearish_ob"
+    )
+
+    if bullish_ob:
+
+        lines.append(
+            "🟢 Bullish OB: "
+            f"{bullish_ob['low']:.8g}"
+            " - "
+            f"{bullish_ob['high']:.8g}"
+        )
+
+        lines.append(
+            f"قوة المنطقة: "
+            f"{bullish_ob['strength']}/100"
+        )
+
+        lines.append(
+            f"Retest: "
+            f"{'YES' if bullish_ob['retest'] else 'NO'}"
+        )
+
+    if bearish_ob:
+
+        lines.append(
+            "🔴 Bearish OB: "
+            f"{bearish_ob['low']:.8g}"
+            " - "
+            f"{bearish_ob['high']:.8g}"
+        )
+
+        lines.append(
+            f"قوة المنطقة: "
+            f"{bearish_ob['strength']}/100"
+        )
+
+        lines.append(
+            f"Retest: "
+            f"{'YES' if bearish_ob['retest'] else 'NO'}"
+        )
+
+    lines.append("")
+
+    # =====================================================
+    # MTF OB
+    # =====================================================
+
+    lines.append(
+        "🧭 MTF Order Block:"
+    )
+
+    lines.append(
+        f"15m/30m/1H/4H: "
+        f"{result.get('mtf_ob_direction', 'NEUTRAL')}"
+    )
+
+    lines.append("")
+
+    # =====================================================
+    # TRENDS
     # =====================================================
 
     lines.append(
@@ -3378,47 +3499,28 @@ def generate_evidence_report(
         f"15m: {result.get('trend_15m', 'NEUTRAL')}"
     )
 
-    lines.append(
-        f"تأكيد 15m/30m: "
-        f"{result.get('confirmation', 'NEUTRAL')}"
-    )
-
     lines.append("")
 
     # =====================================================
-    # LIQUIDITY
+    # CONFIRMATION
     # =====================================================
 
     lines.append(
-        "💧 السيولة:"
+        "🔎 التأكيد:"
     )
-
-    liquidity = result.get(
-        "liquidity",
-        "NEUTRAL",
-    )
-
-    if liquidity == "INFLOW":
-
-        lines.append(
-            "🟢 INFLOW — دخول سيولة"
-        )
-
-    elif liquidity == "OUTFLOW":
-
-        lines.append(
-            "🔴 OUTFLOW — خروج سيولة"
-        )
-
-    else:
-
-        lines.append(
-            "🟡 NEUTRAL"
-        )
 
     lines.append(
-        f"Liquidity Bias: "
-        f"{result.get('liquidity_bias', 'NEUTRAL')}"
+        f"BOS: {result.get('bos', 'NONE')}"
+    )
+
+    lines.append(
+        f"Structure: "
+        f"{result.get('market_structure', 'MIXED')}"
+    )
+
+    lines.append(
+        f"Liquidity: "
+        f"{result.get('liquidity', 'NEUTRAL')}"
     )
 
     lines.append(
@@ -3429,71 +3531,6 @@ def generate_evidence_report(
     lines.append(
         f"Volume Ratio: "
         f"{result.get('volume_ratio', 1):.2f}x"
-    )
-
-    lines.append(
-        f"Volume Trend: "
-        f"{result.get('volume_trend', 'NEUTRAL')}"
-    )
-
-    lines.append("")
-
-    # =====================================================
-    # SMART MONEY
-    # =====================================================
-
-    lines.append(
-        "🏦 Smart Money State:"
-    )
-
-    lines.append(
-        "Accumulation: "
-        f"{result.get('accumulation', 'NONE')}"
-    )
-
-    lines.append(
-        "Accumulation Score: "
-        f"{result.get('accumulation_score', 0)}"
-    )
-
-    lines.append(
-        "Distribution: "
-        f"{result.get('distribution', 'NONE')}"
-    )
-
-    lines.append(
-        "Distribution Score: "
-        f"{result.get('distribution_score', 0)}"
-    )
-
-    lines.append(
-        "Reversal: "
-        f"{result.get('reversal', 'NONE')}"
-    )
-
-    lines.append(
-        "BOS: "
-        f"{result.get('bos', 'NONE')}"
-    )
-
-    lines.append("")
-
-    # =====================================================
-    # SCORES
-    # =====================================================
-
-    lines.append(
-        "⚖️ اتجاه السيولة/التحليل:"
-    )
-
-    lines.append(
-        f"🟢 LONG Score: "
-        f"{result.get('long_score', 0)}/100"
-    )
-
-    lines.append(
-        f"🔴 SHORT Score: "
-        f"{result.get('short_score', 0)}/100"
     )
 
     lines.append("")
@@ -3519,7 +3556,7 @@ def generate_evidence_report(
     lines.append("")
 
     # =====================================================
-    # PRICE LEVELS
+    # LEVELS
     # =====================================================
 
     lines.append(
@@ -3566,7 +3603,7 @@ def generate_evidence_report(
         lines.append("")
 
         lines.append(
-            "🧠 أسباب التحليل:"
+            "🧠 أسباب القرار:"
         )
 
         for reason in reasons[:10]:
@@ -3574,10 +3611,6 @@ def generate_evidence_report(
             lines.append(
                 f"• {reason}"
             )
-
-    # =====================================================
-    # WARNING
-    # =====================================================
 
     warning = result.get(
         "warning",
@@ -3591,6 +3624,14 @@ def generate_evidence_report(
         lines.append(
             warning
         )
+
+    lines.append("")
+
+    lines.append(
+        "🛡️ ملاحظة: "
+        "الشموع ليست العامل الأساسي لتحديد LONG/SHORT. "
+        "Order Block هو المحور، والسيولة وBOS والتايم فريمات عوامل تأكيد."
+    )
 
     return "\n".join(lines)
 
@@ -3607,18 +3648,20 @@ def format_scan_results(
 
         return (
             "🟡 انتهى الفحص.\n\n"
-            "لم يتم العثور على "
-            "مرشحين مناسبين حالياً.\n\n"
+            "لم يتم العثور على Order Block "
+            "قوي ومؤكد حالياً.\n\n"
             "🛡️ البوت فضّل الانتظار."
         )
 
     lines = [
 
-        "🤖 BingX AI Scanner v11",
+        "🤖 BingX AI Scanner",
+
+        "🏦 ORDER BLOCK ENGINE",
 
         "",
 
-        "🔎 أفضل المرشحين حالياً:",
+        "🔎 أفضل المناطق حالياً:",
 
         "",
     ]
@@ -3648,26 +3691,31 @@ def format_scan_results(
             0,
         )
 
-        liquidity = result.get(
-            "liquidity",
+        ob_direction = result.get(
+            "order_block_direction",
             "NEUTRAL",
         )
 
-        if state == "ENTRY READY":
+        ob_score = result.get(
+            "order_block_score",
+            0,
+        )
+
+        if direction == "LONG":
 
             icon = "🟢"
 
-        elif state == (
-            "ACCUMULATION WATCH"
-        ):
+        elif direction == "SHORT":
+
+            icon = "🔴"
+
+        elif direction == "LONG WATCH":
 
             icon = "🔵"
 
-        elif state == (
-            "REVERSAL WATCH"
-        ):
+        elif direction == "SHORT WATCH":
 
-            icon = "🟡"
+            icon = "🟠"
 
         else:
 
@@ -3679,61 +3727,27 @@ def format_scan_results(
         )
 
         lines.append(
-            f"   الاتجاه: "
-            f"{direction}"
+            f"   الاتجاه: {direction}"
         )
 
         lines.append(
-            f"   الحالة: "
-            f"{state}"
+            f"   الحالة: {state}"
         )
 
         lines.append(
-            f"   Score: "
-            f"{score}/100"
+            f"   OB: "
+            f"{ob_direction} "
+            f"({ob_score}/100)"
         )
 
         lines.append(
-            f"   💧 السيولة: "
-            f"{liquidity}"
+            f"   Score: {score}/100"
         )
 
         lines.append(
-            f"   🧭 Liquidity Bias: "
-            f"{result.get('liquidity_bias', 'NEUTRAL')}"
+            f"   Liquidity: "
+            f"{result.get('liquidity', 'NEUTRAL')}"
         )
-
-        lines.append(
-            f"   🟢 LONG: "
-            f"{result.get('long_score', 0)}/100"
-        )
-
-        lines.append(
-            f"   🔴 SHORT: "
-            f"{result.get('short_score', 0)}/100"
-        )
-
-        if result.get(
-            "accumulation"
-        ) in (
-            "ACCUMULATION",
-            "STRONG_ACCUMULATION",
-        ):
-
-            lines.append(
-                "   🔵 يوجد تجميع"
-            )
-
-        if result.get(
-            "distribution"
-        ) in (
-            "DISTRIBUTION",
-            "STRONG_DISTRIBUTION",
-        ):
-
-            lines.append(
-                "   🔴 يوجد توزيع"
-            )
 
         lines.append("")
 
