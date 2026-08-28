@@ -249,7 +249,7 @@ def find_active_order_block(k,d,p):
     for o in cs:
         if not _ob_valid(k,o,d):continue
         dist=ob_distance_percent(p,o)
-        if dist>12:continue
+        if dist>6:continue
         rec=12 if o['index']>=len(k)-15 else 7 if o['index']>=len(k)-35 else 2
         proximity=max(0,20-dist*2.5)
         score=o['strength']+rec+proximity
@@ -371,8 +371,18 @@ def get_coin_analysis(symbol):
     elif short_ready and s>l: direction='SHORT';es=s;state='ENTRY READY - Bearish Order Block + Confirmation'
     elif bo and l>=55 and resd>.20 and not crash: direction='WAIT';es=l;state='REVERSAL WATCH - Bullish OB موجود وننتظر Retest/BOS'
     elif so and s>=55 and supd>.20 and not crash: direction='WAIT';es=s;state='REVERSAL WATCH - Bearish OB موجود وننتظر Retest/BOS'
-    elif bottom: direction='WAIT';es=max(l,45);state='ACCUMULATION WATCH - تجميع محتمل وننتظر Order Block/BOS'
-    else: direction='NO TRADE';es=max(l,s,0);state='NO TRADE - Order Block غير مكتمل التأكيد'
+    elif bottom and (bo4 or so4):
+        # Accumulation is only a WATCH state when an actual MTF Order Block
+        # exists.  Do not promote a coin merely because RSI/volume suggests
+        # accumulation.
+        m4 = bo4 if bo4 else so4
+        m4d = ob_distance_percent(p, m4) if m4 else 999
+        if m4d <= 6:
+            direction='WAIT';es=max(l,s,45);state='ACCUMULATION WATCH - MTF Order Block قريب وننتظر تأكيد 1H'
+        else:
+            direction='NO TRADE';es=max(l,s,0);state='NO TRADE - لا يوجد Order Block قريب'
+    else:
+        direction='NO TRADE';es=max(l,s,0);state='NO TRADE - لا يوجد Order Block صالح قريب'
     emin=emax=sl=tp1=tp2=tp3=None
     if direction=='LONG' and bo:
         emin,emax=bo['low'],bo['high'];sl=min(bo['low']-atr*.35,p-atr*.8);risk=max(p-sl,atr*.5);tp1=p+risk*1.2;tp2=p+risk*2;tp3=p+risk*3
@@ -406,11 +416,19 @@ def get_top_futures_symbols(limit=30):
 def _stage1_score(symbol):
     p=get_current_price(symbol); k=get_bingx_klines(symbol,'1h',100)
     if p is None or not k:return None
-    o=detect_order_blocks(k); best=max(o['bullish']+o['bearish'],key=lambda x:x['strength'],default=None)
-    if not best:return None
-    d='LONG' if best['type']=='BULLISH' else 'SHORT';dist=ob_distance_percent(p,best);ret,_=detect_ob_retest(k,best,d)
-    t=calculate_timeframe_trend(k); score=45+min(best['strength'],30)+(20 if ret else 0)+(10 if t==d else 0)-min(dist*3,36)
-    return symbol,score,d,ret
+    o=detect_order_blocks(k)
+    candidates=[]
+    for best in o['bullish']+o['bearish']:
+        d='LONG' if best['type']=='BULLISH' else 'SHORT'
+        if not _ob_valid(k,best,d):continue
+        dist=ob_distance_percent(p,best)
+        # Stage-1 is a proximity filter, not a signal generator.
+        if dist>6:continue
+        ret,_=detect_ob_retest(k,best,d)
+        t=calculate_timeframe_trend(k)
+        score=50+min(best['strength'],30)+(15 if ret else 0)+(10 if t==d else 0)-dist*4
+        candidates.append((symbol,score,d,ret))
+    return max(candidates,key=lambda x:x[1]) if candidates else None
 
 
 def scan_market(limit=5):
@@ -418,7 +436,12 @@ def scan_market(limit=5):
     for s,*_ in stage[:10]:
         try:
             d=get_coin_analysis(s)
-            if d and d.get('direction') in ('LONG','SHORT','WAIT') and not d.get('crash_detected'):res.append(d)
+            if d and d.get('direction') in ('LONG','SHORT','WAIT') and not d.get('crash_detected'):
+                # /scan must return genuine OB opportunities, not generic
+                # accumulation/volume candidates.
+                has_1h_ob = bool(d.get('bullish_ob') or d.get('bearish_ob'))
+                has_near_mtf_ob = bool((d.get('bullish_ob_4h') and d.get('bullish_ob_distance',999)<=6) or (d.get('bearish_ob_4h') and d.get('bearish_ob_distance',999)<=6))
+                if has_1h_ob or has_near_mtf_ob:res.append(d)
         except Exception:logger.exception('FULL ANALYSIS FAILED | %s',s)
     def rank(x):
         return (3 if 'ENTRY READY' in x.get('state','') else 2 if 'REVERSAL WATCH' in x.get('state','') else 1 if 'ACCUMULATION WATCH' in x.get('state','') else 0,x.get('entry_score',0),x.get('bullish_ob_retest',False) or x.get('bearish_ob_retest',False))
