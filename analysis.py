@@ -1,10 +1,17 @@
+# =========================================================
+# analysis.py
+# BingX Futures AI Scanner
+# Liquidity + Accumulation/Distribution + Reversal Engine
+# =========================================================
+
 import time
 import logging
 import threading
 import requests
+from statistics import mean
 
 # =========================================================
-# BINGX CONFIG
+# CONFIG
 # =========================================================
 
 BINGX_URL = "https://open-api.bingx.com"
@@ -12,116 +19,77 @@ BINGX_URL = "https://open-api.bingx.com"
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": "CryptoZeroReversal-BingX-Scanner/9.0",
-    "Accept": "application/json"
+    "Accept": "application/json",
 })
 
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 12
 
-# =========================================================
-# CACHE / RATE LIMIT
-# =========================================================
+SYMBOL_CACHE_SECONDS = 600
+KLINE_CACHE_SECONDS = 60
+
+MIN_REQUEST_INTERVAL = 0.45
 
 _SYMBOL_CACHE = set()
 _SYMBOL_CACHE_TIME = 0
 
-SYMBOL_CACHE_SECONDS = 600
-
 _KLINE_CACHE = {}
-_KLINE_CACHE_TIME = {}
-
-KLINE_CACHE_SECONDS = 45
-
 _REQUEST_LOCK = threading.Lock()
 _LAST_REQUEST_TIME = 0.0
 
-MIN_REQUEST_INTERVAL = 0.45
-
-_RATE_LIMIT_UNTIL = 0
+_RATE_LIMIT_UNTIL = 0.0
 
 
 # =========================================================
-# PRIORITY SYMBOLS
+# BASIC HELPERS
 # =========================================================
 
-PRIORITY_SYMBOLS = {
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "DOGEUSDT",
-    "ADAUSDT",
-    "SUIUSDT",
-    "LINKUSDT",
-    "AVAXUSDT",
-    "LTCUSDT",
-    "DOTUSDT",
-    "TRXUSDT",
-    "PEPEUSDT",
-    "SHIBUSDT",
-    "UNIUSDT",
-    "WIFUSDT",
-    "BONKUSDT",
-    "FLOKIUSDT",
-    "SEIUSDT",
-    "NEARUSDT",
-    "APTUSDT",
-    "ARBUSDT",
-    "OPUSDT",
-    "INJUSDT",
-    "TIAUSDT",
-    "ATOMUSDT",
-    "FILUSDT",
-    "AAVEUSDT",
-    "MKRUSDT",
-    "CRVUSDT",
-    "COMPUSDT",
-    "JUPUSDT",
-    "RAYUSDT",
-    "WLDUSDT",
-    "ONDOUSDT",
-    "ENAUSDT",
-    "PENDLEUSDT",
-    "STXUSDT",
-    "IMXUSDT",
-    "GALAUSDT",
-    "SANDUSDT",
-    "MANAUSDT",
-    "AXSUSDT",
-    "APEUSDT",
-    "FETUSDT",
-    "TAOUSDT",
-    "RENDERUSDT",
-    "HBARUSDT",
-    "ALGOUSDT",
-    "VETUSDT",
-    "ICPUSDT",
-    "ETCUSDT",
-    "BCHUSDT",
-    "XLMUSDT",
-    "KASUSDT",
-    "HEIUSDT",
-    "ACTUSDT",
-    "CHIPUSDT",
-    "MAGUSDT",
-    "COLOUSDT",
-    "NITUSDT",
-    "STARUSDT",
-}
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 
-# =========================================================
-# REQUEST THROTTLE
-# =========================================================
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def normalize_symbol(symbol):
+    if not symbol:
+        return ""
+
+    s = str(symbol).upper().strip()
+
+    for suffix in (
+        "-PERP",
+        "_PERP",
+        "/USDT",
+        "-USDT",
+        "_USDT",
+        " USDT",
+    ):
+        s = s.replace(suffix, "")
+
+    s = s.replace("/", "").replace("-", "").replace("_", "")
+
+    if not s.endswith("USDT"):
+        s += "USDT"
+
+    return s
+
+
+def bingx_symbol(symbol):
+    s = normalize_symbol(symbol)
+    return s
+
 
 def _throttle():
     global _LAST_REQUEST_TIME
 
     with _REQUEST_LOCK:
         now = time.time()
-
         wait = MIN_REQUEST_INTERVAL - (now - _LAST_REQUEST_TIME)
 
         if wait > 0:
@@ -130,125 +98,55 @@ def _throttle():
         _LAST_REQUEST_TIME = time.time()
 
 
-# =========================================================
-# BINGX REQUEST
-# =========================================================
-
-def bingx_get(path, params=None):
+def _get_json(path, params=None):
     global _RATE_LIMIT_UNTIL
 
     if time.time() < _RATE_LIMIT_UNTIL:
         return None
 
-    _throttle()
+    url = BINGX_URL + path
 
-    try:
-        response = SESSION.get(
-            BINGX_URL + path,
-            params=params or {},
-            timeout=REQUEST_TIMEOUT
-        )
+    for attempt in range(3):
 
-        if response.status_code != 200:
-            logger.warning(
-                "BingX HTTP %s: %s",
-                response.status_code,
-                response.text[:300]
-            )
-            return None
+        try:
+            _throttle()
 
-        data = response.json()
-
-        if not isinstance(data, dict):
-            return None
-
-        code = data.get("code")
-
-        if code in (109429, 109400):
-            _RATE_LIMIT_UNTIL = time.time() + 60
-
-            logger.warning(
-                "BingX rate limit detected. Cooldown 60 seconds."
+            response = SESSION.get(
+                url,
+                params=params or {},
+                timeout=REQUEST_TIMEOUT,
             )
 
-            return None
+            if response.status_code == 429:
+                _RATE_LIMIT_UNTIL = time.time() + 5
+                time.sleep(1.5)
+                continue
 
-        if code not in (0, None):
-            logger.warning(
-                "BingX API error %s: %s",
-                code,
-                str(data)[:400]
-            )
+            response.raise_for_status()
 
-            return None
+            data = response.json()
 
-        return data
+            code = str(data.get("code", ""))
 
-    except requests.RequestException as exc:
-        logger.warning("BingX request error: %s", exc)
-        return None
+            if code in ("109429", "109400"):
+                _RATE_LIMIT_UNTIL = time.time() + 5
+                time.sleep(1.5)
+                continue
 
-    except Exception as exc:
-        logger.exception(
-            "Unexpected BingX error: %s",
-            exc
-        )
+            return data
 
-        return None
+        except Exception as exc:
+            if attempt == 2:
+                logger.warning("BingX request failed: %s", exc)
+                return None
 
+            time.sleep(0.8)
 
-# =========================================================
-# SYMBOL NORMALIZATION
-# =========================================================
-
-def normalize_symbol(symbol):
-    if not symbol:
-        return ""
-
-    s = str(symbol).upper().strip()
-
-    for char in " /-_":
-        s = s.replace(char, "")
-
-    if s.endswith("USDT"):
-        return s
-
-    return s + "USDT"
-
-
-def bingx_symbol(symbol):
-    s = normalize_symbol(symbol)
-
-    if s.endswith("USDT") and s[:-4]:
-        return f"{s[:-4]}-USDT"
-
-    return s
+    return None
 
 
 # =========================================================
-# DATA EXTRACTION
-# =========================================================
-
-def _extract_rows(data):
-    if not data:
-        return []
-
-    rows = data.get("data")
-
-    if isinstance(rows, dict):
-        rows = rows.get(
-            "data",
-            rows.get(
-                "rows",
-                [rows]
-            )
-        )
-
-    return rows if isinstance(rows, list) else []
-
-
-# =========================================================
-# FUTURES SYMBOLS
+# SYMBOLS
 # =========================================================
 
 def get_futures_symbols():
@@ -257,568 +155,329 @@ def get_futures_symbols():
 
     now = time.time()
 
-    if (
-        _SYMBOL_CACHE
-        and now - _SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS
-    ):
+    if _SYMBOL_CACHE and now - _SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS:
         return list(_SYMBOL_CACHE)
+
+    data = _get_json("/openApi/swap/v2/quote/contracts")
 
     symbols = set()
 
-    endpoints = (
-        "/openApi/swap/v2/quote/contracts",
-        "/openApi/swap/v2/quote/ticker"
-    )
+    try:
+        rows = data.get("data", []) if data else []
 
-    for endpoint in endpoints:
+        for row in rows:
 
-        rows = _extract_rows(
-            bingx_get(endpoint)
-        )
-
-        for item in rows:
-
-            if not isinstance(item, dict):
-                continue
-
-            symbol = (
-                item.get("symbol")
-                or item.get("pair")
-                or item.get("contract")
-            )
+            if isinstance(row, dict):
+                symbol = (
+                    row.get("symbol")
+                    or row.get("contractId")
+                    or row.get("name")
+                )
+            else:
+                symbol = row
 
             if not symbol:
                 continue
 
-            symbol = normalize_symbol(
-                str(symbol).replace("-", "")
-            )
+            symbol = normalize_symbol(symbol)
 
             if symbol.endswith("USDT"):
                 symbols.add(symbol)
 
-        if symbols:
-            break
+    except Exception as exc:
+        logger.warning("Symbol parsing failed: %s", exc)
 
-    if not symbols:
+    if symbols:
+        _SYMBOL_CACHE = symbols
+        _SYMBOL_CACHE_TIME = now
 
-        logger.warning(
-            "BingX symbol discovery failed; using fallback."
-        )
-
-        symbols = set(PRIORITY_SYMBOLS)
-
-    _SYMBOL_CACHE = symbols
-    _SYMBOL_CACHE_TIME = time.time()
-
-    logger.info(
-        "Loaded %s BingX USDT futures symbols",
-        len(symbols)
-    )
-
-    return list(symbols)
-
-
-# =========================================================
-# INTERVAL
-# =========================================================
-
-def _interval_to_bingx(interval):
-
-    mapping = {
-        "1m": "1m",
-        "3m": "3m",
-        "5m": "5m",
-        "15m": "15m",
-        "30m": "30m",
-        "1h": "1h",
-        "2h": "2h",
-        "4h": "4h",
-        "6h": "6h",
-        "8h": "8h",
-        "12h": "12h",
-        "1d": "1d",
-        "3d": "3d",
-        "1w": "1w",
-    }
-
-    return mapping.get(
-        str(interval).lower(),
-        interval
-    )
+    return list(_SYMBOL_CACHE)
 
 
 # =========================================================
 # KLINES
 # =========================================================
 
+def _interval_minutes(interval):
+    mapping = {
+        "15m": 15,
+        "30m": 30,
+        "1h": 60,
+        "4h": 240,
+        "1d": 1440,
+    }
+    return mapping.get(interval, 60)
+
+
 def get_klines(symbol, interval="1h", limit=120):
 
-    api_symbol = bingx_symbol(symbol)
+    symbol = bingx_symbol(symbol)
 
-    interval = _interval_to_bingx(interval)
-
-    limit = int(limit)
-
-    key = (
-        api_symbol,
-        interval,
-        limit
-    )
-
+    cache_key = (symbol, interval, limit)
     now = time.time()
 
-    if (
-        key in _KLINE_CACHE
-        and now - _KLINE_CACHE_TIME.get(key, 0)
-        < KLINE_CACHE_SECONDS
-    ):
-        return _KLINE_CACHE[key]
+    cached = _KLINE_CACHE.get(cache_key)
 
-    data = bingx_get(
-        "/openApi/swap/v2/quote/klines",
-        {
-            "symbol": api_symbol,
-            "interval": interval,
-            "limit": limit
-        }
+    if cached:
+        timestamp, values = cached
+
+        if now - timestamp < KLINE_CACHE_SECONDS:
+            return values
+
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit,
+    }
+
+    data = _get_json(
+        "/openApi/swap/v3/quote/klines",
+        params=params,
     )
 
-    rows = _extract_rows(data)
+    if not data:
+        return []
 
-    result = []
+    raw = data.get("data", [])
 
-    for row in rows:
+    candles = []
 
-        try:
+    try:
 
-            if isinstance(row, dict):
+        for item in raw:
 
-                ts = (
-                    row.get("time")
-                    or row.get("timestamp")
-                    or row.get("openTime")
-                )
+            if isinstance(item, dict):
 
-                o = (
-                    row.get("open")
-                    or row.get("o")
-                )
+                candles.append({
+                    "open": safe_float(item.get("open")),
+                    "high": safe_float(item.get("high")),
+                    "low": safe_float(item.get("low")),
+                    "close": safe_float(item.get("close")),
+                    "volume": safe_float(
+                        item.get("volume")
+                        or item.get("quoteVolume")
+                    ),
+                    "time": item.get("time"),
+                })
 
-                h = (
-                    row.get("high")
-                    or row.get("h")
-                )
+            elif isinstance(item, (list, tuple)) and len(item) >= 6:
 
-                l = (
-                    row.get("low")
-                    or row.get("l")
-                )
+                candles.append({
+                    "open": safe_float(item[1]),
+                    "high": safe_float(item[2]),
+                    "low": safe_float(item[3]),
+                    "close": safe_float(item[4]),
+                    "volume": safe_float(item[5]),
+                    "time": item[0],
+                })
 
-                c = (
-                    row.get("close")
-                    or row.get("c")
-                )
+    except Exception as exc:
+        logger.warning("Kline parsing failed %s %s: %s",
+                       symbol, interval, exc)
 
-                v = (
-                    row.get("volume")
-                    or row.get("v")
-                    or 0
-                )
+    if candles:
+        _KLINE_CACHE[cache_key] = (now, candles)
 
-            elif isinstance(row, (list, tuple)) and len(row) >= 6:
-
-                ts, o, h, l, c, v = row[:6]
-
-            else:
-                continue
-
-            if None in (o, h, l, c):
-                continue
-
-            result.append({
-                "time": float(ts or 0),
-                "open": float(o),
-                "high": float(h),
-                "low": float(l),
-                "close": float(c),
-                "volume": float(v or 0)
-            })
-
-        except Exception:
-            continue
-
-    result.sort(
-        key=lambda x: x["time"]
-    )
-
-    if result:
-
-        _KLINE_CACHE[key] = result
-        _KLINE_CACHE_TIME[key] = time.time()
-
-    return result
+    return candles
 
 
 # =========================================================
-# CURRENT PRICE
-# =========================================================
-
-def get_current_price(symbol):
-
-    data = bingx_get(
-        "/openApi/swap/v2/quote/ticker",
-        {
-            "symbol": bingx_symbol(symbol)
-        }
-    )
-
-    for item in _extract_rows(data):
-
-        if not isinstance(item, dict):
-            continue
-
-        for key in (
-            "lastPrice",
-            "last",
-            "price",
-            "markPrice"
-        ):
-
-            try:
-
-                value = float(
-                    item.get(key)
-                )
-
-                if value > 0:
-                    return value
-
-            except Exception:
-                pass
-
-    klines = get_klines(
-        symbol,
-        "1m",
-        3
-    )
-
-    if klines:
-        return klines[-1]["close"]
-
-    return None
-
-
-# =========================================================
-# EMA
+# INDICATORS
 # =========================================================
 
 def calculate_ema(values, period):
-
     if not values:
-        return []
-
-    period = max(
-        1,
-        int(period)
-    )
+        return 0.0
 
     if len(values) < period:
-        return [None] * len(values)
-
-    result = [None] * (period - 1)
-
-    previous = sum(
-        values[:period]
-    ) / period
-
-    result.append(previous)
+        return mean(values)
 
     multiplier = 2 / (period + 1)
 
-    for value in values[period:]:
+    ema = mean(values[:period])
 
-        previous = (
-            (value - previous)
-            * multiplier
-            + previous
-        )
+    for price in values[period:]:
+        ema = (price - ema) * multiplier + ema
 
-        result.append(previous)
-
-    return result
+    return ema
 
 
-# =========================================================
-# RSI
-# =========================================================
+def calculate_rsi(closes, period=14):
 
-def calculate_rsi(values, period=14):
-
-    if len(values) < period + 1:
-        return None
+    if len(closes) < period + 1:
+        return 50.0
 
     gains = []
     losses = []
 
-    for i in range(1, len(values)):
+    for i in range(1, len(closes)):
+        change = closes[i] - closes[i - 1]
 
-        diff = values[i] - values[i - 1]
+        if change >= 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
 
-        gains.append(
-            max(diff, 0)
-        )
+    avg_gain = mean(gains[-period:])
+    avg_loss = mean(losses[-period:])
 
-        losses.append(
-            max(-diff, 0)
-        )
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
 
-    average_gain = (
-        sum(gains[:period]) / period
-    )
+    rs = avg_gain / avg_loss
 
-    average_loss = (
-        sum(losses[:period]) / period
-    )
+    return 100 - (100 / (1 + rs))
 
-    for i in range(period, len(gains)):
-
-        average_gain = (
-            (
-                average_gain
-                * (period - 1)
-            )
-            + gains[i]
-        ) / period
-
-        average_loss = (
-            (
-                average_loss
-                * (period - 1)
-            )
-            + losses[i]
-        ) / period
-
-    if average_loss == 0:
-        return 100.0
-
-    rs = average_gain / average_loss
-
-    return 100 - (
-        100 / (1 + rs)
-    )
-
-
-# =========================================================
-# ATR
-# =========================================================
 
 def calculate_atr(klines, period=14):
 
     if len(klines) < period + 1:
-        return None
+        return 0.0
 
-    true_ranges = []
+    trs = []
 
     for i in range(1, len(klines)):
 
         current = klines[i]
         previous = klines[i - 1]
 
-        true_range = max(
-            current["high"] - current["low"],
-            abs(
-                current["high"]
-                - previous["close"]
-            ),
-            abs(
-                current["low"]
-                - previous["close"]
-            )
+        high = current["high"]
+        low = current["low"]
+        prev_close = previous["close"]
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close),
         )
 
-        true_ranges.append(
-            true_range
-        )
+        trs.append(tr)
 
-    recent = true_ranges[-period:]
-
-    if not recent:
-        return None
-
-    return sum(recent) / len(recent)
+    return mean(trs[-period:])
 
 
-# =========================================================
-# VOLUME RATIO
-# =========================================================
+def calculate_volume_ratio(klines, period=20):
 
-def calculate_volume_ratio(
-    klines,
-    period=20
-):
+    if len(klines) < period + 1:
+        return 1.0
 
-    if len(klines) < 2:
-        return 0
+    recent = klines[-1]["volume"]
 
     previous = [
         x["volume"]
-        for x in klines[-(period + 1):-1]
+        for x in klines[-period - 1:-1]
+        if x["volume"] > 0
     ]
 
     if not previous:
-        return 0
+        return 1.0
 
-    average = (
-        sum(previous)
-        / len(previous)
-    )
+    avg_volume = mean(previous)
 
-    if average <= 0:
-        return 0
+    if avg_volume <= 0:
+        return 1.0
 
-    return (
-        klines[-1]["volume"]
-        / average
-    )
+    return recent / avg_volume
 
 
-# =========================================================
-# VOLUME TREND
-# =========================================================
+def calculate_volume_trend(klines, lookback=8):
 
-def calculate_volume_trend(
-    klines,
-    period=5
-):
-
-    if len(klines) < period * 2:
+    if len(klines) < lookback * 2:
         return "NEUTRAL"
 
-    recent = sum(
+    recent = [
         x["volume"]
-        for x in klines[-period:]
-    ) / period
-
-    previous = sum(
-        x["volume"]
-        for x in klines[-period * 2:-period]
-    ) / period
-
-    if previous <= 0:
-        return "NEUTRAL"
-
-    ratio = recent / previous
-
-    if ratio >= 1.05:
-        return "RISING"
-
-    if ratio <= 0.95:
-        return "FALLING"
-
-    return "STABLE"
-
-
-# =========================================================
-# SUPPORT / RESISTANCE
-# =========================================================
-
-def calculate_support_resistance(
-    klines,
-    lookback=80
-):
-
-    if not klines:
-        return None, None
-
-    data = klines[
-        -min(
-            lookback,
-            len(klines)
-        ):
+        for x in klines[-lookback:]
     ]
 
-    support = min(
-        x["low"]
-        for x in data
-    )
+    previous = [
+        x["volume"]
+        for x in klines[-lookback * 2:-lookback]
+    ]
 
-    resistance = max(
-        x["high"]
-        for x in data
-    )
+    if not recent or not previous:
+        return "NEUTRAL"
+
+    r = mean(recent)
+    p = mean(previous)
+
+    if p <= 0:
+        return "NEUTRAL"
+
+    change = (r - p) / p * 100
+
+    if change >= 15:
+        return "RISING"
+
+    if change <= -15:
+        return "FALLING"
+
+    return "NEUTRAL"
+
+
+# =========================================================
+# PRICE STRUCTURE
+# =========================================================
+
+def calculate_support_resistance(klines):
+
+    if not klines:
+        return 0.0, 0.0
+
+    lookback = min(80, len(klines))
+
+    recent = klines[-lookback:]
+
+    support = min(x["low"] for x in recent)
+    resistance = max(x["high"] for x in recent)
 
     return support, resistance
 
 
-# =========================================================
-# TIMEFRAME TREND
-# =========================================================
+def price_position(price, support, resistance):
 
-def calculate_timeframe_trend(klines):
+    if resistance <= support:
+        return 50.0
 
-    if len(klines) < 60:
-        return "NEUTRAL"
+    return clamp(
+        ((price - support) / (resistance - support)) * 100,
+        0,
+        100,
+    )
 
-    closes = [
-        x["close"]
-        for x in klines
-    ]
 
-    ema9 = calculate_ema(
-        closes,
-        9
-    )[-1]
+def recent_drawdown(klines, lookback=30):
 
-    ema20 = calculate_ema(
-        closes,
-        20
-    )[-1]
+    if len(klines) < 5:
+        return 0.0
 
-    ema50 = calculate_ema(
-        closes,
-        50
-    )[-1]
+    data = klines[-lookback:]
 
-    price = closes[-1]
+    highest = max(x["high"] for x in data)
+    current = data[-1]["close"]
 
-    if (
-        ema9
-        and ema20
-        and ema50
-        and ema9 > ema20
-        and ema20 > ema50
-        and price > ema20
-    ):
-        return "LONG"
+    if highest <= 0:
+        return 0.0
 
-    if (
-        ema9
-        and ema20
-        and ema50
-        and ema9 < ema20
-        and ema20 < ema50
-        and price < ema20
-    ):
-        return "SHORT"
+    return (current - highest) / highest * 100
 
-    if (
-        ema9
-        and ema20
-        and price > ema20
-        and ema9 > ema20
-    ):
-        return "LONG"
 
-    if (
-        ema9
-        and ema20
-        and price < ema20
-        and ema9 < ema20
-    ):
-        return "SHORT"
+def recent_rally(klines, lookback=30):
 
-    return "NEUTRAL"
+    if len(klines) < 5:
+        return 0.0
+
+    data = klines[-lookback:]
+
+    lowest = min(x["low"] for x in data)
+    current = data[-1]["close"]
+
+    if lowest <= 0:
+        return 0.0
+
+    return (current - lowest) / lowest * 100
 
 
 # =========================================================
@@ -827,53 +486,45 @@ def calculate_timeframe_trend(klines):
 
 def detect_market_structure(klines):
 
-    if len(klines) < 40:
-        return "MIXED", "NONE"
+    if len(klines) < 20:
+        return {
+            "structure": "MIXED",
+            "bos": "NONE",
+            "bullish": False,
+            "bearish": False,
+        }
 
     recent = klines[-20:]
-    previous = klines[-40:-20]
 
-    recent_high = max(
-        x["high"]
-        for x in recent
-    )
+    highs = [x["high"] for x in recent]
+    lows = [x["low"] for x in recent]
 
-    recent_low = min(
-        x["low"]
-        for x in recent
-    )
+    previous_high = max(highs[:-5])
+    previous_low = min(lows[:-5])
 
-    previous_high = max(
-        x["high"]
-        for x in previous
-    )
+    current_close = recent[-1]["close"]
 
-    previous_low = min(
-        x["low"]
-        for x in previous
-    )
+    bullish_bos = current_close > previous_high
+    bearish_bos = current_close < previous_low
 
-    close = klines[-1]["close"]
+    if bullish_bos:
+        structure = "BULLISH"
+        bos = "BULLISH"
 
-    if close > previous_high:
-        return "BULLISH", "BULLISH"
+    elif bearish_bos:
+        structure = "BEARISH"
+        bos = "BEARISH"
 
-    if close < previous_low:
-        return "BEARISH", "BEARISH"
+    else:
+        structure = "MIXED"
+        bos = "NONE"
 
-    if (
-        recent_high > previous_high
-        and recent_low > previous_low
-    ):
-        return "BULLISH", "NONE"
-
-    if (
-        recent_high < previous_high
-        and recent_low < previous_low
-    ):
-        return "BEARISH", "NONE"
-
-    return "MIXED", "NONE"
+    return {
+        "structure": structure,
+        "bos": bos,
+        "bullish": bullish_bos,
+        "bearish": bearish_bos,
+    }
 
 
 # =========================================================
@@ -883,2221 +534,1540 @@ def detect_market_structure(klines):
 def detect_liquidity_flow(klines):
 
     if len(klines) < 20:
-        return "NEUTRAL", 50
+        return {
+            "state": "NEUTRAL",
+            "bullish_volume": 0.0,
+            "bearish_volume": 0.0,
+            "ratio": 1.0,
+            "confidence": 0,
+        }
 
-    recent = klines[-12:]
+    recent = klines[-20:]
 
-    bullish_volume = sum(
-        x["volume"]
-        for x in recent
-        if x["close"] > x["open"]
-    )
+    bullish_volume = 0.0
+    bearish_volume = 0.0
 
-    bearish_volume = sum(
-        x["volume"]
-        for x in recent
-        if x["close"] < x["open"]
-    )
+    for candle in recent:
 
-    total = (
-        bullish_volume
-        + bearish_volume
-    )
+        o = candle["open"]
+        c = candle["close"]
+        v = candle["volume"]
 
-    if total <= 0:
-        return "NEUTRAL", 50
+        if c > o:
+            bullish_volume += v
 
-    buy_pressure = (
-        bullish_volume
-        / total
-        * 100
-    )
+        elif c < o:
+            bearish_volume += v
 
-    volume_ratio = calculate_volume_ratio(
-        klines
-    )
+        else:
+            bullish_volume += v * 0.5
+            bearish_volume += v * 0.5
 
-    if (
-        bullish_volume
-        > bearish_volume * 1.12
-        and volume_ratio >= 0.90
-    ):
-        return "INFLOW", round(
-            buy_pressure
+    if bearish_volume <= 0:
+        ratio = 99.0
+    else:
+        ratio = bullish_volume / bearish_volume
+
+    total = bullish_volume + bearish_volume
+
+    confidence = 0
+
+    if total > 0:
+        imbalance = abs(
+            bullish_volume - bearish_volume
+        ) / total
+
+        confidence = int(
+            clamp(imbalance * 100, 0, 100)
         )
 
-    if (
-        bearish_volume
-        > bullish_volume * 1.12
-        and volume_ratio >= 0.90
-    ):
-        return "OUTFLOW", round(
-            buy_pressure
-        )
+    # -----------------------------------------------------
+    # IMPORTANT:
+    # لا نعتمد على اتجاه السعر وحده.
+    # -----------------------------------------------------
 
-    return "NEUTRAL", round(
-        buy_pressure
-    )
+    if (
+        bullish_volume > bearish_volume * 1.20
+        and ratio >= 1.05
+    ):
+        state = "INFLOW"
+
+    elif (
+        bearish_volume > bullish_volume * 1.20
+        and ratio <= 0.95
+    ):
+        state = "OUTFLOW"
+
+    else:
+        state = "NEUTRAL"
+
+    return {
+        "state": state,
+        "bullish_volume": bullish_volume,
+        "bearish_volume": bearish_volume,
+        "ratio": ratio,
+        "confidence": confidence,
+    }
 
 
 # =========================================================
-# BOTTOM / ACCUMULATION
+# ACCUMULATION
 # =========================================================
 
 def detect_bottom_accumulation(klines):
 
     result = {
-        "found": False,
+        "state": "NONE",
         "score": 0,
-        "drawdown": 0,
-        "recent_range": 0,
-        "volume_ratio": 0,
-        "volume_trend": "NEUTRAL",
-        "reason": []
+        "drawdown": 0.0,
+        "range": 0.0,
+        "reasons": [],
     }
 
-    if len(klines) < 40:
+    if len(klines) < 35:
         return result
 
-    closes = [
-        x["close"]
-        for x in klines
-    ]
+    recent = klines[-30:]
 
-    current = closes[-1]
+    highs = [x["high"] for x in recent]
+    lows = [x["low"] for x in recent]
 
-    previous_high = max(
-        closes[-40:-5]
-    )
+    highest = max(highs)
+    lowest = min(lows)
 
-    if previous_high <= 0:
+    current = recent[-1]["close"]
+
+    if highest <= 0:
         return result
 
-    drawdown = (
-        current / previous_high
-        - 1
-    ) * 100
+    drawdown = (current - highest) / highest * 100
 
-    recent = klines[-10:]
+    if lowest > 0:
+        recent_range = (
+            (highest - lowest) / lowest * 100
+        )
+    else:
+        recent_range = 999
 
-    high = max(
-        x["high"]
-        for x in recent
-    )
+    result["drawdown"] = drawdown
+    result["range"] = recent_range
 
-    low = min(
-        x["low"]
-        for x in recent
-    )
+    volume_ratio = calculate_volume_ratio(klines)
+    volume_trend = calculate_volume_trend(klines)
 
-    recent_range = (
-        (high - low)
-        / low
-        * 100
-        if low > 0
-        else 0
-    )
+    flow = detect_liquidity_flow(klines)
 
-    volume_ratio = calculate_volume_ratio(
-        klines
-    )
+    # -----------------------------------------------------
+    # 1 - السعر هبط من القمة
+    # -----------------------------------------------------
 
-    volume_trend = calculate_volume_trend(
-        klines
-    )
-
-    score = 0
-    reasons = []
-
-    if drawdown <= -4:
-        score += 1
-        reasons.append(
+    if drawdown <= -5:
+        result["score"] += 1
+        result["reasons"].append(
             "هبوط سابق واضح"
         )
 
-    if drawdown <= -8:
-        score += 1
-        reasons.append(
-            "تصحيح عميق"
+    # -----------------------------------------------------
+    # 2 - بدأ يضيق في نطاق
+    # -----------------------------------------------------
+
+    if recent_range <= 15:
+        result["score"] += 1
+        result["reasons"].append(
+            "نطاق سعري مضغوط"
         )
 
-    if recent_range <= 18:
-        score += 1
-        reasons.append(
-            "النطاق السعري بدأ يضيق"
+    # -----------------------------------------------------
+    # 3 - السيولة تدخل
+    # أهم فلتر
+    # -----------------------------------------------------
+
+    if flow["state"] == "INFLOW":
+        result["score"] += 2
+        result["reasons"].append(
+            "دخول سيولة شرائية"
         )
 
-    if volume_ratio >= 0.80:
-        score += 1
-        reasons.append(
-            "الحجم ما زال موجوداً بعد الهبوط"
+    # -----------------------------------------------------
+    # 4 - volume rising
+    # -----------------------------------------------------
+
+    if volume_ratio >= 1.05:
+        result["score"] += 1
+        result["reasons"].append(
+            "الحجم أعلى من المتوسط"
         )
 
-    if volume_trend in (
-        "RISING",
-        "STABLE"
-    ):
-        score += 1
-        reasons.append(
-            "الحجم لا يزال داعماً"
+    if volume_trend == "RISING":
+        result["score"] += 1
+        result["reasons"].append(
+            "الحجم يتزايد"
         )
 
-    rejection_count = 0
+    # -----------------------------------------------------
+    # 5 - القاع لا يصنع قاعًا جديدًا
+    # -----------------------------------------------------
 
-    for candle in recent[-6:]:
+    last_lows = [
+        x["low"]
+        for x in recent[-8:]
+    ]
 
-        candle_range = max(
-            candle["high"]
-            - candle["low"],
-            1e-12
-        )
+    if len(last_lows) >= 5:
 
-        lower_wick = (
-            min(
-                candle["open"],
-                candle["close"]
+        old_low = min(last_lows[:4])
+        new_low = min(last_lows[4:])
+
+        if new_low >= old_low * 0.995:
+            result["score"] += 1
+            result["reasons"].append(
+                "القاع ثابت"
             )
-            - candle["low"]
-        )
 
-        if (
-            lower_wick
-            >= candle_range * 0.60
-        ):
-            rejection_count += 1
+    # -----------------------------------------------------
+    # classification
+    # -----------------------------------------------------
 
-    if rejection_count >= 1:
-        score += 1
-        reasons.append(
-            "رفض سعري من الأسفل"
-        )
+    if result["score"] >= 4:
+        result["state"] = "STRONG_ACCUMULATION"
 
-    result.update({
-        "found": score >= 3,
-        "score": score,
-        "drawdown": drawdown,
-        "recent_range": recent_range,
-        "volume_ratio": volume_ratio,
-        "volume_trend": volume_trend,
-        "reason": reasons
-    })
+    elif result["score"] >= 3:
+        result["state"] = "ACCUMULATION"
+
+    elif result["score"] >= 2:
+        result["state"] = "POSSIBLE_ACCUMULATION"
 
     return result
 
 
 # =========================================================
-# RECENT MOVE
+# DISTRIBUTION
 # =========================================================
 
-def calculate_recent_move(
-    klines,
-    n
-):
+def detect_distribution(klines):
 
-    if len(klines) <= n:
-        return 0
+    result = {
+        "state": "NONE",
+        "score": 0,
+        "rally": 0.0,
+        "range": 0.0,
+        "reasons": [],
+    }
 
-    old_price = klines[
-        -n - 1
-    ]["close"]
+    if len(klines) < 35:
+        return result
 
-    new_price = klines[
-        -1
-    ]["close"]
+    recent = klines[-30:]
 
-    if old_price <= 0:
-        return 0
+    highs = [x["high"] for x in recent]
+    lows = [x["low"] for x in recent]
 
-    return (
-        new_price / old_price
-        - 1
-    ) * 100
+    highest = max(highs)
+    lowest = min(lows)
+
+    current = recent[-1]["close"]
+
+    if lowest <= 0:
+        return result
+
+    rally = (current - lowest) / lowest * 100
+
+    recent_range = (
+        (highest - lowest) / lowest * 100
+    )
+
+    result["rally"] = rally
+    result["range"] = recent_range
+
+    flow = detect_liquidity_flow(klines)
+    volume_ratio = calculate_volume_ratio(klines)
+    volume_trend = calculate_volume_trend(klines)
+
+    # صعود قوي سابق
+    if rally >= 8:
+        result["score"] += 1
+        result["reasons"].append(
+            "صعود سابق قوي"
+        )
+
+    # السعر قريب من القمة
+    if highest > 0:
+
+        distance_from_high = (
+            highest - current
+        ) / highest * 100
+
+        if distance_from_high <= 4:
+            result["score"] += 1
+            result["reasons"].append(
+                "السعر قريب من القمة"
+            )
+
+    # -----------------------------------------------------
+    # أهم شيء:
+    # خروج السيولة بعد الصعود
+    # -----------------------------------------------------
+
+    if flow["state"] == "OUTFLOW":
+        result["score"] += 2
+        result["reasons"].append(
+            "خروج سيولة بيعية"
+        )
+
+    if volume_ratio >= 1.05:
+        result["score"] += 1
+        result["reasons"].append(
+            "حجم مرتفع"
+        )
+
+    if volume_trend == "RISING":
+        result["score"] += 1
+        result["reasons"].append(
+            "الحجم يتزايد"
+        )
+
+    if result["score"] >= 4:
+        result["state"] = "STRONG_DISTRIBUTION"
+
+    elif result["score"] >= 3:
+        result["state"] = "DISTRIBUTION"
+
+    elif result["score"] >= 2:
+        result["state"] = "POSSIBLE_DISTRIBUTION"
+
+    return result
 
 
 # =========================================================
-# EMA STATE
+# TIMEFRAME TREND
 # =========================================================
 
-def ema_state(klines):
+def calculate_timeframe_trend(klines):
 
-    if len(klines) < 20:
-        return "MIXED"
+    if len(klines) < 55:
+        return "NEUTRAL"
 
     closes = [
         x["close"]
         for x in klines
     ]
 
-    ema9 = calculate_ema(
-        closes,
-        9
-    )[-1]
+    ema9 = calculate_ema(closes, 9)
+    ema20 = calculate_ema(closes, 20)
+    ema50 = calculate_ema(closes, 50)
 
-    ema20 = calculate_ema(
-        closes,
-        20
-    )[-1]
+    price = closes[-1]
 
-    if ema9 > ema20:
-        return "BULLISH"
+    bullish = (
+        price > ema9
+        and ema9 > ema20
+        and ema20 > ema50
+    )
 
-    if ema9 < ema20:
-        return "BEARISH"
+    bearish = (
+        price < ema9
+        and ema9 < ema20
+        and ema20 < ema50
+    )
 
-    return "MIXED"
+    if bullish:
+        return "LONG"
+
+    if bearish:
+        return "SHORT"
+
+    return "NEUTRAL"
 
 
 # =========================================================
-# MOMENTUM DETECTOR
+# REVERSAL DETECTOR
 # =========================================================
 
-def detect_momentum(klines):
+def detect_reversal(klines):
 
     result = {
-        "state": "NEUTRAL",
-        "score": 0,
-        "move_2": 0,
-        "move_6": 0,
-        "volume_ratio": 0,
-        "volume_trend": "NEUTRAL",
-        "reason": []
+        "state": "NONE",
+        "bull_score": 0,
+        "bear_score": 0,
+        "reasons": [],
     }
 
     if len(klines) < 30:
         return result
 
-    move_2 = calculate_recent_move(
-        klines,
-        2
+    structure = detect_market_structure(klines)
+    flow = detect_liquidity_flow(klines)
+
+    accumulation = detect_bottom_accumulation(klines)
+    distribution = detect_distribution(klines)
+
+    rsi = calculate_rsi(
+        [x["close"] for x in klines]
     )
 
-    move_6 = calculate_recent_move(
-        klines,
-        6
-    )
+    drawdown = recent_drawdown(klines)
+    rally = recent_rally(klines)
 
-    volume_ratio = calculate_volume_ratio(
-        klines
-    )
+    # =====================================================
+    # BULLISH REVERSAL
+    # =====================================================
 
-    volume_trend = calculate_volume_trend(
-        klines
-    )
-
-    closes = [
-        x["close"]
-        for x in klines
-    ]
-
-    ema9 = calculate_ema(
-        closes,
-        9
-    )[-1]
-
-    ema20 = calculate_ema(
-        closes,
-        20
-    )[-1]
-
-    score = 0
-    reasons = []
-
-    bullish = 0
-    bearish = 0
-
-    if move_2 >= 0.60:
-        bullish += 1
-        score += 2
-        reasons.append(
-            "حركة صاعدة حديثة"
+    if accumulation["state"] in (
+        "ACCUMULATION",
+        "STRONG_ACCUMULATION",
+    ):
+        result["bull_score"] += 2
+        result["reasons"].append(
+            "Accumulation"
         )
 
-    elif move_2 <= -0.60:
-        bearish += 1
-        score += 2
-        reasons.append(
-            "حركة هابطة حديثة"
+    if flow["state"] == "INFLOW":
+        result["bull_score"] += 2
+        result["reasons"].append(
+            "Liquidity Inflow"
         )
 
-    if move_6 >= 1.20:
-        bullish += 1
-        score += 2
-        reasons.append(
-            "Momentum صاعد على عدة شموع"
+    if structure["bullish"]:
+        result["bull_score"] += 2
+        result["reasons"].append(
+            "Bullish BOS"
         )
 
-    elif move_6 <= -1.20:
-        bearish += 1
-        score += 2
-        reasons.append(
-            "Momentum هابط على عدة شموع"
+    if rsi <= 42:
+        result["bull_score"] += 1
+        result["reasons"].append(
+            "RSI منخفض"
         )
 
-    if volume_ratio >= 1.20:
-        score += 2
-        reasons.append(
-            "الحجم أعلى من المتوسط"
+    if drawdown <= -8:
+        result["bull_score"] += 1
+        result["reasons"].append(
+            "هبوط سابق كبير"
         )
 
-    elif volume_ratio >= 0.90:
-        score += 1
+    # =====================================================
+    # BEARISH REVERSAL
+    # =====================================================
 
-    if volume_trend == "RISING":
-        score += 2
-        reasons.append(
-            "الحجم في ارتفاع"
+    if distribution["state"] in (
+        "DISTRIBUTION",
+        "STRONG_DISTRIBUTION",
+    ):
+        result["bear_score"] += 2
+        result["reasons"].append(
+            "Distribution"
         )
+
+    if flow["state"] == "OUTFLOW":
+        result["bear_score"] += 2
+        result["reasons"].append(
+            "Liquidity Outflow"
+        )
+
+    if structure["bearish"]:
+        result["bear_score"] += 2
+        result["reasons"].append(
+            "Bearish BOS"
+        )
+
+    if rsi >= 58:
+        result["bear_score"] += 1
+        result["reasons"].append(
+            "RSI مرتفع"
+        )
+
+    if rally >= 10:
+        result["bear_score"] += 1
+        result["reasons"].append(
+            "صعود سابق كبير"
+        )
+
+    # =====================================================
+    # FINAL REVERSAL
+    # =====================================================
 
     if (
-        ema9
-        and ema20
-        and ema9 > ema20
+        result["bull_score"] >= 4
+        and result["bull_score"] >= result["bear_score"] + 2
     ):
-        bullish += 1
+        result["state"] = "BULLISH_REVERSAL"
 
     elif (
-        ema9
-        and ema20
-        and ema9 < ema20
+        result["bear_score"] >= 4
+        and result["bear_score"] >= result["bull_score"] + 2
     ):
-        bearish += 1
-
-    if bullish >= 2 and bullish > bearish:
-        result["state"] = "BULLISH"
-
-    elif bearish >= 2 and bearish > bullish:
-        result["state"] = "BEARISH"
-
-    else:
-        result["state"] = "NEUTRAL"
-
-    result.update({
-        "score": score,
-        "move_2": move_2,
-        "move_6": move_6,
-        "volume_ratio": volume_ratio,
-        "volume_trend": volume_trend,
-        "reason": reasons
-    })
+        result["state"] = "BEARISH_REVERSAL"
 
     return result
 
 
 # =========================================================
-# TREND START DETECTOR
+# LATE PUMP FILTER
 # =========================================================
 
-def detect_trend_start(klines):
+def detect_late_pump(klines):
 
-    result = {
-        "found": False,
-        "direction": "NEUTRAL",
-        "score": 0,
-        "reason": []
-    }
+    if len(klines) < 30:
+        return False
 
-    if len(klines) < 60:
-        return result
+    rally = recent_rally(klines, 25)
 
-    closes = [
-        x["close"]
-        for x in klines
-    ]
-
-    ema9 = calculate_ema(
-        closes,
-        9
+    rsi = calculate_rsi(
+        [x["close"] for x in klines]
     )
 
-    ema20 = calculate_ema(
-        closes,
-        20
-    )
+    volume_ratio = calculate_volume_ratio(klines)
 
-    ema50 = calculate_ema(
-        closes,
-        50
-    )
+    if rally >= 18 and rsi >= 68:
+        return True
 
-    current_price = closes[-1]
+    if rally >= 25 and volume_ratio >= 1.5:
+        return True
 
-    score_long = 0
-    score_short = 0
-
-    reasons_long = []
-    reasons_short = []
-
-    if (
-        ema9[-1]
-        and ema20[-1]
-        and ema9[-1] > ema20[-1]
-    ):
-        score_long += 2
-        reasons_long.append(
-            "EMA9 فوق EMA20"
-        )
-
-    if (
-        ema9[-1]
-        and ema20[-1]
-        and ema9[-1] < ema20[-1]
-    ):
-        score_short += 2
-        reasons_short.append(
-            "EMA9 تحت EMA20"
-        )
-
-    if (
-        ema20[-1]
-        and ema50[-1]
-        and ema20[-1] > ema50[-1]
-    ):
-        score_long += 2
-        reasons_long.append(
-            "EMA20 فوق EMA50"
-        )
-
-    if (
-        ema20[-1]
-        and ema50[-1]
-        and ema20[-1] < ema50[-1]
-    ):
-        score_short += 2
-        reasons_short.append(
-            "EMA20 تحت EMA50"
-        )
-
-    if (
-        ema20[-1]
-        and current_price > ema20[-1]
-    ):
-        score_long += 1
-
-    if (
-        ema20[-1]
-        and current_price < ema20[-1]
-    ):
-        score_short += 1
-
-    recent_move = calculate_recent_move(
-        klines,
-        6
-    )
-
-    if recent_move >= 1.0:
-        score_long += 2
-        reasons_long.append(
-            "السعر بدأ يتحرك صعوداً"
-        )
-
-    if recent_move <= -1.0:
-        score_short += 2
-        reasons_short.append(
-            "السعر بدأ يتحرك هبوطاً"
-        )
-
-    volume_ratio = calculate_volume_ratio(
-        klines
-    )
-
-    if volume_ratio >= 1.10:
-
-        if score_long > score_short:
-            score_long += 1
-            reasons_long.append(
-                "ارتفاع الحجم مع الحركة"
-            )
-
-        elif score_short > score_long:
-            score_short += 1
-            reasons_short.append(
-                "ارتفاع الحجم مع الهبوط"
-            )
-
-    if (
-        score_long >= 5
-        and score_long > score_short
-    ):
-        result.update({
-            "found": True,
-            "direction": "LONG",
-            "score": score_long,
-            "reason": reasons_long
-        })
-
-    elif (
-        score_short >= 5
-        and score_short > score_long
-    ):
-        result.update({
-            "found": True,
-            "direction": "SHORT",
-            "score": score_short,
-            "reason": reasons_short
-        })
-
-    return result
+    return False
 
 
 # =========================================================
-# DEEP COIN ANALYSIS
+# LATE DUMP FILTER
+# =========================================================
+
+def detect_late_dump(klines):
+
+    if len(klines) < 30:
+        return False
+
+    drawdown = recent_drawdown(klines, 25)
+
+    rsi = calculate_rsi(
+        [x["close"] for x in klines]
+    )
+
+    if drawdown <= -18 and rsi <= 28:
+        return True
+
+    return False
+
+
+# =========================================================
+# SCORE ENGINE
+# =========================================================
+
+def calculate_entry_score(
+    trend_1d,
+    trend_4h,
+    trend_1h,
+    flow,
+    accumulation,
+    distribution,
+    reversal,
+    late_pump,
+    late_dump,
+):
+
+    long_score = 0
+    short_score = 0
+
+    # =====================================================
+    # LONG
+    # =====================================================
+
+    if trend_1d == "LONG":
+        long_score += 10
+
+    if trend_4h == "LONG":
+        long_score += 15
+
+    if trend_1h == "LONG":
+        long_score += 15
+
+    if flow == "INFLOW":
+        long_score += 20
+
+    if accumulation in (
+        "ACCUMULATION",
+        "STRONG_ACCUMULATION",
+    ):
+        long_score += 20
+
+    if reversal == "BULLISH_REVERSAL":
+        long_score += 15
+
+    if late_dump:
+        long_score += 5
+
+    # =====================================================
+    # SHORT
+    # =====================================================
+
+    if trend_1d == "SHORT":
+        short_score += 10
+
+    if trend_4h == "SHORT":
+        short_score += 15
+
+    if trend_1h == "SHORT":
+        short_score += 15
+
+    if flow == "OUTFLOW":
+        short_score += 20
+
+    if distribution in (
+        "DISTRIBUTION",
+        "STRONG_DISTRIBUTION",
+    ):
+        short_score += 20
+
+    if reversal == "BEARISH_REVERSAL":
+        short_score += 15
+
+    if late_pump:
+        short_score += 5
+
+    # =====================================================
+    # CRITICAL OVERRIDE
+    #
+    # السيولة + التجميع تمنع SHORT
+    # السيولة الخارجة + التوزيع تمنع LONG
+    # =====================================================
+
+    if (
+        flow == "INFLOW"
+        and accumulation in (
+            "ACCUMULATION",
+            "STRONG_ACCUMULATION",
+        )
+    ):
+        short_score = min(short_score, 35)
+
+    if (
+        flow == "OUTFLOW"
+        and distribution in (
+            "DISTRIBUTION",
+            "STRONG_DISTRIBUTION",
+        )
+    ):
+        long_score = min(long_score, 35)
+
+    # انعكاس قوي له الأولوية
+    if reversal == "BULLISH_REVERSAL":
+        short_score = min(short_score, 40)
+
+    if reversal == "BEARISH_REVERSAL":
+        long_score = min(long_score, 40)
+
+    return clamp(long_score, 0, 100), clamp(short_score, 0, 100)
+
+
+# =========================================================
+# SINGLE COIN ANALYSIS
 # =========================================================
 
 def get_coin_analysis(symbol):
 
     symbol = normalize_symbol(symbol)
 
-    if not symbol:
-        return None
+    try:
 
-    timeframes = (
-        ("1d", 100),
-        ("4h", 120),
-        ("1h", 120),
-        ("30m", 100),
-        ("15m", 100)
-    )
+        tf_15m = get_klines(symbol, "15m", 100)
+        tf_30m = get_klines(symbol, "30m", 100)
+        tf_1h = get_klines(symbol, "1h", 120)
+        tf_4h = get_klines(symbol, "4h", 120)
+        tf_1d = get_klines(symbol, "1d", 100)
 
-    ks = {}
+        if not all([
+            tf_15m,
+            tf_30m,
+            tf_1h,
+            tf_4h,
+            tf_1d,
+        ]):
+            return {
+                "symbol": symbol,
+                "direction": "WAIT",
+                "score": 0,
+                "reason": "بيانات غير كافية",
+            }
 
-    for timeframe, limit in timeframes:
+        # -------------------------------------------------
+        # trends
+        # -------------------------------------------------
 
-        ks[timeframe] = get_klines(
-            symbol,
-            timeframe,
-            limit
+        trend_1d = calculate_timeframe_trend(tf_1d)
+        trend_4h = calculate_timeframe_trend(tf_4h)
+        trend_1h = calculate_timeframe_trend(tf_1h)
+        trend_30m = calculate_timeframe_trend(tf_30m)
+        trend_15m = calculate_timeframe_trend(tf_15m)
+
+        # -------------------------------------------------
+        # Main 1H analysis
+        # -------------------------------------------------
+
+        flow_data = detect_liquidity_flow(tf_1h)
+
+        accumulation = detect_bottom_accumulation(tf_1h)
+
+        distribution = detect_distribution(tf_1h)
+
+        structure = detect_market_structure(tf_1h)
+
+        reversal = detect_reversal(tf_1h)
+
+        late_pump = detect_late_pump(tf_1h)
+
+        late_dump = detect_late_dump(tf_1h)
+
+        # -------------------------------------------------
+        # price
+        # -------------------------------------------------
+
+        price = tf_1h[-1]["close"]
+
+        support, resistance = calculate_support_resistance(
+            tf_1h
         )
 
-    minimums = {
-        "1d": 60,
-        "4h": 60,
-        "1h": 60,
-        "30m": 40,
-        "15m": 40
-    }
+        atr = calculate_atr(tf_1h)
 
-    for timeframe, minimum in minimums.items():
-
-        if len(ks[timeframe]) < minimum:
-            return None
-
-    k1d = ks["1d"]
-    k4h = ks["4h"]
-    k1h = ks["1h"]
-    k30 = ks["30m"]
-    k15 = ks["15m"]
-
-    price = (
-        get_current_price(symbol)
-        or k1h[-1]["close"]
-    )
-
-    t1d = calculate_timeframe_trend(
-        k1d
-    )
-
-    t4h = calculate_timeframe_trend(
-        k4h
-    )
-
-    t1h = calculate_timeframe_trend(
-        k1h
-    )
-
-    t30 = calculate_timeframe_trend(
-        k30
-    )
-
-    t15 = calculate_timeframe_trend(
-        k15
-    )
-
-    structure, bos = detect_market_structure(
-        k1h
-    )
-
-    liquidity, buy_pressure = detect_liquidity_flow(
-        k1h
-    )
-
-    volume_ratio = calculate_volume_ratio(
-        k1h
-    )
-
-    volume_trend = calculate_volume_trend(
-        k1h
-    )
-
-    rsi = (
-        calculate_rsi(
-            [x["close"] for x in k1h]
-        )
-        or 50
-    )
-
-    ema = ema_state(
-        k1h
-    )
-
-    bottom = detect_bottom_accumulation(
-        k1h
-    )
-
-    momentum = detect_momentum(
-        k1h
-    )
-
-    trend_start = detect_trend_start(
-        k1h
-    )
-
-    support, resistance = calculate_support_resistance(
-        k1h
-    )
-
-    atr = calculate_atr(
-        k1h
-    )
-
-    distance_support = (
-        (price - support)
-        / price
-        * 100
-        if support
-        else 0
-    )
-
-    distance_resistance = (
-        (resistance - price)
-        / price
-        * 100
-        if resistance
-        else 0
-    )
-
-    long_score = 0
-    short_score = 0
-
-    long_reasons = []
-    short_reasons = []
-
-    # =====================================================
-    # HIGHER TIMEFRAME
-    # =====================================================
-
-    for trend, weight, label in (
-        (t1d, 15, "1D"),
-        (t4h, 15, "4H"),
-        (t1h, 15, "1H")
-    ):
-
-        if trend == "LONG":
-
-            long_score += weight
-
-            long_reasons.append(
-                f"{label} يدعم الاتجاه الصاعد"
-            )
-
-        elif trend == "SHORT":
-
-            short_score += weight
-
-            short_reasons.append(
-                f"{label} يدعم الاتجاه الهابط"
-            )
-
-    # =====================================================
-    # LOWER TIMEFRAMES
-    # =====================================================
-
-    if t30 == "LONG":
-        long_score += 8
-
-    elif t30 == "SHORT":
-        short_score += 8
-
-    if t15 == "LONG":
-        long_score += 6
-
-    elif t15 == "SHORT":
-        short_score += 6
-
-    # =====================================================
-    # BOS
-    # =====================================================
-
-    if bos == "BULLISH":
-
-        long_score += 12
-
-        long_reasons.append(
-            "BOS صاعد مؤكد"
+        rsi_1h = calculate_rsi(
+            [x["close"] for x in tf_1h]
         )
 
-    elif bos == "BEARISH":
-
-        short_score += 12
-
-        short_reasons.append(
-            "BOS هابط مؤكد"
+        rsi_15m = calculate_rsi(
+            [x["close"] for x in tf_15m]
         )
 
-    # =====================================================
-    # STRUCTURE
-    # =====================================================
+        volume_ratio = calculate_volume_ratio(tf_1h)
 
-    if structure == "BULLISH":
+        # -------------------------------------------------
+        # score
+        # -------------------------------------------------
 
-        long_score += 8
-
-        long_reasons.append(
-            "هيكل السوق صاعد"
+        long_score, short_score = calculate_entry_score(
+            trend_1d,
+            trend_4h,
+            trend_1h,
+            flow_data["state"],
+            accumulation["state"],
+            distribution["state"],
+            reversal["state"],
+            late_pump,
+            late_dump,
         )
 
-    elif structure == "BEARISH":
-
-        short_score += 8
-
-        short_reasons.append(
-            "هيكل السوق هابط"
-        )
-
-    # =====================================================
-    # LIQUIDITY
-    # =====================================================
-
-    if liquidity == "INFLOW":
-
-        long_score += 10
-
-        long_reasons.append(
-            "السيولة تدخل للسوق"
-        )
-
-    elif liquidity == "OUTFLOW":
-
-        short_score += 10
-
-        short_reasons.append(
-            "السيولة تخرج من السوق"
-        )
-
-    # =====================================================
-    # BUY PRESSURE
-    # =====================================================
-
-    if buy_pressure >= 57:
-
-        long_score += 6
-
-    elif buy_pressure <= 43:
-
-        short_score += 6
-
-    # =====================================================
-    # VOLUME
-    # =====================================================
-
-    if volume_ratio >= 1.20:
-
-        if buy_pressure >= 50:
-
-            long_score += 6
-
-            long_reasons.append(
-                "الحجم مرتفع مع ضغط شرائي"
-            )
-
-        else:
-
-            short_score += 6
-
-            short_reasons.append(
-                "الحجم مرتفع مع ضغط بيعي"
-            )
-
-    elif volume_ratio >= 0.80:
-
-        if buy_pressure >= 50:
-            long_score += 2
-        else:
-            short_score += 2
-
-    # =====================================================
-    # RSI
-    # =====================================================
-
-    if 35 <= rsi <= 48:
-
-        long_score += 5
-
-        long_reasons.append(
-            "RSI مناسب لمحاولة صعود"
-        )
-
-    elif 52 <= rsi <= 65:
-
-        short_score += 5
-
-        short_reasons.append(
-            "RSI يميل للضغط الهابط"
-        )
-
-    elif rsi < 30:
-
-        long_score += 7
-
-        long_reasons.append(
-            "RSI في منطقة تشبع بيعي"
-        )
-
-    elif rsi > 70:
-
-        short_score += 7
-
-        short_reasons.append(
-            "RSI في منطقة تشبع شرائي"
-        )
-
-    # =====================================================
-    # EMA
-    # =====================================================
-
-    if ema == "BULLISH":
-
-        long_score += 5
-
-        long_reasons.append(
-            "EMA9 فوق EMA20"
-        )
-
-    elif ema == "BEARISH":
-
-        short_score += 5
-
-        short_reasons.append(
-            "EMA9 تحت EMA20"
-        )
-
-    # =====================================================
-    # BOTTOM
-    # =====================================================
-
-    if bottom["found"]:
-
-        long_score += 8
-
-        long_reasons.append(
-            "تم اكتشاف احتمال قاع/تجميع"
-        )
-
-    # =====================================================
-    # MOMENTUM
-    # =====================================================
-
-    if momentum["state"] == "BULLISH":
-
-        long_score += 8
-
-        long_reasons.append(
-            "Momentum صاعد"
-        )
-
-    elif momentum["state"] == "BEARISH":
-
-        short_score += 8
-
-        short_reasons.append(
-            "Momentum هابط"
-        )
-
-    # =====================================================
-    # TREND START
-    # =====================================================
-
-    if trend_start["found"]:
-
-        if trend_start["direction"] == "LONG":
-
-            long_score += 7
-
-            long_reasons.append(
-                "بداية ترند صاعد محتملة"
-            )
-
-        elif trend_start["direction"] == "SHORT":
-
-            short_score += 7
-
-            short_reasons.append(
-                "بداية ترند هابط محتملة"
-            )
-
-    # =====================================================
-    # DIRECTION
-    # =====================================================
-
-    if long_score > short_score:
-
-        direction = "LONG"
-
-    elif short_score > long_score:
-
-        direction = "SHORT"
-
-    else:
-
-        direction = "NEUTRAL"
-
-    score = int(
-        max(
-            0,
-            min(
-                100,
-                max(
-                    long_score,
-                    short_score
-                )
+        # -------------------------------------------------
+        # FINAL DIRECTION
+        # -------------------------------------------------
+
+        direction = "WAIT"
+        state = "NO TRADE"
+
+        # =================================================
+        # HARD SAFETY:
+        # =================================================
+
+        # دخول سيولة + تجميع
+        # ممنوع SHORT
+        bullish_liquidity_setup = (
+            flow_data["state"] == "INFLOW"
+            and accumulation["state"] in (
+                "ACCUMULATION",
+                "STRONG_ACCUMULATION",
             )
         )
-    )
 
-    # =====================================================
-    # CONFIRMATION
-    # =====================================================
-
-    long_confirmation = (
-        t1h == "LONG"
-        and (
-            t30 == "LONG"
-            or t15 == "LONG"
-            or bos == "BULLISH"
-            or liquidity == "INFLOW"
-            or momentum["state"] == "BULLISH"
-        )
-    )
-
-    short_confirmation = (
-        t1h == "SHORT"
-        and (
-            t30 == "SHORT"
-            or t15 == "SHORT"
-            or bos == "BEARISH"
-            or liquidity == "OUTFLOW"
-            or momentum["state"] == "BEARISH"
-        )
-    )
-
-    # =====================================================
-    # TRADE
-    # =====================================================
-
-    trade_type = "NO TRADE"
-
-    decision = (
-        "انتظار تأكيد إضافي"
-    )
-
-    entry = None
-    stop_loss = None
-    tp1 = None
-    tp2 = None
-    tp3 = None
-
-    # =====================================================
-    # LONG ENTRY
-    # =====================================================
-
-    if (
-        direction == "LONG"
-        and score >= 48
-        and long_confirmation
-    ):
-
-        trade_type = "ENTRY READY"
-
-        decision = (
-            "صفقة LONG جاهزة"
+        # خروج سيولة + توزيع
+        # ممنوع LONG
+        bearish_liquidity_setup = (
+            flow_data["state"] == "OUTFLOW"
+            and distribution["state"] in (
+                "DISTRIBUTION",
+                "STRONG_DISTRIBUTION",
+            )
         )
 
-        entry = price
-
-        if atr and atr > 0:
-
-            stop_loss = (
-                entry
-                - atr * 1.25
-            )
-
-        elif support:
-
-            stop_loss = (
-                support * 0.995
-            )
-
-        else:
-
-            stop_loss = (
-                entry * 0.97
-            )
-
-        risk = (
-            entry - stop_loss
-        )
-
-        if risk > 0:
-
-            tp1 = (
-                entry
-                + risk * 1.2
-            )
-
-            tp2 = (
-                entry
-                + risk * 2
-            )
-
-            tp3 = (
-                entry
-                + risk * 3
-            )
-
-    # =====================================================
-    # SHORT ENTRY
-    # =====================================================
-
-    elif (
-        direction == "SHORT"
-        and score >= 48
-        and short_confirmation
-    ):
-
-        trade_type = "ENTRY READY"
-
-        decision = (
-            "صفقة SHORT جاهزة"
-        )
-
-        entry = price
-
-        if atr and atr > 0:
-
-            stop_loss = (
-                entry
-                + atr * 1.25
-            )
-
-        elif resistance:
-
-            stop_loss = (
-                resistance * 1.005
-            )
-
-        else:
-
-            stop_loss = (
-                entry * 1.03
-            )
-
-        risk = (
-            stop_loss - entry
-        )
-
-        if risk > 0:
-
-            tp1 = (
-                entry
-                - risk * 1.2
-            )
-
-            tp2 = (
-                entry
-                - risk * 2
-            )
-
-            tp3 = (
-                entry
-                - risk * 3
-            )
-
-    # =====================================================
-    # REVERSAL WATCH LONG
-    # =====================================================
-
-    elif (
-        direction == "LONG"
-        and bottom["found"]
-        and score >= 30
-    ):
-
-        trade_type = "REVERSAL WATCH"
-
-        decision = (
-            "ننتظر تأكيد التحول الصاعد على 1H/BOS"
-        )
-
-    # =====================================================
-    # REVERSAL WATCH SHORT
-    # =====================================================
-
-    elif (
-        direction == "SHORT"
-        and score >= 30
-        and (
-            bos == "BEARISH"
-            or liquidity == "OUTFLOW"
-            or momentum["state"] == "BEARISH"
-        )
-    ):
-
-        trade_type = "REVERSAL WATCH"
-
-        decision = (
-            "ننتظر تأكيد التحول الهابط على 1H/BOS"
-        )
-
-    # =====================================================
-    # ACCUMULATION
-    # =====================================================
-
-    elif (
-        bottom["found"]
-        and score >= 20
-    ):
-
-        trade_type = "ACCUMULATION WATCH"
-
-        decision = (
-            "تجميع مبكر؛ ننتظر تحول 1H/BOS"
-        )
-
-    # =====================================================
-    # RETURN
-    # =====================================================
-
-    return {
-        "symbol": symbol,
-        "price": price,
-
-        "direction": direction,
-        "final_direction": direction,
-
-        "score": score,
-        "entry_score": score,
-
-        "trade_type": trade_type,
-        "status": trade_type,
-
-        "decision": decision,
-
-        "trend_1d": t1d,
-        "trend_4h": t4h,
-        "trend_1h": t1h,
-        "trend_30m": t30,
-        "trend_15m": t15,
-
-        "structure": structure,
-        "bos": bos,
-
-        "liquidity": liquidity,
-        "buy_pressure": buy_pressure,
-
-        "volume_ratio": volume_ratio,
-        "volume_trend": volume_trend,
-
-        "rsi": rsi,
-        "ema_state": ema,
-
-        "bottom_found": bottom["found"],
-        "bottom_score": bottom["score"],
-        "drawdown": bottom["drawdown"],
-
-        "momentum_state": momentum["state"],
-        "momentum_score": momentum["score"],
-        "momentum_move_2": momentum["move_2"],
-        "momentum_move_6": momentum["move_6"],
-        "momentum_reasons": momentum["reason"],
-
-        "trend_start_found": trend_start["found"],
-        "trend_start_direction": trend_start["direction"],
-        "trend_start_score": trend_start["score"],
-        "trend_start_reasons": trend_start["reason"],
-
-        "support": support,
-        "resistance": resistance,
-
-        "distance_support": distance_support,
-        "distance_resistance": distance_resistance,
-
-        "atr": atr,
-
-        "entry": entry,
-        "stop_loss": stop_loss,
-
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-
-        "move_2": calculate_recent_move(
-            k1h,
-            2
-        ),
-
-        "move_6": calculate_recent_move(
-            k1h,
-            6
-        ),
-
-        "reasons": (
-            long_reasons
-            if direction == "LONG"
-            else short_reasons
-        ),
-
-        "long_score": long_score,
-        "short_score": short_score,
-
-        "bottom_reasons": bottom["reason"]
-    }
-
-
-# =========================================================
-# TREND HUNTER
-# =========================================================
-
-def trend_hunter(
-    symbols,
-    max_coins=120
-):
-
-    start = time.time()
-
-    symbols = list(
-        dict.fromkeys(
-            symbols
-        )
-    )
-
-    priority_set = set(
-        PRIORITY_SYMBOLS
-    )
-
-    priority = [
-        symbol
-        for symbol in symbols
-        if symbol in priority_set
-    ]
-
-    others = [
-        symbol
-        for symbol in symbols
-        if symbol not in priority_set
-    ]
-
-    ordered_symbols = (
-        priority
-        + others
-    )
-
-    # -----------------------------------------------------
-    # HARD LIMIT
-    # -----------------------------------------------------
-
-    ordered_symbols = ordered_symbols[
-        :max_coins
-    ]
-
-    candidates = []
-
-    for symbol in ordered_symbols:
-
-        try:
-
-            k = get_klines(
-                symbol,
-                "1h",
-                80
-            )
-
-            if len(k) < 50:
-                continue
-
-            closes = [
-                x["close"]
-                for x in k
-            ]
-
-            trend = calculate_timeframe_trend(
-                k
-            )
-
-            volume_ratio = calculate_volume_ratio(
-                k
-            )
-
-            volume_trend = calculate_volume_trend(
-                k
-            )
-
-            rsi = (
-                calculate_rsi(
-                    closes
-                )
-                or 50
-            )
-
-            structure, bos = detect_market_structure(
-                k
-            )
-
-            liquidity, buy_pressure = detect_liquidity_flow(
-                k
-            )
-
-            bottom = detect_bottom_accumulation(
-                k
-            )
-
-            momentum = detect_momentum(
-                k
-            )
-
-            trend_start = detect_trend_start(
-                k
-            )
-
-            move_2 = calculate_recent_move(
-                k,
-                2
-            )
-
-            move_6 = calculate_recent_move(
-                k,
-                6
-            )
-
-            # =================================================
-            # TREND HUNTER SCORE
-            # =================================================
-
-            score = 0
-
-            # Existing trend
-            if trend in (
-                "LONG",
-                "SHORT"
-            ):
-                score += 10
-
-            # BOS
-            if bos != "NONE":
-                score += 15
-
-            # Structure
-            if structure != "MIXED":
-                score += 10
-
-            # Liquidity
-            if liquidity != "NEUTRAL":
-                score += 15
-
-            # Volume
-            if volume_ratio >= 0.80:
-                score += 8
-
-            if volume_ratio >= 1.20:
-                score += 7
-
-            # Volume trend
-            if volume_trend == "RISING":
-                score += 7
-
-            # Momentum
-            score += min(
-                momentum["score"],
-                15
-            )
-
-            # Trend start
-            if trend_start["found"]:
-                score += min(
-                    trend_start["score"],
-                    10
-                )
-
-            # Bottom
-            if bottom["found"]:
-                score += 15
-
-            # Recent movement
-            if abs(move_2) >= 0.60:
-                score += 4
-
-            if abs(move_6) >= 1.20:
-                score += 5
-
-            if abs(move_6) >= 2.50:
-                score += 5
-
-            # RSI
-            if (
-                rsi <= 42
-                or rsi >= 58
-            ):
-                score += 5
-
-            # Buy pressure
-            if (
-                buy_pressure >= 57
-                or buy_pressure <= 43
-            ):
-                score += 5
-
-            # =================================================
-            # DIRECTION
-            # =================================================
+        # -------------------------------------------------
+        # BULLISH
+        # -------------------------------------------------
+
+        if bullish_liquidity_setup:
 
             if (
-                momentum["state"] == "BULLISH"
-                or trend_start["direction"] == "LONG"
+                reversal["state"] == "BULLISH_REVERSAL"
+                or structure["bullish"]
             ):
-
-                hunter_direction = "LONG"
-
-            elif (
-                momentum["state"] == "BEARISH"
-                or trend_start["direction"] == "SHORT"
-            ):
-
-                hunter_direction = "SHORT"
-
-            elif trend in (
-                "LONG",
-                "SHORT"
-            ):
-
-                hunter_direction = trend
+                direction = "LONG"
+                state = "ENTRY READY"
 
             else:
+                direction = "LONG WATCH"
+                state = "REVERSAL WATCH"
 
-                hunter_direction = "NEUTRAL"
+        # -------------------------------------------------
+        # BEARISH
+        # -------------------------------------------------
 
-            candidates.append({
-                "symbol": symbol,
-                "fast_score": score,
-                "direction": hunter_direction,
-                "move_2": move_2,
-                "move_6": move_6,
-                "volume": volume_ratio,
-                "volume_trend": volume_trend,
-                "momentum": momentum["state"],
-                "momentum_score": momentum["score"],
-                "trend_start": trend_start["found"],
-                "trend_start_score": trend_start["score"],
-                "bottom": bottom["found"],
-                "bottom_score": bottom["score"],
-                "structure": structure,
-                "bos": bos,
-                "liquidity": liquidity
-            })
+        elif bearish_liquidity_setup:
 
-        except Exception as exc:
+            if (
+                reversal["state"] == "BEARISH_REVERSAL"
+                or structure["bearish"]
+            ):
+                direction = "SHORT"
+                state = "ENTRY READY"
 
-            logger.warning(
-                "Trend Hunter error %s: %s",
-                symbol,
-                exc
+            else:
+                direction = "SHORT WATCH"
+                state = "REVERSAL WATCH"
+
+        # -------------------------------------------------
+        # Normal LONG
+        # -------------------------------------------------
+
+        elif (
+            long_score >= 65
+            and long_score > short_score + 10
+            and not late_pump
+        ):
+
+            direction = "LONG"
+            state = "ENTRY READY"
+
+        # -------------------------------------------------
+        # Normal SHORT
+        # -------------------------------------------------
+
+        elif (
+            short_score >= 65
+            and short_score > long_score + 10
+            and not late_dump
+        ):
+
+            direction = "SHORT"
+            state = "ENTRY READY"
+
+        # -------------------------------------------------
+        # Late pump protection
+        # -------------------------------------------------
+
+        if late_pump and direction == "LONG":
+
+            direction = "LONG WATCH"
+            state = "LATE PUMP - WAIT"
+
+        # -------------------------------------------------
+        # Late dump protection
+        # -------------------------------------------------
+
+        if late_dump and direction == "SHORT":
+
+            direction = "SHORT WATCH"
+            state = "LATE DUMP - WAIT"
+
+        # -------------------------------------------------
+        # Calculate trade levels
+        # -------------------------------------------------
+
+        entry = price
+
+        if atr <= 0:
+            atr = price * 0.01
+
+        if direction in ("LONG", "LONG WATCH"):
+
+            sl = min(
+                support * 0.985 if support > 0 else price - atr * 1.5,
+                price - atr * 1.2,
             )
 
-    candidates.sort(
-        key=lambda x: (
-            x["fast_score"],
-            x["momentum_score"],
-            x["trend_start_score"],
-            abs(x["move_6"]),
-            x["volume"]
-        ),
-        reverse=True
-    )
+            risk = max(
+                price - sl,
+                atr,
+            )
 
-    logger.info(
-        "Trend Hunter finished: %.2fs | scanned=%s | candidates=%s",
-        time.time() - start,
-        len(ordered_symbols),
-        len(candidates)
-    )
+            tp1 = price + risk * 1.2
+            tp2 = price + risk * 2.0
+            tp3 = price + risk * 3.0
 
-    return candidates
+        elif direction in ("SHORT", "SHORT WATCH"):
+
+            sl = max(
+                resistance * 1.015 if resistance > 0 else price + atr * 1.5,
+                price + atr * 1.2,
+            )
+
+            risk = max(
+                sl - price,
+                atr,
+            )
+
+            tp1 = price - risk * 1.2
+            tp2 = price - risk * 2.0
+            tp3 = price - risk * 3.0
+
+        else:
+
+            sl = 0.0
+            tp1 = 0.0
+            tp2 = 0.0
+            tp3 = 0.0
+
+        # -------------------------------------------------
+        # Confidence
+        # -------------------------------------------------
+
+        score = max(
+            long_score,
+            short_score,
+        )
+
+        if direction in ("LONG", "SHORT"):
+            confidence = int(
+                clamp(score, 0, 100)
+            )
+        else:
+            confidence = int(
+                clamp(
+                    max(long_score, short_score),
+                    0,
+                    100,
+                )
+            )
+
+        # -------------------------------------------------
+        # Reasons
+        # -------------------------------------------------
+
+        reasons = []
+
+        if flow_data["state"] == "INFLOW":
+            reasons.append("دخول سيولة")
+
+        elif flow_data["state"] == "OUTFLOW":
+            reasons.append("خروج سيولة")
+
+        if accumulation["state"] in (
+            "ACCUMULATION",
+            "STRONG_ACCUMULATION",
+        ):
+            reasons.append("تجميع")
+
+        if distribution["state"] in (
+            "DISTRIBUTION",
+            "STRONG_DISTRIBUTION",
+        ):
+            reasons.append("توزيع")
+
+        if reversal["state"] == "BULLISH_REVERSAL":
+            reasons.append("انعكاس صاعد")
+
+        if reversal["state"] == "BEARISH_REVERSAL":
+            reasons.append("انعكاس هابط")
+
+        if structure["bos"] == "BULLISH":
+            reasons.append("BOS صاعد")
+
+        elif structure["bos"] == "BEARISH":
+            reasons.append("BOS هابط")
+
+        # -------------------------------------------------
+        # Critical warning
+        # -------------------------------------------------
+
+        warning = ""
+
+        if bullish_liquidity_setup:
+            warning = (
+                "⚠️ العملة هابطة سعرياً لكن السيولة تدخل "
+                "مع وجود تجميع؛ لا يتم مطاردتها SHORT."
+            )
+
+        elif bearish_liquidity_setup:
+            warning = (
+                "⚠️ العملة صاعدة سعرياً لكن السيولة تخرج "
+                "مع وجود توزيع؛ لا يتم مطاردتها LONG."
+            )
+
+        return {
+            "symbol": symbol,
+
+            "direction": direction,
+            "state": state,
+
+            "score": confidence,
+
+            "long_score": long_score,
+            "short_score": short_score,
+
+            "price": price,
+
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+
+            "trend_1d": trend_1d,
+            "trend_4h": trend_4h,
+            "trend_1h": trend_1h,
+            "trend_30m": trend_30m,
+            "trend_15m": trend_15m,
+
+            "rsi_1h": rsi_1h,
+            "rsi_15m": rsi_15m,
+
+            "volume_ratio": volume_ratio,
+            "volume_trend": calculate_volume_trend(tf_1h),
+
+            "liquidity": flow_data["state"],
+            "liquidity_confidence": flow_data["confidence"],
+
+            "accumulation": accumulation["state"],
+            "accumulation_score": accumulation["score"],
+
+            "distribution": distribution["state"],
+            "distribution_score": distribution["score"],
+
+            "market_structure": structure["structure"],
+            "bos": structure["bos"],
+
+            "reversal": reversal["state"],
+            "bull_reversal_score": reversal["bull_score"],
+            "bear_reversal_score": reversal["bear_score"],
+
+            "drawdown": recent_drawdown(tf_1h),
+            "rally": recent_rally(tf_1h),
+
+            "support": support,
+            "resistance": resistance,
+
+            "late_pump": late_pump,
+            "late_dump": late_dump,
+
+            "reasons": reasons,
+            "warning": warning,
+
+            "analysis_ok": True,
+        }
+
+    except Exception as exc:
+
+        logger.exception(
+            "Analysis failed for %s",
+            symbol,
+        )
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "state": "ERROR",
+            "score": 0,
+            "reason": str(exc),
+            "analysis_ok": False,
+        }
 
 
 # =========================================================
-# MARKET SCAN
+# MARKET SCANNER
 # =========================================================
 
 def scan_market(limit=5):
-
-    start = time.time()
 
     symbols = get_futures_symbols()
 
     if not symbols:
         return []
 
-    # =====================================================
-    # TREND HUNTER
-    # UP TO 120 COINS
-    # =====================================================
+    candidates = []
 
-    candidates = trend_hunter(
-        symbols,
-        max_coins=120
-    )
+    # -----------------------------------------------------
+    # لا نفحص كل السوق بنفس العمق.
+    # نعمل فلترة سريعة أولاً.
+    # -----------------------------------------------------
 
-    if not candidates:
-        return []
-
-    # =====================================================
-    # TOP 15 DEEP ANALYSIS
-    # =====================================================
-
-    deep_candidates = candidates[:15]
-
-    deep_results = []
-
-    for item in deep_candidates:
-
-        symbol = item["symbol"]
+    for symbol in symbols:
 
         try:
 
-            result = get_coin_analysis(
-                symbol
-            )
-
-            if result:
-
-                result["hunter_score"] = item[
-                    "fast_score"
-                ]
-
-                result["hunter_direction"] = item[
-                    "direction"
-                ]
-
-                result["hunter_momentum"] = item[
-                    "momentum"
-                ]
-
-                result["hunter_momentum_score"] = item[
-                    "momentum_score"
-                ]
-
-                result["hunter_trend_start"] = item[
-                    "trend_start"
-                ]
-
-                result["hunter_trend_start_score"] = item[
-                    "trend_start_score"
-                ]
-
-                deep_results.append(
-                    result
-                )
-
-        except Exception as exc:
-
-            logger.warning(
-                "Deep analysis error %s: %s",
+            klines = get_klines(
                 symbol,
-                exc
+                "1h",
+                45,
             )
 
-    # =====================================================
-    # FALLBACK
-    # =====================================================
+            if len(klines) < 30:
+                continue
 
-    if not deep_results:
+            current = klines[-1]["close"]
 
-        for item in candidates[:5]:
+            if current <= 0:
+                continue
 
-            try:
+            drawdown = recent_drawdown(
+                klines,
+                30,
+            )
 
-                result = get_coin_analysis(
-                    item["symbol"]
-                )
+            rally = recent_rally(
+                klines,
+                30,
+            )
 
-                if result:
-                    deep_results.append(
-                        result
-                    )
+            volume_ratio = calculate_volume_ratio(
+                klines
+            )
 
-            except Exception:
-                pass
+            flow = detect_liquidity_flow(
+                klines
+            )
 
-    # =====================================================
-    # FINAL RANKING
-    # =====================================================
+            accumulation = detect_bottom_accumulation(
+                klines
+            )
 
-    trade_rank = {
+            distribution = detect_distribution(
+                klines
+            )
+
+            # -------------------------------------------------
+            # الأولوية ليست لأكبر هبوط أو أكبر صعود.
+            # الأولوية للـsetup.
+            # -------------------------------------------------
+
+            priority = 0
+
+            if flow["state"] == "INFLOW":
+                priority += 30
+
+            if flow["state"] == "OUTFLOW":
+                priority += 30
+
+            if accumulation["state"] == "STRONG_ACCUMULATION":
+                priority += 35
+
+            elif accumulation["state"] == "ACCUMULATION":
+                priority += 25
+
+            if distribution["state"] == "STRONG_DISTRIBUTION":
+                priority += 35
+
+            elif distribution["state"] == "DISTRIBUTION":
+                priority += 25
+
+            # الهبوط وحده لا يعطي أولوية كبيرة
+            if drawdown <= -10:
+                priority += 5
+
+            # الصعود وحده لا يعطي أولوية كبيرة
+            if rally >= 10:
+                priority += 5
+
+            if volume_ratio >= 1.15:
+                priority += 10
+
+            candidates.append({
+                "symbol": symbol,
+                "priority": priority,
+                "drawdown": drawdown,
+                "rally": rally,
+            })
+
+        except Exception:
+            continue
+
+    # -----------------------------------------------------
+    # أفضل setups وليس أعلى الرابحين/الخاسرين فقط
+    # -----------------------------------------------------
+
+    candidates.sort(
+        key=lambda x: x["priority"],
+        reverse=True,
+    )
+
+    # -----------------------------------------------------
+    # تحليل أعمق لأفضل المرشحين
+    # -----------------------------------------------------
+
+    results = []
+
+    max_deep_scan = min(
+        max(limit * 4, 15),
+        len(candidates),
+    )
+
+    for item in candidates[:max_deep_scan]:
+
+        result = get_coin_analysis(
+            item["symbol"]
+        )
+
+        if not result.get("analysis_ok"):
+            continue
+
+        result["scan_priority"] = item["priority"]
+
+        results.append(result)
+
+    # -----------------------------------------------------
+    # ترتيب نهائي
+    #
+    # ENTRY READY أولاً
+    # ثم REVERSAL WATCH
+    # ثم باقي الحالات
+    # -----------------------------------------------------
+
+    state_rank = {
         "ENTRY READY": 5,
         "REVERSAL WATCH": 4,
-        "ACCUMULATION WATCH": 3,
-        "NO TRADE": 1
+        "LATE PUMP - WAIT": 2,
+        "LATE DUMP - WAIT": 2,
+        "NO TRADE": 1,
     }
 
-    def ranking(item):
-
-        return (
-            trade_rank.get(
-                item.get(
-                    "trade_type",
-                    "NO TRADE"
-                ),
-                0
+    results.sort(
+        key=lambda x: (
+            state_rank.get(
+                x.get("state", ""),
+                0,
             ),
-
-            item.get(
-                "score",
-                0
-            ),
-
-            item.get(
-                "hunter_score",
-                0
-            ),
-
-            item.get(
-                "hunter_momentum_score",
-                0
-            ),
-
-            int(
-                abs(
-                    item.get(
-                        "move_6",
-                        0
-                    )
-                )
-            ),
-
-            item.get(
-                "bottom_score",
-                0
-            )
-        )
-
-    deep_results.sort(
-        key=ranking,
-        reverse=True
+            x.get("score", 0),
+            x.get("scan_priority", 0),
+        ),
+        reverse=True,
     )
 
-    elapsed = (
-        time.time()
-        - start
-    )
-
-    logger.info(
-        "Market scan finished: %.2fs | universe=%s | hunter=%s | deep=%s",
-        elapsed,
-        len(symbols),
-        len(candidates),
-        len(deep_results)
-    )
-
-    return deep_results[
-        :max(
-            1,
-            int(limit)
-        )
-    ]
-
-
-# =========================================================
-# FORMAT PRICE
-# =========================================================
-
-def _fmt_price(value):
-
-    if value is None:
-        return "غير محدد"
-
-    try:
-
-        value = float(value)
-
-        if value >= 1000:
-            return f"{value:.2f}"
-
-        if value >= 1:
-            return f"{value:.5f}"
-
-        if value >= 0.01:
-            return f"{value:.6f}"
-
-        return f"{value:.8f}"
-
-    except Exception:
-
-        return "غير محدد"
-
-
-# =========================================================
-# FORMAT PERCENT
-# =========================================================
-
-def _fmt_percent(value):
-
-    try:
-
-        return f"{float(value or 0):.2f}%"
-
-    except Exception:
-
-        return "0.00%"
+    return results[:limit]
 
 
 # =========================================================
 # EVIDENCE REPORT
 # =========================================================
 
-def generate_evidence_report(data):
+def generate_evidence_report(result):
 
-    symbol = data.get(
-        "symbol",
-        "UNKNOWN"
-    )
+    if not result:
+        return "لا توجد بيانات تحليل."
 
-    direction = data.get(
+    symbol = result.get("symbol", "UNKNOWN")
+
+    direction = result.get(
         "direction",
-        "NEUTRAL"
+        "WAIT",
     )
 
-    score = data.get(
+    state = result.get(
+        "state",
+        "NO TRADE",
+    )
+
+    score = result.get(
         "score",
-        0
+        0,
     )
 
-    trade = data.get(
-        "trade_type",
-        "NO TRADE"
+    price = result.get(
+        "price",
+        0,
     )
 
-    # =====================================================
-    # DIRECTION TEXT
-    # =====================================================
+    long_score = result.get(
+        "long_score",
+        0,
+    )
 
-    if (
-        trade == "ENTRY READY"
-        and direction == "LONG"
-    ):
+    short_score = result.get(
+        "short_score",
+        0,
+    )
 
+    liquidity = result.get(
+        "liquidity",
+        "NEUTRAL",
+    )
+
+    accumulation = result.get(
+        "accumulation",
+        "NONE",
+    )
+
+    distribution = result.get(
+        "distribution",
+        "NONE",
+    )
+
+    reversal = result.get(
+        "reversal",
+        "NONE",
+    )
+
+    bos = result.get(
+        "bos",
+        "NONE",
+    )
+
+    rsi = result.get(
+        "rsi_1h",
+        50,
+    )
+
+    volume_ratio = result.get(
+        "volume_ratio",
+        1,
+    )
+
+    reasons = result.get(
+        "reasons",
+        [],
+    )
+
+    warning = result.get(
+        "warning",
+        "",
+    )
+
+    lines = []
+
+    lines.append(
+        f"🤖 BingX AI Scanner"
+    )
+
+    lines.append("")
+    lines.append(
+        f"💎 العملة: {symbol}"
+    )
+
+    if direction == "LONG":
         direction_text = "🟢 LONG"
 
-    elif (
-        trade == "ENTRY READY"
-        and direction == "SHORT"
-    ):
-
+    elif direction == "SHORT":
         direction_text = "🔴 SHORT"
 
-    elif direction == "LONG":
+    elif direction == "LONG WATCH":
+        direction_text = "🟡 LONG WATCH"
 
-        direction_text = "🟢 LONG WATCH"
-
-    elif direction == "SHORT":
-
-        direction_text = "🔴 SHORT WATCH"
+    elif direction == "SHORT WATCH":
+        direction_text = "🟠 SHORT WATCH"
 
     else:
+        direction_text = "⚪ WAIT"
 
-        direction_text = "🟡 NEUTRAL"
-
-    # =====================================================
-    # STATE
-    # =====================================================
-
-    state = {
-        "ENTRY READY":
-            "🟢 ENTRY READY - صفقة جاهزة",
-
-        "REVERSAL WATCH":
-            "🟡 REVERSAL WATCH - ننتظر تأكيد الانعكاس",
-
-        "ACCUMULATION WATCH":
-            "🔵 ACCUMULATION WATCH - تجميع مبكر"
-    }.get(
-        trade,
-        "🟡 NO TRADE - الشروط غير مكتملة"
+    lines.append(
+        f"📌 الاتجاه النهائي: {direction_text}"
     )
+
+    lines.append(
+        f"⭐ Score: {score}/100"
+    )
+
+    lines.append(
+        f"🧠 الحالة: {state}"
+    )
+
+    lines.append("")
+
+    lines.append("📊 الاتجاهات:")
+
+    lines.append(
+        f"1D: {result.get('trend_1d', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"4H: {result.get('trend_4h', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"1H: {result.get('trend_1h', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"30m: {result.get('trend_30m', 'NEUTRAL')}"
+    )
+
+    lines.append(
+        f"15m: {result.get('trend_15m', 'NEUTRAL')}"
+    )
+
+    lines.append("")
+
+    lines.append("💧 السيولة:")
+
+    if liquidity == "INFLOW":
+        liquidity_text = "🟢 INFLOW — دخول سيولة"
+
+    elif liquidity == "OUTFLOW":
+        liquidity_text = "🔴 OUTFLOW — خروج سيولة"
+
+    else:
+        liquidity_text = "🟡 NEUTRAL"
+
+    lines.append(liquidity_text)
+
+    lines.append(
+        f"Volume Ratio: {volume_ratio:.2f}x"
+    )
+
+    lines.append("")
+
+    lines.append("🏦 حالة السوق:")
+
+    lines.append(
+        f"Accumulation: {accumulation}"
+    )
+
+    lines.append(
+        f"Distribution: {distribution}"
+    )
+
+    lines.append(
+        f"Reversal: {reversal}"
+    )
+
+    lines.append(
+        f"BOS: {bos}"
+    )
+
+    lines.append("")
+
+    lines.append("📈 المؤشرات:")
+
+    lines.append(
+        f"RSI 1H: {rsi:.1f}"
+    )
+
+    lines.append(
+        f"LONG Score: {long_score}"
+    )
+
+    lines.append(
+        f"SHORT Score: {short_score}"
+    )
+
+    lines.append("")
+
+    lines.append("🎯 المستويات:")
+
+    lines.append(
+        f"Entry: {price:.8g}"
+    )
+
+    if result.get("sl"):
+        lines.append(
+            f"🛑 SL: {result['sl']:.8g}"
+        )
+
+        lines.append(
+            f"🎯 TP1: {result['tp1']:.8g}"
+        )
+
+        lines.append(
+            f"🎯 TP2: {result['tp2']:.8g}"
+        )
+
+        lines.append(
+            f"🎯 TP3: {result['tp3']:.8g}"
+        )
+
+    lines.append("")
+
+    if reasons:
+
+        lines.append("🧠 أسباب التحليل:")
+
+        for reason in reasons[:8]:
+            lines.append(
+                f"• {reason}"
+            )
+
+    if warning:
+
+        lines.append("")
+        lines.append(warning)
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# OPTIONAL QUICK SCAN TEXT
+# =========================================================
+
+def format_scan_results(results):
+
+    if not results:
+        return (
+            "🟡 انتهى الفحص.\n\n"
+            "لم يتم العثور حالياً على setup قوي."
+        )
 
     lines = [
         "🤖 BingX AI Scanner",
         "",
-        f"💎 العملة: {symbol}",
-        f"📈 الاتجاه النهائي: {direction_text}",
-        f"⭐ Entry Score: {score}/100",
+        "🔎 أفضل الفرص الحالية:",
         "",
-        f"🧠 الحالة: {state}",
-        f"🧭 القرار: {data.get('decision', 'انتظار')}",
-        "",
-        "📊 الاتجاه العام",
-        f"1D: {data.get('trend_1d', 'NEUTRAL')}",
-        f"4H: {data.get('trend_4h', 'NEUTRAL')}",
-        "",
-        "🔎 تأكيد الدخول",
-        f"1H: {data.get('trend_1h', 'NEUTRAL')}",
-        f"30m: {data.get('trend_30m', 'NEUTRAL')}",
-        f"15m: {data.get('trend_15m', 'NEUTRAL')}",
-        f"هيكل السوق: {data.get('structure', 'MIXED')}"
     ]
 
-    # =====================================================
-    # BOS
-    # =====================================================
-
-    bos = data.get(
-        "bos",
-        "NONE"
-    )
-
-    if bos == "BULLISH":
-
-        lines.append(
-            "BOS: 🟢 BULLISH"
-        )
-
-    elif bos == "BEARISH":
-
-        lines.append(
-            "BOS: 🔴 BEARISH"
-        )
-
-    else:
-
-        lines.append(
-            "BOS: ⚪ NONE"
-        )
-
-    # =====================================================
-    # LIQUIDITY
-    # =====================================================
-
-    liquidity = data.get(
-        "liquidity",
-        "NEUTRAL"
-    )
-
-    if liquidity == "INFLOW":
-
-        liquidity_text = "🟢 INFLOW"
-
-    elif liquidity == "OUTFLOW":
-
-        liquidity_text = "🔴 OUTFLOW"
-
-    else:
-
-        liquidity_text = "🟡 سيولة محايدة"
-
-    lines += [
-        f"💧 السيولة: {liquidity_text}",
-        f"📊 Volume: {float(data.get('volume_ratio', 0)):.2f}x",
-        f"📈 Volume Trend: {data.get('volume_trend', 'NEUTRAL')}",
-        f"💪 Buy Pressure: {data.get('buy_pressure', 50)}%",
-        f"📊 RSI: {float(data.get('rsi', 50)):.2f}",
-        ""
-    ]
-
-    # =====================================================
-    # MOMENTUM
-    # =====================================================
-
-    momentum_state = data.get(
-        "momentum_state",
-        "NEUTRAL"
-    )
-
-    if momentum_state == "BULLISH":
-
-        momentum_text = "🟢 BULLISH"
-
-    elif momentum_state == "BEARISH":
-
-        momentum_text = "🔴 BEARISH"
-
-    else:
-
-        momentum_text = "🟡 NEUTRAL"
-
-    lines += [
-        "🚀 Momentum",
-        f"الحالة: {momentum_text}",
-        f"Momentum Score: {data.get('momentum_score', 0)}",
-        f"الحركة القصيرة: {_fmt_percent(data.get('momentum_move_2'))}",
-        f"الحركة المتوسطة: {_fmt_percent(data.get('momentum_move_6'))}",
-        ""
-    ]
-
-    # =====================================================
-    # TREND START
-    # =====================================================
-
-    if data.get(
-        "trend_start_found",
-        False
+    for index, result in enumerate(
+        results,
+        start=1,
     ):
 
-        trend_start_direction = data.get(
-            "trend_start_direction",
-            "NEUTRAL"
+        symbol = result.get(
+            "symbol",
+            "UNKNOWN",
         )
 
-        lines += [
-            "🔥 بداية ترند",
-            f"الاتجاه: {trend_start_direction}",
-            f"القوة: {data.get('trend_start_score', 0)}",
-            ""
-        ]
-
-    # =====================================================
-    # BOTTOM
-    # =====================================================
-
-    lines += [
-        "🎯 القاع/التجميع: "
-        + (
-            "🟢 نعم — تجميع مبكر"
-            if data.get(
-                "bottom_found"
-            )
-            else
-            "⚪ لا يوجد تأكيد قوي"
-        ),
-        f"📉 الهبوط السابق: {_fmt_percent(data.get('drawdown'))}",
-        ""
-    ]
-
-    # =====================================================
-    # SUPPORT / RESISTANCE
-    # =====================================================
-
-    lines += [
-        "🛡️ الدعم والمقاومة",
-        f"🟢 Support: {_fmt_price(data.get('support'))}",
-        f"🔴 Resistance: {_fmt_price(data.get('resistance'))}",
-        f"📏 البعد عن الدعم: {_fmt_percent(data.get('distance_support'))}",
-        f"📏 البعد عن المقاومة: {_fmt_percent(data.get('distance_resistance'))}",
-        ""
-    ]
-
-    # =====================================================
-    # ENTRY
-    # =====================================================
-
-    entry = data.get(
-        "entry"
-    )
-
-    lines += [
-        "📍 منطقة الدخول",
-        (
-            f"Entry: {_fmt_price(entry)}"
-            if entry
-            else
-            "Entry: ⏳ انتظار تأكيد"
-        ),
-        "",
-        f"🛑 Stop Loss: {_fmt_price(data.get('stop_loss'))}",
-        "",
-        "🎯 الأهداف",
-        f"TP1: {_fmt_price(data.get('tp1'))}",
-        f"TP2: {_fmt_price(data.get('tp2'))}",
-        f"TP3: {_fmt_price(data.get('tp3'))}",
-        ""
-    ]
-
-    # =====================================================
-    # MOVEMENT
-    # =====================================================
-
-    lines += [
-        "📊 الحركة الأخيرة",
-        f"آخر شمعتين تقريباً: {_fmt_percent(data.get('move_2'))}",
-        f"آخر 6 شموع تقريباً: {_fmt_percent(data.get('move_6'))}",
-        ""
-    ]
-
-    # =====================================================
-    # HUNTER
-    # =====================================================
-
-    if data.get(
-        "hunter_score"
-    ) is not None:
-
-        lines += [
-            "🎯 Trend Hunter",
-            f"Hunter Score: {data.get('hunter_score', 0)}",
-            f"Hunter Direction: {data.get('hunter_direction', 'NEUTRAL')}",
-            ""
-        ]
-
-    # =====================================================
-    # REASONS
-    # =====================================================
-
-    lines += [
-        "🔍 أسباب القرار"
-    ]
-
-    reasons = data.get(
-        "reasons",
-        []
-    )
-
-    if reasons:
-
-        lines += [
-            f"• {reason}"
-            for reason in reasons[:10]
-        ]
-
-    else:
-
-        lines.append(
-            "• لا توجد عوامل قوية كافية حالياً"
+        direction = result.get(
+            "direction",
+            "WAIT",
         )
 
-    # =====================================================
-    # MARKET STRUCTURE EVIDENCE
-    # =====================================================
-
-    lines += [
-        "",
-        "🏗️ أدلة هيكل السوق"
-    ]
-
-    if bos == "BULLISH":
-
-        lines.append(
-            "• تم تأكيد كسر هيكل صاعد BOS"
+        score = result.get(
+            "score",
+            0,
         )
 
-    elif bos == "BEARISH":
-
-        lines.append(
-            "• تم تأكيد كسر هيكل هابط BOS"
+        state = result.get(
+            "state",
+            "NO TRADE",
         )
 
-    else:
-
-        lines.append(
-            "• لا يوجد BOS مؤكد حالياً"
+        liquidity = result.get(
+            "liquidity",
+            "NEUTRAL",
         )
 
-    # =====================================================
-    # LIQUIDITY EVIDENCE
-    # =====================================================
+        if direction in (
+            "LONG",
+            "LONG WATCH",
+        ):
+            icon = "🟢"
 
-    lines += [
-        "",
-        "💧 أدلة السيولة"
-    ]
-
-    if liquidity == "INFLOW":
-
-        lines.append(
-            "• تدفق شرائي واضح"
-        )
-
-    elif liquidity == "OUTFLOW":
-
-        lines.append(
-            "• ضغط بيعي واضح"
-        )
-
-    else:
-
-        lines.append(
-            "• السيولة ما زالت محايدة"
-        )
-
-    # =====================================================
-    # MOMENTUM EVIDENCE
-    # =====================================================
-
-    momentum_reasons = data.get(
-        "momentum_reasons",
-        []
-    )
-
-    if momentum_reasons:
-
-        lines += [
-            "",
-            "🚀 أدلة Momentum"
-        ]
-
-        lines += [
-            f"• {reason}"
-            for reason in momentum_reasons[:6]
-        ]
-
-    # =====================================================
-    # BOTTOM EVIDENCE
-    # =====================================================
-
-    if data.get(
-        "bottom_found"
-    ):
-
-        lines += [
-            "",
-            "🎯 أدلة التجميع"
-        ]
-
-        bottom_reasons = data.get(
-            "bottom_reasons",
-            []
-        )
-
-        if bottom_reasons:
-
-            lines += [
-                f"• {reason}"
-                for reason in bottom_reasons
-            ]
+        elif direction in (
+            "SHORT",
+            "SHORT WATCH",
+        ):
+            icon = "🔴"
 
         else:
+            icon = "⚪"
 
-            lines.append(
-                "• توجد مؤشرات تجميع مبكرة"
-            )
+        lines.append(
+            f"{index}. {icon} {symbol}"
+        )
 
-    # =====================================================
-    # NO ENTRY
-    # =====================================================
+        lines.append(
+            f"   {direction} | "
+            f"{state} | "
+            f"Score {score}"
+        )
 
-    if trade != "ENTRY READY":
+        lines.append(
+            f"   💧 Liquidity: {liquidity}"
+        )
 
-        lines += [
-            "",
-            "🚫 لماذا لم يدخل؟",
-            "• لا يوجد تأكيد دخول كامل حالياً"
-        ]
-
-    # =====================================================
-    # FOOTER
-    # =====================================================
-
-    lines += [
-        "",
-        "⚠️ إشارة تحليلية وليست ضماناً للربح.",
-        "⚠️ 1D + 4H للاتجاه العام.",
-        "⚠️ 1H + 30m + 15m لتأكيد الدخول.",
-        "⚠️ BOS + السيولة + الحجم + Momentum عوامل تأكيد.",
-        "⚠️ ENTRY READY لا تعني ضمان الربح."
-    ]
+        lines.append("")
 
     return "\n".join(lines)
+
+
+# =========================================================
+# END
+# =========================================================
