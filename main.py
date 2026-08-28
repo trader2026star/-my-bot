@@ -381,9 +381,39 @@ async def handle_message(
         "⏳ انتظر النتيجة..."
     )
 
+    # =====================================================
+    # DIRECT COIN ANALYSIS
+    #
+    # IMPORTANT:
+    # Do NOT require analysis_ok.
+    #
+    # get_coin_analysis() already returns a complete
+    # analysis dictionary when data is available.
+    #
+    # The old code was doing:
+    #
+    # if not data.get("analysis_ok", False):
+    #
+    # But analysis.py did not return analysis_ok.
+    #
+    # Therefore every valid analysis was rejected.
+    # =====================================================
+
     try:
 
+        logger.info(
+            "COIN ANALYSIS START | %s",
+            symbol,
+        )
+
         data = get_coin_analysis(symbol)
+
+        logger.info(
+            "COIN ANALYSIS RETURNED | %s | type=%s | data=%s",
+            symbol,
+            type(data).__name__,
+            bool(data),
+        )
 
     except Exception as exc:
 
@@ -395,38 +425,57 @@ async def handle_message(
 
         await update.message.reply_text(
             f"❌ حدث خطأ أثناء تحليل {symbol}.\n\n"
+            f"🧾 السبب: {str(exc)[:500]}\n\n"
             "حاول مرة أخرى بعد قليل."
         )
 
         return
 
-    if not data:
+    # =====================================================
+    # ONLY NONE MEANS THAT ANALYSIS DID NOT RETURN DATA
+    # =====================================================
+
+    if data is None:
 
         await update.message.reply_text(
             f"❌ لم تصل بيانات تحليل {symbol}.\n\n"
-            "تأكد أن الزوج موجود على BingX Futures."
+            "تعذر الحصول على بيانات السوق من BingX "
+            "لهذا الزوج حالياً.\n\n"
+            "🛡️ لم يتم إنشاء صفقة وهمية."
+        )
+
+        logger.warning(
+            "COIN ANALYSIS RETURNED NONE | %s",
+            symbol,
         )
 
         return
 
-    if not data.get("analysis_ok", False):
+    # =====================================================
+    # EMPTY / INVALID RESULT PROTECTION
+    # =====================================================
 
-        reason = data.get(
-            "reason",
-            "",
+    if not isinstance(data, dict):
+
+        await update.message.reply_text(
+            f"❌ نتيجة تحليل {symbol} غير صالحة.\n\n"
+            "🛡️ لم يتم إنشاء صفقة وهمية."
         )
 
-        message = (
-            f"⚠️ تعذر إكمال تحليل {symbol}.\n\n"
-            "لم يتم إعطاء صفقة وهمية."
+        logger.error(
+            "INVALID COIN ANALYSIS RESULT | %s | %r",
+            symbol,
+            data,
         )
-
-        if reason:
-            message += f"\n\n🧾 السبب: {reason}"
-
-        await update.message.reply_text(message)
 
         return
+
+    # =====================================================
+    # SHOW ANALYSIS
+    #
+    # Even WAIT / NO TRADE is a valid analysis.
+    # It must NOT be reported as a data-fetch failure.
+    # =====================================================
 
     try:
 
@@ -435,6 +484,15 @@ async def handle_message(
         await send_long_message(
             update,
             report,
+        )
+
+        logger.info(
+            "COIN ANALYSIS REPORT SENT | %s | direction=%s | "
+            "state=%s | score=%s",
+            symbol,
+            data.get("direction", "WAIT"),
+            data.get("state", "UNKNOWN"),
+            data.get("score", 0),
         )
 
     except Exception as exc:
@@ -446,7 +504,7 @@ async def handle_message(
         )
 
         await update.message.reply_text(
-            "❌ حدث خطأ أثناء إنشاء التقرير."
+            f"❌ حدث خطأ أثناء إنشاء تقرير {symbol}."
         )
 
 
