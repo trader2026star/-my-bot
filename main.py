@@ -54,7 +54,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "BingX AI Scanner is running.", 200
+    return "BingX AI Scanner - ORDER BLOCK ENGINE is running.", 200
 
 
 @app.route("/health")
@@ -67,7 +67,7 @@ def run_flask():
 
     logger.info(
         "Starting Flask server on 0.0.0.0:%s",
-        port
+        port,
     )
 
     app.run(
@@ -77,6 +77,86 @@ def run_flask():
         use_reloader=False,
         threaded=True,
     )
+
+
+# =========================================================
+# TELEGRAM MESSAGE HELPER
+# =========================================================
+
+async def send_long_message(
+    update: Update,
+    text: str,
+):
+    """
+    Telegram يسمح بحوالي 4096 حرف.
+    نقسم التقرير بأمان بدون فقدان المحتوى.
+    """
+
+    if not update.message:
+        return
+
+    if not text:
+        return
+
+    max_length = 3900
+
+    if len(text) <= max_length:
+
+        await update.message.reply_text(
+            text
+        )
+
+        return
+
+    current = ""
+
+    for line in text.split("\n"):
+
+        # لو السطر نفسه طويل جداً
+        if len(line) > max_length:
+
+            if current:
+
+                await update.message.reply_text(
+                    current
+                )
+
+                current = ""
+
+            for i in range(
+                0,
+                len(line),
+                max_length,
+            ):
+
+                await update.message.reply_text(
+                    line[i:i + max_length]
+                )
+
+            continue
+
+        if (
+            len(current)
+            + len(line)
+            + 1
+            > max_length
+        ):
+
+            if current:
+
+                await update.message.reply_text(
+                    current
+                )
+
+            current = ""
+
+        current += line + "\n"
+
+    if current:
+
+        await update.message.reply_text(
+            current
+        )
 
 
 # =========================================================
@@ -92,7 +172,11 @@ async def start(
         return
 
     await update.message.reply_text(
-        "🤖 أهلاً بك في BingX AI Scanner\n\n"
+        "🤖 BingX AI Scanner\n\n"
+
+        "🏦 المحرك الأساسي:\n"
+        "ORDER BLOCK\n\n"
+
         "📌 أرسل اسم العملة للتحليل:\n"
         "BTC\n"
         "ETH\n"
@@ -101,27 +185,26 @@ async def start(
 
         "أو أي زوج USDT موجود على BingX Futures.\n\n"
 
-        "📌 أمر الفحص الكامل:\n"
+        "📌 للفحص الكامل للسوق:\n"
         "/scan\n\n"
 
-        "🔎 النظام يعتمد على:\n"
-        "• 1D = الاتجاه العام\n"
-        "• 4H = الاتجاه الرئيسي\n"
-        "• 1H = بوابة الدخول\n"
-        "• 30m + 15m = تأكيد إضافي\n"
+        "🧠 منهج التحليل:\n"
+        "• 1D = Context\n"
+        "• 4H = MTF Order Block\n"
+        "• 1H = Primary Order Block\n"
+        "• 30m + 15m = Confirmation\n"
         "• BOS + Market Structure\n"
-        "• السيولة والحجم\n"
-        "• RSI + EMA\n"
-        "• القاع والتجميع\n"
-        "• Support / Resistance\n"
-        "• ATR\n"
-        "• Entry / SL / TP\n\n"
+        "• Liquidity + Volume\n"
+        "• Retest\n"
+        "• Accumulation / Distribution\n"
+        "• ATR + Entry / SL / TP\n\n"
 
-        "🟢 ENTRY READY = صفقة جاهزة\n"
-        "🟡 REVERSAL WATCH = ننتظر التأكيد\n"
-        "🔵 ACCUMULATION WATCH = تجميع مبكر\n\n"
+        "🟢 ENTRY READY\n"
+        "🟡 REVERSAL WATCH\n"
+        "🔵 ACCUMULATION WATCH\n\n"
 
-        "🛡️ البوت لا يدخل صفقة لمجرد وجود إشارة واحدة."
+        "🛡️ Order Block هو العامل الأساسي.\n"
+        "الشموع لا يتم استخدامها وحدها لتحديد LONG أو SHORT."
     )
 
 
@@ -140,13 +223,16 @@ async def scan_command(
     started = time.time()
 
     # -----------------------------------------------------
-    # Start message
+    # START MESSAGE
     # -----------------------------------------------------
 
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
+
+        "🏦 ORDER BLOCK هو المحرك الأساسي.\n\n"
+
         "⚡ فلترة سريعة للسوق أولاً.\n"
-        "🧠 ثم تحليل أفضل العملات فقط.\n\n"
+        "🧠 ثم تحليل أفضل المرشحين فقط.\n\n"
 
         "🟢 ENTRY READY\n"
         "🟡 REVERSAL WATCH\n"
@@ -164,11 +250,14 @@ async def scan_command(
     except Exception as exc:
 
         logger.exception(
-            "Scanner error: %s",
-            exc
+            "Market scan failed: %s",
+            exc,
         )
 
-        elapsed = time.time() - started
+        elapsed = (
+            time.time()
+            - started
+        )
 
         await update.message.reply_text(
             "❌ حدث خطأ أثناء فحص السوق.\n\n"
@@ -178,84 +267,114 @@ async def scan_command(
 
         return
 
-    elapsed = time.time() - started
+    elapsed = (
+        time.time()
+        - started
+    )
 
     # -----------------------------------------------------
-    # No results
+    # NO RESULTS
     # -----------------------------------------------------
 
     if not results:
 
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
-            "لم يتم العثور حالياً على فرصة قوية.\n\n"
-            "🛡️ البوت فضّل الانتظار بدلاً من "
-            "إعطاء صفقة ضعيفة.\n\n"
+
+            "لم يتم العثور حالياً على "
+            "Order Block قوي ومؤكد.\n\n"
+
+            "🛡️ البوت فضّل الانتظار "
+            "بدلاً من إعطاء صفقة ضعيفة.\n\n"
+
             f"⏱️ وقت الفحص: {elapsed:.1f} ثانية"
         )
 
         return
 
     # -----------------------------------------------------
-    # Results found
+    # RESULTS
     # -----------------------------------------------------
 
     await update.message.reply_text(
         "✅ انتهى الفحص.\n\n"
-        f"🎯 تم العثور على {len(results)} مرشحين.\n"
+
+        f"🎯 عدد المرشحين: {len(results)}\n"
         f"⏱️ وقت الفحص: {elapsed:.1f} ثانية\n\n"
-        "📊 أفضل النتائج:"
+
+        "🏦 أفضل مناطق Order Block:"
     )
 
-    for data in results:
+    # -----------------------------------------------------
+    # SEND RESULTS
+    # -----------------------------------------------------
+
+    for index, data in enumerate(
+        results,
+        start=1,
+    ):
 
         try:
+
+            symbol = data.get(
+                "symbol",
+                "UNKNOWN",
+            )
+
+            direction = data.get(
+                "direction",
+                "WAIT",
+            )
+
+            state = data.get(
+                "state",
+                "NO TRADE",
+            )
+
+            score = data.get(
+                "score",
+                0,
+            )
+
+            ob_direction = data.get(
+                "order_block_direction",
+                "NEUTRAL",
+            )
+
+            ob_score = data.get(
+                "order_block_score",
+                0,
+            )
+
+            logger.info(
+                "SCAN RESULT %s | %s | direction=%s | state=%s | score=%s | OB=%s/%s",
+                index,
+                symbol,
+                direction,
+                state,
+                score,
+                ob_direction,
+                ob_score,
+            )
 
             report = generate_evidence_report(
                 data
             )
 
-            # Telegram limit protection
-            if len(report) <= 4000:
-
-                await update.message.reply_text(
-                    report
-                )
-
-            else:
-
-                # Split long report
-                chunks = []
-
-                current = ""
-
-                for line in report.split("\n"):
-
-                    if len(current) + len(line) + 1 > 3900:
-
-                        chunks.append(current)
-                        current = ""
-
-                    current += line + "\n"
-
-                if current:
-                    chunks.append(current)
-
-                for chunk in chunks:
-
-                    await update.message.reply_text(
-                        chunk
-                    )
+            await send_long_message(
+                update,
+                report,
+            )
 
         except Exception as exc:
 
             logger.exception(
-                "Report error: %s",
-                exc
+                "Failed sending scan result: %s",
+                exc,
             )
 
             await update.message.reply_text(
-                "❌ حدث خطأ أثناء إنشاء تقرير إحدى العملات."
+                "⚠️ تعذر إرسال تقرير إحدى النتائج."
             )
 
 
@@ -274,9 +393,19 @@ async def handle_message(
     ):
         return
 
-    text = update.message.text.strip()
+    text = (
+        update.message.text
+        .strip()
+    )
 
     if not text:
+        return
+
+    # -----------------------------------------------------
+    # Ignore accidental commands
+    # -----------------------------------------------------
+
+    if text.startswith("/"):
         return
 
     symbol = normalize_symbol(
@@ -284,25 +413,30 @@ async def handle_message(
     )
 
     if not symbol:
+
         await update.message.reply_text(
             "❌ اكتب اسم العملة مثل BTC أو ETH."
         )
+
         return
 
     await update.message.reply_text(
         f"🔍 جاري تحليل {symbol}...\n\n"
 
-        "📊 1D = الاتجاه العام\n"
-        "📊 4H = الاتجاه الرئيسي\n"
-        "⏱️ 1H = بوابة الدخول\n"
-        "⏱️ 30m + 15m = التأكيد\n\n"
+        "🏦 ORDER BLOCK = المحرك الأساسي\n\n"
+
+        "📊 1D = Context\n"
+        "📊 4H = MTF Order Block\n"
+        "⏱️ 1H = Primary Entry Zone\n"
+        "⏱️ 30m + 15m = Confirmation\n\n"
 
         "🧠 جاري فحص:\n"
+        "Order Block\n"
+        "OB Retest\n"
         "BOS + Market Structure\n"
-        "السيولة + الحجم\n"
-        "RSI + EMA\n"
-        "القاع والتجميع\n"
-        "Support / Resistance\n"
+        "Liquidity + Volume\n"
+        "Accumulation / Distribution\n"
+        "MTF Order Blocks\n"
         "ATR + Entry / SL / TP\n\n"
 
         "⏳ انتظر النتيجة..."
@@ -317,9 +451,9 @@ async def handle_message(
     except Exception as exc:
 
         logger.exception(
-            "Coin analysis error for %s: %s",
+            "Coin analysis exception for %s: %s",
             symbol,
-            exc
+            exc,
         )
 
         await update.message.reply_text(
@@ -329,15 +463,53 @@ async def handle_message(
 
         return
 
+    # -----------------------------------------------------
+    # NO DATA
+    # -----------------------------------------------------
+
     if not data:
 
         await update.message.reply_text(
-            f"❌ لم أستطع تحليل {symbol} حالياً.\n\n"
-            "تأكد أن الزوج موجود على "
-            "BingX Futures وأنه USDT."
+            f"❌ لم تصل بيانات تحليل {symbol}.\n\n"
+            "تأكد أن الزوج موجود على BingX Futures."
         )
 
         return
+
+    # -----------------------------------------------------
+    # ANALYSIS FAILED
+    # -----------------------------------------------------
+
+    if not data.get(
+        "analysis_ok",
+        False,
+    ):
+
+        reason = data.get(
+            "reason",
+            "",
+        )
+
+        message = (
+            f"⚠️ تعذر إكمال تحليل {symbol}.\n\n"
+            "لم يتم إعطاء صفقة وهمية."
+        )
+
+        if reason:
+
+            message += (
+                f"\n\n🧾 السبب: {reason}"
+            )
+
+        await update.message.reply_text(
+            message
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # REPORT
+    # -----------------------------------------------------
 
     try:
 
@@ -345,40 +517,17 @@ async def handle_message(
             data
         )
 
-        if len(report) <= 4000:
-
-            await update.message.reply_text(
-                report
-            )
-
-        else:
-
-            current = ""
-
-            for line in report.split("\n"):
-
-                if len(current) + len(line) + 1 > 3900:
-
-                    await update.message.reply_text(
-                        current
-                    )
-
-                    current = ""
-
-                current += line + "\n"
-
-            if current:
-
-                await update.message.reply_text(
-                    current
-                )
+        await send_long_message(
+            update,
+            report,
+        )
 
     except Exception as exc:
 
         logger.exception(
-            "Report error for %s: %s",
+            "Report generation failed for %s: %s",
             symbol,
-            exc
+            exc,
         )
 
         await update.message.reply_text(
@@ -403,11 +552,10 @@ async def error_handler(
         exc_info=True,
     )
 
-    # Conflict means another bot instance is polling.
     if error and "Conflict" in str(error):
 
         logger.error(
-            "Telegram polling conflict: "
+            "TELEGRAM CONFLICT: "
             "another bot instance is running."
         )
 
@@ -429,36 +577,37 @@ def run_bot():
     )
 
     # -----------------------------------------------------
-    # Commands
+    # COMMANDS
     # -----------------------------------------------------
 
     application.add_handler(
         CommandHandler(
             "start",
-            start
+            start,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "scan",
-            scan_command
+            scan_command,
         )
     )
 
     # -----------------------------------------------------
-    # Coin messages
+    # COIN MESSAGES
     # -----------------------------------------------------
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT
+            & ~filters.COMMAND,
             handle_message,
         )
     )
 
     # -----------------------------------------------------
-    # Errors
+    # ERROR HANDLER
     # -----------------------------------------------------
 
     application.add_error_handler(
@@ -470,7 +619,7 @@ def run_bot():
     )
 
     # -----------------------------------------------------
-    # Polling
+    # POLLING
     # -----------------------------------------------------
 
     application.run_polling(
@@ -486,14 +635,28 @@ def run_bot():
 
 def main():
 
-    logger.info("=" * 60)
+    logger.info("=" * 70)
+
     logger.info(
         "BingX AI Scanner starting..."
     )
-    logger.info("=" * 60)
+
+    logger.info(
+        "ENGINE: ORDER BLOCK PRIMARY"
+    )
+
+    logger.info(
+        "DIRECTION: OB + MTF OB + BOS + LIQUIDITY"
+    )
+
+    logger.info(
+        "CANDLE COLOR IS NOT A PRIMARY DIRECTION SIGNAL"
+    )
+
+    logger.info("=" * 70)
 
     # -----------------------------------------------------
-    # Flask
+    # FLASK
     # -----------------------------------------------------
 
     flask_thread = threading.Thread(
@@ -509,13 +672,13 @@ def main():
     )
 
     # -----------------------------------------------------
-    # Wait for Flask
+    # WAIT FOR FLASK
     # -----------------------------------------------------
 
     time.sleep(1)
 
     # -----------------------------------------------------
-    # Telegram
+    # TELEGRAM
     # -----------------------------------------------------
 
     run_bot()
