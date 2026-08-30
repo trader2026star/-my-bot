@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v23.0
+# analysis.py - BingX Futures AI Scanner v23.1
 # ORDER BLOCK PRIMARY + ICT CONFLUENCE ENGINE
 # 1D Context | 4H MTF OB | 1H Primary OB | 30m/15m Confirmation
 #
@@ -18,7 +18,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-OB-ICT-Scanner/23.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-OB-ICT-Scanner/23.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -467,6 +467,41 @@ def calculate_trade_plan(plan_direction,price,atr,ob,support,resistance):
     else:return empty
     return {'entry_min':emin,'entry_max':emax,'entry_price':entry,'stop_loss':sl,'tp1':tp1,'tp2':tp2,'tp3':tp3,'risk':risk}
 
+def strong_entry_filter(direction, price, ob, ob4, ob_distance, retest, t4, t30, t15, ict, score, room_distance, crash, pump):
+    """v23.1 hard gate: OB primary, ICT/MTF mandatory for ENTRY READY."""
+    if not ob or price is None or ob_distance > 1.0 or ob.get("strength", 0) < 58:
+        return False, ["Order Block غير قوي/قريب بما يكفي"]
+    if crash or pump:
+        return False, ["حركة سعرية حادة؛ منع مطاردة السعر"]
+    ms = ict.get("mss_bos", {})
+    disp = ict.get("displacement", {})
+    sweep = ict.get("sweep", {})
+    if direction == "LONG":
+        structure_ok = ms.get("mss") == "BULLISH_MSS" or ms.get("bos") == "BULLISH_BOS"
+        displacement_ok = disp.get("direction") == "LONG" and disp.get("score", 0) >= 62
+        sweep_ok = bool(sweep.get("bullish"))
+        mtf4_ok = t4 == "LONG" or bool(ob4)
+        low_ok = t30 == "LONG" or t15 == "LONG"
+    else:
+        structure_ok = ms.get("mss") == "BEARISH_MSS" or ms.get("bos") == "BEARISH_BOS"
+        displacement_ok = disp.get("direction") == "SHORT" and disp.get("score", 0) >= 62
+        sweep_ok = bool(sweep.get("bearish"))
+        mtf4_ok = t4 == "SHORT" or bool(ob4)
+        low_ok = t30 == "SHORT" or t15 == "SHORT"
+    reasons=[]
+    if not structure_ok: reasons.append("لا يوجد MSS/BOS مؤكد في اتجاه الصفقة")
+    if not displacement_ok: reasons.append("لا يوجد Displacement قوي في اتجاه الصفقة")
+    if not sweep_ok: reasons.append("لا يوجد Liquidity Sweep في اتجاه الصفقة")
+    if not retest: reasons.append("لا يوجد Retest/رفض واضح من Order Block")
+    if not mtf4_ok: reasons.append("4H لا يدعم اتجاه الـOB")
+    if not low_ok: reasons.append("30m/15m لا يعطيان تأكيد MTF كافياً")
+    if t15 == ("SHORT" if direction == "LONG" else "LONG"): reasons.append("15m يعاكس الاتجاه")
+    if room_distance <= 0.50: reasons.append("المساحة أمام الدعم/المقاومة ضيقة")
+    if score < 75: reasons.append("Entry Score أقل من 75")
+    hard = structure_ok and displacement_ok and mtf4_ok and low_ok
+    trigger = sweep_ok or retest
+    return hard and trigger and room_distance > 0.50 and score >= 75 and t15 != ("SHORT" if direction == "LONG" else "LONG"), reasons
+
 # =========================================================
 # MAIN ANALYSIS
 # =========================================================
@@ -523,10 +558,13 @@ def get_coin_analysis(symbol):
     long_confirm=long_near and (bor or st['bos']=='BULLISH_BOS' or long_ict_confirm or (_mtf(t4,t1,t30,t15,'LONG')>=2 and t15!='SHORT'))
     short_confirm=short_near and (sor or st['bos']=='BEARISH_BOS' or short_ict_confirm or (_mtf(t4,t1,t30,t15,'SHORT')>=2 and t15!='LONG'))
     # Require OB + proximity + confirmation. ICT improves confirmation but never creates a trade without OB.
-    long_ok=bool(bo) and l>=62 and long_near and long_confirm and resd>.35 and not crash and not (rsi>=82 and not bor) and t15!='SHORT'
-    short_ok=bool(so) and s>=62 and short_near and short_confirm and supd>.35 and not crash and not (rsi<=20 and not sor) and t15!='LONG'
-    if long_ok and l>=s:direction='LONG';es=l;state='ENTRY READY - Bullish Order Block + ICT Confirmation'
-    elif short_ok and s>l:direction='SHORT';es=s;state='ENTRY READY - Bearish Order Block + ICT Confirmation'
+    # v23.1 STRONG ENTRY GATE: tighten ENTRY READY while keeping OB primary.
+    long_ok, long_rejects = strong_entry_filter('LONG', p, bo, bo4, bd, bor, t4, t30, t15, ict_long, l, resd, crash, pump)
+    short_ok, short_rejects = strong_entry_filter('SHORT', p, so, so4, sd, sor, t4, t30, t15, ict_short, s, supd, crash, pump)
+    if not long_ok and l >= 62: reject.extend(long_rejects[:6])
+    if not short_ok and s >= 62: reject.extend(short_rejects[:6])
+    if long_ok and l>=s:direction='LONG';es=l;state='ENTRY READY - Strong Bullish OB + ICT MSS/BOS + Sweep/Retest + Displacement + MTF'
+    elif short_ok and s>l:direction='SHORT';es=s;state='ENTRY READY - Strong Bearish OB + ICT MSS/BOS + Sweep/Retest + Displacement + MTF'
     elif bo and l>=48 and not crash:direction='WAIT';es=l;state='REVERSAL WATCH - Bullish OB قريب وننتظر ICT/confirmation' if bd<=1.5 else 'REVERSAL WATCH - Bullish OB موجود لكن السعر بعيد'
     elif so and s>=48 and not crash:direction='WAIT';es=s;state='REVERSAL WATCH - Bearish OB قريب وننتظر ICT/confirmation' if sd<=1.5 else 'REVERSAL WATCH - Bearish OB موجود لكن السعر بعيد'
     elif bottom and (bo4 or so4):direction='WAIT';es=max(l,s,45);state='ACCUMULATION WATCH - MTF Order Block قريب وننتظر تأكيد 1H'
@@ -603,7 +641,7 @@ def _plan_direction_text(d):return '🟢 LONG' if d=='LONG' else '🔴 SHORT' if
 def generate_evidence_report(d):
     if not d:return '⚠️ تعذر إكمال التحليل.\nلم يتم استلام بيانات صالحة من محرك التحليل.'
     dr=d.get('direction','WAIT');pd=d.get('plan_direction',dr);emo='🟢' if dr=='LONG' else '🔴' if dr=='SHORT' else '🟡';liq='🟢 دخول سيولة محتمل' if d.get('liquidity_state')=='INFLOW' else '🔴 خروج سيولة محتمل' if d.get('liquidity_state')=='OUTFLOW' else '🟡 سيولة محايدة';bos='🟢 BULLISH' if d.get('bos')=='BULLISH_BOS' else '🔴 BEARISH' if d.get('bos')=='BEARISH_BOS' else '⚪ NONE'
-    lines=['🤖 BingX AI Scanner v23.0',f"💎 العملة: {d.get('symbol','-')}",f"💰 السعر الحالي: {d.get('price','-')}",f"📈 الاتجاه النهائي: {emo} {dr}",f"⭐ Entry Score: {d.get('entry_score',0)}/100",f"\n🧠 الحالة: {d.get('state','-')}",'\n🏦 ORDER BLOCK = المحرك الأساسي',f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",f"🔴 Bearish OB 1H: {_ob_text(d.get('bearish_ob'))}",f"📊 Bullish OB 4H: {_ob_text(d.get('bullish_ob_4h'))}",f"📊 Bearish OB 4H: {_ob_text(d.get('bearish_ob_4h'))}",f"📏 Bullish OB Distance: {d.get('bullish_ob_distance',999)}%",f"📏 Bearish OB Distance: {d.get('bearish_ob_distance',999)}%",f"🔄 Bullish Retest: {'YES' if d.get('bullish_ob_retest') else 'NO'}",f"🔄 Bearish Retest: {'YES' if d.get('bearish_ob_retest') else 'NO'}",'\n📊 ICT CONFLUENCE','💧 Liquidity Sweep: '+str(d.get('liquidity_sweep','NONE')),f"🧱 MSS: {d.get('ict_mss','NONE')}",f"🏗️ ICT BOS: {d.get('ict_bos','NONE')}",f"🕳️ Bullish FVG: {_fvg_text(d.get('ict_fvg_bullish'))}",f"🕳️ Bearish FVG: {_fvg_text(d.get('ict_fvg_bearish'))}",f"💥 ICT Score: {d.get('ict_score',0)}/100",f"💎 Premium/Discount: {d.get('premium_discount',{}).get('zone','UNKNOWN')}",'\n📊 Context',f"1D: {d.get('trend_1d')}",f"4H: {d.get('trend_4h')}",'\n⏱️ Confirmation',f"1H: {d.get('trend_1h')}",f"30m: {d.get('trend_30m')}",f"15m: {d.get('trend_15m')}",'\n🏗️ Structure',f"{d.get('structure')} | BOS: {bos}",f'\n💧 Liquidity: {liq}',f"📊 Volume: {d.get('volume_ratio')}x",f"📈 Volume Trend: {d.get('volume_trend')}",f"💪 Buy Pressure: {d.get('buy_pressure')}%",f"📊 RSI: {d.get('rsi')}",f"\n🛡️ Support: {d.get('support')}",f"🔴 Resistance: {d.get('resistance')}"]
+    lines=['🤖 BingX AI Scanner v23.1',f"💎 العملة: {d.get('symbol','-')}",f"💰 السعر الحالي: {d.get('price','-')}",f"📈 الاتجاه النهائي: {emo} {dr}",f"⭐ Entry Score: {d.get('entry_score',0)}/100",f"\n🧠 الحالة: {d.get('state','-')}",'\n🏦 ORDER BLOCK = المحرك الأساسي',f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",f"🔴 Bearish OB 1H: {_ob_text(d.get('bearish_ob'))}",f"📊 Bullish OB 4H: {_ob_text(d.get('bullish_ob_4h'))}",f"📊 Bearish OB 4H: {_ob_text(d.get('bearish_ob_4h'))}",f"📏 Bullish OB Distance: {d.get('bullish_ob_distance',999)}%",f"📏 Bearish OB Distance: {d.get('bearish_ob_distance',999)}%",f"🔄 Bullish Retest: {'YES' if d.get('bullish_ob_retest') else 'NO'}",f"🔄 Bearish Retest: {'YES' if d.get('bearish_ob_retest') else 'NO'}",'\n📊 ICT CONFLUENCE','💧 Liquidity Sweep: '+str(d.get('liquidity_sweep','NONE')),f"🧱 MSS: {d.get('ict_mss','NONE')}",f"🏗️ ICT BOS: {d.get('ict_bos','NONE')}",f"🕳️ Bullish FVG: {_fvg_text(d.get('ict_fvg_bullish'))}",f"🕳️ Bearish FVG: {_fvg_text(d.get('ict_fvg_bearish'))}",f"💥 ICT Score: {d.get('ict_score',0)}/100",f"💎 Premium/Discount: {d.get('premium_discount',{}).get('zone','UNKNOWN')}",'\n📊 Context',f"1D: {d.get('trend_1d')}",f"4H: {d.get('trend_4h')}",'\n⏱️ Confirmation',f"1H: {d.get('trend_1h')}",f"30m: {d.get('trend_30m')}",f"15m: {d.get('trend_15m')}",'\n🏗️ Structure',f"{d.get('structure')} | BOS: {bos}",f'\n💧 Liquidity: {liq}',f"📊 Volume: {d.get('volume_ratio')}x",f"📈 Volume Trend: {d.get('volume_trend')}",f"💪 Buy Pressure: {d.get('buy_pressure')}%",f"📊 RSI: {d.get('rsi')}",f"\n🛡️ Support: {d.get('support')}",f"🔴 Resistance: {d.get('resistance')}"]
     if pd in ('LONG','SHORT'):
         lines += ['\n━━━━━━━━━━━━━━━━━━','📋 خطة الصفقة',f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",'\n📍 منطقة الدخول:',f"{d.get('entry_min')} - {d.get('entry_max')}",f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",f"\n🎯 TP1: {d.get('tp1')}",f"🎯 TP2: {d.get('tp2')}",f"🎯 TP3: {d.get('tp3')}",f"\n🛑 Stop Loss: {d.get('stop_loss')}"]
         if dr=='WAIT':lines += ['\n⏳ التنفيذ: WAIT','⚠️ لا تدخل الآن لمجرد وصول السعر للمنطقة.','✅ انتظر تأكيد ICT/الاتجاه حسب الحالة أعلاه.','📌 الخطة والأهداف محددة مسبقاً.']
@@ -611,5 +649,5 @@ def generate_evidence_report(d):
         elif dr=='SHORT':lines += ['\n🔴 التنفيذ: ENTRY READY','✅ شروط الدخول الحالية متوافقة مع الخطة.']
     else:lines += ['\n📍 منطقة الدخول: غير متاحة','🛑 Stop Loss: غير محدد','🎯 الأهداف: غير محددة','⏳ لا توجد خطة تداول صالحة حالياً.']
     lines += ['\n\n🔍 أسباب القرار']+[f'• {x}' for x in d.get('analysis_lines',[])[:10]]+[f'⚠️ {x}' for x in d.get('rejection_reasons',[])[:5]]
-    lines += ['\n🛡️ ORDER BLOCK هو العامل الأساسي.','⚙️ ICT = Liquidity Sweep + MSS/BOS + FVG + Displacement + Premium/Discount.','⚠️ 1D = Context | 4H = MTF | 1H = Primary OB | 30m + 15m = Confirmation.','⚠️ الإشارة تحليلية وليست ضماناً للربح.']
+    lines += ['\n🛡️ ORDER BLOCK هو العامل الأساسي.','⚙️ ICT Strong Filter = Liquidity Sweep + MSS/BOS + Displacement + MTF + FVG/Premium-Discount.','⚠️ 1D = Context | 4H = MTF | 1H = Primary OB | 30m + 15m = Confirmation.','⚠️ الإشارة تحليلية وليست ضماناً للربح.']
     return '\n'.join(lines)
