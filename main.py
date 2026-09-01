@@ -1,10 +1,16 @@
+# =========================================================
+# main.py - BingX AI Scanner
+# AUTO WAIT MONITOR + TELEGRAM ALERTS
+# Flask Thread + Safe Asyncio Event Loop
+# =========================================================
+
 import os
 import asyncio
 import logging
 import threading
+from typing import Dict, Any
 
 from flask import Flask
-
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -24,7 +30,7 @@ from analysis import (
 
 
 # =========================================================
-# Logging
+# LOGGING
 # =========================================================
 
 logging.basicConfig(
@@ -36,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# Telegram Token
+# BOT TOKEN
 # =========================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -48,7 +54,7 @@ if not TOKEN:
 
 
 # =========================================================
-# Flask Server - Render
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -66,38 +72,286 @@ def health():
 
 def run_flask():
     """
-    Flask runs in a completely separate background thread.
-    Render provides the PORT dynamically.
+    Flask runs independently in a background thread.
+    Render supplies PORT dynamically.
     """
+    port = int(os.environ.get("PORT", "5000"))
 
-    port = int(
-        os.environ.get("PORT", "5000")
-    )
-
-    logger.info(
-        "Starting Flask server on port %s",
-        port,
-    )
+    logger.info("Starting Flask on port %s", port)
 
     app.run(
         host="0.0.0.0",
         port=port,
         debug=False,
         use_reloader=False,
+        threaded=True,
     )
 
 
 # =========================================================
-# /start
+# AUTO WAIT MONITOR
+# =========================================================
+
+# symbol -> last known state
+WATCHLIST: Dict[str, str] = {}
+
+# symbol -> last alerted direction
+LAST_ALERT: Dict[str, str] = {}
+
+# Protect shared watch data
+WATCH_LOCK = threading.Lock()
+
+# Monitor interval in seconds
+MONITOR_INTERVAL = int(
+    os.getenv("MONITOR_INTERVAL", "60")
+)
+
+
+def add_to_watchlist(symbol: str):
+    """
+    Add a WAIT symbol to automatic monitoring.
+    """
+    symbol = normalize_symbol(symbol)
+
+    if not symbol:
+        return
+
+    with WATCH_LOCK:
+        WATCHLIST[symbol] = "WAIT"
+
+    logger.info(
+        "Added %s to automatic WAIT monitoring",
+        symbol
+    )
+
+
+def remove_from_watchlist(symbol: str):
+    """
+    Remove symbol after a confirmed alert.
+    """
+    symbol = normalize_symbol(symbol)
+
+    with WATCH_LOCK:
+        WATCHLIST.pop(symbol, None)
+
+
+def get_watchlist():
+    """
+    Return a safe copy of the current watchlist.
+    """
+    with WATCH_LOCK:
+        return list(WATCHLIST.keys())
+
+
+def is_confirmed_trade(data: Any) -> bool:
+    """
+    Only LONG / SHORT are considered confirmed trade states.
+
+    WAIT / NO TRADE / invalid data are never alerted.
+    """
+    if not isinstance(data, dict):
+        return False
+
+    state = str(
+        data.get("state", "")
+    ).upper().strip()
+
+    direction = str(
+        data.get("direction", "")
+    ).upper().strip()
+
+    return (
+        state in ("LONG", "SHORT")
+        and direction in ("LONG", "SHORT")
+        and state == direction
+    )
+
+
+def get_trade_direction(data: Dict[str, Any]) -> str:
+    state = str(
+        data.get("state", "")
+    ).upper().strip()
+
+    direction = str(
+        data.get("direction", "")
+    ).upper().strip()
+
+    if state in ("LONG", "SHORT"):
+        return state
+
+    if direction in ("LONG", "SHORT"):
+        return direction
+
+    return ""
+
+
+async def monitor_waiting_coins(
+    application
+):
+    """
+    Continuously monitor WAIT coins.
+
+    WAIT -> automatic re-analysis
+    LONG/SHORT confirmed -> Telegram alert
+    """
+
+    logger.info(
+        "Automatic WAIT monitor started. Interval=%ss",
+        MONITOR_INTERVAL,
+    )
+
+    while True:
+        try:
+            symbols = get_watchlist()
+
+            if not symbols:
+                await asyncio.sleep(MONITOR_INTERVAL)
+                continue
+
+            logger.info(
+                "Monitoring %s WAIT coins: %s",
+                len(symbols),
+                ", ".join(symbols),
+            )
+
+            for symbol in symbols:
+
+                try:
+                    # get_coin_analysis is synchronous,
+                    # so run it outside the asyncio event loop.
+                    data = await asyncio.to_thread(
+                        get_coin_analysis,
+                        symbol,
+                    )
+
+                    if not data:
+                        continue
+
+                    state = str(
+                        data.get("state", "")
+                    ).upper().strip()
+
+                    direction = get_trade_direction(data)
+
+                    # -------------------------------------------------
+                    # Still WAIT
+                    # -------------------------------------------------
+
+                    if state == "WAIT":
+                        with WATCH_LOCK:
+                            WATCHLIST[symbol] = "WAIT"
+
+                        continue
+
+                    # -------------------------------------------------
+                    # Confirmed LONG / SHORT
+                    # -------------------------------------------------
+
+                    if is_confirmed_trade(data):
+
+                        previous_alert = LAST_ALERT.get(symbol)
+
+                        # Prevent duplicate alerts for same direction
+                        if previous_alert == direction:
+                            continue
+
+                        report = generate_evidence_report(data)
+
+                        alert_message = (
+                            "🚨🚨 صفقة مؤكدة ظهرت 🚨🚨\n\n"
+                            f"🪙 {symbol}\n"
+                            f"📌 الاتجاه: {direction}\n\n"
+                            "🏦 ORDER BLOCK = المحرك الأساسي\n"
+                            "🧠 تم اجتياز شروط الدخول النهائية\n"
+                            "📡 تم اكتشاف التحول من WAIT إلى صفقة\n\n"
+                            f"{report}"
+                        )
+
+                        # Send alert to all active chats stored by bot.
+                        chat_ids = get_chat_ids()
+
+                        for chat_id in chat_ids:
+                            try:
+                                await application.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=alert_message,
+                                )
+
+                            except Exception as exc:
+                                logger.exception(
+                                    "Failed sending alert for %s "
+                                    "to chat %s: %s",
+                                    symbol,
+                                    chat_id,
+                                    exc,
+                                )
+
+                        LAST_ALERT[symbol] = direction
+
+                        # Remove from WAIT watchlist after alert.
+                        remove_from_watchlist(symbol)
+
+                        logger.info(
+                            "AUTO ALERT SENT: %s %s",
+                            symbol,
+                            direction,
+                        )
+
+                except Exception as exc:
+                    logger.exception(
+                        "Monitor error for %s: %s",
+                        symbol,
+                        exc,
+                    )
+
+                # Small pause between monitored coins.
+                await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            logger.info("WAIT monitor stopped.")
+            raise
+
+        except Exception as exc:
+            logger.exception(
+                "WAIT monitor loop error: %s",
+                exc,
+            )
+
+        await asyncio.sleep(MONITOR_INTERVAL)
+
+
+# =========================================================
+# ACTIVE TELEGRAM CHATS
+# =========================================================
+
+ACTIVE_CHATS = set()
+
+ACTIVE_CHATS_LOCK = threading.Lock()
+
+
+def register_chat(chat_id: int):
+    with ACTIVE_CHATS_LOCK:
+        ACTIVE_CHATS.add(chat_id)
+
+
+def get_chat_ids():
+    with ACTIVE_CHATS_LOCK:
+        return list(ACTIVE_CHATS)
+
+
+# =========================================================
+# /START
 # =========================================================
 
 async def start(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
     if not update.message:
         return
+
+    register_chat(update.effective_chat.id)
 
     await update.message.reply_text(
         "🤖 أهلاً بك في BingX AI Scanner\n\n"
@@ -127,37 +381,44 @@ async def start(
         "• ATR\n"
         "• Entry / SL / TP\n\n"
 
-        "🛡️ ORDER BLOCK هو المحرك الأساسي."
+        "🛡️ ORDER BLOCK هو المحرك الأساسي.\n\n"
+
+        "🔔 WAIT لا تعتبر صفقة.\n"
+        "🤖 إذا تحولت العملة من WAIT إلى LONG/SHORT "
+        "مؤكد، سأرسل لك تنبيه تلقائيًا."
     )
 
 
 # =========================================================
-# /scan
+# /SCAN
 # =========================================================
 
 async def scan_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
     if not update.message:
         return
+
+    register_chat(update.effective_chat.id)
 
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
 
         "🏦 ORDER BLOCK = المحرك الأساسي\n"
         "📡 الأسعار تُسحب مباشرة من BingX Futures\n"
-        "🧠 1D + 4H Context | 1H Primary OB | "
-        "30m + 15m Confirmation\n"
+        "🧠 1D + 4H Context | 1H Primary OB\n"
+        "⏱️ 30m + 15m Confirmation\n"
         "💧 Liquidity + Volume + BOS\n\n"
 
         "⏳ انتظر النتيجة..."
     )
 
     try:
-        results = scan_market(
-            limit=5
+        results = await asyncio.to_thread(
+            scan_market,
+            limit=5,
         )
 
     except Exception as exc:
@@ -170,55 +431,137 @@ async def scan_command(
             "❌ حدث خطأ أثناء فحص السوق.\n\n"
             "راجع Logs وحاول مرة أخرى."
         )
-
         return
 
     if not results:
-
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
 
-            "لم يتم العثور حالياً على فرصة قوية "
-            "بالشروط النهائية.\n\n"
+            "لم يتم العثور حالياً على صفقة قوية "
+            "جاهزة للدخول.\n\n"
 
-            "🛡️ البوت فضّل الانتظار بدلاً من إعطاء صفقة ضعيفة."
+            "🛡️ البوت فضّل الانتظار بدلاً من "
+            "إعطاء صفقة ضعيفة.\n\n"
+
+            "🔔 العملات التي تم تحليلها كـ WAIT "
+            "تتم مراقبتها تلقائياً."
         )
 
         return
 
-    await update.message.reply_text(
-        f"✅ انتهى الفحص.\n\n"
-        f"🎯 تم العثور على {len(results)} فرص.\n"
-        f"💰 كل نتيجة تتضمن السعر الحالي من BingX.\n"
-        f"🏦 سيتم إرسال أفضل مناطق Order Block."
-    )
+    confirmed_results = []
+    waiting_results = []
 
     for data in results:
 
-        try:
-            report = generate_evidence_report(
-                data
-            )
+        if not isinstance(data, dict):
+            continue
 
-            await update.message.reply_text(
-                report
-            )
+        symbol = normalize_symbol(
+            data.get("symbol", "")
+        )
 
-        except Exception as exc:
+        state = str(
+            data.get("state", "")
+        ).upper().strip()
 
-            logger.exception(
-                "Report error: %s",
-                exc,
+        direction = str(
+            data.get("direction", "")
+        ).upper().strip()
+
+        # -------------------------------------------------
+        # WAIT -> watch automatically
+        # -------------------------------------------------
+
+        if symbol and (
+            state == "WAIT"
+            or direction == "WAIT"
+            or not is_confirmed_trade(data)
+        ):
+            add_to_watchlist(symbol)
+            waiting_results.append(symbol)
+
+        # -------------------------------------------------
+        # Only confirmed trades are sent as opportunities
+        # -------------------------------------------------
+
+        if is_confirmed_trade(data):
+            confirmed_results.append(data)
+
+    # -----------------------------------------------------
+    # Send confirmed trades only
+    # -----------------------------------------------------
+
+    if confirmed_results:
+
+        await update.message.reply_text(
+            f"🚨 تم العثور على "
+            f"{len(confirmed_results)} صفقة مؤكدة.\n\n"
+            "🏦 ORDER BLOCK = المحرك الأساسي\n"
+            "🛡️ لن يتم إرسال WAIT كصفقة."
+        )
+
+        for data in confirmed_results:
+
+            try:
+                await update.message.reply_text(
+                    generate_evidence_report(data)
+                )
+
+                symbol = normalize_symbol(
+                    data.get("symbol", "")
+                )
+
+                direction = get_trade_direction(data)
+
+                if symbol and direction:
+                    LAST_ALERT[symbol] = direction
+
+            except Exception as exc:
+                logger.exception(
+                    "Report error: %s",
+                    exc,
+                )
+
+    else:
+
+        await update.message.reply_text(
+            "🟡 لا توجد صفقة جاهزة للدخول الآن.\n\n"
+            "تم تجاهل نتائج WAIT كصفقات.\n"
+            "🤖 العملات التي ظهرت WAIT دخلت المراقبة "
+            "التلقائية.\n\n"
+            "🔔 عند تحقق شروط الدخول سأرسل التنبيه تلقائياً."
+        )
+
+    # -----------------------------------------------------
+    # Inform about automatic monitoring
+    # -----------------------------------------------------
+
+    if waiting_results:
+
+        unique_waiting = list(
+            dict.fromkeys(waiting_results)
+        )
+
+        await update.message.reply_text(
+            "👁️ المراقبة التلقائية بدأت لـ:\n\n"
+            + "\n".join(
+                f"• {symbol}"
+                for symbol in unique_waiting
             )
+            + "\n\n"
+            f"⏱️ إعادة الفحص كل {MONITOR_INTERVAL} ثانية.\n"
+            "🔔 لن يصلك تنبيه إلا عند ظهور LONG/SHORT مؤكد."
+        )
 
 
 # =========================================================
-# Coin Analysis
+# HANDLE COIN MESSAGE
 # =========================================================
 
 async def handle_message(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
     if not update.message:
@@ -227,51 +570,34 @@ async def handle_message(
     if not update.message.text:
         return
 
+    register_chat(update.effective_chat.id)
+
     text = update.message.text.strip()
 
     if not text:
         return
 
-    symbol = normalize_symbol(
-        text
-    )
+    symbol = normalize_symbol(text)
 
     # -----------------------------------------------------
-    # Current BingX Futures Price
+    # Get current price
     # -----------------------------------------------------
 
     try:
-
-        price = get_current_price(
+        price = await asyncio.to_thread(
+            get_current_price,
             symbol,
             True,
         )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Price error for %s: %s",
-            symbol,
-            exc,
-        )
-
+    except Exception:
         price = None
 
-    if price is not None:
-
-        price_text = (
-            f"💰 السعر الحالي: {price}\n"
-        )
-
-    else:
-
-        price_text = (
-            "💰 السعر الحالي: جاري جلبه من BingX...\n"
-        )
-
-    # -----------------------------------------------------
-    # Progress Message
-    # -----------------------------------------------------
+    price_text = (
+        f"💰 السعر الحالي: {price}\n"
+        if price is not None
+        else
+        "💰 السعر الحالي: جاري جلبه من BingX...\n"
+    )
 
     await update.message.reply_text(
         f"🔍 جاري تحليل {symbol}...\n\n"
@@ -296,14 +622,11 @@ async def handle_message(
         "⏳ انتظر النتيجة..."
     )
 
-    # -----------------------------------------------------
-    # Analysis
-    # -----------------------------------------------------
-
     try:
 
-        data = get_coin_analysis(
-            symbol
+        data = await asyncio.to_thread(
+            get_coin_analysis,
+            symbol,
         )
 
     except Exception as exc:
@@ -331,40 +654,103 @@ async def handle_message(
 
         return
 
+    state = str(
+        data.get("state", "")
+    ).upper().strip()
+
+    direction = str(
+        data.get("direction", "")
+    ).upper().strip()
+
     # -----------------------------------------------------
-    # Evidence Report
+    # WAIT -> automatic monitoring
     # -----------------------------------------------------
 
-    try:
+    if (
+        state == "WAIT"
+        or direction == "WAIT"
+        or not is_confirmed_trade(data)
+    ):
 
-        report = generate_evidence_report(
-            data
-        )
+        add_to_watchlist(symbol)
 
-        await update.message.reply_text(
-            report
-        )
+        try:
+            report = generate_evidence_report(data)
 
-    except Exception as exc:
+            await update.message.reply_text(
+                report
+                + "\n\n"
+                "👁️ الحالة: WAIT\n"
+                "🤖 تم إدخال العملة للمراقبة التلقائية.\n"
+                f"⏱️ إعادة الفحص كل {MONITOR_INTERVAL} ثانية.\n"
+                "🔔 سأرسل لك تنبيهًا تلقائيًا إذا تحولت "
+                "إلى LONG/SHORT مؤكد."
+            )
 
-        logger.exception(
-            "Report error for %s: %s",
-            symbol,
-            exc,
-        )
+        except Exception as exc:
 
-        await update.message.reply_text(
-            "❌ حدث خطأ أثناء إنشاء التقرير."
-        )
+            logger.exception(
+                "WAIT report error for %s: %s",
+                symbol,
+                exc,
+            )
+
+            await update.message.reply_text(
+                "🟡 العملة WAIT حالياً.\n\n"
+                "👁️ تم إدخالها للمراقبة التلقائية."
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # Confirmed LONG / SHORT
+    # -----------------------------------------------------
+
+    if is_confirmed_trade(data):
+
+        try:
+
+            LAST_ALERT[symbol] = direction
+
+            await update.message.reply_text(
+                "🚨 صفقة مؤكدة\n\n"
+                + generate_evidence_report(data)
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Report error for %s: %s",
+                symbol,
+                exc,
+            )
+
+            await update.message.reply_text(
+                "❌ حدث خطأ أثناء إنشاء التقرير."
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # Any unknown / invalid state
+    # -----------------------------------------------------
+
+    add_to_watchlist(symbol)
+
+    await update.message.reply_text(
+        f"🟡 {symbol} ليست صفقة مؤكدة حالياً.\n\n"
+        "👁️ تم وضعها تحت المراقبة التلقائية.\n"
+        "🔔 سيتم التنبيه فقط عند تحقق LONG/SHORT."
+    )
 
 
 # =========================================================
-# Telegram Error Handler
+# ERROR HANDLER
 # =========================================================
 
 async def error_handler(
     update,
-    context,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
     logger.error(
@@ -374,33 +760,16 @@ async def error_handler(
 
 
 # =========================================================
-# Telegram Bot Application
-# =========================================================
-
-application = None
-
-
-# =========================================================
-# Main Async Telegram Loop
+# MAIN BOT
 # =========================================================
 
 async def main_bot():
-
-    global application
-
-    logger.info(
-        "Creating Telegram application..."
-    )
 
     application = (
         ApplicationBuilder()
         .token(TOKEN)
         .build()
     )
-
-    # -----------------------------------------------------
-    # Handlers
-    # -----------------------------------------------------
 
     application.add_handler(
         CommandHandler(
@@ -427,168 +796,141 @@ async def main_bot():
         error_handler
     )
 
-    # -----------------------------------------------------
-    # Initialize Telegram Application
-    # -----------------------------------------------------
-
-    logger.info(
-        "Initializing Telegram application..."
-    )
-
-    await application.initialize()
-
-    # -----------------------------------------------------
-    # Delete Old Webhook
-    # -----------------------------------------------------
-
-    logger.info(
-        "Deleting old Telegram webhook..."
-    )
+    monitor_task = None
 
     try:
+
+        # -------------------------------------------------
+        # Initialize Telegram application
+        # -------------------------------------------------
+
+        logger.info(
+            "Initializing Telegram application..."
+        )
+
+        await application.initialize()
+
+        # -------------------------------------------------
+        # Delete old webhook
+        # -------------------------------------------------
+
+        logger.info(
+            "Deleting Telegram webhook..."
+        )
 
         await application.bot.delete_webhook(
             drop_pending_updates=True
         )
 
+        # -------------------------------------------------
+        # Start Telegram application
+        # -------------------------------------------------
+
+        await application.start()
+
+        # -------------------------------------------------
+        # Start polling
+        # -------------------------------------------------
+
         logger.info(
-            "Telegram webhook deleted successfully."
+            "Starting Telegram polling..."
         )
 
-    except Exception as exc:
-
-        logger.exception(
-            "Webhook deletion failed: %s",
-            exc
+        await application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
         )
 
-        await application.shutdown()
+        # -------------------------------------------------
+        # Start automatic WAIT monitor
+        # -------------------------------------------------
 
-        raise
-
-    # -----------------------------------------------------
-    # Start Telegram Application
-    # -----------------------------------------------------
-
-    logger.info(
-        "Starting Telegram application..."
-    )
-
-    await application.start()
-
-    # -----------------------------------------------------
-    # Start Long Polling
-    # -----------------------------------------------------
-
-    if application.updater is None:
-        raise RuntimeError(
-            "Telegram updater is not available."
+        monitor_task = asyncio.create_task(
+            monitor_waiting_coins(
+                application
+            )
         )
 
-    logger.info(
-        "Starting Telegram polling..."
-    )
+        logger.info(
+            "BingX AI Scanner is LIVE."
+        )
 
-    await application.updater.start_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
-    )
-
-    logger.info(
-        "Telegram bot is now running."
-    )
-
-    print(
-        "========================================"
-    )
-    print(
-        "BingX AI Scanner is LIVE"
-    )
-    print(
-        "Flask: RUNNING"
-    )
-    print(
-        "Telegram: POLLING"
-    )
-    print(
-        "Event Loop: ACTIVE"
-    )
-    print(
-        "========================================"
-    )
-
-    # -----------------------------------------------------
-    # Keep the SAME Event Loop Alive
-    # -----------------------------------------------------
-
-    try:
-
+        # Keep the asyncio loop alive.
         await asyncio.Event().wait()
 
     except asyncio.CancelledError:
 
         logger.info(
-            "Main Telegram task cancelled."
+            "Main bot task cancelled."
         )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Fatal bot error: %s",
+            exc,
+        )
+
+        raise
 
     finally:
 
         # -------------------------------------------------
-        # Stop Polling
+        # Stop monitor
         # -------------------------------------------------
 
-        if application.updater:
+        if monitor_task:
+
+            monitor_task.cancel()
 
             try:
-
-                await application.updater.stop()
-
-            except Exception as exc:
-
-                logger.exception(
-                    "Error stopping updater: %s",
-                    exc,
-                )
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
 
         # -------------------------------------------------
-        # Stop Application
+        # Stop Telegram polling
         # -------------------------------------------------
 
         try:
-
-            await application.stop()
-
-        except Exception as exc:
-
+            if application.updater:
+                await application.updater.stop()
+        except Exception:
             logger.exception(
-                "Error stopping application: %s",
-                exc,
+                "Error stopping updater"
             )
 
         # -------------------------------------------------
-        # Shutdown Application
+        # Stop application
         # -------------------------------------------------
 
         try:
-
-            await application.shutdown()
-
-        except Exception as exc:
-
+            await application.stop()
+        except Exception:
             logger.exception(
-                "Error shutting down application: %s",
-                exc,
+                "Error stopping application"
+            )
+
+        # -------------------------------------------------
+        # Shutdown Telegram
+        # -------------------------------------------------
+
+        try:
+            await application.shutdown()
+        except Exception:
+            logger.exception(
+                "Error shutting down application"
             )
 
 
 # =========================================================
-# Program Entry Point
+# PROGRAM ENTRY
 # =========================================================
 
 if __name__ == "__main__":
 
     # -----------------------------------------------------
-    # 1. Start Flask in a separate background Thread
+    # Flask runs first in separate background Thread
     # -----------------------------------------------------
 
     flask_thread = threading.Thread(
@@ -604,26 +946,9 @@ if __name__ == "__main__":
     )
 
     # -----------------------------------------------------
-    # 2. Run Telegram inside ONE dedicated Event Loop
+    # Telegram gets its own clean asyncio event loop
     # -----------------------------------------------------
 
-    try:
-
-        asyncio.run(
-            main_bot()
-        )
-
-    except KeyboardInterrupt:
-
-        logger.info(
-            "Bot stopped by keyboard interrupt."
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Fatal Telegram bot error: %s",
-            exc,
-        )
-
-        raise
+    asyncio.run(
+        main_bot()
+    )
