@@ -1,7 +1,7 @@
 import os
+import asyncio
 import logging
 import threading
-import asyncio
 
 from flask import Flask
 
@@ -11,7 +11,7 @@ from telegram.ext import (
     ContextTypes,
     CommandHandler,
     MessageHandler,
-    filters
+    filters,
 )
 
 from analysis import (
@@ -29,7 +29,7 @@ from analysis import (
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,24 +66,24 @@ def health():
 
 def run_flask():
     """
-    تشغيل Flask في Thread مستقل.
-    Render يحدد PORT تلقائياً من Environment Variables.
+    Flask runs in a completely separate background thread.
+    Render provides the PORT dynamically.
     """
 
     port = int(
-        os.environ.get("PORT", 5000)
+        os.environ.get("PORT", "5000")
     )
 
     logger.info(
-        "Starting Flask on port %s",
-        port
+        "Starting Flask server on port %s",
+        port,
     )
 
     app.run(
         host="0.0.0.0",
         port=port,
         debug=False,
-        use_reloader=False
+        use_reloader=False,
     )
 
 
@@ -93,7 +93,7 @@ def run_flask():
 
 async def start(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
@@ -137,7 +137,7 @@ async def start(
 
 async def scan_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
@@ -156,16 +156,14 @@ async def scan_command(
     )
 
     try:
-
         results = scan_market(
             limit=5
         )
 
     except Exception as exc:
-
         logger.exception(
             "Scanner error: %s",
-            exc
+            exc,
         )
 
         await update.message.reply_text(
@@ -198,7 +196,6 @@ async def scan_command(
     for data in results:
 
         try:
-
             report = generate_evidence_report(
                 data
             )
@@ -211,7 +208,7 @@ async def scan_command(
 
             logger.exception(
                 "Report error: %s",
-                exc
+                exc,
             )
 
 
@@ -221,7 +218,7 @@ async def scan_command(
 
 async def handle_message(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
@@ -247,7 +244,7 @@ async def handle_message(
 
         price = get_current_price(
             symbol,
-            True
+            True,
         )
 
     except Exception as exc:
@@ -255,7 +252,7 @@ async def handle_message(
         logger.exception(
             "Price error for %s: %s",
             symbol,
-            exc
+            exc,
         )
 
         price = None
@@ -271,7 +268,6 @@ async def handle_message(
         price_text = (
             "💰 السعر الحالي: جاري جلبه من BingX...\n"
         )
-
 
     # -----------------------------------------------------
     # Progress Message
@@ -300,7 +296,6 @@ async def handle_message(
         "⏳ انتظر النتيجة..."
     )
 
-
     # -----------------------------------------------------
     # Analysis
     # -----------------------------------------------------
@@ -316,7 +311,7 @@ async def handle_message(
         logger.exception(
             "Coin analysis error for %s: %s",
             symbol,
-            exc
+            exc,
         )
 
         await update.message.reply_text(
@@ -326,18 +321,15 @@ async def handle_message(
 
         return
 
-
     if not data:
 
         await update.message.reply_text(
             f"❌ لم أستطع تحليل {symbol} حالياً.\n\n"
-
             "تأكد أن الزوج موجود على BingX Futures "
             "وأنه USDT."
         )
 
         return
-
 
     # -----------------------------------------------------
     # Evidence Report
@@ -358,7 +350,7 @@ async def handle_message(
         logger.exception(
             "Report error for %s: %s",
             symbol,
-            exc
+            exc,
         )
 
         await update.message.reply_text(
@@ -372,38 +364,33 @@ async def handle_message(
 
 async def error_handler(
     update,
-    context
+    context,
 ):
 
     logger.error(
         "Telegram error: %s",
-        context.error
+        context.error,
     )
 
 
 # =========================================================
-# Main
+# Telegram Bot Application
 # =========================================================
 
-def main():
+application = None
 
-    # =====================================================
-    # 1. Start Flask FIRST in a completely separate Thread
-    # =====================================================
 
-    threading.Thread(
-        target=run_flask,
-        daemon=True
-    ).start()
+# =========================================================
+# Main Async Telegram Loop
+# =========================================================
+
+async def main_bot():
+
+    global application
 
     logger.info(
-        "Flask Thread started."
+        "Creating Telegram application..."
     )
-
-
-    # =====================================================
-    # 2. Build Telegram Application
-    # =====================================================
 
     application = (
         ApplicationBuilder()
@@ -411,29 +398,28 @@ def main():
         .build()
     )
 
-
-    # =====================================================
-    # 3. Telegram Handlers
-    # =====================================================
+    # -----------------------------------------------------
+    # Handlers
+    # -----------------------------------------------------
 
     application.add_handler(
         CommandHandler(
             "start",
-            start
+            start,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "scan",
-            scan_command
+            scan_command,
         )
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_message
+            handle_message,
         )
     )
 
@@ -441,10 +427,19 @@ def main():
         error_handler
     )
 
+    # -----------------------------------------------------
+    # Initialize Telegram Application
+    # -----------------------------------------------------
 
-    # =====================================================
-    # 4. Delete Telegram Webhook BEFORE Polling
-    # =====================================================
+    logger.info(
+        "Initializing Telegram application..."
+    )
+
+    await application.initialize()
+
+    # -----------------------------------------------------
+    # Delete Old Webhook
+    # -----------------------------------------------------
 
     logger.info(
         "Deleting old Telegram webhook..."
@@ -452,10 +447,8 @@ def main():
 
     try:
 
-        asyncio.run(
-            application.bot.delete_webhook(
-                drop_pending_updates=True
-            )
+        await application.bot.delete_webhook(
+            drop_pending_updates=True
         )
 
         logger.info(
@@ -465,49 +458,172 @@ def main():
     except Exception as exc:
 
         logger.exception(
-            "Failed to delete Telegram webhook: %s",
+            "Webhook deletion failed: %s",
             exc
         )
 
+        await application.shutdown()
 
-    # =====================================================
-    # 5. Start Telegram Polling
-    # =====================================================
+        raise
+
+    # -----------------------------------------------------
+    # Start Telegram Application
+    # -----------------------------------------------------
+
+    logger.info(
+        "Starting Telegram application..."
+    )
+
+    await application.start()
+
+    # -----------------------------------------------------
+    # Start Long Polling
+    # -----------------------------------------------------
+
+    if application.updater is None:
+        raise RuntimeError(
+            "Telegram updater is not available."
+        )
 
     logger.info(
         "Starting Telegram polling..."
     )
 
-    print(
-        "========================================"
-    )
-
-    print(
-        "BingX AI Scanner is starting..."
-    )
-
-    print(
-        "Flask server is running in background."
-    )
-
-    print(
-        "Telegram polling is starting..."
-    )
-
-    print(
-        "========================================"
-    )
-
-
-    application.run_polling(
+    await application.updater.start_polling(
+        drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
     )
+
+    logger.info(
+        "Telegram bot is now running."
+    )
+
+    print(
+        "========================================"
+    )
+    print(
+        "BingX AI Scanner is LIVE"
+    )
+    print(
+        "Flask: RUNNING"
+    )
+    print(
+        "Telegram: POLLING"
+    )
+    print(
+        "Event Loop: ACTIVE"
+    )
+    print(
+        "========================================"
+    )
+
+    # -----------------------------------------------------
+    # Keep the SAME Event Loop Alive
+    # -----------------------------------------------------
+
+    try:
+
+        await asyncio.Event().wait()
+
+    except asyncio.CancelledError:
+
+        logger.info(
+            "Main Telegram task cancelled."
+        )
+
+    finally:
+
+        # -------------------------------------------------
+        # Stop Polling
+        # -------------------------------------------------
+
+        if application.updater:
+
+            try:
+
+                await application.updater.stop()
+
+            except Exception as exc:
+
+                logger.exception(
+                    "Error stopping updater: %s",
+                    exc,
+                )
+
+        # -------------------------------------------------
+        # Stop Application
+        # -------------------------------------------------
+
+        try:
+
+            await application.stop()
+
+        except Exception as exc:
+
+            logger.exception(
+                "Error stopping application: %s",
+                exc,
+            )
+
+        # -------------------------------------------------
+        # Shutdown Application
+        # -------------------------------------------------
+
+        try:
+
+            await application.shutdown()
+
+        except Exception as exc:
+
+            logger.exception(
+                "Error shutting down application: %s",
+                exc,
+            )
 
 
 # =========================================================
-# Entry Point
+# Program Entry Point
 # =========================================================
 
 if __name__ == "__main__":
-    main()
+
+    # -----------------------------------------------------
+    # 1. Start Flask in a separate background Thread
+    # -----------------------------------------------------
+
+    flask_thread = threading.Thread(
+        target=run_flask,
+        daemon=True,
+        name="FlaskThread",
+    )
+
+    flask_thread.start()
+
+    logger.info(
+        "Flask background thread started."
+    )
+
+    # -----------------------------------------------------
+    # 2. Run Telegram inside ONE dedicated Event Loop
+    # -----------------------------------------------------
+
+    try:
+
+        asyncio.run(
+            main_bot()
+        )
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "Bot stopped by keyboard interrupt."
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Fatal Telegram bot error: %s",
+            exc,
+        )
+
+        raise
