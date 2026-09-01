@@ -328,7 +328,10 @@ def detect_ict_mss_bos(k,lookback=35):
     prior=k[-6][4]
     if c>last_h and prior<=last_h:mss='BULLISH_MSS';direction='LONG';level=last_h;reasons.append('ICT Bullish MSS')
     elif c<last_l and prior>=last_l:mss='BEARISH_MSS';direction='SHORT';level=last_l;reasons.append('ICT Bearish MSS')
-    return {'mss':mss,'bos':bos,'direction':direction,'level':level,'reasons':reasons}
+    trigger_index = len(k)-1 if (mss!='NONE' or bos!='NONE') else None
+    trigger_high = k[trigger_index][2] if trigger_index is not None else None
+    trigger_low = k[trigger_index][3] if trigger_index is not None else None
+    return {'mss':mss,'bos':bos,'direction':direction,'level':level,'trigger_index':trigger_index,'trigger_high':trigger_high,'trigger_low':trigger_low,'reasons':reasons}
 
 
 def detect_fvg(k,lookback=60):
@@ -466,20 +469,44 @@ def determine_plan_direction(direction,long_score,short_score,bullish_ob,bearish
     return None
 
 
-def calculate_trade_plan(plan_direction,price,atr,ob,support,resistance):
+def calculate_trade_plan(plan_direction, price, atr, ob, support, resistance, structure=None):
+    """Calculate trade levels ONLY for a confirmed MARKET setup.
+    SL is placed 2 pips beyond the MSS candle; if MSS is absent, the BOS
+    trigger candle is used because the entry gate explicitly allows MSS OR BOS.
+    """
     empty={'entry_min':None,'entry_max':None,'entry_price':None,'stop_loss':None,'tp1':None,'tp2':None,'tp3':None,'risk':None}
-    if not plan_direction or not price or not ob:return empty
-    atr=atr or price*.01;emin=ob['low'];emax=ob['high'];entry=(emin+emax)/2 if emin<=price<=emax else emin if price<emin else emax
-    if plan_direction=='LONG':
-        sl=min(emin-atr*.35,entry-atr*.8);risk=max(entry-sl,atr*.5);tp1=entry+risk*1.25;tp2=entry+risk*2;tp3=entry+risk*3
-        if resistance and resistance>entry and (resistance-entry)/risk>=.85:tp1=min(tp1,resistance)
-        tp1=max(tp1,entry+risk*.75);tp2=max(tp2,tp1+risk*.35);tp3=max(tp3,tp2+risk*.5)
-    elif plan_direction=='SHORT':
-        sl=max(emax+atr*.35,entry+atr*.8);risk=max(sl-entry,atr*.5);tp1=entry-risk*1.25;tp2=entry-risk*2;tp3=entry-risk*3
-        if support and support<entry and (entry-support)/risk>=.85:tp1=max(tp1,support)
-        tp1=min(tp1,entry-risk*.75);tp2=min(tp2,tp1-risk*.35);tp3=min(tp3,tp2-risk*.5)
-    else:return empty
-    return {'entry_min':emin,'entry_max':emax,'entry_price':entry,'stop_loss':sl,'tp1':tp1,'tp2':tp2,'tp3':tp3,'risk':risk}
+    try:
+        if plan_direction not in ('LONG','SHORT') or not price or not ob:
+            return empty
+        structure=structure or {}
+        if structure.get('mss')=='NONE' and structure.get('bos')=='NONE':
+            return empty
+        emin=ob['low']; emax=ob['high']
+        entry=(emin+emax)/2 if emin<=price<=emax else emin if price<emin else emax
+        # Crypto-safe pip convention: 1 pip = 0.01% of current price.
+        pip=max(price*0.0001, 1e-12)
+        buffer=2.0*pip
+        trigger_high=structure.get('trigger_high')
+        trigger_low=structure.get('trigger_low')
+        if plan_direction=='LONG':
+            if trigger_low is None: return empty
+            sl=trigger_low-buffer
+            if sl>=entry: return empty
+            risk=entry-sl
+            tp1=entry+risk*1.25; tp2=entry+risk*2; tp3=entry+risk*3
+            if resistance and resistance>entry and (resistance-entry)/risk>=.85: tp1=min(tp1,resistance)
+            tp1=max(tp1,entry+risk*.75); tp2=max(tp2,tp1+risk*.35); tp3=max(tp3,tp2+risk*.5)
+        else:
+            if trigger_high is None: return empty
+            sl=trigger_high+buffer
+            if sl<=entry: return empty
+            risk=sl-entry
+            tp1=entry-risk*1.25; tp2=entry-risk*2; tp3=entry-risk*3
+            if support and support<entry and (entry-support)/risk>=.85: tp1=max(tp1,support)
+            tp1=min(tp1,entry-risk*.75); tp2=min(tp2,tp1-risk*.35); tp3=min(tp3,tp2-risk*.5)
+        return {'entry_min':emin,'entry_max':emax,'entry_price':entry,'stop_loss':sl,'tp1':tp1,'tp2':tp2,'tp3':tp3,'risk':risk}
+    except Exception:
+        return empty
 
 def strong_entry_filter(direction, price, ob, ob4, ob_distance, retest, t4, t1, t30, t15, ict, score, room_distance, crash, pump):
     """v25.0 INSTITUTIONAL ENTRY GATE. OB is primary; ICT validates the trigger."""
@@ -529,95 +556,24 @@ def strong_entry_filter(direction, price, ob, ob4, ob_distance, retest, t4, t1, 
     return ok,reasons
 
 # =========================================================
-# SAFETY WRAPPERS
-# =========================================================
-def _safe_dict_call(fn, *args, default=None, name=None, **kwargs):
-    try:
-        value = fn(*args, **kwargs)
-        return value if isinstance(value, dict) else (default.copy() if isinstance(default, dict) else default)
-    except Exception as e:
-        logger.exception("INDICATOR FAILED | %s | %s", name or getattr(fn, '__name__', 'unknown'), e)
-        return default.copy() if isinstance(default, dict) else default
-
-
-def _safe_ob(k, direction, price):
-    try:
-        return find_active_order_block(k, direction, price)
-    except Exception as e:
-        logger.exception("OB FAILED | %s", e)
-        return None
-
-
-def _safe_retest(k, ob, direction):
-    try:
-        value = detect_ob_retest(k, ob, direction)
-        return value if isinstance(value, tuple) and len(value) == 2 else (False, [])
-    except Exception as e:
-        logger.exception("OB RETEST FAILED | %s", e)
-        return False, []
-
-
-def _safe_ict(k, direction):
-    default = {'score': 0, 'sweep': {'bullish': False, 'bearish': False, 'type': 'NONE', 'level': None, 'reasons': []},
-               'mss_bos': {'mss': 'NONE', 'bos': 'NONE', 'direction': 'NONE', 'level': None, 'reasons': []},
-               'fvg': {'bullish': [], 'bearish': [], 'nearest_bullish': None, 'nearest_bearish': None},
-               'displacement': {'direction': 'NONE', 'score': 0, 'ratio': 0, 'move_atr': 0, 'reasons': []},
-               'premium_discount': {'range_high': None, 'range_low': None, 'equilibrium': None, 'zone': 'UNKNOWN', 'position': 50.0},
-               'reasons': []}
-    return _safe_dict_call(ict_confluence, k, direction, default=default, name=f'ICT {direction}') or default.copy()
-
-
-def _wait_result(symbol, price, state='WAIT - لا توجد شروط دخول فوري كاملة حالياً'):
-    """Always return a valid engine payload for a non-entry setup; never return None."""
-    return {
-        'symbol': symbol, 'direction': 'WAIT', 'plan_direction': None, 'score': 0, 'entry_score': 0,
-        'state': state, 'price': smart_round(price), 'rsi': 50.0, 'volume_ratio': 1.0,
-        'volume_trend': 'NEUTRAL', 'liquidity_state': 'NEUTRAL', 'liquidity_score': 0,
-        'bottom_detected': False, 'bottom_score': 0, 'drawdown': 0, 'buy_pressure': 50.0,
-        'trend': 'NEUTRAL', 'trend_1d': 'UNKNOWN', 'trend_4h': 'UNKNOWN', 'trend_1h': 'UNKNOWN',
-        'trend_30m': 'UNKNOWN', 'trend_15m': 'UNKNOWN', 'structure': 'UNKNOWN', 'bos': 'NONE',
-        'liquidity_zone': 'NONE', 'bullish_ob': None, 'bearish_ob': None, 'bullish_ob_4h': None,
-        'bearish_ob_4h': None, 'bullish_ob_distance': 999, 'bearish_ob_distance': 999,
-        'bullish_ob_retest': False, 'bearish_ob_retest': False, 'recent_change_2': 0,
-        'recent_change_6': 0, 'crash_detected': False, 'pump_detected': False,
-        'ict_long_score': 0, 'ict_short_score': 0, 'ict_score': 0, 'liquidity_sweep': 'NONE',
-        'bullish_liquidity_sweep': False, 'bearish_liquidity_sweep': False, 'ict_mss': 'NONE',
-        'ict_bos': 'NONE', 'ict_fvg_bullish': None, 'ict_fvg_bearish': None,
-        'ict_displacement_long': {}, 'ict_displacement_short': {},
-        'premium_discount': {'zone': 'UNKNOWN'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
-        'ict15_long_score': 0, 'ict15_short_score': 0, 'entry_gate': 'WAIT',
-        'entry_gate_requirements': 'OB + proximity + MSS/BOS + Displacement + Sweep/Retest + 4H + 30m/15m + room',
-        'score_semantics': 'Opportunity Score = setup quality; ENTRY READY requires the independent institutional hard gate.',
-        'entry_min': None, 'entry_max': None, 'entry_price': None, 'stop_loss': None, 'tp1': None,
-        'tp2': None, 'tp3': None, 'risk': None, 'support': None, 'resistance': None,
-        'support_distance': 999, 'resistance_distance': 999, 'long_score': 0, 'short_score': 0,
-        'analysis_lines': [], 'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
-        'bullish_retest_reasons': [], 'bearish_retest_reasons': [],
-        'rejection_reasons': ['لم تكتمل شروط الدخول الفوري']
-    }
-
-
-# =========================================================
 # MAIN ANALYSIS
 # =========================================================
-def _get_coin_analysis_core(symbol):
+def _get_coin_analysis_impl(symbol):
     symbol=normalize_symbol(symbol)
-    if not symbol_exists(symbol):
-        return _wait_result(symbol, get_current_price(symbol, True), 'WAIT - العملة غير متاحة حالياً في قائمة عقود BingX')
+    if not symbol_exists(symbol):return None
     k1=get_bingx_klines(symbol,'1h',220);p=get_current_price(symbol,True)
     if p is None and k1:p=k1[-1][4]
-    if p is None:
-        return _wait_result(symbol, None, 'WAIT - تعذر الحصول على السعر الحالي؛ لا توجد إشارة دخول فوري')
+    if p is None:return None
     if not k1 or len(k1)<50:return {'symbol':symbol,'direction':'NO TRADE','score':0,'entry_score':0,'state':'NO TRADE - بيانات 1H غير مكتملة','price':smart_round(p)}
     k4=get_bingx_klines(symbol,'4h',180);kd=get_bingx_klines(symbol,'1d',120);k30=get_bingx_klines(symbol,'30m',180);k15=get_bingx_klines(symbol,'15m',180)
     t1=calculate_timeframe_trend(k1);t4=calculate_timeframe_trend(k4);td=calculate_timeframe_trend(kd);t30=calculate_timeframe_trend(k30);t15=calculate_timeframe_trend(k15)
     c=[x[4] for x in k1];v=[x[5] for x in k1];rsi=calculate_rsi(c);atr=calculate_atr(k1) or p*.01;vr=calculate_volume_ratio(v);vt=calculate_volume_trend(v);sup,res=calculate_support_resistance(k1);st=detect_market_structure(k1);liq,liqs,liqr=detect_liquidity_flow(k1);bottom,bs,br=detect_bottom_accumulation(k1)
-    bo=_safe_ob(k1,'LONG',p);so=_safe_ob(k1,'SHORT',p);bo4=_safe_ob(k4,'LONG',p) if k4 else None;so4=_safe_ob(k4,'SHORT',p) if k4 else None
-    bor,bor_r=_safe_retest(k1,bo,'LONG');sor,sor_r=_safe_retest(k1,so,'SHORT');bd=ob_distance_percent(p,bo);sd=ob_distance_percent(p,so)
-    ict_long=_safe_ict(k1,'LONG');ict_short=_safe_ict(k1,'SHORT')
+    bo=find_active_order_block(k1,'LONG',p);so=find_active_order_block(k1,'SHORT',p);bo4=find_active_order_block(k4,'LONG',p) if k4 else None;so4=find_active_order_block(k4,'SHORT',p) if k4 else None
+    bor,bor_r=detect_ob_retest(k1,bo,'LONG');sor,sor_r=detect_ob_retest(k1,so,'SHORT');bd=ob_distance_percent(p,bo);sd=ob_distance_percent(p,so)
+    ict_long=ict_confluence(k1,'LONG');ict_short=ict_confluence(k1,'SHORT')
     # 15m ICT confirmation is used as secondary confirmation, not primary OB selection.
-    ict15_long=_safe_ict(k15,'LONG') if k15 else _safe_ict([], 'LONG')
-    ict15_short=_safe_ict(k15,'SHORT') if k15 else _safe_ict([], 'SHORT')
+    ict15_long=ict_confluence(k15,'LONG') if k15 else {'score':0,'sweep':{},'mss_bos':{},'fvg':{},'displacement':{},'premium_discount':{},'reasons':[]}
+    ict15_short=ict_confluence(k15,'SHORT') if k15 else {'score':0,'sweep':{},'mss_bos':{},'fvg':{},'displacement':{},'premium_discount':{},'reasons':[]}
     l=s=0;lines=[];reject=[]
     if bo:
         l+=38+(10 if bo['strength']>=55 else 0)+(15 if bor else 0)+(10 if bd<=1.5 else 5 if bd<=3 else 0);lines.append('يوجد Bullish Order Block أساسي صالح على 1H')
@@ -699,7 +655,12 @@ def _get_coin_analysis_core(symbol):
     elif bottom and (bo4 or so4):direction='WAIT';es=max(l,s,45);state='ACCUMULATION WATCH - MTF Order Block قريب وننتظر تأكيد 1H'
     else:direction='NO TRADE';es=max(l,s,0);state='NO TRADE - لا يوجد Order Block صالح قريب'
     plan_direction=determine_plan_direction(direction,l,s,bo,so,bd,sd,t4,t1,t30,t15,ict_long['score'],ict_short['score']);plan_ob=bo if plan_direction=='LONG' else so if plan_direction=='SHORT' else None
-    plan=calculate_trade_plan(plan_direction,p,atr,plan_ob,sup,res);emin=plan['entry_min'];emax=plan['entry_max'];entry_price=plan['entry_price'];sl=plan['stop_loss'];tp1=plan['tp1'];tp2=plan['tp2'];tp3=plan['tp3'];risk=plan['risk']
+    selected_ict=ict_long if plan_direction=='LONG' else ict_short if plan_direction=='SHORT' else {}
+    selected_ms=selected_ict.get('mss_bos',{}) if isinstance(selected_ict,dict) else {}
+    selected_structure_ok=(selected_ms.get('mss') not in (None,'NONE') or selected_ms.get('bos') not in (None,'NONE'))
+    if direction in ('LONG','SHORT') and not selected_structure_ok:
+        direction='WAIT'; plan_direction=None; plan_ob=None; es=0; state='WAIT - لا يوجد MSS/BOS مؤكد في اتجاه الصفقة'
+    plan=calculate_trade_plan(plan_direction,p,atr,plan_ob,sup,res, st);emin=plan['entry_min'];emax=plan['entry_max'];entry_price=plan['entry_price'];sl=plan['stop_loss'];tp1=plan['tp1'];tp2=plan['tp2'];tp3=plan['tp3'];risk=plan['risk']
     if direction=='WAIT' and plan_direction is None:
         state='WAIT - لا توجد جهة خطة متوافقة مع MTF/ICT حالياً'
     if plan_direction=='LONG' and sl and tp1 and tp1-entry_price<(entry_price-sl)*.70:direction='WAIT';state='REVERSAL WATCH - Bullish OB موجود لكن المقاومة قريبة'
@@ -709,36 +670,27 @@ def _get_coin_analysis_core(symbol):
     buy=60+min(vr*6,25) if liq=='INFLOW' else 40-min(vr*5,25) if liq=='OUTFLOW' else 50
     return {'symbol':symbol,'direction':direction,'plan_direction':plan_direction,'score':int(max(0,min(100,es))),'entry_score':int(max(0,min(100,es))),'state':state,'price':smart_round(p),'rsi':rsi,'volume_ratio':vr,'volume_trend':vt,'liquidity_state':liq,'liquidity_score':liqs,'bottom_detected':bottom,'bottom_score':bs,'drawdown':0,'buy_pressure':round(max(5,min(95,buy)),1),'trend':'UP' if t4=='LONG' else 'DOWN' if t4=='SHORT' else 'NEUTRAL','trend_1d':td,'trend_4h':t4,'trend_1h':t1,'trend_30m':t30,'trend_15m':t15,'structure':st['structure'],'bos':st['bos'],'liquidity_zone':st['liquidity_zone'],'bullish_ob':bo,'bearish_ob':so,'bullish_ob_4h':bo4,'bearish_ob_4h':so4,'bullish_ob_distance':round(bd,2),'bearish_ob_distance':round(sd,2),'bullish_ob_retest':bor,'bearish_ob_retest':sor,'recent_change_2':round(ch2,2),'recent_change_6':round(ch6,2),'crash_detected':crash,'pump_detected':pump,
         # ICT fields
-        'ict_long_score':ict_long['score'],'ict_short_score':ict_short['score'],'ict_score':max(ict_long['score'],ict_short['score']),'liquidity_sweep':ict_long['sweep']['type'] if l>=s else ict_short['sweep']['type'],'bullish_liquidity_sweep':ict_long['sweep']['bullish'],'bearish_liquidity_sweep':ict_short['sweep']['bearish'],'ict_mss':ict_long['mss_bos']['mss'] if l>=s else ict_short['mss_bos']['mss'],'ict_bos':ict_long['mss_bos']['bos'] if l>=s else ict_short['mss_bos']['bos'],'ict_fvg_bullish':ict_long['fvg']['nearest_bullish'],'ict_fvg_bearish':ict_short['fvg']['nearest_bearish'],'ict_displacement_long':ict_long['displacement'],'ict_displacement_short':ict_short['displacement'],'premium_discount':ict_long['premium_discount'] if l>=s else ict_short['premium_discount'],'ict_long_reasons':ict_long['reasons'],'ict_short_reasons':ict_short['reasons'],'ict15_long_score':ict15_long['score'],'ict15_short_score':ict15_short['score'],'entry_gate':'PASSED' if direction in ('LONG','SHORT') else 'WAIT','entry_gate_requirements':'OB + proximity + MSS/BOS + Displacement + Sweep/Retest + 4H + 30m/15m + room',
+        'ict_long_score':ict_long['score'],'ict_short_score':ict_short['score'],'ict_score':max(ict_long['score'],ict_short['score']),'liquidity_sweep':ict_long['sweep']['type'] if l>=s else ict_short['sweep']['type'],'bullish_liquidity_sweep':ict_long['sweep']['bullish'],'bearish_liquidity_sweep':ict_short['sweep']['bearish'],'ict_mss':ict_long['mss_bos']['mss'] if l>=s else ict_short['mss_bos']['mss'],'ict_bos':ict_long['mss_bos']['bos'] if l>=s else ict_short['mss_bos']['bos'],'ict_fvg_bullish':ict_long['fvg']['nearest_bullish'],'ict_fvg_bearish':ict_short['fvg']['nearest_bearish'],'ict_displacement_long':ict_long['displacement'],'ict_displacement_short':ict_short['displacement'],'premium_discount':ict_long['premium_discount'] if l>=s else ict_short['premium_discount'],'ict_long_reasons':ict_long['reasons'],'ict_short_reasons':ict_short['reasons'],'ict15_long_score':ict15_long['score'],'ict15_short_score':ict15_short['score'],'entry_gate':'PASSED' if direction in ('LONG','SHORT') and selected_structure_ok else 'WAIT','entry_gate_requirements':'OB + proximity + MSS/BOS + Displacement + Sweep/Retest + 4H + 30m/15m + room',
          'score_semantics':'Opportunity Score = setup quality; ENTRY READY requires the independent institutional hard gate.',
         'entry_min':smart_round(emin),'entry_max':smart_round(emax),'entry_price':smart_round(entry_price),'stop_loss':smart_round(sl),'tp1':smart_round(tp1),'tp2':smart_round(tp2),'tp3':smart_round(tp3),'risk':smart_round(risk),'support':smart_round(sup),'resistance':smart_round(res),'support_distance':round(supd,2),'resistance_distance':round(resd,2),'long_score':int(max(0,min(100,l))),'short_score':int(max(0,min(100,s))),'analysis_lines':lines,'liquidity_reasons':liqr,'bottom_reasons':br,'structure_reasons':st['reasons'],'bullish_retest_reasons':bor_r,'bearish_retest_reasons':sor_r,'rejection_reasons':list(dict.fromkeys(reject))}
 
 
 def get_coin_analysis(symbol):
-    """Public analysis entry point: indicator failures never crash the engine.
-    A setup without all immediate-entry conditions is a successful WAIT result.
-    """
-    symbol = normalize_symbol(symbol)
+    """Safe analysis entry point. Any missing/invalid OB/FVG/MSS/ICT value
+    becomes a normal WAIT result instead of crashing the analysis engine."""
+    symbol=normalize_symbol(symbol)
     try:
-        result = _get_coin_analysis_core(symbol)
-        if isinstance(result, dict):
-            # The engine must never expose a blank/None result for a valid scan.
-            if result.get('direction') in ('LONG', 'SHORT'):
-                return result
-            result['direction'] = 'WAIT'
-            result['entry_gate'] = 'WAIT'
-            result.setdefault('state', 'WAIT - لا توجد شروط دخول فوري كاملة حالياً')
-            result.setdefault('entry_score', result.get('score', 0))
-            return result
-        price = get_current_price(symbol, True)
-        return _wait_result(symbol, price)
-    except Exception as e:
-        logger.exception('FULL ANALYSIS FAILED -> SAFE WAIT | %s | %s', symbol, e)
-        try:
-            price = get_current_price(symbol, True)
-        except Exception:
-            price = None
-        return _wait_result(symbol, price, 'WAIT - لم تكتمل شروط الدخول الفوري؛ استمر الفحص بدون تعطل المحرك')
+        result=_get_coin_analysis_impl(symbol)
+        if not isinstance(result,dict):
+            return {'symbol':symbol,'direction':'WAIT','plan_direction':None,'entry_gate':'WAIT'}
+        result.setdefault('direction','WAIT')
+        result.setdefault('plan_direction',None)
+        result.setdefault('entry_gate','WAIT')
+        return result
+    except Exception as exc:
+        logging.exception('Analysis engine protected failure for %s: %s', symbol, exc)
+        return {'symbol':symbol,'direction':'WAIT','plan_direction':None,'entry_gate':'WAIT',
+                'ict_mss':'NONE','ict_bos':'NONE','state':'WAIT - protected indicator failure'}
 
 
 def test_market_data(symbol='BTCUSDT'):
@@ -798,17 +750,22 @@ def _plan_direction_text(d):return '🟢 LONG' if d=='LONG' else '🔴 SHORT' if
 
 
 def generate_evidence_report(d):
-    if not d:return '⚠️ تعذر إكمال التحليل.\nلم يتم استلام بيانات صالحة من محرك التحليل.'
-    dr=d.get('direction','WAIT');pd=d.get('plan_direction',dr);emo='🟢' if dr=='LONG' else '🔴' if dr=='SHORT' else '🟡';liq='🟢 دخول سيولة محتمل' if d.get('liquidity_state')=='INFLOW' else '🔴 خروج سيولة محتمل' if d.get('liquidity_state')=='OUTFLOW' else '🟡 سيولة محايدة';bos='🟢 BULLISH' if d.get('bos')=='BULLISH_BOS' else '🔴 BEARISH' if d.get('bos')=='BEARISH_BOS' else '⚪ NONE'
+    # STRICT OUTPUT GATE: never expose a trade plan, prices, reasons or WAIT execution.
+    # Only a confirmed MARKET setup may produce the detailed report.
+    if not d:
+        return '🟡 انتهى الفحص. لم يتم العثور حالياً على فرصة دخول فوري كاملة الشروط على هذه العملة.'
+    dr=d.get('direction')
+    pd=d.get('plan_direction')
+    mss=str(d.get('ict_mss','NONE'))
+    ict_bos=str(d.get('ict_bos','NONE'))
+    market_confirmed=(dr in ('LONG','SHORT') and pd==dr and (mss!='NONE' or ict_bos!='NONE') and d.get('entry_gate')=='PASSED')
+    if not market_confirmed:
+        return '🟡 انتهى الفحص. لم يتم العثور حالياً على فرصة دخول فوري كاملة الشروط على هذه العملة.'
+    emo='🟢' if dr=='LONG' else '🔴';liq='🟢 دخول سيولة محتمل' if d.get('liquidity_state')=='INFLOW' else '🔴 خروج سيولة محتمل' if d.get('liquidity_state')=='OUTFLOW' else '🟡 سيولة محايدة';bos='🟢 BULLISH' if d.get('bos')=='BULLISH_BOS' else '🔴 BEARISH' if d.get('bos')=='BEARISH_BOS' else '⚪ NONE'
     lines=['🤖 BingX AI Scanner v25.0',f"💎 العملة: {d.get('symbol','-')}",f"💰 السعر الحالي: {d.get('price','-')}",f"📈 الاتجاه النهائي: {emo} {dr}",f"⭐ Entry Score: {d.get('entry_score',0)}/100",f"\n🧠 الحالة: {d.get('state','-')}",'\n🏦 ORDER BLOCK = المحرك الأساسي',f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",f"🔴 Bearish OB 1H: {_ob_text(d.get('bearish_ob'))}",f"📊 Bullish OB 4H: {_ob_text(d.get('bullish_ob_4h'))}",f"📊 Bearish OB 4H: {_ob_text(d.get('bearish_ob_4h'))}",f"📏 Bullish OB Distance: {d.get('bullish_ob_distance',999)}%",f"📏 Bearish OB Distance: {d.get('bearish_ob_distance',999)}%",f"🔄 Bullish Retest: {'YES' if d.get('bullish_ob_retest') else 'NO'}",f"🔄 Bearish Retest: {'YES' if d.get('bearish_ob_retest') else 'NO'}",'\n📊 ICT CONFLUENCE','💧 Liquidity Sweep: '+str(d.get('liquidity_sweep','NONE')),f"🧱 MSS: {d.get('ict_mss','NONE')}",f"🏗️ ICT BOS: {d.get('ict_bos','NONE')}",f"🕳️ Bullish FVG: {_fvg_text(d.get('ict_fvg_bullish'))}",f"🕳️ Bearish FVG: {_fvg_text(d.get('ict_fvg_bearish'))}",f"💥 ICT Score: {d.get('ict_score',0)}/100",f"💎 Premium/Discount: {d.get('premium_discount',{}).get('zone','UNKNOWN')}",'\n📊 Context',f"1D: {d.get('trend_1d')}",f"4H: {d.get('trend_4h')}",'\n⏱️ Confirmation',f"1H: {d.get('trend_1h')}",f"30m: {d.get('trend_30m')}",f"15m: {d.get('trend_15m')}",'\n🏗️ Structure',f"{d.get('structure')} | BOS: {bos}",f'\n💧 Liquidity: {liq}',f"📊 Volume: {d.get('volume_ratio')}x",f"📈 Volume Trend: {d.get('volume_trend')}",f"💪 Buy Pressure: {d.get('buy_pressure')}%",f"📊 RSI: {d.get('rsi')}",f"\n🛡️ Support: {d.get('support')}",f"🔴 Resistance: {d.get('resistance')}"]
     if pd in ('LONG','SHORT'):
         lines += ['\n━━━━━━━━━━━━━━━━━━','📋 خطة الصفقة',f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",'\n📍 منطقة الدخول:',f"{d.get('entry_min')} - {d.get('entry_max')}",f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",f"\n🎯 TP1: {d.get('tp1')}",f"🎯 TP2: {d.get('tp2')}",f"🎯 TP3: {d.get('tp3')}",f"\n🛑 Stop Loss: {d.get('stop_loss')}"]
-        if dr=='WAIT':lines += ['\n⏳ التنفيذ: WAIT','⚠️ لا تدخل الآن لمجرد وصول السعر للمنطقة.','✅ انتظر تأكيد ICT/الاتجاه حسب الحالة أعلاه.','📌 الخطة والأهداف محددة مسبقاً.']
-        elif dr=='LONG':lines += ['\n🟢 التنفيذ: ENTRY READY','✅ شروط الدخول الحالية متوافقة مع الخطة.']
-        elif dr=='SHORT':lines += ['\n🔴 التنفيذ: ENTRY READY','✅ شروط الدخول الحالية متوافقة مع الخطة.']
-    else:lines += ['\n📍 منطقة الدخول: غير متاحة','🛑 Stop Loss: غير محدد','🎯 الأهداف: غير محددة','⏳ لا توجد خطة تداول صالحة حالياً.']
-    if dr == 'WAIT':
-        lines += ['\n🟡 انتهى الفحص. لم يتم العثور حالياً على فرصة دخول فوري كاملة الشروط على هذه العملة.']
+        lines += ['\n🟢 التنفيذ: دخول فوري (MARKET)','✅ شروط الدخول الحالية مكتملة: OB + MSS/BOS + ICT + MTF.']
     lines += ['\n\n🔍 أسباب القرار']+[f'• {x}' for x in d.get('analysis_lines',[])[:10]]+[f'⚠️ {x}' for x in d.get('rejection_reasons',[])[:5]]
     lines += ['\n🛡️ ORDER BLOCK هو العامل الأساسي.','⚙️ ICT Strong Filter = Liquidity Sweep + MSS/BOS + Displacement + MTF + FVG/Premium-Discount.','⚠️ 1D = Context | 4H = MTF | 1H = Primary OB | 30m + 15m = Confirmation.','⚠️ الإشارة تحليلية وليست ضماناً للربح.']
     return '\n'.join(lines)
