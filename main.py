@@ -1,8 +1,10 @@
 import os
 import logging
 import threading
+import asyncio
 
 from flask import Flask
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -20,6 +22,11 @@ from analysis import (
     get_current_price,
 )
 
+
+# =========================================================
+# Logging
+# =========================================================
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -27,10 +34,17 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
+# =========================================================
+# Telegram Token
+# =========================================================
+
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN غير موجود في Environment Variables")
+    raise RuntimeError(
+        "BOT_TOKEN غير موجود في Environment Variables"
+    )
 
 
 # =========================================================
@@ -42,7 +56,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "BingX AI Scanner is running."
+    return "Bot is Running Live!"
 
 
 @app.route("/health")
@@ -52,14 +66,16 @@ def health():
 
 def run_flask():
     """
-    Render provides the PORT environment variable dynamically.
-    Flask runs in a separate daemon thread so it does not block
-    Telegram polling.
+    تشغيل Flask في Thread مستقل.
+    Render يحدد PORT تلقائياً من Environment Variables.
     """
-    port = int(os.environ.get("PORT", "5000"))
+
+    port = int(
+        os.environ.get("PORT", 5000)
+    )
 
     logger.info(
-        "Starting Flask server on 0.0.0.0:%s",
+        "Starting Flask on port %s",
         port
     )
 
@@ -72,23 +88,31 @@ def run_flask():
 
 
 # =========================================================
-# Telegram Commands
+# /start
 # =========================================================
 
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.message:
         return
 
     await update.message.reply_text(
         "🤖 أهلاً بك في BingX AI Scanner\n\n"
+
         "📌 أرسل اسم العملة للتحليل:\n"
-        "BTC\nETH\nSOL\nXRP\n\n"
+        "BTC\n"
+        "ETH\n"
+        "SOL\n"
+        "XRP\n\n"
+
         "أو أي زوج USDT موجود على BingX Futures.\n\n"
+
         "📌 أمر الفحص الكامل:\n"
         "/scan\n\n"
+
         "🔎 النظام يعتمد على:\n"
         "• 1D = الاتجاه العام\n"
         "• 4H = الاتجاه الرئيسي\n"
@@ -102,31 +126,43 @@ async def start(
         "• Support / Resistance\n"
         "• ATR\n"
         "• Entry / SL / TP\n\n"
+
         "🛡️ ORDER BLOCK هو المحرك الأساسي."
     )
 
+
+# =========================================================
+# /scan
+# =========================================================
 
 async def scan_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.message:
         return
 
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
+
         "🏦 ORDER BLOCK = المحرك الأساسي\n"
         "📡 الأسعار تُسحب مباشرة من BingX Futures\n"
         "🧠 1D + 4H Context | 1H Primary OB | "
         "30m + 15m Confirmation\n"
         "💧 Liquidity + Volume + BOS\n\n"
+
         "⏳ انتظر النتيجة..."
     )
 
     try:
-        results = scan_market(limit=5)
+
+        results = scan_market(
+            limit=5
+        )
 
     except Exception as exc:
+
         logger.exception(
             "Scanner error: %s",
             exc
@@ -140,10 +176,13 @@ async def scan_command(
         return
 
     if not results:
+
         await update.message.reply_text(
             "🟡 انتهى الفحص.\n\n"
+
             "لم يتم العثور حالياً على فرصة قوية "
             "بالشروط النهائية.\n\n"
+
             "🛡️ البوت فضّل الانتظار بدلاً من إعطاء صفقة ضعيفة."
         )
 
@@ -157,12 +196,19 @@ async def scan_command(
     )
 
     for data in results:
+
         try:
+
+            report = generate_evidence_report(
+                data
+            )
+
             await update.message.reply_text(
-                generate_evidence_report(data)
+                report
             )
 
         except Exception as exc:
+
             logger.exception(
                 "Report error: %s",
                 exc
@@ -177,7 +223,11 @@ async def handle_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    if not update.message or not update.message.text:
+
+    if not update.message:
+        return
+
+    if not update.message.text:
         return
 
     text = update.message.text.strip()
@@ -185,31 +235,59 @@ async def handle_message(
     if not text:
         return
 
-    symbol = normalize_symbol(text)
-
-    # Get current BingX Futures price before analysis
-    price = get_current_price(
-        symbol,
-        True
+    symbol = normalize_symbol(
+        text
     )
 
+    # -----------------------------------------------------
+    # Current BingX Futures Price
+    # -----------------------------------------------------
+
+    try:
+
+        price = get_current_price(
+            symbol,
+            True
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Price error for %s: %s",
+            symbol,
+            exc
+        )
+
+        price = None
+
     if price is not None:
+
         price_text = (
             f"💰 السعر الحالي: {price}\n"
         )
+
     else:
+
         price_text = (
             "💰 السعر الحالي: جاري جلبه من BingX...\n"
         )
 
+
+    # -----------------------------------------------------
+    # Progress Message
+    # -----------------------------------------------------
+
     await update.message.reply_text(
         f"🔍 جاري تحليل {symbol}...\n\n"
+
         f"{price_text}"
+
         "🏦 ORDER BLOCK = المحرك الأساسي\n"
         "📊 1D = Context\n"
         "📊 4H = MTF Order Block\n"
         "⏱️ 1H = Primary Entry Zone\n"
         "⏱️ 30m + 15m = Confirmation\n\n"
+
         "🧠 جاري فحص:\n"
         "Order Block\n"
         "OB Retest\n"
@@ -218,13 +296,23 @@ async def handle_message(
         "Accumulation / Distribution\n"
         "MTF Order Blocks\n"
         "ATR + Entry / SL / TP\n\n"
+
         "⏳ انتظر النتيجة..."
     )
 
+
+    # -----------------------------------------------------
+    # Analysis
+    # -----------------------------------------------------
+
     try:
-        data = get_coin_analysis(symbol)
+
+        data = get_coin_analysis(
+            symbol
+        )
 
     except Exception as exc:
+
         logger.exception(
             "Coin analysis error for %s: %s",
             symbol,
@@ -238,23 +326,35 @@ async def handle_message(
 
         return
 
+
     if not data:
+
         await update.message.reply_text(
             f"❌ لم أستطع تحليل {symbol} حالياً.\n\n"
+
             "تأكد أن الزوج موجود على BingX Futures "
             "وأنه USDT."
         )
 
         return
 
+
+    # -----------------------------------------------------
+    # Evidence Report
+    # -----------------------------------------------------
+
     try:
-        report = generate_evidence_report(data)
+
+        report = generate_evidence_report(
+            data
+        )
 
         await update.message.reply_text(
             report
         )
 
     except Exception as exc:
+
         logger.exception(
             "Report error for %s: %s",
             symbol,
@@ -274,38 +374,11 @@ async def error_handler(
     update,
     context
 ):
+
     logger.error(
         "Telegram error: %s",
         context.error
     )
-
-
-# =========================================================
-# Delete Old Webhook Before Polling
-# =========================================================
-
-async def post_init(application):
-    """
-    Remove any old Telegram webhook before starting
-    long polling. This prevents Conflict 409 errors.
-    """
-
-    try:
-        await application.bot.delete_webhook(
-            drop_pending_updates=True
-        )
-
-        logger.info(
-            "Telegram webhook deleted successfully."
-        )
-
-    except Exception as exc:
-        logger.exception(
-            "Failed to delete Telegram webhook: %s",
-            exc
-        )
-
-        raise
 
 
 # =========================================================
@@ -314,23 +387,35 @@ async def post_init(application):
 
 def main():
 
-    # Start Flask in background thread.
-    # Render PORT is detected automatically inside run_flask().
-    flask_thread = threading.Thread(
+    # =====================================================
+    # 1. Start Flask FIRST in a completely separate Thread
+    # =====================================================
+
+    threading.Thread(
         target=run_flask,
         daemon=True
+    ).start()
+
+    logger.info(
+        "Flask Thread started."
     )
 
-    flask_thread.start()
+
+    # =====================================================
+    # 2. Build Telegram Application
+    # =====================================================
 
     application = (
         ApplicationBuilder()
         .token(TOKEN)
-        .post_init(post_init)
         .build()
     )
 
-    # /start
+
+    # =====================================================
+    # 3. Telegram Handlers
+    # =====================================================
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -338,7 +423,6 @@ def main():
         )
     )
 
-    # /scan
     application.add_handler(
         CommandHandler(
             "scan",
@@ -346,7 +430,6 @@ def main():
         )
     )
 
-    # Coin messages
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -354,20 +437,68 @@ def main():
         )
     )
 
-    # Error handler
     application.add_error_handler(
         error_handler
     )
 
-    print("Telegram bot is starting...")
-    print("Flask server is starting...")
-    print(
-        "Render PORT:",
-        os.environ.get("PORT", "5000")
+
+    # =====================================================
+    # 4. Delete Telegram Webhook BEFORE Polling
+    # =====================================================
+
+    logger.info(
+        "Deleting old Telegram webhook..."
     )
 
-    # post_init deletes the old webhook first,
-    # then Telegram polling starts.
+    try:
+
+        asyncio.run(
+            application.bot.delete_webhook(
+                drop_pending_updates=True
+            )
+        )
+
+        logger.info(
+            "Telegram webhook deleted successfully."
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Failed to delete Telegram webhook: %s",
+            exc
+        )
+
+
+    # =====================================================
+    # 5. Start Telegram Polling
+    # =====================================================
+
+    logger.info(
+        "Starting Telegram polling..."
+    )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "BingX AI Scanner is starting..."
+    )
+
+    print(
+        "Flask server is running in background."
+    )
+
+    print(
+        "Telegram polling is starting..."
+    )
+
+    print(
+        "========================================"
+    )
+
+
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
