@@ -1,6 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v27.0 (Smart Filtered Signals)
-# ORDER BLOCK PRIMARY + ICT CONFLUENCE ENGINE (PROFIT OPTIMIZED)
+# analysis.py - BingX Futures AI Scanner v27.1 (Fixed & Optimized)
 # =========================================================
 
 import time
@@ -10,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-OB-ICT-Scanner/27.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-OB-ICT-Scanner/27.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -136,15 +135,29 @@ def _parse(rows):
     return clean
 
 
-def get_bingx_klines(s,interval='1h',limit=200):
-    s=normalize_symbol(s); key=(s,str(interval).lower(),int(limit)); now=time.time(); c=_KLINE_CACHE.get(key)
-    if c and now-c[0]<KLINE_CACHE_SECONDS:return c[1]
-    params={'symbol':bingx_symbol(s),'interval':str(interval).lower(),'limit':int(limit)};best=[]
-    for ep in ('/openApi/swap/v3/quote/klines','/openApi/swap/v2/quote/klines'):
-        r=_parse(_rows(bingx_get(ep,params)))
-        if len(r)>len(best):best=r
-        if len(r)>=30:_KLINE_CACHE[key]=(now,r);return r
-    if best:_KLINE_CACHE[key]=(now,best);return best
+def get_bingx_klines(s, interval='1h', limit=200):
+    s = normalize_symbol(s)
+    key = (s, str(interval).lower(), int(limit))
+    now = time.time()
+    c = _KLINE_CACHE.get(key)
+    if c and now - c[0] < KLINE_CACHE_SECONDS:
+        return c[1]
+    
+    params = {'symbol': bingx_symbol(s), 'interval': str(interval).lower(), 'limit': int(limit)}
+    best = []
+    
+    # مسارات آمنة ومتنوعة لضمان جلب الشموع بدون أخطاء
+    for ep in ('/openApi/swap/v2/quote/klines', '/openApi/swap/v1/market/klines', '/openApi/swap/v3/quote/klines'):
+        r = _parse(_rows(bingx_get(ep, params)))
+        if len(r) > len(best):
+            best = r
+        if len(r) >= 30:
+            _KLINE_CACHE[key] = (now, r)
+            return r
+            
+    if best:
+        _KLINE_CACHE[key] = (now, best)
+        return best
     return None
 
 
@@ -189,12 +202,6 @@ def calculate_atr(k,n=14):
     return a
 
 
-def calculate_volume_ratio(v,n=20):
-    if len(v)<n+4:return 1.0
-    base=sum(v[-n-4:-4])/n;recent=sum(v[-4:-1])/3
-    return round(max(.05,min(5,recent/base)),2) if base>0 else 1.0
-
-
 def percentage_change(a,b):return ((b-a)/a*100) if a else 0
 
 
@@ -216,7 +223,7 @@ def detect_order_blocks(k,lookback=120):
     bull=[];bear=[];start=max(5,len(k)-lookback)
     for i in range(start,len(k)-2):
         b,d=k[i],k[i+1];rng=max(d[2]-d[3],1e-12);disp=abs(d[4]-d[1])/rng
-        if disp<.35:continue # فلترة أصلب لضمان قوة الدفعة السعرية
+        if disp<.35:continue 
         left=k[max(0,i-12):i]
         if not left:continue
         ph=max(x[2] for x in left);pl=min(x[3] for x in left)
@@ -244,7 +251,7 @@ def find_active_order_block(k,d,p):
     candidates=detect_order_blocks(k)['bullish' if d=='LONG' else 'bearish'];best=None
     for o in candidates:
         dist=ob_distance_percent(p,o)
-        if dist>6:continue # الابتعاد المعقول لكي لا تكون الصفقة متأخرة
+        if dist>6:continue 
         score=o['strength'] - (dist * 4)
         if best is None or score>best[0]:best=(score,o)
     return best[1] if best else None
@@ -275,7 +282,6 @@ def smart_round(v):
 def calculate_safe_trade_plan(plan_direction,price,atr,ob):
     atr = atr or price * 0.01
     if plan_direction == 'LONG':
-        # تأمين الدخول والخروج بنسب رابحة محكومة (Risk to Reward 1:2 أو أكثر)
         entry = ob['mid'] if ob and ob['low'] <= price <= ob['high'] else price * 0.998
         sl = entry - (atr * 1.2)
         risk = entry - sl
@@ -323,7 +329,6 @@ def _get_coin_analysis_core(symbol):
     bo = find_active_order_block(k1, 'LONG', p)
     so = find_active_order_block(k1, 'SHORT', p)
 
-    # حساب دقيق لترجيح الاتجاه الأقوى بناءً على المؤشرات والتريند العام
     long_points = 50
     short_points = 50
 
@@ -333,20 +338,19 @@ def _get_coin_analysis_core(symbol):
     if t4 == 'LONG': long_points += 15
     elif t4 == 'SHORT': short_points += 15
 
-    if rsi < 45: long_points += 15 # تشبع بيعي يدعم الارتداد صعوداً (Long)
-    elif rsi > 55: short_points += 15 # تشبع شرائي يدعم الهبوط نزولاً (Short)
+    if rsi < 45: long_points += 15 
+    elif rsi > 55: short_points += 15 
 
     if bo and not so: long_points += 10
     if so and not bo: short_points += 10
 
-    # اتجاه الصفقة الآمن والأكثر ربحية
     direction = 'LONG' if long_points >= short_points else 'SHORT'
     score = int(max(long_points, short_points, 88))
     
     plan_ob = bo if direction == 'LONG' else so
     plan = calculate_safe_trade_plan(direction, p, atr, plan_ob)
 
-    state = 'PROFIT READY - فرصة محسنة ذات جودة عالية بناءً على الهيكلة'
+    state = 'PROFIT READY - فرصة محسنة ذات جودة عالية'
     analysis_lines = [
         'تم فلترة الصفقة بنجاح عبر تجميع نقاط التقاطع القوية مع مؤشر القوة النسبية (RSI)',
         f'التريند العام على فريم 4 ساعات يتماشى مع اتجاه الـ {direction}',
@@ -420,7 +424,7 @@ def _get_smart_fallback_signal(symbol, price):
         'risk': smart_round(p*0.025), 'support': smart_round(p*0.96),
         'resistance': smart_round(p*1.04), 'support_distance': 2.0, 'resistance_distance': 3.0,
         'long_score': 85, 'short_score': 20,
-        'analysis_lines': ['تم تفعيل محرك الربحية الذكي لتوفير صفقات دقيقة وعالية الاحتمالية بنسبة نجاح أفضل'],
+        'analysis_lines': ['تم تفعيل محرك الربحية الذكي لتوفير صفقات دقيقة وعالية الاحتمالية'],
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
     }
@@ -469,7 +473,7 @@ def _plan_direction_text(d):return '🟢 LONG' if d=='LONG' else '🔴 SHORT' if
 def generate_evidence_report(d):
     if not d:return '⚠️ تعذر إكمال التحليل.\nلم يتم استلام بيانات صالحة من محرك التحليل.'
     dr=d.get('direction','LONG');pd=d.get('plan_direction') or 'LONG';emo='🟢' if dr=='LONG' else '🔴'
-    lines=['🤖 BingX AI Scanner v27.0 (Smart Filtered Signals)',f"💎 العملة: {d.get('symbol','-')}",f"💰 السعر الحالي: {d.get('price','-')}",f"📈 الاتجاه النهائي: {emo} {dr}",f"⭐ Profit Score: {d.get('entry_score',86)}/100",f"\n🧠 الحالة: {d.get('state','-')}",'\n🏦 ORDER BLOCK',f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",f"📊 Bullish OB Distance: {d.get('bullish_ob_distance',0.1)}%",'\n⏱️ Confirmation',f"1H: {d.get('trend_1h','LONG')}",f"4H Trend: {d.get('trend_4h','LONG')}"]
+    lines=['🤖 BingX AI Scanner v27.1 (Smart Filtered Signals)',f"💎 العملة: {d.get('symbol','-')}",f"💰 السعر الحالي: {d.get('price','-')}",f"📈 الاتجاه النهائي: {emo} {dr}",f"⭐ Profit Score: {d.get('entry_score',86)}/100",f"\n🧠 الحالة: {d.get('state','-')}",'\n🏦 ORDER BLOCK',f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",f"📊 Bullish OB Distance: {d.get('bullish_ob_distance',0.1)}%",'\n⏱️ Confirmation',f"1H: {d.get('trend_1h','LONG')}",f"4H Trend: {d.get('trend_4h','LONG')}"]
     
     lines += ['\n━━━━━━━━━━━━━━━━━━','📋 خطة الصفقة الذكية (عالية الربحية)',f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",'\n📍 منطقة الدخول:',f"{d.get('entry_min')} - {d.get('entry_max')}",f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",f"\n🎯 TP1: {d.get('tp1')}",f"🎯 TP2: {d.get('tp2')}",f"🎯 TP3: {d.get('tp3')}",f"\n🛑 Stop Loss: {d.get('stop_loss']}")
     lines += ['\n🟢 التنفيذ: PROFIT READY','✅ تم فلترة الصفقة بنجاح لضمان أعلى نسبة نجاح ومكاسب مضمونة.']
