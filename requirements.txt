@@ -1,5 +1,5 @@
 Flask==3.0.3
-python-telegram-bot[job-queue]==21.1.1
+python-telegram-bot==21.1.1
 requests==2.31.0
 pandas==2.2.1
 numpy==1.26.4
