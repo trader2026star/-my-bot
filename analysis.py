@@ -146,7 +146,6 @@ def get_bingx_klines(s, interval='1h', limit=200):
     params = {'symbol': bingx_symbol(s), 'interval': str(interval).lower(), 'limit': int(limit)}
     best = []
     
-    # مسارات آمنة ومتنوعة لضمان جلب الشموع بدون أخطاء
     for ep in ('/openApi/swap/v2/quote/klines', '/openApi/swap/v1/market/klines', '/openApi/swap/v3/quote/klines'):
         r = _parse(_rows(bingx_get(ep, params)))
         if len(r) > len(best):
@@ -215,9 +214,6 @@ def calculate_support_resistance(k):
 def _dir(x):return 'BULLISH' if x[4]>x[1] else 'BEARISH' if x[4]<x[1] else 'NEUTRAL'
 
 
-# =========================================================
-# SMART ORDER BLOCK ENGINE (HIGH PROBABILITY)
-# =========================================================
 def detect_order_blocks(k,lookback=120):
     if len(k)<35:return {'bullish':[],'bearish':[]}
     bull=[];bear=[];start=max(5,len(k)-lookback)
@@ -257,9 +253,6 @@ def find_active_order_block(k,d,p):
     return best[1] if best else None
 
 
-# =========================================================
-# ICT & MARKET STRUCTURE FILTERS
-# =========================================================
 def calculate_timeframe_trend(k):
     if not k:return 'UNKNOWN'
     c=[x[4] for x in k];a=ema(c,9);b=ema(c,20);d=ema(c,50)
@@ -306,9 +299,6 @@ def calculate_safe_trade_plan(plan_direction,price,atr,ob):
     }
 
 
-# =========================================================
-# MAIN ANALYSIS ENGINE (HIGH WIN-RATE FILTER)
-# =========================================================
 def _get_coin_analysis_core(symbol):
     symbol = normalize_symbol(symbol)
     p = get_current_price(symbol, True)
@@ -472,11 +462,42 @@ def _plan_direction_text(d):return '🟢 LONG' if d=='LONG' else '🔴 SHORT' if
 
 def generate_evidence_report(d):
     if not d:return '⚠️ تعذر إكمال التحليل.\nلم يتم استلام بيانات صالحة من محرك التحليل.'
-    dr=d.get('direction','LONG');pd=d.get('plan_direction') or 'LONG';emo='🟢' if dr=='LONG' else '🔴'
-    lines=['🤖 BingX AI Scanner v27.1 (Smart Filtered Signals)',f"💎 العملة: {d.get('symbol','-')}",f"💰 السعر الحالي: {d.get('price','-')}",f"📈 الاتجاه النهائي: {emo} {dr}",f"⭐ Profit Score: {d.get('entry_score',86)}/100",f"\n🧠 الحالة: {d.get('state','-')}",'\n🏦 ORDER BLOCK',f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",f"📊 Bullish OB Distance: {d.get('bullish_ob_distance',0.1)}%",'\n⏱️ Confirmation',f"1H: {d.get('trend_1h','LONG')}",f"4H Trend: {d.get('trend_4h','LONG')}"]
+    dr = d.get('direction', 'LONG')
+    pd = d.get('plan_direction') or 'LONG'
+    emo = '🟢' if dr == 'LONG' else '🔴'
     
-    lines += ['\n━━━━━━━━━━━━━━━━━━','📋 خطة الصفقة الذكية (عالية الربحية)',f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",'\n📍 منطقة الدخول:',f"{d.get('entry_min')} - {d.get('entry_max')}",f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",f"\n🎯 TP1: {d.get('tp1')}",f"🎯 TP2: {d.get('tp2')}",f"🎯 TP3: {d.get('tp3')}",f"\n🛑 Stop Loss: {d.get('stop_loss']}")
-    lines += ['\n🟢 التنفيذ: PROFIT READY','✅ تم فلترة الصفقة بنجاح لضمان أعلى نسبة نجاح ومكاسب مضمونة.']
+    lines = [
+        '🤖 BingX AI Scanner v27.1 (Smart Filtered Signals)',
+        f"💎 العملة: {d.get('symbol', '-')}",
+        f"💰 السعر الحالي: {d.get('price', '-')}",
+        f"📈 الاتجاه النهائي: {emo} {dr}",
+        f"⭐ Profit Score: {d.get('entry_score', 86)}/100",
+        f"\n🧠 الحالة: {d.get('state', '-')}",
+        '\n🏦 ORDER BLOCK',
+        f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",
+        f"📊 Bullish OB Distance: {d.get('bullish_ob_distance', 0.1)}%",
+        '\n⏱️ Confirmation',
+        f"1H: {d.get('trend_1h', 'LONG')}",
+        f"4H Trend: {d.get('trend_4h', 'LONG')}"
+    ]
     
-    lines += ['\n\n🔍 تفاصيل التحليل']+[f'• {x}' for x in d.get('analysis_lines',[])]
+    lines.extend([
+        '\n━━━━━━━━━━━━━━━━━━',
+        '📋 خطة الصفقة الذكية (عالية الربحية)',
+        f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
+        f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
+        f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
+        f"\n🎯 TP1: {d.get('tp1')}",
+        f"🎯 TP2: {d.get('tp2')}",
+        f"🎯 TP3: {d.get('tp3')}",
+        f"\n🛑 Stop Loss: {d.get('stop_loss')}"
+    ])
+    
+    lines.append('\n🟢 التنفيذ: PROFIT READY\n✅ تم فلترة الصفقة بنجاح لضمان أعلى نسبة نجاح ومكاسب مضمونة.')
+    
+    if d.get('analysis_lines'):
+        lines.append('\n\n🔍 تفاصيل التحليل')
+        for x in d.get('analysis_lines', []):
+            lines.append(f'• {x}')
+            
     return '\n'.join(lines)
