@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v27.1 (Fixed & Optimized)
+# analysis.py - BingX Futures AI Scanner v27.2 (Optimized Targets)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-OB-ICT-Scanner/27.1', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-OB-ICT-Scanner/27.2', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -272,30 +272,32 @@ def smart_round(v):
     return round(v,8)
 
 
-def calculate_safe_trade_plan(plan_direction,price,atr,ob):
-    atr = atr or price * 0.01
+def calculate_safe_trade_plan(plan_direction, price, atr, ob):
+    # تعديل منطق الأهداف لتكون متوازنة وقريبة لصفقات الفيوتشر السريعة
+    atr = atr or (price * 0.01)
+    # حصر وقف الخسارة والأهداف في نطاق سعري ذكي ومنطقي نسبياً
+    sl_dist = min(max(atr * 1.2, price * 0.015), price * 0.05)
+    
     if plan_direction == 'LONG':
         entry = ob['mid'] if ob and ob['low'] <= price <= ob['high'] else price * 0.998
-        sl = entry - (atr * 1.2)
-        risk = entry - sl
-        tp1 = entry + (risk * 1.5)
-        tp2 = entry + (risk * 2.5)
-        tp3 = entry + (risk * 3.5)
+        sl = entry - sl_dist
+        tp1 = entry + (sl_dist * 1.2)
+        tp2 = entry + (sl_dist * 2.0)
+        tp3 = entry + (sl_dist * 3.0)
         emin, emax = entry * 0.997, entry * 1.002
     else:
         entry = ob['mid'] if ob and ob['low'] <= price <= ob['high'] else price * 1.002
-        sl = entry + (atr * 1.2)
-        risk = sl - entry
-        tp1 = entry - (risk * 1.5)
-        tp2 = entry - (risk * 2.5)
-        tp3 = entry - (risk * 3.5)
+        sl = entry + sl_dist
+        tp1 = entry - (sl_dist * 1.2)
+        tp2 = entry - (sl_dist * 2.0)
+        tp3 = entry - (sl_dist * 3.0)
         emin, emax = entry * 0.998, entry * 1.003
 
     return {
         'entry_min': smart_round(emin), 'entry_max': smart_round(emax),
-        'entry_price': smart_round(entry), 'stop_loss': smart_round(sl),
-        'tp1': smart_round(tp1), 'tp2': smart_round(tp2), 'tp3': smart_round(tp3),
-        'risk': smart_round(risk)
+        'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
+        'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)), 
+        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(sl_dist)
     }
 
 
@@ -344,7 +346,7 @@ def _get_coin_analysis_core(symbol):
     analysis_lines = [
         'تم فلترة الصفقة بنجاح عبر تجميع نقاط التقاطع القوية مع مؤشر القوة النسبية (RSI)',
         f'التريند العام على فريم 4 ساعات يتماشى مع اتجاه الـ {direction}',
-        'تم تحديد مستويات الأهداف ووقف الخسارة بناءً على معدل التذبذب الحقيقي (ATR)'
+        'تم تحديد مستويات الأهداف ووقف الخسارة بناءً على معدل التذبذب الحقيقي ونطاقات الدخول الذكية'
     ]
 
     return {
@@ -467,7 +469,7 @@ def generate_evidence_report(d):
     emo = '🟢' if dr == 'LONG' else '🔴'
     
     lines = [
-        '🤖 BingX AI Scanner v27.1 (Smart Filtered Signals)',
+        '🤖 BingX AI Scanner v27.2 (Smart Filtered Signals)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
         f"📈 الاتجاه النهائي: {emo} {dr}",
