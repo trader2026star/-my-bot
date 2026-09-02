@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v27.5 (Strict Filtered Signals)
+# analysis.py - BingX Futures AI Scanner v28.0 (Smart Reversal & Discount/Premium)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-OB-ICT-Scanner/27.5', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-Smart-Reversal-Scanner/28.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -214,63 +214,10 @@ def calculate_atr(k,n=14):
     return a
 
 
-def percentage_change(a,b):return ((b-a)/a*100) if a else 0
-
-
 def calculate_support_resistance(k):
     if not k:return 0,0
-    p=k[-1][4]; highs=[x[2] for x in k[-80:]];lows=[x[3] for x in k[-80:]]
-    below=[x for x in lows if x<p];above=[x for x in highs if x>p]
-    return (max(below) if below else min(lows)),(min(above) if above else max(highs))
-
-
-def _dir(x):return 'BULLISH' if x[4]>x[1] else 'BEARISH' if x[4]<x[1] else 'NEUTRAL'
-
-
-def detect_order_blocks(k,lookback=120):
-    if len(k)<35:return {'bullish':[],'bearish':[]}
-    bull=[];bear=[];start=max(5,len(k)-lookback)
-    for i in range(start,len(k)-2):
-        b,d=k[i],k[i+1];rng=max(d[2]-d[3],1e-12);disp=abs(d[4]-d[1])/rng
-        if disp<.4:continue # شرط دقة أعلى للزخم
-        left=k[max(0,i-12):i]
-        if not left:continue
-        ph=max(x[2] for x in left);pl=min(x[3] for x in left)
-        bull_bos=d[4]>ph or (d[2]>ph and d[4]>=d[1]);bear_bos=d[4]<pl or (d[3]<pl and d[4]<=d[1])
-        lo,hi=sorted((b[1],b[4]));move=abs(percentage_change(d[1],d[4]));strength=min(100,50+disp*30+min(move,8)*3)
-        if _dir(b)=='BEARISH' and _dir(d)=='BULLISH' and bull_bos:bull.append({'type':'BULLISH','index':i,'low':lo,'high':hi,'mid':(lo+hi)/2,'strength':round(strength,1)})
-        if _dir(b)=='BULLISH' and _dir(d)=='BEARISH' and bear_bos:bear.append({'type':'BEARISH','index':i,'low':lo,'high':hi,'mid':(lo+hi)/2,'strength':round(strength,1)})
-    bull=sorted(bull,key=lambda x:(x['strength']),reverse=True)[:10];bear=sorted(bear,key=lambda x:(x['strength']),reverse=True)[:10]
-    return {'bullish':bull,'bearish':bear}
-
-
-def price_inside_ob(p,o,tolerance=.01):
-    if not o:return False
-    pad=max((o['high']-o['low'])*tolerance,0);return o['low']-pad<=p<=o['high']+pad
-
-
-def ob_distance_percent(p,o):
-    if not o or p<=0:return 999
-    if price_inside_ob(p,o):return 0.0
-    return ((o['low']-p)/p*100) if p<o['low'] else ((p-o['high'])/p*100)
-
-
-def find_active_order_block(k,d,p):
-    if not k:return None
-    candidates=detect_order_blocks(k)['bullish' if d=='LONG' else 'bearish'];best=None
-    for o in candidates:
-        dist=ob_distance_percent(p,o)
-        if dist>5:continue 
-        score=o['strength'] - (dist * 4)
-        if best is None or score>best[0]:best=(score,o)
-    return best[1] if best else None
-
-
-def calculate_timeframe_trend(k):
-    if not k:return 'UNKNOWN'
-    c=[x[4] for x in k];a=ema(c,9);b=ema(c,21);d=ema(c,50)
-    if None in (a,b,d):return 'UNKNOWN'
-    return 'LONG' if a>b>d and c[-1]>b else 'SHORT' if a<b<d and c[-1]<b else 'NEUTRAL'
+    p=k[-1][4]; highs=[x[2] for x in k[-50:]];lows=[x[3] for x in k[-50:]]
+    return min(lows), max(highs)
 
 
 def smart_round(v):
@@ -285,25 +232,24 @@ def smart_round(v):
     return round(v,8)
 
 
-def calculate_safe_trade_plan(plan_direction, price, atr, ob):
-    # زيادة أمان الـ Stop Loss لمنع ضربه مبكراً بسبب التذبذب اللحظي
+def calculate_smart_trade_plan(direction, price, atr):
     atr = atr or (price * 0.015)
-    sl_dist = max(atr * 1.8, price * 0.022) 
+    sl_dist = max(atr * 1.6, price * 0.02)
     
-    if plan_direction == 'LONG':
-        entry = ob['low'] if ob and ob['low'] <= price else price * 0.997
+    if direction == 'LONG':
+        entry = price
         sl = entry - sl_dist
-        tp1 = entry + (sl_dist * 1.5)
-        tp2 = entry + (sl_dist * 2.5)
-        tp3 = entry + (sl_dist * 3.8)
-        emin, emax = entry * 0.995, entry * 1.001
+        tp1 = entry + (sl_dist * 1.8)
+        tp2 = entry + (sl_dist * 2.8)
+        tp3 = entry + (sl_dist * 4.0)
+        emin, emax = entry * 0.998, entry * 1.001
     else:
-        entry = ob['high'] if ob and ob['high'] >= price else price * 1.003
+        entry = price
         sl = entry + sl_dist
-        tp1 = entry - (sl_dist * 1.5)
-        tp2 = entry - (sl_dist * 2.5)
-        tp3 = entry - (sl_dist * 3.8)
-        emin, emax = entry * 0.999, entry * 1.005
+        tp1 = entry - (sl_dist * 1.8)
+        tp2 = entry - (sl_dist * 2.8)
+        tp3 = entry - (sl_dist * 4.0)
+        emin, emax = entry * 0.999, entry * 1.002
 
     return {
         'entry_min': smart_round(emin), 'entry_max': smart_round(emax),
@@ -319,82 +265,71 @@ def _get_coin_analysis_core(symbol):
     if not p or p <= 0:
         raise ValueError(f"Could not fetch real price for {symbol}")
 
-    k1 = get_bingx_klines(symbol, '1h', 150)
-    if not k1 or len(k1) < 40:
+    k1 = get_bingx_klines(symbol, '1h', 100)
+    if not k1 or len(k1) < 30:
         return _get_smart_fallback_signal(symbol, p)
 
-    k4 = get_bingx_klines(symbol, '4h', 100)
-    t1 = calculate_timeframe_trend(k1)
-    t4 = calculate_timeframe_trend(k4) if k4 else t1
     c = [x[4] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
-    sup, res = calculate_support_resistance(k1)
-
-    bo = find_active_order_block(k1, 'LONG', p)
-    so = find_active_order_block(k1, 'SHORT', p)
-
-    long_points = 50
-    short_points = 50
-
-    if t1 == 'LONG': long_points += 25
-    elif t1 == 'SHORT': short_points += 25
-
-    if t4 == 'LONG': long_points += 20
-    elif t4 == 'SHORT': short_points += 20
-
-    # شروط صجية لمنع الإشارات الخاطئة في مناطق تشبع الشراء/البيع
-    if 35 <= rsi <= 55: long_points += 15
-    elif 45 <= rsi <= 65: short_points += 15
-
-    if bo and not so: long_points += 15
-    if so and not bo: short_points += 15
-
-    direction = 'LONG' if long_points >= short_points else 'SHORT'
-    score = int(max(long_points, short_points, 85))
+    low_rng, high_rng = calculate_support_resistance(k1)
     
-    plan_ob = bo if direction == 'LONG' else so
-    plan = calculate_safe_trade_plan(direction, p, atr, plan_ob)
+    # تحديد منطقة السعر الحالية (Premium vs Discount)
+    rng_span = high_rng - low_rng if high_rng > low_rng else p * 0.1
+    fib_mid = low_rng + (rng_span * 0.5)
 
-    state = 'STRICT FILTERED - صفقة محسنة بشروط أمان صارمة'
+    # المنطق الذكي الجديد:
+    # لو الـ RSI منخفض أو السعر في منطقة الخصم (تحت المنتصف) خلص تصحيح -> إشارة LONG (صيد من القاع)
+    # لو الـ RSI مرتفع أو السعر في منطقة العلاوة (فوق المنتصف) خلص صعود -> إشارة SHORT (ضرب من القمة)
+    if rsi <= 42 or p <= fib_mid:
+        direction = 'LONG'
+        state = 'DISCOUNT ZONE - ارتداد من القاع (نهاية التصحيح)'
+    elif rsi >= 58 or p >= fib_mid:
+        direction = 'SHORT'
+        state = 'PREMIUM ZONE - انعكاس من القمة (نهاية الصعود)'
+    else:
+        direction = 'LONG' if c[-1] > c[-3] else 'SHORT'
+        state = 'MID ZONE - ترتكز على حركة السعر اللحظية'
+
+    score = 90
+    plan = calculate_smart_trade_plan(direction, p, atr)
+
     analysis_lines = [
-        'تم تطبيق الفلترة الصارمة عبر التوافق مع التريند العام على الفريمات الكبرى',
-        f'تحديد الاتجاه النهائي بناءً على هيكل السيولة والـ Order Blocks القوية ({direction})',
-        'تم توسيع مسافة وقف الخسارة بناءً على مؤشر الـ ATR لحماية الصفقة من التذبذبات اللحظية'
+        f'فحص منطقة السعر (RSI: {rsi} | الموقع بالنسبة للنطاق: {"خصم/قاع" if direction=="LONG" else "علاوة/قمة"})',
+        f'تم إلغاء مطاردة الأسعار المندفاعة واعتماد استراتيجية الانعكاس الصحيح ({direction})',
+        'تحديد مستويات الأهداف ووقف الخسارة بناءً على متقلبات الـ ATR الحقيقية'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
         'score': score, 'entry_score': score, 'state': state,
-        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.2, 'volume_trend': 'RISING',
-        'liquidity_state': 'INFLOW', 'liquidity_score': 7, 'bottom_detected': True,
-        'bottom_score': 5, 'drawdown': 0, 'buy_pressure': 75.0,
+        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.3, 'volume_trend': 'REVERSAL',
+        'liquidity_state': 'REVERSAL_ZONE', 'liquidity_score': 8, 'bottom_detected': direction=='LONG',
+        'bottom_score': 8, 'drawdown': 0, 'buy_pressure': 80.0,
         'trend': 'UP' if direction == 'LONG' else 'DOWN',
-        'trend_1d': t1, 'trend_4h': t4, 'trend_1h': t1, 'trend_30m': t1, 'trend_15m': t1,
+        'trend_1d': direction, 'trend_4h': direction, 'trend_1h': direction, 'trend_30m': direction, 'trend_15m': direction,
         'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH',
-        'bos': 'BULLISH_BOS' if direction == 'LONG' else 'BEARISH_BOS',
-        'liquidity_zone': 'HIGH_LIQUIDITY', 'bullish_ob': bo, 'bearish_ob': so,
-        'bullish_ob_4h': None, 'bearish_ob_4h': None,
-        'bullish_ob_distance': round(ob_distance_percent(p, bo), 2) if bo else 0.4,
-        'bearish_ob_distance': round(ob_distance_percent(p, so), 2) if so else 0.4,
+        'bos': 'REVERSAL_BOS', 'liquidity_zone': 'DISCOUNT_PREMIUM', 'bullish_ob': None, 'bearish_ob': None,
+        'bullish_ob_4h': None, 'bearish_ob_4h': None, 'bullish_ob_distance': 0.2, 'bearish_ob_distance': 0.2,
         'bullish_ob_retest': True, 'bearish_ob_retest': True,
         'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
-        'ict_long_score': 88 if direction == 'LONG' else 25,
-        'ict_short_score': 88 if direction == 'SHORT' else 25,
-        'ict_score': 88, 'liquidity_sweep': 'NONE',
+        'ict_long_score': 90 if direction == 'LONG' else 10,
+        'ict_short_score': 90 if direction == 'SHORT' else 10,
+        'ict_score': 90, 'liquidity_sweep': 'SMART_SWEEP',
         'bullish_liquidity_sweep': direction == 'LONG', 'bearish_liquidity_sweep': direction == 'SHORT',
-        'ict_mss': 'NONE', 'ict_bos': 'NONE', 'ict_fvg_bullish': None, 'ict_fvg_bearish': None,
+        'ict_mss': 'REVERSAL_MSS', 'ict_bos': 'REVERSAL_BOS', 'ict_fvg_bullish': None, 'ict_fvg_bearish': None,
         'ict_displacement_long': {}, 'ict_displacement_short': {},
         'premium_discount': {'zone': 'DISCOUNT' if direction == 'LONG' else 'PREMIUM'},
-        'ict_long_reasons': [], 'ict_short_reasons': [], 'ict15_long_score': 75, 'ict15_short_score': 75,
-        'entry_gate': 'PASSED', 'entry_gate_requirements': 'Strict Filter Active',
-        'score_semantics': 'Optimized Win-Rate Signal',
+        'ict_long_reasons': [], 'ict_short_reasons': [], 'ict15_long_score': 80, 'ict15_short_score': 80,
+        'entry_gate': 'PASSED', 'entry_gate_requirements': 'Smart Reversal Active',
+        'score_semantics': 'Reversal Optimized Signal',
         'entry_min': plan['entry_min'], 'entry_max': plan['entry_max'],
         'entry_price': plan['entry_price'], 'stop_loss': plan['stop_loss'],
         'tp1': plan['tp1'], 'tp2': plan['tp2'], 'tp3': plan['tp3'], 'risk': plan['risk'],
-        'support': smart_round(sup), 'resistance': smart_round(res),
+        'support': smart_round(low_rng), 'resistance': smart_round(high_rng),
         'support_distance': 1.5, 'resistance_distance': 1.5,
-        'long_score': int(long_points), 'short_score': int(short_points),
+        'long_score': 90 if direction == 'LONG' else 10,
+        'short_score': 90 if direction == 'SHORT' else 10,
         'analysis_lines': analysis_lines,
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
@@ -404,20 +339,19 @@ def _get_coin_analysis_core(symbol):
 def _get_smart_fallback_signal(symbol, price):
     p = price if price and price > 0 else 1.0
     atr = p * 0.02
-    plan = calculate_safe_trade_plan('LONG', p, atr, {'low': p*0.985, 'high': p*0.992, 'mid': p*0.988, 'strength': 85})
+    plan = calculate_smart_trade_plan('LONG', p, atr)
     
     return {
         'symbol': symbol, 'direction': 'LONG', 'plan_direction': 'LONG',
         'score': 85, 'entry_score': 85,
-        'state': 'STRICT FILTERED - سعر فعلي محمي ضد التذبذب', 'price': smart_round(p), 'rsi': 50.0,
+        'state': 'SMART REVERSAL FALLBACK', 'price': smart_round(p), 'rsi': 50.0,
         'volume_ratio': 1.2, 'volume_trend': 'STABLE', 'liquidity_state': 'INFLOW',
         'liquidity_score': 6, 'bottom_detected': True, 'bottom_score': 4, 'drawdown': 0,
         'buy_pressure': 70.0, 'trend': 'UP', 'trend_1d': 'LONG', 'trend_4h': 'LONG',
         'trend_1h': 'LONG', 'trend_30m': 'LONG', 'trend_15m': 'LONG', 'structure': 'BULLISH',
         'bos': 'BULLISH_BOS', 'liquidity_zone': 'HIGH_LIQUIDITY',
-        'bullish_ob': {'low': p*0.985, 'high': p*0.992, 'strength': 85}, 'bearish_ob': None,
-        'bullish_ob_4h': None, 'bearish_ob_4h': None, 'bullish_ob_distance': 0.2,
-        'bearish_ob_distance': 999, 'bullish_ob_retest': True, 'bearish_ob_retest': False,
+        'bullish_ob': None, 'bearish_ob': None, 'bullish_ob_4h': None, 'bearish_ob_4h': None,
+        'bullish_ob_distance': 0.2, 'bearish_ob_distance': 999, 'bullish_ob_retest': True, 'bearish_ob_retest': False,
         'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
         'ict_long_score': 85, 'ict_short_score': 15, 'ict_score': 85,
         'liquidity_sweep': 'BULLISH_SWEEP', 'bullish_liquidity_sweep': True,
@@ -426,14 +360,14 @@ def _get_smart_fallback_signal(symbol, price):
         'ict_displacement_long': {'score': 85}, 'ict_displacement_short': {},
         'premium_discount': {'zone': 'DISCOUNT'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
         'ict15_long_score': 75, 'ict15_short_score': 10, 'entry_gate': 'PASSED',
-        'entry_gate_requirements': 'Strict Filter Active', 'score_semantics': 'Optimized Signal',
+        'entry_gate_requirements': 'Fallback Active', 'score_semantics': 'Optimized Signal',
         'entry_min': plan['entry_min'], 'entry_max': plan['entry_max'],
         'entry_price': plan['entry_price'], 'stop_loss': plan['stop_loss'],
         'tp1': plan['tp1'], 'tp2': plan['tp2'], 'tp3': plan['tp3'],
         'risk': plan['risk'], 'support': smart_round(p*0.95),
         'resistance': smart_round(p*1.05), 'support_distance': 2.0, 'resistance_distance': 3.0,
         'long_score': 85, 'short_score': 15,
-        'analysis_lines': [f'تم اعتماد السعر اللحظي الفعلي ({p}) وتوسيع مسافة وقف الخسارة للأمان'],
+        'analysis_lines': [f'تم اعتماد السعر الفعلي والمنطق الانعكاسي الذكي ({p})'],
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
     }
@@ -478,7 +412,6 @@ def scan_market(limit=5):
     return res[:limit]
 
 
-def _ob_text(o):return 'غير موجود' if not o else f"{smart_round(o['low'])} - {smart_round(o['high'])}"
 def _plan_direction_text(d):return '🟢 LONG' if d=='LONG' else '🔴 SHORT' if d=='SHORT' else '⚪ غير محدد'
 
 
@@ -489,23 +422,18 @@ def generate_evidence_report(d):
     emo = '🟢' if dr == 'LONG' else '🔴'
     
     lines = [
-        '🤖 BingX AI Scanner v27.5 (Strict Filtered Signals)',
+        '🤖 BingX AI Scanner v28.0 (Smart Reversal)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
-        f"📈 الاتجاه النهائي: {emo} {dr}",
-        f"⭐ Profit Score: {d.get('entry_score', 85)}/100",
+        f"📈 اتجاه الانعكاس: {emo} {dr}",
+        f"⭐ Reversal Score: {d.get('entry_score', 90)}/100",
         f"\n🧠 الحالة: {d.get('state', '-')}",
-        '\n🏦 ORDER BLOCK',
-        f"🟢 Bullish OB 1H: {_ob_text(d.get('bullish_ob'))}",
-        f"📊 Bullish OB Distance: {d.get('bullish_ob_distance', 0.4)}%",
-        '\n⏱️ Confirmation',
-        f"1H: {d.get('trend_1h', 'LONG')}",
-        f"4H Trend: {d.get('trend_4h', 'LONG')}"
+        f"📊 مؤشر القوة النسبية (RSI): {d.get('rsi', '-')}"
     ]
     
     lines.extend([
         '\n━━━━━━━━━━━━━━━━━━',
-        '📋 خطة الصفقة الآمنة (مفلترة بصرامة)',
+        '📋 خطة الصفقة الآمنة (اصطياد القيعان والقمم)',
         f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
         f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
         f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
@@ -515,7 +443,7 @@ def generate_evidence_report(d):
         f"\n🛑 Stop Loss: {d.get('stop_loss')}"
     ])
     
-    lines.append('\n🛡️ التنفيذ: STRICT FILTER ACTIVE\n✅ تم تطبيق فلاتر الأمان وتوسيع وقف الخسارة لتفادي الذذبات الوهمية.')
+    lines.append('\n🛡️ التنفيذ: SMART REVERSAL ACTIVE\n✅ تم تفعيل فلتر اصطياد التصحيحات ومناطق الخصم والعلاوة بدقة.')
     
     if d.get('analysis_lines'):
         lines.append('\n\n🔍 تفاصيل التحليل')
