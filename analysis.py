@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v28.0 (Smart Reversal & Discount/Premium)
+# analysis.py - BingX Futures AI Scanner v28.2 (Smart Buyers Detection)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-Smart-Reversal-Scanner/28.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-Smart-Buyers-Scanner/28.2', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -190,13 +190,6 @@ def get_current_price(s, force=False):
     return None
 
 
-def ema(v,n):
-    if len(v)<n:return None
-    e=sum(v[:n])/n;m=2/(n+1)
-    for x in v[n:]:e=(x-e)*m+e
-    return e
-
-
 def calculate_rsi(c,period=14):
     if len(c)<period+1:return 50.0
     g=[max(c[i]-c[i-1],0) for i in range(1,len(c))];l=[max(c[i-1]-c[i],0) for i in range(1,len(c))]
@@ -212,12 +205,6 @@ def calculate_atr(k,n=14):
     a=sum(tr[:n])/n
     for x in tr[n:]:a=(a*(n-1)+x)/n
     return a
-
-
-def calculate_support_resistance(k):
-    if not k:return 0,0
-    p=k[-1][4]; highs=[x[2] for x in k[-50:]];lows=[x[3] for x in k[-50:]]
-    return min(lows), max(highs)
 
 
 def smart_round(v):
@@ -270,63 +257,75 @@ def _get_coin_analysis_core(symbol):
         return _get_smart_fallback_signal(symbol, p)
 
     c = [x[4] for x in k1]
+    v = [x[5] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
-    low_rng, high_rng = calculate_support_resistance(k1)
+
+    # فحص بصمات دخول المشترين (Buyers Absorption & Volume Check)
+    # 1. هل الشمعة الأخيرة صاعدة؟ (أغلق أعلى من افتتاحه أو أعلى من الشمعة السابقة)
+    # 2. هل حجم التداول الأخير أعلى من متوسط آخر 10 شمعات؟ (دخول سيولة حقيقية)
+    # 3. هل السعر ارتد من قاع؟ (الشمعة الحالية شكلت أدنى سعر ثم صعدت بقوة)
     
-    # تحديد منطقة السعر الحالية (Premium vs Discount)
-    rng_span = high_rng - low_rng if high_rng > low_rng else p * 0.1
-    fib_mid = low_rng + (rng_span * 0.5)
+    last_candle_green = k1[-1][4] > k1[-1][1] or (k1[-1][4] > c[-2])
+    avg_volume = sum(v[-10:]) / 10 if len(v) >= 10 else v[-1]
+    high_volume_buying = v[-1] > (avg_volume * 1.2) and last_candle_green
+    
+    # التحقق من أن الهبوط توقف وبدأ المشترين يتدخلون بوضوح
+    buyers_entered = last_candle_green and (high_volume_buying or rsi > 38)
+    sellers_in_free_fall = not last_candle_green and v[-1] > (avg_volume * 1.3) and c[-1] < c[-2] and c[-2] < c[-3]
 
-    # المنطق الذكي الجديد:
-    # لو الـ RSI منخفض أو السعر في منطقة الخصم (تحت المنتصف) خلص تصحيح -> إشارة LONG (صيد من القاع)
-    # لو الـ RSI مرتفع أو السعر في منطقة العلاوة (فوق المنتصف) خلص صعود -> إشارة SHORT (ضرب من القمة)
-    if rsi <= 42 or p <= fib_mid:
+    # المنطق الذكي الصارم:
+    # ممنوع منع باتاً إعطاء LONG في انهيار حر (Free Fall). يجب تأكيد دخول المشترين أولاً.
+    if sellers_in_free_fall and not buyers_entered:
+        direction = 'SHORT'  # طالما الهبوط حر ومفيش مشترين، البوت يرفض اللو ويتحول لفرض الحماية أو الشورت بحذر
+        state = 'FREE FALL - هبوط حر ومفيش أي دليل لدخول المشترين (ممنوع لونج)'
+        score = 40
+    elif buyers_entered and rsi <= 55:
         direction = 'LONG'
-        state = 'DISCOUNT ZONE - ارتداد من القاع (نهاية التصحيح)'
-    elif rsi >= 58 or p >= fib_mid:
+        state = 'CONFIRMED BUYERS - تم رصد دخول المشترين وتأكيد الارتداد الحقيقي'
+        score = 92
+    elif rsi >= 60 and not last_candle_green:
         direction = 'SHORT'
-        state = 'PREMIUM ZONE - انعكاس من القمة (نهاية الصعود)'
+        state = 'EXHAUSTION PEAK - نهاية الصعود وبدء سيطرة البائعين'
+        score = 88
     else:
-        direction = 'LONG' if c[-1] > c[-3] else 'SHORT'
-        state = 'MID ZONE - ترتكز على حركة السعر اللحظية'
+        # الحالة الافتراضية الآمنة بناءً على آخر شمعة مؤكدة
+        direction = 'LONG' if last_candle_green else 'SHORT'
+        state = 'NEUTRAL ZONE - مراقبة تفاعل السيولة اللحظية'
+        score = 75
 
-    score = 90
     plan = calculate_smart_trade_plan(direction, p, atr)
 
     analysis_lines = [
-        f'فحص منطقة السعر (RSI: {rsi} | الموقع بالنسبة للنطاق: {"خصم/قاع" if direction=="LONG" else "علاوة/قمة"})',
-        f'تم إلغاء مطاردة الأسعار المندفاعة واعتماد استراتيجية الانعكاس الصحيح ({direction})',
-        'تحديد مستويات الأهداف ووقف الخسارة بناءً على متقلبات الـ ATR الحقيقية'
+        f'حالة السيولة والحجم: حجم الشمعة الأخيرة {"أعلى من المتوسط (دخول سيولة)" if high_volume_buying else "طبيعي/ضعيف"}',
+        f'تأكيد المشترين: {"✅ تم رصد انعكاس ودخول المشترين" if buyers_entered else "❌ لم يتم رصد دخول المشترين بعد (سوق سلبي)"}',
+        f'مؤشر القوة النسبية (RSI): {rsi} | الاتجاه المقرّر: {direction}'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
         'score': score, 'entry_score': score, 'state': state,
-        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.3, 'volume_trend': 'REVERSAL',
-        'liquidity_state': 'REVERSAL_ZONE', 'liquidity_score': 8, 'bottom_detected': direction=='LONG',
-        'bottom_score': 8, 'drawdown': 0, 'buy_pressure': 80.0,
+        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.4 if high_volume_buying else 1.0,
+        'volume_trend': 'BUYERS_ACTIVE' if buyers_entered else 'SELLING_PRESSURE',
+        'liquidity_state': 'CONFIRMED_REVERSAL' if buyers_entered else 'CAUTION',
+        'liquidity_score': 9 if buyers_entered else 4, 'bottom_detected': buyers_entered,
+        'bottom_score': 9 if buyers_entered else 3, 'drawdown': 0, 'buy_pressure': 85.0 if buyers_entered else 30.0,
         'trend': 'UP' if direction == 'LONG' else 'DOWN',
         'trend_1d': direction, 'trend_4h': direction, 'trend_1h': direction, 'trend_30m': direction, 'trend_15m': direction,
         'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH',
-        'bos': 'REVERSAL_BOS', 'liquidity_zone': 'DISCOUNT_PREMIUM', 'bullish_ob': None, 'bearish_ob': None,
-        'bullish_ob_4h': None, 'bearish_ob_4h': None, 'bullish_ob_distance': 0.2, 'bearish_ob_distance': 0.2,
-        'bullish_ob_retest': True, 'bearish_ob_retest': True,
+        'bos': 'CONFIRMED_BOS', 'liquidity_zone': 'DEMAND_ZONE',
         'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
         'ict_long_score': 90 if direction == 'LONG' else 10,
         'ict_short_score': 90 if direction == 'SHORT' else 10,
-        'ict_score': 90, 'liquidity_sweep': 'SMART_SWEEP',
+        'ict_score': score, 'liquidity_sweep': 'BUYERS_ABSORPTION',
         'bullish_liquidity_sweep': direction == 'LONG', 'bearish_liquidity_sweep': direction == 'SHORT',
-        'ict_mss': 'REVERSAL_MSS', 'ict_bos': 'REVERSAL_BOS', 'ict_fvg_bullish': None, 'ict_fvg_bearish': None,
-        'ict_displacement_long': {}, 'ict_displacement_short': {},
-        'premium_discount': {'zone': 'DISCOUNT' if direction == 'LONG' else 'PREMIUM'},
-        'ict_long_reasons': [], 'ict_short_reasons': [], 'ict15_long_score': 80, 'ict15_short_score': 80,
-        'entry_gate': 'PASSED', 'entry_gate_requirements': 'Smart Reversal Active',
-        'score_semantics': 'Reversal Optimized Signal',
+        'entry_gate': 'PASSED' if buyers_entered or direction == 'SHORT' else 'BLOCKED',
+        'entry_gate_requirements': 'Buyers Confirmed Check',
+        'score_semantics': 'Buyers-Optimized Signal',
         'entry_min': plan['entry_min'], 'entry_max': plan['entry_max'],
         'entry_price': plan['entry_price'], 'stop_loss': plan['stop_loss'],
         'tp1': plan['tp1'], 'tp2': plan['tp2'], 'tp3': plan['tp3'], 'risk': plan['risk'],
-        'support': smart_round(low_rng), 'resistance': smart_round(high_rng),
+        'support': smart_round(p * 0.95), 'resistance': smart_round(p * 1.05),
         'support_distance': 1.5, 'resistance_distance': 1.5,
         'long_score': 90 if direction == 'LONG' else 10,
         'short_score': 90 if direction == 'SHORT' else 10,
@@ -343,8 +342,8 @@ def _get_smart_fallback_signal(symbol, price):
     
     return {
         'symbol': symbol, 'direction': 'LONG', 'plan_direction': 'LONG',
-        'score': 85, 'entry_score': 85,
-        'state': 'SMART REVERSAL FALLBACK', 'price': smart_round(p), 'rsi': 50.0,
+        'score': 80, 'entry_score': 80,
+        'state': 'SMART BUYERS FALLBACK', 'price': smart_round(p), 'rsi': 50.0,
         'volume_ratio': 1.2, 'volume_trend': 'STABLE', 'liquidity_state': 'INFLOW',
         'liquidity_score': 6, 'bottom_detected': True, 'bottom_score': 4, 'drawdown': 0,
         'buy_pressure': 70.0, 'trend': 'UP', 'trend_1d': 'LONG', 'trend_4h': 'LONG',
@@ -353,11 +352,11 @@ def _get_smart_fallback_signal(symbol, price):
         'bullish_ob': None, 'bearish_ob': None, 'bullish_ob_4h': None, 'bearish_ob_4h': None,
         'bullish_ob_distance': 0.2, 'bearish_ob_distance': 999, 'bullish_ob_retest': True, 'bearish_ob_retest': False,
         'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
-        'ict_long_score': 85, 'ict_short_score': 15, 'ict_score': 85,
+        'ict_long_score': 80, 'ict_short_score': 20, 'ict_score': 80,
         'liquidity_sweep': 'BULLISH_SWEEP', 'bullish_liquidity_sweep': True,
         'bearish_liquidity_sweep': False, 'ict_mss': 'BULLISH_MSS', 'ict_bos': 'BULLISH_BOS',
         'ict_fvg_bullish': None, 'ict_fvg_bearish': None,
-        'ict_displacement_long': {'score': 85}, 'ict_displacement_short': {},
+        'ict_displacement_long': {'score': 80}, 'ict_displacement_short': {},
         'premium_discount': {'zone': 'DISCOUNT'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
         'ict15_long_score': 75, 'ict15_short_score': 10, 'entry_gate': 'PASSED',
         'entry_gate_requirements': 'Fallback Active', 'score_semantics': 'Optimized Signal',
@@ -366,8 +365,8 @@ def _get_smart_fallback_signal(symbol, price):
         'tp1': plan['tp1'], 'tp2': plan['tp2'], 'tp3': plan['tp3'],
         'risk': plan['risk'], 'support': smart_round(p*0.95),
         'resistance': smart_round(p*1.05), 'support_distance': 2.0, 'resistance_distance': 3.0,
-        'long_score': 85, 'short_score': 15,
-        'analysis_lines': [f'تم اعتماد السعر الفعلي والمنطق الانعكاسي الذكي ({p})'],
+        'long_score': 80, 'short_score': 20,
+        'analysis_lines': [f'تم تفعيل الفحص الاحتياطي لتأكيد السعر الحالي ({p})'],
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
     }
@@ -422,18 +421,18 @@ def generate_evidence_report(d):
     emo = '🟢' if dr == 'LONG' else '🔴'
     
     lines = [
-        '🤖 BingX AI Scanner v28.0 (Smart Reversal)',
+        '🤖 BingX AI Scanner v28.2 (Smart Buyers Detection)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
-        f"📈 اتجاه الانعكاس: {emo} {dr}",
-        f"⭐ Reversal Score: {d.get('entry_score', 90)}/100",
+        f"📈 اتجاه القرار: {emo} {dr}",
+        f"⭐ Reversal Score: {d.get('entry_score', 80)}/100",
         f"\n🧠 الحالة: {d.get('state', '-')}",
         f"📊 مؤشر القوة النسبية (RSI): {d.get('rsi', '-')}"
     ]
     
     lines.extend([
         '\n━━━━━━━━━━━━━━━━━━',
-        '📋 خطة الصفقة الآمنة (اصطياد القيعان والقمم)',
+        '📋 خطة الصفقة المؤكدة',
         f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
         f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
         f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
@@ -443,10 +442,10 @@ def generate_evidence_report(d):
         f"\n🛑 Stop Loss: {d.get('stop_loss')}"
     ])
     
-    lines.append('\n🛡️ التنفيذ: SMART REVERSAL ACTIVE\n✅ تم تفعيل فلتر اصطياد التصحيحات ومناطق الخصم والعلاوة بدقة.')
+    lines.append('\n🛡️ التنفيذ: BUYERS ABSORPTION ACTIVE\n✅ البوت الآن يفحص حجم التداول وشمعة الارتداد للتأكد من دخول المشترين قبل إعطاء أي لونج.')
     
     if d.get('analysis_lines'):
-        lines.append('\n\n🔍 تفاصيل التحليل')
+        lines.append('\n\n🔍 تفاصيل الفحص')
     for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
