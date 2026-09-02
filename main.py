@@ -1,16 +1,16 @@
 # =========================================================
 # main.py - BingX AI Scanner v26
-# Flask + Telegram Async Polling
-# AUTO MARKET SCANNER (Dynamic Signal Reset)
+# Flask + Standalone Background Thread Auto Scanner
 # =========================================================
 
 import os
-import asyncio
+import time
 import logging
 import threading
+import asyncio
 
 from flask import Flask
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -73,9 +73,13 @@ TARGET_COINS = [
     "FTM", "NEAR", "OP", "SUI"
 ]
 
+# ذاكرة عامة لتتبع آخر اتجاه تم إرساله لكل عملة لتنفيذ Dynamic Signal Reset
+LAST_SENT_SIGNALS = {}
+LAST_ACTIVE_CHAT_ID = CHAT_ID
+
 
 # =========================================================
-# FLASK
+# FLASK SERVER
 # =========================================================
 
 app = Flask(__name__)
@@ -93,7 +97,6 @@ def health():
 
 def run_flask():
     port = int(os.environ.get("PORT", "5000"))
-
     app.run(
         host="0.0.0.0",
         port=port,
@@ -103,19 +106,19 @@ def run_flask():
 
 
 # =========================================================
-# START COMMAND
+# TELEGRAM HANDLERS
 # =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global LAST_ACTIVE_CHAT_ID
     if not update.message:
         return
 
-    # حفظ Chat ID تلقائيًا في الذاكرة أثناء التشغيل
-    context.application.bot_data["last_chat_id"] = update.effective_chat.id
+    LAST_ACTIVE_CHAT_ID = update.effective_chat.id
 
     await update.message.reply_text(
         "🤖 أهلاً بك في BingX AI Scanner\n\n"
-        "🚀 Auto Market Scanner يعمل تلقائياً في الخلفية (Dynamic Signal Reset).\n\n"
+        "🚀 Auto Market Scanner يعمل تلقائياً في الخلفية (Thread مستقل).\n\n"
         "📡 البوت يفحص أهم 20 عملة في السوق كل "
         f"{AUTO_SCAN_INTERVAL // 60} دقيقة.\n\n"
         "🟢 LONG = دخول شراء مؤكد 100%\n"
@@ -130,15 +133,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================================================
-# MANUAL MARKET SCAN
-# =========================================================
-
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global LAST_ACTIVE_CHAT_ID
     if not update.message:
         return
 
-    context.application.bot_data["last_chat_id"] = update.effective_chat.id
+    LAST_ACTIVE_CHAT_ID = update.effective_chat.id
 
     await update.message.reply_text(
         "🔍 جاري فحص BingX Futures...\n\n"
@@ -153,13 +153,10 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         results = await asyncio.to_thread(scan_market, limit=AUTO_SCAN_LIMIT)
-
     except Exception as exc:
         logger.exception("Manual scanner error: %s", exc)
-
         await update.message.reply_text(
-            "❌ حدث خطأ أثناء فحص السوق.\n\n"
-            "راجع Logs وحاول مرة أخرى."
+            "❌ حدث خطأ أثناء فحص السوق.\n\nراجع Logs وحاول مرة أخرى."
         )
         return
 
@@ -186,11 +183,8 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# =========================================================
-# MANUAL COIN ANALYSIS
-# =========================================================
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global LAST_ACTIVE_CHAT_ID
     if not update.message or not update.message.text:
         return
 
@@ -198,9 +192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
-    # حفظ Chat ID لاستخدامه في التنبيهات التلقائية
-    context.application.bot_data["last_chat_id"] = update.effective_chat.id
-
+    LAST_ACTIVE_CHAT_ID = update.effective_chat.id
     symbol = normalize_symbol(text)
 
     try:
@@ -249,7 +241,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================================
 
 def is_market_entry(data):
-    """ يتحقق أن نتيجة analysis.py تعتبر صفقة دخول فورية (MARKET) فقط """
     if not isinstance(data, dict):
         return False
 
@@ -278,97 +269,100 @@ def is_market_entry(data):
 
 
 # =========================================================
-# AUTO MARKET SCANNER (DYNAMIC SIGNAL RESET)
+# STANDALONE BACKGROUND THREAD AUTO SCANNER
 # =========================================================
 
-async def auto_market_scanner(context: ContextTypes.DEFAULT_TYPE):
+def start_auto_scan():
     """
-    فحص تلقائي للسوق في الخلفية لأهم 20 عملة مع دعم Dynamic Signal Reset.
-    إذا استمرت نفس الإشارة يتم تجاهلها، وإذا تغيرت الحالة أو الاتجاه، 
-    يتم مسح الذاكرة وإرسال التنبيه الجديد فوراً.
+    دالة مسح تلقائي مستقلة تماماً تعمل في Thread منفصل كلياً عن الـ Asyncio والـ Telegram Bot.
+    تستخدم مكتبة requests العادية أو Bot لتنفيذ الإرسال عبر HTTP API الخاص بـ Telegram.
     """
-    logger.info("AUTO SCANNER: starting market scan for Top 20 coins...")
+    logger.info("BACKGROUND THREAD: Auto Scanner started.")
+    
+    # الانتظار قليلاً ريثما يقلع السيرفر والبوت
+    time.sleep(20)
 
-    chat_id = CHAT_ID
-    if not chat_id:
-        chat_id = context.application.bot_data.get("last_chat_id")
+    bot = Bot(token=TOKEN)
 
-    if not chat_id:
-        logger.warning("AUTO SCANNER: no CHAT_ID available. Cannot send alerts.")
-        return
-
-    # ذاكرة لتتبع آخر اتجاه تم إرساله لكل عملة لتنفيذ Dynamic Signal Reset
-    last_sent_signals = context.application.bot_data.setdefault("last_sent_signals", {})
-    found_market = 0
-
-    for symbol in TARGET_COINS:
+    while True:
         try:
-            data = await asyncio.to_thread(get_coin_analysis, symbol)
-            await asyncio.sleep(2)  # فاصل زمني حماية للـ API
+            logger.info("AUTO SCANNER (Thread): starting market scan for Top 20 coins...")
 
-            if not data:
+            target_chat_id = CHAT_ID or LAST_ACTIVE_CHAT_ID
+
+            if not target_chat_id:
+                logger.warning("AUTO SCANNER (Thread): No chat_id available yet. Skipping cycle.")
+                time.sleep(AUTO_SCAN_INTERVAL)
                 continue
 
-            # استخراج الاتجاه الحالي من النتيجة
-            current_direction = str(
-                data.get("direction")
-                or data.get("final_direction")
-                or data.get("signal")
-                or ""
-            ).upper()
+            found_market = 0
 
-            is_market = is_market_entry(data)
+            for symbol in TARGET_COINS:
+                try:
+                    # استدعاء دالة التحليل بشكل متزامن عادي داخل الـ Thread
+                    data = get_coin_analysis(symbol)
+                    time.sleep(2)  # حماية الـ API
 
-            # استرجاع آخر إشارة تم إرسالها لهذه العملة مسبقاً
-            previous_sent_direction = last_sent_signals.get(symbol)
+                    if not data:
+                        continue
 
-            # المنطق الذكي (Dynamic Signal Reset):
-            # 1. إذا لم تعد الصفقة MARKET (أصبحت WAIT مثلاً)، نقوم بمسح الذاكرة لهذه العملة لتصبح جاهزة لاستقبال أي صفقة جديدة مستقبلاً.
-            if not is_market:
-                if previous_sent_direction is not None:
-                    logger.info("AUTO SCANNER: Coin %s exited market state. Resetting signal memory.", symbol)
-                    last_sent_signals[symbol] = None
-                continue
+                    current_direction = str(
+                        data.get("direction")
+                        or data.get("final_direction")
+                        or data.get("signal")
+                        or ""
+                    ).upper()
 
-            # 2. إذا كانت الصفقة MARKET، لكن اتجاهها الحالي يطابق تماماً آخر اتجاه تم إرساله مسبقاً، نتجاهلها لعدم التكرار المزعج.
-            if current_direction == previous_sent_direction:
-                logger.info("AUTO SCANNER: Duplicate signal ignored for %s (%s).", symbol, current_direction)
-                continue
+                    is_market = is_market_entry(data)
+                    previous_sent_direction = LAST_SENT_SIGNALS.get(symbol)
 
-            # 3. إذا وصلنا إلى هنا، فهذا يعني أن هناك فرصة MARKET جديدة كلياً (أو تغيرت من LONG إلى SHORT أو العكس، أو بدأت دورة جديدة):
-            found_market += 1
+                    # Dynamic Signal Reset Logic
+                    if not is_market:
+                        if previous_sent_direction is not None:
+                            logger.info("AUTO SCANNER: Coin %s exited market state. Resetting signal memory.", symbol)
+                            LAST_SENT_SIGNALS[symbol] = None
+                        continue
 
-            report = generate_evidence_report(data)
+                    if current_direction == previous_sent_direction:
+                        logger.info("AUTO SCANNER: Duplicate signal ignored for %s (%s).", symbol, current_direction)
+                        continue
 
-            if current_direction == "LONG":
-                header = "🚨🚨 صفقة LONG جديدة جاهزة 🚨🚨\n\n🟢 دخول شراء — MARKET\n"
-            else:
-                header = "🚨🚨 صفقة SHORT جديدة جاهزة 🚨🚨\n\n🔴 دخول بيع — MARKET\n"
+                    found_market += 1
+                    report = generate_evidence_report(data)
 
-            message = (
-                header
-                + f"💎 {symbol}\n\n"
-                + report
-                + "\n\n⚠️ تم اجتياز بوابة (v26 Hard Gate) بنجاح - Dynamic Signal Reset"
-            )
+                    if current_direction == "LONG":
+                        header = "🚨🚨 صفقة LONG جديدة جاهزة 🚨🚨\n\n🟢 دخول شراء — MARKET\n"
+                    else:
+                        header = "🚨🚨 صفقة SHORT جديدة جاهزة 🚨🚨\n\n🔴 دخول بيع — MARKET\n"
 
-            await context.bot.send_message(chat_id=chat_id, text=message)
-            
-            # تحديث الذاكرة بآخر اتجاه تم إرساله لهذه العملة
-            last_sent_signals[symbol] = current_direction
-            logger.info("AUTO ALERT SENT & MEMORY UPDATED: %s -> %s", symbol, current_direction)
+                    message = (
+                        header
+                        + f"💎 {symbol}\n\n"
+                        + report
+                        + "\n\n⚠️ تم اجتياز بوابة (v26 Hard Gate) بنجاح - Standalone Background Thread"
+                    )
 
-        except Exception as exc:
-            logger.exception("AUTO SCANNER error for %s: %s", symbol, exc)
+                    # إرسال التنبيه باستخدام واجهة Bot البحتة دون تداخل مع الـ Event Loop
+                    asyncio.run(bot.send_message(chat_id=target_chat_id, text=message))
 
-    # تنظيف الذاكرة إذا تجاوزت الحد المسموح
-    if len(last_sent_signals) > 500:
-        context.application.bot_data["last_sent_signals"] = {
-            k: last_sent_signals[k] for k in list(last_sent_signals.keys())[-200:]
-        }
+                    LAST_SENT_SIGNALS[symbol] = current_direction
+                    logger.info("AUTO ALERT SENT & MEMORY UPDATED: %s -> %s", symbol, current_direction)
 
-    if found_market == 0:
-        logger.info("AUTO SCANNER: Completed 20 coins. No new market transitions found.")
+                except Exception as coin_exc:
+                    logger.exception("AUTO SCANNER error for %s: %s", symbol, coin_exc)
+
+            if len(LAST_SENT_SIGNALS) > 500:
+                global LAST_SENT_SIGNALS
+                LAST_SENT_SIGNALS = {k: LAST_SENT_SIGNALS[k] for k in list(LAST_SENT_SIGNALS.keys())[-200:]}
+
+            if found_market == 0:
+                logger.info("AUTO SCANNER: Completed 20 coins. No new market transitions found.")
+
+        except Exception as loop_exc:
+            logger.exception("AUTO SCANNER CRITICAL ERROR in loop: %s", loop_exc)
+
+        # الانتظار للمدة المحددة قبل الدورة القادمة
+        time.sleep(AUTO_SCAN_INTERVAL)
 
 
 # =========================================================
@@ -380,65 +374,28 @@ async def error_handler(update, context):
 
 
 # =========================================================
-# BOT MAIN
+# BOT MAIN (TELEGRAM POLLING)
 # =========================================================
 
 async def main_bot():
-    # بناء التطبيق
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
 
-    # -----------------------------------------------------
-    # تشغيل Flask في Thread منفصل لضمان عمل السيرفر 24/7
-    # -----------------------------------------------------
-    threading.Thread(target=run_flask, daemon=True).start()
-    logger.info("Flask server started in background thread.")
-
-    # -----------------------------------------------------
-    # Telegram initialization
-    # -----------------------------------------------------
     await application.initialize()
-
-    # حذف Webhook القديم لمنع Conflict 409
     await application.bot.delete_webhook(drop_pending_updates=True)
-
-    # -----------------------------------------------------
-    # بدء Telegram polling
-    # -----------------------------------------------------
     await application.start()
+
     await application.updater.start_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
     )
-    logger.info("Telegram bot started successfully.")
 
-    # -----------------------------------------------------
-    # Auto Scanner Job
-    # -----------------------------------------------------
-    if application.job_queue is not None:
-        application.job_queue.run_repeating(
-            auto_market_scanner,
-            interval=AUTO_SCAN_INTERVAL,
-            first=15,  # يبدأ الفحص الأول بعد 15 ثانية من الإقلاع
-            name="auto_market_scanner_20_coins",
-        )
-        logger.info(
-            "AUTO MARKET SCANNER enabled: scanning top 20 coins every %d seconds",
-            AUTO_SCAN_INTERVAL
-        )
-    else:
-        logger.error(
-            "JobQueue غير متوفر. تأكد من تثبيت python-telegram-bot[job-queue]"
-        )
+    logger.info("Telegram bot started successfully with standard polling.")
 
-    # -----------------------------------------------------
-    # إبقاء التطبيق يعمل
-    # -----------------------------------------------------
     try:
         while True:
             await asyncio.sleep(3600)
@@ -460,9 +417,22 @@ async def main_bot():
 
 
 # =========================================================
-# ENTRY POINT
+# ENTRY POINT (MULTI-THREADED RUNNER)
 # =========================================================
 
 if __name__ == "__main__":
-    logger.info("Starting BingX AI Scanner v26...")
-    asyncio.run(main_bot())
+    logger.info("Starting BingX AI Scanner v26 with Standalone Thread architecture...")
+
+    # 1. تشغيل سيرفر الفلاسك في Thread مستقل للخلفية
+    threading.Thread(target=run_flask, daemon=True).start()
+    logger.info("Flask server thread started.")
+
+    # 2. تشغيل محرك المسح التلقائي للسوق في Thread مستقل للخلفية
+    threading.Thread(target=start_auto_scan, daemon=True).start()
+    logger.info("Auto Scan background thread started.")
+
+    # 3. تشغيل بوت التليجرام بالـ Polling الطبيعي المستقر
+    try:
+        asyncio.run(main_bot())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped by user.")
