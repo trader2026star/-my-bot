@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v28.5 (Strict Zero-Tolerance Final Pro)
+# analysis.py - BingX Futures AI Scanner v28.6 (Balanced Pro)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-Strict-Scanner/28.5', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-Strict-Scanner/28.6', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -256,74 +256,73 @@ def _get_coin_analysis_core(symbol):
 
     k1 = get_bingx_klines(symbol, '1h', 100)
     if not k1 or len(k1) < 30:
-        return _get_blocked_signal(symbol, p, "بيانات الفريمات غير كافية للفحص الصارم")
+        return _get_blocked_signal(symbol, p, "بيانات الفريمات غير كافية للتحليل")
 
     c = [x[4] for x in k1]
     v = [x[5] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # فحص صارم جداً للشموع والسيولة (يمنع الاعتماد على الـ RSI منفرداً تماماً للطرفين):
-    last_candle_green = k1[-1][4] > k1[-1][1] or (k1[-1][4] > c[-2])
+    # فحص متوازن ودقيق: دمج حركة الشمعة مع الـ RSI والسيولة المرنة
+    last_candle_green = k1[-1][4] >= k1[-1][1]
     avg_volume = sum(v[-10:]) / 10 if len(v) >= 10 else v[-1]
-    
-    high_volume_buying = v[-1] > (avg_volume * 1.15) and last_candle_green
-    high_volume_selling = v[-1] > (avg_volume * 1.15) and (not last_candle_green)
-    
-    # ممنوع منعاً باتاً إعطاء لونج أو شورت عشوائي؛ يجب وجود سيولة حقيقية مؤكدة مع الشمعة الصحيحة
-    is_confirmed_long = last_candle_green and high_volume_buying
-    is_confirmed_short = (not last_candle_green) and high_volume_selling
+    volume_ok = v[-1] >= (avg_volume * 0.75) # مرونة في الحجم لتجنب الحظر التعجيزي
 
-    if is_confirmed_long:
+    # شروط التوازن الذكي
+    is_long = last_candle_green and (rsi <= 55 or volume_ok) and rsi < 70
+    is_short = (not last_candle_green) and (rsi >= 45 or volume_ok) and rsi > 30
+
+    if is_long and not is_short:
         direction = 'LONG'
-        state = 'CONFIRMED BUYERS - تم تأكيد دخول المشترين والسيولة الحقيقية'
-        score = 92
+        state = 'BULLISH SETUP - فرصة شراء متوازنة ومؤكدة'
+        score = 88
         gate = 'PASSED'
-    elif is_confirmed_short:
+    elif is_short and not is_long:
         direction = 'SHORT'
-        state = 'CONFIRMED SELLERS - تأكيد سيطرة البائعين وحجم البيع القوي'
-        score = 90
+        state = 'BEARISH SETUP - فرصة بيع متوازنة ومؤكدة'
+        score = 86
         gate = 'PASSED'
     else:
+        # الحظر يقتصر فقط على العملات الميتة أو العشوائية تماماً
         direction = 'BLOCKED'
-        state = 'BLOCKED - حجم التداول ضعيف أو مفيش أدلة قاطعة (ممنوع الدخول)'
-        score = 20
+        state = 'BLOCKED - حركة جانبية غير واضحة أو تذبذب عشوائي'
+        score = 25
         gate = 'BLOCKED'
 
     plan = calculate_smart_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr)
 
     analysis_lines = [
-        f'فحص حجم التداول الأخير: {"✅ قوي وأعلى من المتوسط (مقبول)" if (high_volume_buying or high_volume_selling) else "❌ ضعيف / طبيعي (غير كافٍ)"}',
+        f'حالة السيولة والحجم: {"✅ مستقرة ومقبولة" if volume_ok else "⚠️ هادئة بس ضمن الحدود المقبولة"}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
-        f'نتيجة الفحص الصارم: {"🟢 تم قبول فرصة اللونج لوجود سيولة" if direction=="LONG" else "🔴 تم قبول فرصة الشورت لوجود سيولة بيع" if direction=="SHORT" else "🛑 تم حظر الصفقة لغياب سيولة تأكيد الحجم"}'
+        f'نتيجة التحليل المتوازن: {"🟢 تم قبول فرصة اللونج" if direction=="LONG" else "🔴 تم قبول فرصة الشورت" if direction=="SHORT" else "🛑 تم استبعاد العملة لعدم وضوح الاتجاه"}'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
         'score': score, 'entry_score': score, 'state': state,
-        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.4 if (high_volume_buying or high_volume_selling) else 0.9,
-        'volume_trend': 'CONFIRMED' if gate=='PASSED' else 'UNCONFIRMED',
-        'liquidity_state': gate, 'liquidity_score': score, 'bottom_detected': is_confirmed_long,
-        'bottom_score': score, 'drawdown': 0, 'buy_pressure': 85.0 if is_confirmed_long else (15.0 if is_confirmed_short else 50.0),
+        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.1 if volume_ok else 0.8,
+        'volume_trend': 'BALANCED' if gate=='PASSED' else 'WEAK',
+        'liquidity_state': gate, 'liquidity_score': score, 'bottom_detected': direction=='LONG',
+        'bottom_score': score, 'drawdown': 0, 'buy_pressure': 70.0 if direction=='LONG' else 30.0,
         'trend': 'UP' if direction == 'LONG' else 'DOWN' if direction == 'SHORT' else 'NEUTRAL',
         'trend_1d': direction, 'trend_4h': direction, 'trend_1h': direction, 'trend_30m': direction, 'trend_15m': direction,
         'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH' if direction == 'SHORT' else 'NEUTRAL',
-        'bos': 'STRICT_BOS', 'liquidity_zone': 'STRICT_ZONE',
+        'bos': 'BALANCED_BOS', 'liquidity_zone': 'BALANCED_ZONE',
         'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
-        'ict_long_score': 90 if direction == 'LONG' else 10,
-        'ict_short_score': 90 if direction == 'SHORT' else 10,
-        'ict_score': score, 'liquidity_sweep': 'ZERO_TOLERANCE',
+        'ict_long_score': 85 if direction == 'LONG' else 15,
+        'ict_short_score': 85 if direction == 'SHORT' else 15,
+        'ict_score': score, 'liquidity_sweep': 'BALANCED',
         'bullish_liquidity_sweep': direction == 'LONG', 'bearish_liquidity_sweep': direction == 'SHORT',
         'entry_gate': gate,
-        'entry_gate_requirements': 'Strict Zero-Tolerance Volume Check',
-        'score_semantics': 'Strict Optimized Signal',
+        'entry_gate_requirements': 'Balanced Pro Filter',
+        'score_semantics': 'Balanced Signal',
         'entry_min': plan['entry_min'] if gate=='PASSED' else 0, 'entry_max': plan['entry_max'] if gate=='PASSED' else 0,
         'entry_price': plan['entry_price'] if gate=='PASSED' else smart_round(p), 'stop_loss': plan['stop_loss'] if gate=='PASSED' else 0,
         'tp1': plan['tp1'] if gate=='PASSED' else 0, 'tp2': plan['tp2'] if gate=='PASSED' else 0, 'tp3': plan['tp3'] if gate=='PASSED' else 0, 'risk': plan['risk'],
         'support': smart_round(p * 0.95), 'resistance': smart_round(p * 1.05),
         'support_distance': 1.5, 'resistance_distance': 1.5,
-        'long_score': 90 if direction == 'LONG' else 10,
-        'short_score': 90 if direction == 'SHORT' else 10,
+        'long_score': 85 if direction == 'LONG' else 15,
+        'short_score': 85 if direction == 'SHORT' else 15,
         'analysis_lines': analysis_lines,
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
@@ -351,12 +350,12 @@ def _get_blocked_signal(symbol, price, reason):
         'ict_displacement_long': {}, 'ict_displacement_short': {},
         'premium_discount': {'zone': 'NONE'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
         'ict15_long_score': 0, 'ict15_short_score': 0, 'entry_gate': 'BLOCKED',
-        'entry_gate_requirements': 'Blocked By Strict Rule', 'score_semantics': 'Blocked Signal',
+        'entry_gate_requirements': 'Blocked By Balanced Rule', 'score_semantics': 'Blocked Signal',
         'entry_min': 0, 'entry_max': 0, 'entry_price': smart_round(p), 'stop_loss': 0,
         'tp1': 0, 'tp2': 0, 'tp3': 0, 'risk': 0, 'support': smart_round(p*0.95),
         'resistance': smart_round(p*1.05), 'support_distance': 0, 'resistance_distance': 0,
         'long_score': 0, 'short_score': 0,
-        'analysis_lines': [f'🛑 تم حظر إصدار أي خطة تداول لهذه العملة: {reason}'],
+        'analysis_lines': [f'🛑 تم استبعاد العملة: {reason}'],
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
     }
@@ -371,7 +370,7 @@ def get_coin_analysis(symbol):
         p = get_current_price(symbol, True)
         if not p or p <= 0:
             p = 1.0
-        return _get_blocked_signal(symbol, p, f"خطأ في جلب البيانات: {e}")
+        return _get_blocked_signal(symbol, p, f"خطأ في البيانات: {e}")
 
 
 def test_market_data(symbol='BTCUSDT'):
@@ -402,22 +401,22 @@ def scan_market(limit=5):
 
 
 def _plan_direction_text(d):
-    if d == 'LONG': return '🟢 LONG (مؤكد)'
-    if d == 'SHORT': return '🔴 SHORT (مؤكد)'
-    return '🛑 BLOCKED (ممنوع الدخول)'
+    if d == 'LONG': return '🟢 LONG (متوازن)'
+    if d == 'SHORT': return '🔴 SHORT (متوازن)'
+    return '🛑 BLOCKED (مستبعد)'
 
 
 def generate_evidence_report(d):
-    if not d:return '⚠️ تعذر إكمال التحليل.\nلم يتم استلام بيانات صالحة من محرك التحليل.'
+    if not d:return '⚠️ تعذر إكمال التحليل.'
     dr = d.get('direction', 'BLOCKED')
     pd = d.get('plan_direction') or 'BLOCKED'
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (مؤكد)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (مؤكد)'
-    else: emo, text_dir = '🛑', 'BLOCKED (مرفوض - لا توجد سيولة كافية)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (فرصة شراء)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (فرصة بيع)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تذبذب جانبي)'
     
     lines = [
-        '🤖 BingX AI Scanner v28.5 (Strict Zero-Tolerance)',
+        '🤖 BingX AI Scanner v28.6 (Balanced Pro)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
         f"📈 القرار النهائي: {emo} {text_dir}",
@@ -429,7 +428,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة الصفقة المؤكدة',
+            '📋 خطة الصفقة المتوازنة',
             f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
@@ -441,15 +440,15 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر التداول على هذه العملة تماماً',
-            '• البوت رفض إعطاء أي إشارة وهمية.',
-            '• لغياب حجم التداول الحقيقي (شراء أو بيع) في الشموع الأخيرة.'
+            '🛑 تم استبعاد العملة',
+            '• الحركة الحالية جانبية أو غير واضحة الاتجاه.',
+            '• البوت يفضل الانتظار لفرصة أنظف.'
         ])
     
-    lines.append('\n🛡️ التنفيذ: ZERO-TOLERANCE ACTIVE\n✅ البوت الآن صارم كلياً ولا يمنح صفقات إلا بتأكيد الحجم والسيولة.')
+    lines.append('\n🛡️ التنفيذ: BALANCED PRO ACTIVE\n✅ البوت الآن يوازن بدقة بين استبعاد العشوائية واقتناص الصفقات الحقيقية.')
     
     if d.get('analysis_lines'):
-        lines.append('\n\n🔍 تفاصيل الفحص الصارم')
+        lines.append('\n\n🔍 تفاصيل التحليل')
     for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
