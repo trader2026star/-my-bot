@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v28.2 (Smart Buyers Detection)
+# analysis.py - BingX Futures AI Scanner v28.3 (Strict Zero-Tolerance)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-Smart-Buyers-Scanner/28.2', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-Strict-Scanner/28.3', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -230,19 +230,21 @@ def calculate_smart_trade_plan(direction, price, atr):
         tp2 = entry + (sl_dist * 2.8)
         tp3 = entry + (sl_dist * 4.0)
         emin, emax = entry * 0.998, entry * 1.001
-    else:
+    elif direction == 'SHORT':
         entry = price
         sl = entry + sl_dist
         tp1 = entry - (sl_dist * 1.8)
         tp2 = entry - (sl_dist * 2.8)
         tp3 = entry - (sl_dist * 4.0)
         emin, emax = entry * 0.999, entry * 1.002
+    else:
+        emin = emax = entry = sl = tp1 = tp2 = tp3 = sl_dist = 0
 
     return {
         'entry_min': smart_round(emin), 'entry_max': smart_round(emax),
-        'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
-        'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)), 
-        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(sl_dist)
+        'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)) if sl else 0,
+        'tp1': smart_round(max(tp1, 0.000001)) if tp1 else 0, 'tp2': smart_round(max(tp2, 0.000001)) if tp2 else 0, 
+        'tp3': smart_round(max(tp3, 0.000001)) if tp3 else 0, 'risk': smart_round(sl_dist)
     }
 
 
@@ -254,77 +256,72 @@ def _get_coin_analysis_core(symbol):
 
     k1 = get_bingx_klines(symbol, '1h', 100)
     if not k1 or len(k1) < 30:
-        return _get_smart_fallback_signal(symbol, p)
+        return _get_blocked_signal(symbol, p, "بيانات الفريمات غير كافية للفحص الصارم")
 
     c = [x[4] for x in k1]
     v = [x[5] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # فحص بصمات دخول المشترين (Buyers Absorption & Volume Check)
-    # 1. هل الشمعة الأخيرة صاعدة؟ (أغلق أعلى من افتتاحه أو أعلى من الشمعة السابقة)
-    # 2. هل حجم التداول الأخير أعلى من متوسط آخر 10 شمعات؟ (دخول سيولة حقيقية)
-    # 3. هل السعر ارتد من قاع؟ (الشمعة الحالية شكلت أدنى سعر ثم صعدت بقوة)
-    
+    # الفحص الصارم جداً لدخول المشترين:
     last_candle_green = k1[-1][4] > k1[-1][1] or (k1[-1][4] > c[-2])
     avg_volume = sum(v[-10:]) / 10 if len(v) >= 10 else v[-1]
-    high_volume_buying = v[-1] > (avg_volume * 1.2) and last_candle_green
+    high_volume_buying = v[-1] > (avg_volume * 1.15) and last_candle_green
     
-    # التحقق من أن الهبوط توقف وبدأ المشترين يتدخلون بوضوح
-    buyers_entered = last_candle_green and (high_volume_buying or rsi > 38)
-    sellers_in_free_fall = not last_candle_green and v[-1] > (avg_volume * 1.3) and c[-1] < c[-2] and c[-2] < c[-3]
+    # شروط صارمة للغاية:
+    # لكي نقول LONG: يجب أن يكون حجم الشمعة الأخيرة قوي جداً مؤكد لدخول المشترين (أو ارتداد واضح من قاع مع سيولة)
+    is_confirmed_long = last_candle_green and (high_volume_buying or rsi <= 38)
+    
+    # لكي نقول SHORT: يجب أن تكون القمة انتهت وزخم البيع هو المسيطر بمقاومة واضحة
+    is_confirmed_short = (not last_candle_green) and (rsi >= 62 or v[-1] > (avg_volume * 1.2))
 
-    # المنطق الذكي الصارم:
-    # ممنوع منع باتاً إعطاء LONG في انهيار حر (Free Fall). يجب تأكيد دخول المشترين أولاً.
-    if sellers_in_free_fall and not buyers_entered:
-        direction = 'SHORT'  # طالما الهبوط حر ومفيش مشترين، البوت يرفض اللو ويتحول لفرض الحماية أو الشورت بحذر
-        state = 'FREE FALL - هبوط حر ومفيش أي دليل لدخول المشترين (ممنوع لونج)'
-        score = 40
-    elif buyers_entered and rsi <= 55:
+    if is_confirmed_long:
         direction = 'LONG'
-        state = 'CONFIRMED BUYERS - تم رصد دخول المشترين وتأكيد الارتداد الحقيقي'
+        state = 'CONFIRMED BUYERS - تم رصد دخول المشترين والسيولة الشرائية بوضوح'
         score = 92
-    elif rsi >= 60 and not last_candle_green:
+        gate = 'PASSED'
+    elif is_confirmed_short:
         direction = 'SHORT'
-        state = 'EXHAUSTION PEAK - نهاية الصعود وبدء سيطرة البائعين'
-        score = 88
+        state = 'CONFIRMED SELLERS - نهاية الصعود وسيطرة البائعين من القمة'
+        score = 90
+        gate = 'PASSED'
     else:
-        # الحالة الافتراضية الآمنة بناءً على آخر شمعة مؤكدة
-        direction = 'LONG' if last_candle_green else 'SHORT'
-        state = 'NEUTRAL ZONE - مراقبة تفاعل السيولة اللحظية'
-        score = 75
+        # إذا لم يتحقق اليقين التام، يتم حظر إعطاء صفقة عشوائية بالكامل!
+        direction = 'BLOCKED'
+        state = 'BLOCKED - السوق سلبي أو مفيش أي دليل قاطع لدخول المشترين (ممنوع الدخول)'
+        score = 20
+        gate = 'BLOCKED'
 
-    plan = calculate_smart_trade_plan(direction, p, atr)
+    plan = calculate_smart_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr)
 
     analysis_lines = [
-        f'حالة السيولة والحجم: حجم الشمعة الأخيرة {"أعلى من المتوسط (دخول سيولة)" if high_volume_buying else "طبيعي/ضعيف"}',
-        f'تأكيد المشترين: {"✅ تم رصد انعكاس ودخول المشترين" if buyers_entered else "❌ لم يتم رصد دخول المشترين بعد (سوق سلبي)"}',
-        f'مؤشر القوة النسبية (RSI): {rsi} | الاتجاه المقرّر: {direction}'
+        f'فحص حجم التداول الأخير: {"عالي ومؤكد لدخول السيولة" if high_volume_buying else "ضعيف / طبيعي (غير كافٍ للتأكيد)"}',
+        f'مؤشر القوة النسبية (RSI): {rsi}',
+        f'نتيجة الفحص الصارم: {"🟢 تم قبول الفرصة لتأكيد المشترين" if direction=="LONG" else "🔴 تم قبول فرصة الشورت" if direction=="SHORT" else "🛑 تم حظر الصفقة لعدم كفاية أدلة الشراء"}'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
         'score': score, 'entry_score': score, 'state': state,
-        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.4 if high_volume_buying else 1.0,
-        'volume_trend': 'BUYERS_ACTIVE' if buyers_entered else 'SELLING_PRESSURE',
-        'liquidity_state': 'CONFIRMED_REVERSAL' if buyers_entered else 'CAUTION',
-        'liquidity_score': 9 if buyers_entered else 4, 'bottom_detected': buyers_entered,
-        'bottom_score': 9 if buyers_entered else 3, 'drawdown': 0, 'buy_pressure': 85.0 if buyers_entered else 30.0,
+        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.4 if high_volume_buying else 0.9,
+        'volume_trend': 'CONFIRMED' if gate=='PASSED' else 'UNCONFIRMED',
+        'liquidity_state': gate, 'liquidity_score': score, 'bottom_detected': is_confirmed_long,
+        'bottom_score': score, 'drawdown': 0, 'buy_pressure': 85.0 if is_confirmed_long else 20.0,
         'trend': 'UP' if direction == 'LONG' else 'DOWN',
         'trend_1d': direction, 'trend_4h': direction, 'trend_1h': direction, 'trend_30m': direction, 'trend_15m': direction,
-        'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH',
-        'bos': 'CONFIRMED_BOS', 'liquidity_zone': 'DEMAND_ZONE',
+        'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH' if direction == 'SHORT' else 'NEUTRAL',
+        'bos': 'STRICT_BOS', 'liquidity_zone': 'STRICT_ZONE',
         'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
         'ict_long_score': 90 if direction == 'LONG' else 10,
         'ict_short_score': 90 if direction == 'SHORT' else 10,
-        'ict_score': score, 'liquidity_sweep': 'BUYERS_ABSORPTION',
+        'ict_score': score, 'liquidity_sweep': 'ZERO_TOLERANCE',
         'bullish_liquidity_sweep': direction == 'LONG', 'bearish_liquidity_sweep': direction == 'SHORT',
-        'entry_gate': 'PASSED' if buyers_entered or direction == 'SHORT' else 'BLOCKED',
-        'entry_gate_requirements': 'Buyers Confirmed Check',
-        'score_semantics': 'Buyers-Optimized Signal',
-        'entry_min': plan['entry_min'], 'entry_max': plan['entry_max'],
-        'entry_price': plan['entry_price'], 'stop_loss': plan['stop_loss'],
-        'tp1': plan['tp1'], 'tp2': plan['tp2'], 'tp3': plan['tp3'], 'risk': plan['risk'],
+        'entry_gate': gate,
+        'entry_gate_requirements': 'Strict Zero-Tolerance Buyers Check',
+        'score_semantics': 'Strict Optimized Signal',
+        'entry_min': plan['entry_min'] if gate=='PASSED' else 0, 'entry_max': plan['entry_max'] if gate=='PASSED' else 0,
+        'entry_price': plan['entry_price'] if gate=='PASSED' else smart_round(p), 'stop_loss': plan['stop_loss'] if gate=='PASSED' else 0,
+        'tp1': plan['tp1'] if gate=='PASSED' else 0, 'tp2': plan['tp2'] if gate=='PASSED' else 0, 'tp3': plan['tp3'] if gate=='PASSED' else 0, 'risk': plan['risk'],
         'support': smart_round(p * 0.95), 'resistance': smart_round(p * 1.05),
         'support_distance': 1.5, 'resistance_distance': 1.5,
         'long_score': 90 if direction == 'LONG' else 10,
@@ -335,38 +332,33 @@ def _get_coin_analysis_core(symbol):
     }
 
 
-def _get_smart_fallback_signal(symbol, price):
+def _get_blocked_signal(symbol, price, reason):
     p = price if price and price > 0 else 1.0
-    atr = p * 0.02
-    plan = calculate_smart_trade_plan('LONG', p, atr)
-    
     return {
-        'symbol': symbol, 'direction': 'LONG', 'plan_direction': 'LONG',
-        'score': 80, 'entry_score': 80,
-        'state': 'SMART BUYERS FALLBACK', 'price': smart_round(p), 'rsi': 50.0,
-        'volume_ratio': 1.2, 'volume_trend': 'STABLE', 'liquidity_state': 'INFLOW',
-        'liquidity_score': 6, 'bottom_detected': True, 'bottom_score': 4, 'drawdown': 0,
-        'buy_pressure': 70.0, 'trend': 'UP', 'trend_1d': 'LONG', 'trend_4h': 'LONG',
-        'trend_1h': 'LONG', 'trend_30m': 'LONG', 'trend_15m': 'LONG', 'structure': 'BULLISH',
-        'bos': 'BULLISH_BOS', 'liquidity_zone': 'HIGH_LIQUIDITY',
+        'symbol': symbol, 'direction': 'BLOCKED', 'plan_direction': 'BLOCKED',
+        'score': 10, 'entry_score': 10,
+        'state': f'BLOCKED - {reason}', 'price': smart_round(p), 'rsi': 50.0,
+        'volume_ratio': 1.0, 'volume_trend': 'BLOCKED', 'liquidity_state': 'BLOCKED',
+        'liquidity_score': 0, 'bottom_detected': False, 'bottom_score': 0, 'drawdown': 0,
+        'buy_pressure': 10.0, 'trend': 'NEUTRAL', 'trend_1d': 'BLOCKED', 'trend_4h': 'BLOCKED',
+        'trend_1h': 'BLOCKED', 'trend_30m': 'BLOCKED', 'trend_15m': 'BLOCKED', 'structure': 'NEUTRAL',
+        'bos': 'NONE', 'liquidity_zone': 'NONE',
         'bullish_ob': None, 'bearish_ob': None, 'bullish_ob_4h': None, 'bearish_ob_4h': None,
-        'bullish_ob_distance': 0.2, 'bearish_ob_distance': 999, 'bullish_ob_retest': True, 'bearish_ob_retest': False,
-        'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
-        'ict_long_score': 80, 'ict_short_score': 20, 'ict_score': 80,
-        'liquidity_sweep': 'BULLISH_SWEEP', 'bullish_liquidity_sweep': True,
-        'bearish_liquidity_sweep': False, 'ict_mss': 'BULLISH_MSS', 'ict_bos': 'BULLISH_BOS',
+        'bullish_ob_distance': 0, 'bearish_ob_distance': 0, 'bullish_ob_retest': False, 'bearish_ob_retest': False,
+        'recent_change_2': 0, 'recent_change_6': 0, 'crash_detected': False, 'pump_detected': False,
+        'ict_long_score': 0, 'ict_short_score': 0, 'ict_score': 0,
+        'liquidity_sweep': 'NONE', 'bullish_liquidity_sweep': False,
+        'bearish_liquidity_sweep': False, 'ict_mss': 'NONE', 'ict_bos': 'NONE',
         'ict_fvg_bullish': None, 'ict_fvg_bearish': None,
-        'ict_displacement_long': {'score': 80}, 'ict_displacement_short': {},
-        'premium_discount': {'zone': 'DISCOUNT'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
-        'ict15_long_score': 75, 'ict15_short_score': 10, 'entry_gate': 'PASSED',
-        'entry_gate_requirements': 'Fallback Active', 'score_semantics': 'Optimized Signal',
-        'entry_min': plan['entry_min'], 'entry_max': plan['entry_max'],
-        'entry_price': plan['entry_price'], 'stop_loss': plan['stop_loss'],
-        'tp1': plan['tp1'], 'tp2': plan['tp2'], 'tp3': plan['tp3'],
-        'risk': plan['risk'], 'support': smart_round(p*0.95),
-        'resistance': smart_round(p*1.05), 'support_distance': 2.0, 'resistance_distance': 3.0,
-        'long_score': 80, 'short_score': 20,
-        'analysis_lines': [f'تم تفعيل الفحص الاحتياطي لتأكيد السعر الحالي ({p})'],
+        'ict_displacement_long': {}, 'ict_displacement_short': {},
+        'premium_discount': {'zone': 'NONE'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
+        'ict15_long_score': 0, 'ict15_short_score': 0, 'entry_gate': 'BLOCKED',
+        'entry_gate_requirements': 'Blocked By Strict Rule', 'score_semantics': 'Blocked Signal',
+        'entry_min': 0, 'entry_max': 0, 'entry_price': smart_round(p), 'stop_loss': 0,
+        'tp1': 0, 'tp2': 0, 'tp3': 0, 'risk': 0, 'support': smart_round(p*0.95),
+        'resistance': smart_round(p*1.05), 'support_distance': 0, 'resistance_distance': 0,
+        'long_score': 0, 'short_score': 0,
+        'analysis_lines': [f'🛑 تم حظر إصدار أي خطة تداول لهذه العملة: {reason}'],
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
     }
@@ -377,11 +369,11 @@ def get_coin_analysis(symbol):
     try:
         return _get_coin_analysis_core(symbol)
     except Exception as e:
-        logger.exception('FULL ANALYSIS FAILED -> FALLBACK | %s | %s', symbol, e)
+        logger.exception('FULL ANALYSIS FAILED -> BLOCKED | %s | %s', symbol, e)
         p = get_current_price(symbol, True)
         if not p or p <= 0:
             p = 1.0
-        return _get_smart_fallback_signal(symbol, p)
+        return _get_blocked_signal(symbol, p, f"خطأ في جلب البيانات: {e}")
 
 
 def test_market_data(symbol='BTCUSDT'):
@@ -411,41 +403,55 @@ def scan_market(limit=5):
     return res[:limit]
 
 
-def _plan_direction_text(d):return '🟢 LONG' if d=='LONG' else '🔴 SHORT' if d=='SHORT' else '⚪ غير محدد'
+def _plan_direction_text(d):
+    if d == 'LONG': return '🟢 LONG (مؤكد)'
+    if d == 'SHORT': return '🔴 SHORT (مؤكد)'
+    return '🛑 BLOCKED (ممنوع الدخول)'
 
 
 def generate_evidence_report(d):
     if not d:return '⚠️ تعذر إكمال التحليل.\nلم يتم استلام بيانات صالحة من محرك التحليل.'
-    dr = d.get('direction', 'LONG')
-    pd = d.get('plan_direction') or 'LONG'
-    emo = '🟢' if dr == 'LONG' else '🔴'
+    dr = d.get('direction', 'BLOCKED')
+    pd = d.get('plan_direction') or 'BLOCKED'
+    
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (مؤكد)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (مؤكد)'
+    else: emo, text_dir = '🛑', 'BLOCKED (مرفوض - لا توجد سيولة)'
     
     lines = [
-        '🤖 BingX AI Scanner v28.2 (Smart Buyers Detection)',
+        '🤖 BingX AI Scanner v28.3 (Strict Zero-Tolerance)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
-        f"📈 اتجاه القرار: {emo} {dr}",
-        f"⭐ Reversal Score: {d.get('entry_score', 80)}/100",
+        f"📈 القرار النهائي: {emo} {text_dir}",
+        f"⭐ Score: {d.get('entry_score', 0)}/100",
         f"\n🧠 الحالة: {d.get('state', '-')}",
         f"📊 مؤشر القوة النسبية (RSI): {d.get('rsi', '-')}"
     ]
     
-    lines.extend([
-        '\n━━━━━━━━━━━━━━━━━━',
-        '📋 خطة الصفقة المؤكدة',
-        f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
-        f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
-        f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
-        f"\n🎯 TP1: {d.get('tp1')}",
-        f"🎯 TP2: {d.get('tp2')}",
-        f"🎯 TP3: {d.get('tp3')}",
-        f"\n🛑 Stop Loss: {d.get('stop_loss')}"
-    ])
+    if dr != 'BLOCKED':
+        lines.extend([
+            '\n━━━━━━━━━━━━━━━━━━',
+            '📋 خطة الصفقة المؤكدة',
+            f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
+            f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
+            f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
+            f"\n🎯 TP1: {d.get('tp1')}",
+            f"🎯 TP2: {d.get('tp2')}",
+            f"🎯 TP3: {d.get('tp3')}",
+            f"\n🛑 Stop Loss: {d.get('stop_loss')}"
+        ])
+    else:
+        lines.extend([
+            '\n━━━━━━━━━━━━━━━━━━',
+            '🛑 تم حظر التداول على هذه العملة تماماً',
+            '• البوت رفض إعطاء أي إشارة لونج وهمية.',
+            '• لعدم ظهور أدلة قاطعة لدخول المشترين في الشموع الأخيرة.'
+        ])
     
-    lines.append('\n🛡️ التنفيذ: BUYERS ABSORPTION ACTIVE\n✅ البوت الآن يفحص حجم التداول وشمعة الارتداد للتأكد من دخول المشترين قبل إعطاء أي لونج.')
+    lines.append('\n🛡️ التنفيذ: ZERO-TOLERANCE ACTIVE\n✅ البوت الآن أصبح صارماً ولا يعطي إشارات إلا عند اليقين التام وتأكيد السيولة.')
     
     if d.get('analysis_lines'):
-        lines.append('\n\n🔍 تفاصيل الفحص')
+        lines.append('\n\n🔍 تفاصيل الفحص الصارم')
     for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
