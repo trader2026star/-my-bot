@@ -118,7 +118,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🤖 أهلاً بك في BingX AI Scanner\n\n"
-        "🚀 Auto Market Scanner يعمل تلقائياً في الخلفية (Thread مستقل).\n\n"
+        "🚀 Auto Market Scanner يعمل تلقائياً في الخلفية (Standalone Thread).\n\n"
         "📡 البوت يفحص أهم 20 عملة في السوق كل "
         f"{AUTO_SCAN_INTERVAL // 60} دقيقة.\n\n"
         "🟢 LONG = دخول شراء مؤكد 100%\n"
@@ -274,12 +274,12 @@ def is_market_entry(data):
 
 def start_auto_scan():
     """
-    دالة مسح تلقائي مستقلة تماماً تعمل في Thread منفصل كلياً عن الـ Asyncio والـ Telegram Bot.
-    تستخدم مكتبة requests العادية أو Bot لتنفيذ الإرسال عبر HTTP API الخاص بـ Telegram.
+    دالة مسح تلقائي مستقلة تعمل بحلقة تكرار لا نهائية (while True) 
+    وتنتظر الوقت المحدد (AUTO_SCAN_INTERVAL) بين كل دورة فحص.
     """
     logger.info("BACKGROUND THREAD: Auto Scanner started.")
     
-    # الانتظار قليلاً ريثما يقلع السيرفر والبوت
+    # الانتظار قليلاً ريثما يقلع السيرفر والبوت بالكامل
     time.sleep(20)
 
     bot = Bot(token=TOKEN)
@@ -299,7 +299,6 @@ def start_auto_scan():
 
             for symbol in TARGET_COINS:
                 try:
-                    # استدعاء دالة التحليل بشكل متزامن عادي داخل الـ Thread
                     data = get_coin_analysis(symbol)
                     time.sleep(2)  # حماية الـ API
 
@@ -339,10 +338,10 @@ def start_auto_scan():
                         header
                         + f"💎 {symbol}\n\n"
                         + report
-                        + "\n\n⚠️ تم اجتياز بوابة (v26 Hard Gate) بنجاح - Standalone Background Thread"
+                        + "\n\n⚠️ تم اجتياز بوابة (v26 Hard Gate) بنجاح - Background Thread"
                     )
 
-                    # إرسال التنبيه باستخدام واجهة Bot البحتة دون تداخل مع الـ Event Loop
+                    # إرسال التنبيه عبر تلغرام API البحت بدون تداخل مع الـ Main Event Loop
                     asyncio.run(bot.send_message(chat_id=target_chat_id, text=message))
 
                     LAST_SENT_SIGNALS[symbol] = current_direction
@@ -361,7 +360,7 @@ def start_auto_scan():
         except Exception as loop_exc:
             logger.exception("AUTO SCANNER CRITICAL ERROR in loop: %s", loop_exc)
 
-        # الانتظار للمدة المحددة قبل الدورة القادمة
+        # الانتظار لمدة 15 دقيقة (أو حسب القيمة المحددة) قبل الدورة القادمة
         time.sleep(AUTO_SCAN_INTERVAL)
 
 
@@ -423,11 +422,11 @@ async def main_bot():
 if __name__ == "__main__":
     logger.info("Starting BingX AI Scanner v26 with Standalone Thread architecture...")
 
-    # 1. تشغيل سيرفر الفلاسك في Thread مستقل للخلفية
+    # 1. تشغيل سيرفر الفلاسك في خلفية مستقلة
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("Flask server thread started.")
 
-    # 2. تشغيل محرك المسح التلقائي للسوق في Thread مستقل للخلفية
+    # 2. تشغيل المسح التلقائي للسوق في خلفية مستقلة
     threading.Thread(target=start_auto_scan, daemon=True).start()
     logger.info("Auto Scan background thread started.")
 
