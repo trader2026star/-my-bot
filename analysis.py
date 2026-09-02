@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v28.4 (Strict Zero-Tolerance Final)
+# analysis.py - BingX Futures AI Scanner v28.5 (Strict Zero-Tolerance Final Pro)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-Strict-Scanner/28.4', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-Strict-Scanner/28.5', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -263,16 +263,16 @@ def _get_coin_analysis_core(symbol):
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # فحص صارم جداً يمنع الاعتماد على الـ RSI منفرداً:
+    # فحص صارم جداً للشموع والسيولة (يمنع الاعتماد على الـ RSI منفرداً تماماً للطرفين):
     last_candle_green = k1[-1][4] > k1[-1][1] or (k1[-1][4] > c[-2])
     avg_volume = sum(v[-10:]) / 10 if len(v) >= 10 else v[-1]
     
-    # يجب أن يكون حجم التداول الأخير قوي جداً (أعلى من المتوسط بـ 15% على الأقل) والشمعة صاعدة لتأكيد دخول المشترين
     high_volume_buying = v[-1] > (avg_volume * 1.15) and last_candle_green
+    high_volume_selling = v[-1] > (avg_volume * 1.15) and (not last_candle_green)
     
-    # ممنوع منعاً باتاً إعطاء لونج لمجرد رخص السعر، الشرط الأساسي وجود حجم تداول شرائي حقيقي مؤكد
+    # ممنوع منعاً باتاً إعطاء لونج أو شورت عشوائي؛ يجب وجود سيولة حقيقية مؤكدة مع الشمعة الصحيحة
     is_confirmed_long = last_candle_green and high_volume_buying
-    is_confirmed_short = (not last_candle_green) and (rsi >= 62 or v[-1] > (avg_volume * 1.2))
+    is_confirmed_short = (not last_candle_green) and high_volume_selling
 
     if is_confirmed_long:
         direction = 'LONG'
@@ -281,32 +281,31 @@ def _get_coin_analysis_core(symbol):
         gate = 'PASSED'
     elif is_confirmed_short:
         direction = 'SHORT'
-        state = 'CONFIRMED SELLERS - نهاية الصعود وسيطرة البائعين'
+        state = 'CONFIRMED SELLERS - تأكيد سيطرة البائعين وحجم البيع القوي'
         score = 90
         gate = 'PASSED'
     else:
-        # أي شمعة حجمها ضعيف أو هبوط بلا سيولة -> بلوك فوري بلا تردد
         direction = 'BLOCKED'
-        state = 'BLOCKED - حجم التداول ضعيف أو مفيش أدلة كافية لدخول المشترين (ممنوع الدخول)'
+        state = 'BLOCKED - حجم التداول ضعيف أو مفيش أدلة قاطعة (ممنوع الدخول)'
         score = 20
         gate = 'BLOCKED'
 
     plan = calculate_smart_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr)
 
     analysis_lines = [
-        f'فحص حجم التداول الأخير: {"✅ قوي وأعلى من المتوسط (مقبول)" if high_volume_buying else "❌ ضعيف / طبيعي (غير كافٍ)"}',
+        f'فحص حجم التداول الأخير: {"✅ قوي وأعلى من المتوسط (مقبول)" if (high_volume_buying or high_volume_selling) else "❌ ضعيف / طبيعي (غير كافٍ)"}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
-        f'نتيجة الفحص الصارم: {"🟢 تم قبول الفرصة لوجود سيولة حقيقية" if direction=="LONG" else "🔴 تم قبول فرصة الشورت" if direction=="SHORT" else "🛑 تم حظر الصفقة لغياب سيولة المشترين"}'
+        f'نتيجة الفحص الصارم: {"🟢 تم قبول فرصة اللونج لوجود سيولة" if direction=="LONG" else "🔴 تم قبول فرصة الشورت لوجود سيولة بيع" if direction=="SHORT" else "🛑 تم حظر الصفقة لغياب سيولة تأكيد الحجم"}'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
         'score': score, 'entry_score': score, 'state': state,
-        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.4 if high_volume_buying else 0.9,
+        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.4 if (high_volume_buying or high_volume_selling) else 0.9,
         'volume_trend': 'CONFIRMED' if gate=='PASSED' else 'UNCONFIRMED',
         'liquidity_state': gate, 'liquidity_score': score, 'bottom_detected': is_confirmed_long,
-        'bottom_score': score, 'drawdown': 0, 'buy_pressure': 85.0 if is_confirmed_long else 20.0,
-        'trend': 'UP' if direction == 'LONG' else 'DOWN',
+        'bottom_score': score, 'drawdown': 0, 'buy_pressure': 85.0 if is_confirmed_long else (15.0 if is_confirmed_short else 50.0),
+        'trend': 'UP' if direction == 'LONG' else 'DOWN' if direction == 'SHORT' else 'NEUTRAL',
         'trend_1d': direction, 'trend_4h': direction, 'trend_1h': direction, 'trend_30m': direction, 'trend_15m': direction,
         'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH' if direction == 'SHORT' else 'NEUTRAL',
         'bos': 'STRICT_BOS', 'liquidity_zone': 'STRICT_ZONE',
@@ -415,10 +414,10 @@ def generate_evidence_report(d):
     
     if dr == 'LONG': emo, text_dir = '🟢', 'LONG (مؤكد)'
     elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (مؤكد)'
-    else: emo, text_dir = '🛑', 'BLOCKED (مرفوض - لا توجد سيولة)'
+    else: emo, text_dir = '🛑', 'BLOCKED (مرفوض - لا توجد سيولة كافية)'
     
     lines = [
-        '🤖 BingX AI Scanner v28.4 (Strict Zero-Tolerance)',
+        '🤖 BingX AI Scanner v28.5 (Strict Zero-Tolerance)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
         f"📈 القرار النهائي: {emo} {text_dir}",
@@ -443,11 +442,11 @@ def generate_evidence_report(d):
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
             '🛑 تم حظر التداول على هذه العملة تماماً',
-            '• البوت رفض إعطاء أي إشارة لونج.',
-            '• لغياب حجم التداول الشرائي المؤكد في الشموع الأخيرة.'
+            '• البوت رفض إعطاء أي إشارة وهمية.',
+            '• لغياب حجم التداول الحقيقي (شراء أو بيع) في الشموع الأخيرة.'
         ])
     
-    lines.append('\n🛡️ التنفيذ: ZERO-TOLERANCE ACTIVE\n✅ البوت الآن لا يمنح أي لونج إلا بوجود حجم تداول حقيقي ومؤكد.')
+    lines.append('\n🛡️ التنفيذ: ZERO-TOLERANCE ACTIVE\n✅ البوت الآن صارم كلياً ولا يمنح صفقات إلا بتأكيد الحجم والسيولة.')
     
     if d.get('analysis_lines'):
         lines.append('\n\n🔍 تفاصيل الفحص الصارم')
