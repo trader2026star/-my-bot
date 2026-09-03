@@ -266,7 +266,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # 1️⃣ فلتر الحجم الصارم وتأكيد شمعتين متتاليتين (Double Candle Confirmation) لمنع الفخاخ
     current_volume = v[-1]
     avg_volume_24 = sum(v[-25:-1]) / 24 if len(v) >= 25 else sum(v) / len(v)
     volume_ok = current_volume >= (avg_volume_24 * 1.5)
@@ -299,7 +298,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         state = 'WARNING - إطار 4H يعاكس الاتجاه'
 
     if not volume_ok and direction != 'BLOCKED':
-        score = max(10, score - 20)  # عقوبة أشد لضعف الحجم لمنع الخداع
+        score = max(10, score - 20)
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -307,6 +306,15 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         score = max(10, score - 15)
 
     plan = calculate_smart_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr)
+
+    analysis_lines = [
+        f'⏱️ الإطار الزمني للتحليل: {interval.upper()}',
+        f'مؤشر SuperTrend ({interval}): {"🟢 صاعد" if st_trend=="BULLISH" else "🔴 هابط"}',
+        f'اتجاه إطار 4H: {"🟢 صاعد" if st_trend_4h=="BULLISH" else "🔴 هابط"}',
+        f'حجم التداول: {"✅ ممتاز" if volume_ok else "⚠️ ضعف بالحجم"}',
+        f'رسوم التمويل: {funding_pct:.4f}%',
+        f'مؤشر RSI: {rsi}'
+    ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
@@ -318,7 +326,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'stop_loss': plan['stop_loss'] if direction!='BLOCKED' else 0,
         'tp1': plan['tp1'] if direction!='BLOCKED' else 0, 'tp2': plan['tp2'] if direction!='BLOCKED' else 0, 
         'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 
-        'funding_rate': funding_pct, 'interval': interval.upper()
+        'funding_rate': funding_pct, 'analysis_lines': analysis_lines, 'interval': interval.upper()
     }
 
 
@@ -327,7 +335,7 @@ def _get_blocked_signal(symbol, price, reason, interval='1h'):
     return {
         'symbol': symbol, 'direction': 'BLOCKED', 'plan_direction': 'BLOCKED',
         'score': 10, 'entry_score': 10, 'state': f'BLOCKED - {reason}',
-        'price': smart_round(p), 'rsi': 50.0, 'interval': interval.upper()
+        'price': smart_round(p), 'rsi': 50.0, 'analysis_lines': [f'🛑 {reason}'], 'interval': interval.upper()
     }
 
 
@@ -346,3 +354,49 @@ def get_top_futures_symbols(limit=25):
             if s in sy and s.endswith('USDT') and v>0:cand.append((s,v))
         except Exception:pass
     cand.sort(key=lambda x:x[1],reverse=True);return [x[0] for x in cand[:limit]]
+
+
+def generate_evidence_report(d):
+    if not d: return '⚠️ تعذر إكمال التحليل.'
+    dr = d.get('direction', 'BLOCKED')
+    inv = d.get('interval', '1H')
+    
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Confirmed Buy)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Confirmed Sell)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تذبذب)'
+    
+    lines = [
+        '🤖 BingX AI Scanner v30.0 (Pro)',
+        f"💎 العملة: {d.get('symbol', '-')}",
+        f"⏱️ الإطار الزمني: {inv}",
+        f"💰 السعر الحالي: {d.get('price', '-')}",
+        f"📈 القرار النهائي: {emo} {text_dir}",
+        f"⭐ Score: {d.get('score', 0)}/100",
+        f"\n🧠 الحالة: {d.get('state', '-')}",
+        f"📊 RSI: {d.get('rsi', '-')}"
+    ]
+
+    if dr != 'BLOCKED':
+        lines.extend([
+            '\n━━━━━━━━━━━━━━━━━━',
+            '📋 خطة صانع السوق (SMC Plan)',
+            f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
+            f"💰 سعر الدخول: {d.get('entry_price')}",
+            f"\n🎯 TP1: {d.get('tp1')}",
+            f"🎯 TP2: {d.get('tp2')}",
+            f"🎯 TP3: {d.get('tp3')}",
+            f"\n🛑 Stop Loss: {d.get('stop_loss')}",
+            f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}"
+        ])
+    else:
+        lines.extend([
+            '\n━━━━━━━━━━━━━━━━━━',
+            '🛑 تم حظر التداول على هذه العملة مؤقتاً لحماية رأس المال.'
+        ])
+    
+    if d.get('analysis_lines'):
+        lines.append('\n🔍 التفاصيل الفنية:')
+        for x in d.get('analysis_lines', []):
+            lines.append(f'• {x}')
+            
+    return '\n'.join(lines)
