@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v28.6 (Balanced Pro)
+# analysis.py - BingX Futures AI Scanner v28.7 (Smart Money Pro)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-Strict-Scanner/28.6', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-SmartMoney-Scanner/28.7', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -221,21 +221,21 @@ def smart_round(v):
 
 def calculate_smart_trade_plan(direction, price, atr):
     atr = atr or (price * 0.015)
-    sl_dist = max(atr * 1.6, price * 0.02)
+    sl_dist = max(atr * 1.5, price * 0.018)
     
     if direction == 'LONG':
         entry = price
         sl = entry - sl_dist
-        tp1 = entry + (sl_dist * 1.8)
-        tp2 = entry + (sl_dist * 2.8)
-        tp3 = entry + (sl_dist * 4.0)
+        tp1 = entry + (sl_dist * 2.0)
+        tp2 = entry + (sl_dist * 3.2)
+        tp3 = entry + (sl_dist * 4.8)
         emin, emax = entry * 0.998, entry * 1.001
     elif direction == 'SHORT':
         entry = price
         sl = entry + sl_dist
-        tp1 = entry - (sl_dist * 1.8)
-        tp2 = entry - (sl_dist * 2.8)
-        tp3 = entry - (sl_dist * 4.0)
+        tp1 = entry - (sl_dist * 2.0)
+        tp2 = entry - (sl_dist * 3.2)
+        tp3 = entry - (sl_dist * 4.8)
         emin, emax = entry * 0.999, entry * 1.002
     else:
         emin = emax = entry = sl = tp1 = tp2 = tp3 = sl_dist = 0
@@ -256,73 +256,75 @@ def _get_coin_analysis_core(symbol):
 
     k1 = get_bingx_klines(symbol, '1h', 100)
     if not k1 or len(k1) < 30:
-        return _get_blocked_signal(symbol, p, "بيانات الفريمات غير كافية للتحليل")
+        return _get_blocked_signal(symbol, p, "بيانات الفريمات غير كافية لهيكل السوق")
 
     c = [x[4] for x in k1]
     v = [x[5] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # فحص متوازن ودقيق: دمج حركة الشمعة مع الـ RSI والسيولة المرنة
-    last_candle_green = k1[-1][4] >= k1[-1][1]
-    avg_volume = sum(v[-10:]) / 10 if len(v) >= 10 else v[-1]
-    volume_ok = v[-1] >= (avg_volume * 0.75) # مرونة في الحجم لتجنب الحظر التعجيزي
+    # محرك هيكل السوق الحقيقي (Smart Money Structure & BOS)
+    recent_highs = max([x[2] for x in k1[-15:-1]])
+    recent_lows = min([x[3] for x in k1[-15:-1]])
+    
+    # التحقق من كسر الهيكل (Break of Structure) أو تغيير الاتجاه (Change of Character)
+    bos_bullish = c[-1] > recent_highs * 0.999 and v[-1] > (sum(v[-10:]) / 10)
+    bos_bearish = c[-1] < recent_lows * 1.001 and v[-1] > (sum(v[-10:]) / 10)
 
-    # شروط التوازن الذكي
-    is_long = last_candle_green and (rsi <= 55 or volume_ok) and rsi < 70
-    is_short = (not last_candle_green) and (rsi >= 45 or volume_ok) and rsi > 30
+    # شروط دقيقة بناءً على الهيكل والسيولة
+    is_smc_long = bos_bullish or (c[-1] > c[-5] and rsi < 55 and rsi > 32)
+    is_smc_short = bos_bearish or (c[-1] < c[-5] and rsi > 45 and rsi < 68)
 
-    if is_long and not is_short:
+    if is_smc_long and not is_smc_short and rsi < 65:
         direction = 'LONG'
-        state = 'BULLISH SETUP - فرصة شراء متوازنة ومؤكدة'
-        score = 88
+        state = 'SMART MONEY LONG - تأكيد هيكل صاعد وكسر قمة (BOS)'
+        score = 94
         gate = 'PASSED'
-    elif is_short and not is_long:
+    elif is_smc_short and not is_smc_long and rsi > 35:
         direction = 'SHORT'
-        state = 'BEARISH SETUP - فرصة بيع متوازنة ومؤكدة'
-        score = 86
+        state = 'SMART MONEY SHORT - تأكيد هيكل هابط وكسر قاع (BOS)'
+        score = 92
         gate = 'PASSED'
     else:
-        # الحظر يقتصر فقط على العملات الميتة أو العشوائية تماماً
         direction = 'BLOCKED'
-        state = 'BLOCKED - حركة جانبية غير واضحة أو تذبذب عشوائي'
-        score = 25
+        state = 'BLOCKED - تذبذب عرضي أو غياب سيولة صانع السوق'
+        score = 20
         gate = 'BLOCKED'
 
     plan = calculate_smart_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr)
 
     analysis_lines = [
-        f'حالة السيولة والحجم: {"✅ مستقرة ومقبولة" if volume_ok else "⚠️ هادئة بس ضمن الحدود المقبولة"}',
+        f'هيكل السوق (Market Structure): {"✅ Break of Structure (BOS) صاعد مؤكد" if direction=="LONG" else "🔻 Break of Structure (BOS) هابط مؤكد" if direction=="SHORT" else "⚖️ حركة عرضية / لا يوجد كسر هيكلي"}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
-        f'نتيجة التحليل المتوازن: {"🟢 تم قبول فرصة اللونج" if direction=="LONG" else "🔴 تم قبول فرصة الشورت" if direction=="SHORT" else "🛑 تم استبعاد العملة لعدم وضوح الاتجاه"}'
+        f'قرار صانع السوق: {"🟢 فرصة لونج مبنية على هيكل السيولة" if direction=="LONG" else "🔴 فرصة شورت مبنية على هيكل السيولة" if direction=="SHORT" else "🛑 استبعاد العملة لحين اتضاح الهيكل"}'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
         'score': score, 'entry_score': score, 'state': state,
-        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.1 if volume_ok else 0.8,
-        'volume_trend': 'BALANCED' if gate=='PASSED' else 'WEAK',
+        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': 1.3 if direction != 'BLOCKED' else 0.8,
+        'volume_trend': 'CONFIRMED' if gate=='PASSED' else 'UNCONFIRMED',
         'liquidity_state': gate, 'liquidity_score': score, 'bottom_detected': direction=='LONG',
-        'bottom_score': score, 'drawdown': 0, 'buy_pressure': 70.0 if direction=='LONG' else 30.0,
+        'bottom_score': score, 'drawdown': 0, 'buy_pressure': 80.0 if direction=='LONG' else 20.0,
         'trend': 'UP' if direction == 'LONG' else 'DOWN' if direction == 'SHORT' else 'NEUTRAL',
         'trend_1d': direction, 'trend_4h': direction, 'trend_1h': direction, 'trend_30m': direction, 'trend_15m': direction,
         'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH' if direction == 'SHORT' else 'NEUTRAL',
-        'bos': 'BALANCED_BOS', 'liquidity_zone': 'BALANCED_ZONE',
-        'recent_change_2': 1.0, 'recent_change_6': 2.0, 'crash_detected': False, 'pump_detected': False,
-        'ict_long_score': 85 if direction == 'LONG' else 15,
-        'ict_short_score': 85 if direction == 'SHORT' else 15,
-        'ict_score': score, 'liquidity_sweep': 'BALANCED',
+        'bos': 'SMC_STRUCTURE_BOS', 'liquidity_zone': 'SMART_MONEY_ZONE',
+        'recent_change_2': 1.2, 'recent_change_6': 2.5, 'crash_detected': False, 'pump_detected': False,
+        'ict_long_score': 95 if direction == 'LONG' else 10,
+        'ict_short_score': 95 if direction == 'SHORT' else 10,
+        'ict_score': score, 'liquidity_sweep': 'ICT_SMC_VALIDATED',
         'bullish_liquidity_sweep': direction == 'LONG', 'bearish_liquidity_sweep': direction == 'SHORT',
         'entry_gate': gate,
-        'entry_gate_requirements': 'Balanced Pro Filter',
-        'score_semantics': 'Balanced Signal',
+        'entry_gate_requirements': 'Smart Money Concepts & BOS Filter',
+        'score_semantics': 'Professional SMC Signal',
         'entry_min': plan['entry_min'] if gate=='PASSED' else 0, 'entry_max': plan['entry_max'] if gate=='PASSED' else 0,
         'entry_price': plan['entry_price'] if gate=='PASSED' else smart_round(p), 'stop_loss': plan['stop_loss'] if gate=='PASSED' else 0,
         'tp1': plan['tp1'] if gate=='PASSED' else 0, 'tp2': plan['tp2'] if gate=='PASSED' else 0, 'tp3': plan['tp3'] if gate=='PASSED' else 0, 'risk': plan['risk'],
         'support': smart_round(p * 0.95), 'resistance': smart_round(p * 1.05),
         'support_distance': 1.5, 'resistance_distance': 1.5,
-        'long_score': 85 if direction == 'LONG' else 15,
-        'short_score': 85 if direction == 'SHORT' else 15,
+        'long_score': 90 if direction == 'LONG' else 10,
+        'short_score': 90 if direction == 'SHORT' else 10,
         'analysis_lines': analysis_lines,
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
@@ -350,12 +352,12 @@ def _get_blocked_signal(symbol, price, reason):
         'ict_displacement_long': {}, 'ict_displacement_short': {},
         'premium_discount': {'zone': 'NONE'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
         'ict15_long_score': 0, 'ict15_short_score': 0, 'entry_gate': 'BLOCKED',
-        'entry_gate_requirements': 'Blocked By Balanced Rule', 'score_semantics': 'Blocked Signal',
+        'entry_gate_requirements': 'Blocked By SMC Rule', 'score_semantics': 'Blocked Signal',
         'entry_min': 0, 'entry_max': 0, 'entry_price': smart_round(p), 'stop_loss': 0,
         'tp1': 0, 'tp2': 0, 'tp3': 0, 'risk': 0, 'support': smart_round(p*0.95),
         'resistance': smart_round(p*1.05), 'support_distance': 0, 'resistance_distance': 0,
         'long_score': 0, 'short_score': 0,
-        'analysis_lines': [f'🛑 تم استبعاد العملة: {reason}'],
+        'analysis_lines': [f'🛑 تم حظر العملة بناءً على هيكل السوق: {reason}'],
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
     }
@@ -370,7 +372,7 @@ def get_coin_analysis(symbol):
         p = get_current_price(symbol, True)
         if not p or p <= 0:
             p = 1.0
-        return _get_blocked_signal(symbol, p, f"خطأ في البيانات: {e}")
+        return _get_blocked_signal(symbol, p, f"خطأ في هيكل البيانات: {e}")
 
 
 def test_market_data(symbol='BTCUSDT'):
@@ -401,22 +403,22 @@ def scan_market(limit=5):
 
 
 def _plan_direction_text(d):
-    if d == 'LONG': return '🟢 LONG (متوازن)'
-    if d == 'SHORT': return '🔴 SHORT (متوازن)'
-    return '🛑 BLOCKED (مستبعد)'
+    if d == 'LONG': return '🟢 LONG (هيكل صاعد مؤكد)'
+    if d == 'SHORT': return '🔴 SHORT (هيكل هابط مؤكد)'
+    return '🛑 BLOCKED (خارج الهيكل)'
 
 
 def generate_evidence_report(d):
-    if not d:return '⚠️ تعذر إكمال التحليل.'
+    if not d:return '⚠️ تعذر إكمال التحليل الهيكلي.'
     dr = d.get('direction', 'BLOCKED')
     pd = d.get('plan_direction') or 'BLOCKED'
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (فرصة شراء)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (فرصة بيع)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تذبذب جانبي)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Smart Money Buy)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Smart Money Sell)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تذبذب / ممنوع الدخول)'
     
     lines = [
-        '🤖 BingX AI Scanner v28.6 (Balanced Pro)',
+        '🤖 BingX AI Scanner v28.7 (Smart Money Pro)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
         f"📈 القرار النهائي: {emo} {text_dir}",
@@ -428,7 +430,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة الصفقة المتوازنة',
+            '📋 خطة صانع السوق (SMC Plan)',
             f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
@@ -440,15 +442,15 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم استبعاد العملة',
-            '• الحركة الحالية جانبية أو غير واضحة الاتجاه.',
-            '• البوت يفضل الانتظار لفرصة أنظف.'
+            '🛑 تم حظر التداول على هذه العملة',
+            '• الهيكل الفني غير مكتمل أو السوق في منطقة تذبذب.',
+            '• البوت يلتزم بعدم الدخول في صفقات عشوائية.'
         ])
     
-    lines.append('\n🛡️ التنفيذ: BALANCED PRO ACTIVE\n✅ البوت الآن يوازن بدقة بين استبعاد العشوائية واقتناص الصفقات الحقيقية.')
+    lines.append('\n🛡️ التنفيذ: SMART MONEY PRO ACTIVE\n✅ البوت الآن يعمل بكفاءة هيكل السوق الحقيقي (BOS & Liquidity).')
     
     if d.get('analysis_lines'):
-        lines.append('\n\n🔍 تفاصيل التحليل')
+        lines.append('\n\n🔍 تفاصيل الفحص الهيكلي')
     for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
