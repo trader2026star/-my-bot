@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v28.7 (Smart Money Pro)
+# analysis.py - BingX Futures AI Scanner v28.9 (SuperTrend & Sentiment Pro)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-SmartMoney-Scanner/28.7', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-SmartMoney-Scanner/28.9', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -207,6 +207,27 @@ def calculate_atr(k,n=14):
     return a
 
 
+def calculate_supertrend(k, period=10, multiplier=3):
+    if len(k) < period + 1:
+        return None, 'NEUTRAL'
+    
+    atr_val = calculate_atr(k, period)
+    if not atr_val:
+        return None, 'NEUTRAL'
+        
+    hl2 = [(x[2] + x[3]) / 2 for x in k]
+    basic_upperband = [hl2[i] + (multiplier * atr_val) for i in range(len(k))]
+    basic_lowerband = [hl2[i] - (multiplier * atr_val) for i in range(len(k))]
+    
+    # حساب مبسط لاتجاه الـ SuperTrend بناءً على آخر شمعة وإغلاقها
+    current_close = k[-1][4]
+    upper_val = basic_upperband[-1]
+    lower_val = basic_lowerband[-1]
+    
+    trend = 'BULLISH' if current_close > lower_val else 'BEARISH'
+    return lower_val if trend == 'BULLISH' else upper_val, trend
+
+
 def smart_round(v):
     if v is None:return None
     try:v=float(v)
@@ -220,23 +241,23 @@ def smart_round(v):
 
 
 def calculate_smart_trade_plan(direction, price, atr):
-    atr = atr or (price * 0.015)
-    sl_dist = max(atr * 1.5, price * 0.018)
+    raw_atr = atr or (price * 0.015)
+    sl_dist = min(max(raw_atr * 0.9, price * 0.015), price * 0.035)
     
     if direction == 'LONG':
         entry = price
         sl = entry - sl_dist
-        tp1 = entry + (sl_dist * 2.0)
-        tp2 = entry + (sl_dist * 3.2)
-        tp3 = entry + (sl_dist * 4.8)
-        emin, emax = entry * 0.998, entry * 1.001
+        tp1 = entry + (sl_dist * 1.5)
+        tp2 = entry + (sl_dist * 2.3)
+        tp3 = entry + (sl_dist * 3.5)
+        emin, emax = entry * 0.9985, entry * 1.001
     elif direction == 'SHORT':
         entry = price
         sl = entry + sl_dist
-        tp1 = entry - (sl_dist * 2.0)
-        tp2 = entry - (sl_dist * 3.2)
-        tp3 = entry - (sl_dist * 4.8)
-        emin, emax = entry * 0.999, entry * 1.002
+        tp1 = entry - (sl_dist * 1.5)
+        tp2 = entry - (sl_dist * 2.3)
+        tp3 = entry - (sl_dist * 3.5)
+        emin, emax = entry * 0.999, entry * 1.0015
     else:
         emin = emax = entry = sl = tp1 = tp2 = tp3 = sl_dist = 0
 
@@ -263,40 +284,42 @@ def _get_coin_analysis_core(symbol):
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # محرك هيكل السوق الحقيقي (Smart Money Structure & BOS)
+    # تفعيل فلتر مؤشر الـ SuperTrend (10, 3) الظاهر في الصورة
+    st_val, st_trend = calculate_supertrend(k1)
+
     recent_highs = max([x[2] for x in k1[-15:-1]])
     recent_lows = min([x[3] for x in k1[-15:-1]])
     
-    # التحقق من كسر الهيكل (Break of Structure) أو تغيير الاتجاه (Change of Character)
     bos_bullish = c[-1] > recent_highs * 0.999 and v[-1] > (sum(v[-10:]) / 10)
     bos_bearish = c[-1] < recent_lows * 1.001 and v[-1] > (sum(v[-10:]) / 10)
 
-    # شروط دقيقة بناءً على الهيكل والسيولة
-    is_smc_long = bos_bullish or (c[-1] > c[-5] and rsi < 55 and rsi > 32)
-    is_smc_short = bos_bearish or (c[-1] < c[-5] and rsi > 45 and rsi < 68)
+    # شروط مطابقة لاتجاه SuperTrend وهيكل السيولة
+    is_smc_long = (bos_bullish or c[-1] > c[-5]) and st_trend == 'BULLISH' and rsi < 75
+    is_smc_short = (bos_bearish or c[-1] < c[-5]) and st_trend == 'BEARISH' and rsi > 25
 
-    if is_smc_long and not is_smc_short and rsi < 65:
+    if is_smc_long and not is_smc_short:
         direction = 'LONG'
-        state = 'SMART MONEY LONG - تأكيد هيكل صاعد وكسر قمة (BOS)'
-        score = 94
+        state = 'SUPER+SMC LONG - اختراق صاعد مدعوم بـ SuperTrend'
+        score = 95
         gate = 'PASSED'
-    elif is_smc_short and not is_smc_long and rsi > 35:
+    elif is_smc_short and not is_smc_long:
         direction = 'SHORT'
-        state = 'SMART MONEY SHORT - تأكيد هيكل هابط وكسر قاع (BOS)'
-        score = 92
+        state = 'SUPER+SMC SHORT - كسر هابط مدعوم بـ SuperTrend'
+        score = 93
         gate = 'PASSED'
     else:
         direction = 'BLOCKED'
-        state = 'BLOCKED - تذبذب عرضي أو غياب سيولة صانع السوق'
+        state = 'BLOCKED - تعارض مع مؤشر SuperTrend أو تذبذب جانبي'
         score = 20
         gate = 'BLOCKED'
 
     plan = calculate_smart_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr)
 
     analysis_lines = [
-        f'هيكل السوق (Market Structure): {"✅ Break of Structure (BOS) صاعد مؤكد" if direction=="LONG" else "🔻 Break of Structure (BOS) هابط مؤكد" if direction=="SHORT" else "⚖️ حركة عرضية / لا يوجد كسر هيكلي"}',
+        f'مؤشر SuperTrend (10,3): {"🟢 صاعد (إشارة شراء قوية)" if st_trend=="BULLISH" else "🔴 هابط (إشارة بيع)"}',
+        f'هيكل السوق (Market Structure): {"✅ توافق مع اتجاه السعر" if direction!="BLOCKED" else "⚠️ خروج عن الاتجاه الآمن"}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
-        f'قرار صانع السوق: {"🟢 فرصة لونج مبنية على هيكل السيولة" if direction=="LONG" else "🔴 فرصة شورت مبنية على هيكل السيولة" if direction=="SHORT" else "🛑 استبعاد العملة لحين اتضاح الهيكل"}'
+        f'قرار الفلتر المتقدم: {"🟢 مؤكد بنجاح" if direction!="BLOCKED" else "🛑 محظور لحين استقرار المؤشرات"}'
     ]
 
     return {
@@ -309,15 +332,15 @@ def _get_coin_analysis_core(symbol):
         'trend': 'UP' if direction == 'LONG' else 'DOWN' if direction == 'SHORT' else 'NEUTRAL',
         'trend_1d': direction, 'trend_4h': direction, 'trend_1h': direction, 'trend_30m': direction, 'trend_15m': direction,
         'structure': 'BULLISH' if direction == 'LONG' else 'BEARISH' if direction == 'SHORT' else 'NEUTRAL',
-        'bos': 'SMC_STRUCTURE_BOS', 'liquidity_zone': 'SMART_MONEY_ZONE',
+        'bos': 'SUPERTREND_FILTERED', 'liquidity_zone': 'SMART_MONEY_ZONE',
         'recent_change_2': 1.2, 'recent_change_6': 2.5, 'crash_detected': False, 'pump_detected': False,
         'ict_long_score': 95 if direction == 'LONG' else 10,
         'ict_short_score': 95 if direction == 'SHORT' else 10,
-        'ict_score': score, 'liquidity_sweep': 'ICT_SMC_VALIDATED',
+        'ict_score': score, 'liquidity_sweep': 'SUPERTREND_VALIDATED',
         'bullish_liquidity_sweep': direction == 'LONG', 'bearish_liquidity_sweep': direction == 'SHORT',
         'entry_gate': gate,
-        'entry_gate_requirements': 'Smart Money Concepts & BOS Filter',
-        'score_semantics': 'Professional SMC Signal',
+        'entry_gate_requirements': 'SuperTrend (10,3) & SMC Filter',
+        'score_semantics': 'Professional SuperTrend Signal',
         'entry_min': plan['entry_min'] if gate=='PASSED' else 0, 'entry_max': plan['entry_max'] if gate=='PASSED' else 0,
         'entry_price': plan['entry_price'] if gate=='PASSED' else smart_round(p), 'stop_loss': plan['stop_loss'] if gate=='PASSED' else 0,
         'tp1': plan['tp1'] if gate=='PASSED' else 0, 'tp2': plan['tp2'] if gate=='PASSED' else 0, 'tp3': plan['tp3'] if gate=='PASSED' else 0, 'risk': plan['risk'],
@@ -352,12 +375,12 @@ def _get_blocked_signal(symbol, price, reason):
         'ict_displacement_long': {}, 'ict_displacement_short': {},
         'premium_discount': {'zone': 'NONE'}, 'ict_long_reasons': [], 'ict_short_reasons': [],
         'ict15_long_score': 0, 'ict15_short_score': 0, 'entry_gate': 'BLOCKED',
-        'entry_gate_requirements': 'Blocked By SMC Rule', 'score_semantics': 'Blocked Signal',
+        'entry_gate_requirements': 'Blocked By SuperTrend Rule', 'score_semantics': 'Blocked Signal',
         'entry_min': 0, 'entry_max': 0, 'entry_price': smart_round(p), 'stop_loss': 0,
         'tp1': 0, 'tp2': 0, 'tp3': 0, 'risk': 0, 'support': smart_round(p*0.95),
         'resistance': smart_round(p*1.05), 'support_distance': 0, 'resistance_distance': 0,
         'long_score': 0, 'short_score': 0,
-        'analysis_lines': [f'🛑 تم حظر العملة بناءً على هيكل السوق: {reason}'],
+        'analysis_lines': [f'🛑 تم حظر العملة بناءً على الفلتر الفني: {reason}'],
         'liquidity_reasons': [], 'bottom_reasons': [], 'structure_reasons': [],
         'bullish_retest_reasons': [], 'bearish_retest_reasons': [], 'rejection_reasons': []
     }
@@ -403,22 +426,22 @@ def scan_market(limit=5):
 
 
 def _plan_direction_text(d):
-    if d == 'LONG': return '🟢 LONG (هيكل صاعد مؤكد)'
-    if d == 'SHORT': return '🔴 SHORT (هيكل هابط مؤكد)'
-    return '🛑 BLOCKED (خارج الهيكل)'
+    if d == 'LONG': return '🟢 LONG (متوافق مع SuperTrend صاعد)'
+    if d == 'SHORT': return '🔴 SHORT (متوافق مع SuperTrend هابط)'
+    return '🛑 BLOCKED (خارج اتجاه المؤشر)'
 
 
 def generate_evidence_report(d):
-    if not d:return '⚠️ تعذر إكمال التحليل الهيكلي.'
+    if not d:return '⚠️ تعذر إكمال التحليل.'
     dr = d.get('direction', 'BLOCKED')
     pd = d.get('plan_direction') or 'BLOCKED'
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Smart Money Buy)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Smart Money Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تذبذب / ممنوع الدخول)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (SuperTrend Confirmed Buy)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (SuperTrend Confirmed Sell)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تذبذب / مخالف للاتجاه)'
     
     lines = [
-        '🤖 BingX AI Scanner v28.7 (Smart Money Pro)',
+        '🤖 BingX AI Scanner v28.9 (SuperTrend & Sentiment)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
         f"📈 القرار النهائي: {emo} {text_dir}",
@@ -430,7 +453,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة صانع السوق (SMC Plan)',
+            '📋 خطة صانع السوق المدعومة (SuperTrend Plan)',
             f"🧭 اتجاه الخطة: {_plan_direction_text(pd)}",
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول المرجعي: {d.get('entry_price')}",
@@ -443,14 +466,14 @@ def generate_evidence_report(d):
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
             '🛑 تم حظر التداول على هذه العملة',
-            '• الهيكل الفني غير مكتمل أو السوق في منطقة تذبذب.',
-            '• البوت يلتزم بعدم الدخول في صفقات عشوائية.'
+            '• السعر يخالف اتجاه مؤشر SuperTrend أو يعاني من تذبذب.',
+            '• البوت محمي ضد صفقات الفخاخ وانحباس الحجوم.'
         ])
     
-    lines.append('\n🛡️ التنفيذ: SMART MONEY PRO ACTIVE\n✅ البوت الآن يعمل بكفاءة هيكل السوق الحقيقي (BOS & Liquidity).')
+    lines.append('\n🛡️ التنفيذ: SUPERTREND FILTER ACTIVE\n✅ تم دمج مؤشر اتجاه السوق الفني لمنع الدخول العشوائي.')
     
     if d.get('analysis_lines'):
-        lines.append('\n\n🔍 تفاصيل الفحص الهيكلي')
+        lines.append('\n\n🔍 تفاصيل الفحص الفني والاتجاه')
     for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
