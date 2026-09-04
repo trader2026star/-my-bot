@@ -56,18 +56,15 @@ if CHAT_ID_RAW:
     try:
         CHAT_ID = int(CHAT_ID_RAW)
     except ValueError:
-        logger.warning("CHAT_ID يجب أن يكون رقمًا صحيحًا، تم تجاهله.")
+        CHAT_ID = None
 
-if not CHAT_ID:
-    logger.warning("تحذير: CHAT_ID غير معرف. التنبيهات التلقائية لن تُرسل حتى يتفاعل مستخدم مع البوت.")
-
-# الفحص التلقائي كل 30 دقيقة (1800 ثانية) أو حسب رغبتك
+# الفحص التلقائي كل 30 دقيقة (1800 ثانية)
 AUTO_SCAN_INTERVAL = int(os.getenv("AUTO_SCAN_INTERVAL", "1800"))
 
-# عدد العملات التي سيتم فحصها في الأمر اليدوي أو التلقائي
+# عدد العملات التي سيتم فحصها
 AUTO_SCAN_LIMIT = int(os.getenv("AUTO_SCAN_LIMIT", "25"))
 
-# ذاكرة عامة لتتبع آخر حالة تم إرسالها لكل عملة لمنع التكرار المزعج
+# ذاكرة عامة لتتبع آخر حالة تم إرسالها لكل عملة
 LAST_SENT_SIGNALS = {}
 LAST_ACTIVE_CHAT_ID = CHAT_ID
 
@@ -138,8 +135,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = []
         for sym in symbols:
             d = await asyncio.to_thread(get_coin_analysis, sym, '1h')
-            # الفحص اليدوي يعرض فقط الفرص التي وصلت لحالة READY وبجودة ممتازة
-            if d and 'READY' in str(d.get('direction', '')) and d.get('score', 0) >= 80:
+            if d and 'READY' in str(d.get('direction', '')) and d.get('score', 0) >= 75:
                 results.append(d)
     except Exception as exc:
         logger.exception("Manual scanner error: %s", exc)
@@ -152,7 +148,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    for data in results[:3]:  # إرسال أفضل 3 فرص جاهزة حصراً
+    for data in results[:3]:
         try:
             message = generate_evidence_report(data)
             await update.message.reply_text(message)
@@ -212,7 +208,6 @@ def start_auto_scan():
             target_chat_id = CHAT_ID or LAST_ACTIVE_CHAT_ID
 
             if not target_chat_id:
-                logger.info("AUTO SCANNER: Waiting for a chat_id (Send /start to bot)...")
                 time.sleep(AUTO_SCAN_INTERVAL)
                 continue
 
@@ -230,13 +225,11 @@ def start_auto_scan():
 
                     previous_sent_status = LAST_SENT_SIGNALS.get(symbol)
 
-                    # شروط الإرسال الآلي الصارمة: يجب أن تحتوي على كلمة READY حصراً وأن يكون الـ Score >= 80
-                    if 'READY' not in current_direction or score < 80:
+                    if 'READY' not in current_direction or score < 75:
                         if previous_sent_status is not None:
                             LAST_SENT_SIGNALS[symbol] = None
                         continue
 
-                    # منع تكرار إرسال نفس التنبيه لنفس الحالة التراكمية
                     if current_direction == previous_sent_status:
                         continue
 
@@ -297,11 +290,9 @@ async def main_bot():
 if __name__ == "__main__":
     logger.info("Starting BingX Ultra Safe SMC Scanner v34.1...")
 
-    # تشغيل الفلاسك والماسح الآلي في الخلفية
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=start_auto_scan, daemon=True).start()
 
-    # تشغيل بوت التليجرام الرئيسي
     try:
         asyncio.run(main_bot())
     except (KeyboardInterrupt, SystemExit):
