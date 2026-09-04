@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.0
+# analysis.py - Binance Ultra Safe Pure SMC Scanner v33.0
 # =========================================================
 
 import time
@@ -7,16 +7,16 @@ import logging
 import threading
 import requests
 
-BINGX_URL = 'https://open-api.bingx.com'
+BINANCE_URL = 'https://fapi.binance.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'Binance-UltraSMC/33.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
 KLINE_CACHE_SECONDS = 45
 PRICE_CACHE_SECONDS = 3
 TICKER_CACHE_SECONDS = 5
-MIN_REQUEST_INTERVAL = 0.45
+MIN_REQUEST_INTERVAL = 0.3
 _RATE_LIMIT_UNTIL = 0.0
 _LAST_REQUEST_TIME = 0.0
 _SYMBOL_CACHE = set()
@@ -31,23 +31,10 @@ _REQUEST_LOCK = threading.Lock()
 
 def normalize_symbol(s):
     s = str(s).strip().upper().replace(' ', '').replace('-', '').replace('_', '').replace('/', '')
-    return s if s.endswith(('USDT', 'USDC')) else s + 'USDT'
+    return s if s.endswith('USDT') else s + 'USDT'
 
 
-def bingx_symbol(s):
-    s = normalize_symbol(s)
-    return s[:-4] + '-' + s[-4:]
-
-
-def _rows(d):
-    if not isinstance(d, dict): return []
-    x = d.get('data')
-    if isinstance(x, list): return x
-    if isinstance(x, dict): return [x]
-    return []
-
-
-def bingx_get(path, params=None, timeout=12):
+def binance_get(path, params=None, timeout=12):
     global _RATE_LIMIT_UNTIL, _LAST_REQUEST_TIME
     with _RATE_LOCK:
         if time.time() < _RATE_LIMIT_UNTIL: return None
@@ -56,113 +43,94 @@ def bingx_get(path, params=None, timeout=12):
         if wait > 0: time.sleep(wait)
         _LAST_REQUEST_TIME = time.time()
     try:
-        r = SESSION.get(BINGX_URL + path, params=params or {}, timeout=timeout)
-        if r.status_code != 200: return None
-        d = r.json()
-        if not isinstance(d, dict): return None
-        code = d.get('code')
-        if code in (109429, 109400):
-            with _RATE_LOCK: _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, time.time() + 60)
+        r = SESSION.get(BINANCE_URL + path, params=params or {}, timeout=timeout)
+        if r.status_code != 200:
+            if r.status_code == 429:
+                with _RATE_LOCK: _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, time.time() + 60)
             return None
-        if code not in (0, None): return None
+        d = r.json()
         return d
     except Exception:
         return None
-
-
-def _is_crypto_usdt_symbol(s):
-    s = str(s).upper().replace('-', '')
-    if not s.endswith('USDT'): return False
-    base = s[:-4]
-    blocked = ('SP500','NASDAQ','DJI','US30','DXY','GOLD','SILVER','XAU','XAG','OIL','BRENT','WTI')
-    return not base.endswith('USD') and not any(x in base for x in blocked)
 
 
 def get_futures_symbols(force_refresh=False):
     global _SYMBOL_CACHE, _SYMBOL_CACHE_TIME
     if not force_refresh and _SYMBOL_CACHE and time.time()-_SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS:
         return set(_SYMBOL_CACHE)
-    d = bingx_get('/openApi/swap/v2/quote/contracts'); out=set()
-    for x in _rows(d):
-        if isinstance(x, dict):
-            s=str(x.get('symbol','')).replace('-','').upper(); status=x.get('status')
-            if _is_crypto_usdt_symbol(s) and status in (1,'1',None): out.add(s)
-    if out: _SYMBOL_CACHE, _SYMBOL_CACHE_TIME = out, time.time()
+    d = binance_get('/fapi/v1/exchangeInfo')
+    out = set()
+    if isinstance(d, dict):
+        for x in d.get('symbols', []):
+            if isinstance(x, dict) and x.get('contractType') == 'PERPETUAL' and x.get('status') == 'TRADING':
+                s = str(x.get('symbol', '')).upper()
+                if s.endswith('USDT'):
+                    out.add(s)
+    if out:
+        _SYMBOL_CACHE, _SYMBOL_CACHE_TIME = out, time.time()
+        return set(_SYMBOL_CACHE)
     return set(_SYMBOL_CACHE)
 
 
 def symbol_exists(s):
-    sy=get_futures_symbols(); return not sy or normalize_symbol(s) in sy
-
-
-def _price_value(x):
-    if not isinstance(x,dict): return None
-    for k in ('price','lastPrice','last','close','markPrice'):
-        try:
-            v=float(x.get(k));
-            if v>0:return v
-        except Exception: pass
-    return None
+    sy = get_futures_symbols()
+    return not sy or normalize_symbol(s) in sy
 
 
 def _ticker_rows(force=False):
-    global _TICKER_CACHE,_TICKER_CACHE_TIME
-    if not force and _TICKER_CACHE is not None and time.time()-_TICKER_CACHE_TIME<TICKER_CACHE_SECONDS:return _TICKER_CACHE
-    x=_rows(bingx_get('/openApi/swap/v2/quote/ticker'))
-    if x:_TICKER_CACHE,_TICKER_CACHE_TIME=x,time.time()
-    return x
+    global _TICKER_CACHE, _TICKER_CACHE_TIME
+    if not force and _TICKER_CACHE is not None and time.time()-_TICKER_CACHE_TIME < TICKER_CACHE_SECONDS:
+        return _TICKER_CACHE
+    x = binance_get('/fapi/v1/ticker/24hr')
+    if isinstance(x, list):
+        _TICKER_CACHE, _TICKER_CACHE_TIME = x, time.time()
+        return x
+    return []
 
 
 def get_funding_rate(symbol):
-    s = bingx_symbol(symbol)
-    d = bingx_get('/openApi/swap/v2/quote/premiumIndex', {'symbol': s})
-    rows = _rows(d)
-    if rows:
+    symbol = normalize_symbol(symbol)
+    d = binance_get('/fapi/v1/premiumIndex', {'symbol': symbol})
+    if isinstance(d, dict):
         try:
-            return float(rows[0].get('lastFundingRate', rows[0].get('fundingRate', 0)))
+            return float(d.get('lastFundingRate', 0))
         except Exception:
             pass
     return 0.0
 
 
 def _parse(rows):
-    out=[]
+    out = []
     for x in rows:
         try:
-            if isinstance(x,dict):
-                t=x.get('time',x.get('timestamp',x.get('openTime',0))); o=x.get('open'); h=x.get('high'); l=x.get('low'); c=x.get('close'); v=x.get('volume',x.get('vol',0))
-            elif isinstance(x,list) and len(x)>=6:t,o,h,l,c,v=x[:6]
-            else:continue
-            if None in (o,h,l,c):continue
-            out.append([t,float(o),float(h),float(l),float(c),float(v or 0)])
-        except Exception:pass
-    try:out.sort(key=lambda z:z[0])
-    except Exception:pass
-    seen=set(); clean=[]
+            if isinstance(x, list) and len(x) >= 6:
+                t, o, h, l, c, v = x[:6]
+                out.append([int(t), float(o), float(h), float(l), float(c), float(v or 0)])
+        except Exception:
+            pass
+    try:
+        out.sort(key=lambda z: z[0])
+    except Exception:
+        pass
+    seen = set(); clean = []
     for x in out:
-        if x[0] in seen:continue
-        seen.add(x[0]);clean.append(x)
+        if x[0] in seen: continue
+        seen.add(x[0]); clean.append(x)
     return clean
 
 
-def get_bingx_klines(s, interval='1h', limit=200):
+def get_binance_klines(s, interval='1h', limit=100):
     s = normalize_symbol(s)
     key = (s, str(interval).lower(), int(limit))
     now = time.time()
     c = _KLINE_CACHE.get(key)
     if c and now - c[0] < KLINE_CACHE_SECONDS: return c[1]
     
-    params = {'symbol': bingx_symbol(s), 'interval': str(interval).lower(), 'limit': int(limit)}
-    best = []
-    for ep in ('/openApi/swap/v2/quote/klines', '/openApi/swap/v1/market/klines'):
-        r = _parse(_rows(bingx_get(ep, params)))
-        if len(r) > len(best): best = r
-        if len(r) >= 30:
-            _KLINE_CACHE[key] = (now, r)
-            return r
-    if best:
-        _KLINE_CACHE[key] = (now, best)
-        return best
+    d = binance_get('/fapi/v1/klines', {'symbol': s, 'interval': str(interval).lower(), 'limit': int(limit)})
+    r = _parse(d)
+    if r:
+        _KLINE_CACHE[key] = (now, r)
+        return r
     return None
 
 
@@ -172,46 +140,52 @@ def get_current_price(s, force=False):
     c = _PRICE_CACHE.get(s)
     if not force and c and now - c[0] < PRICE_CACHE_SECONDS: return c[1]
     
-    for x in _ticker_rows(force):
-        sym = str(x.get('symbol', '')).replace('-', '').upper()
-        if sym == s or sym == s.replace('USDT', '-USDT'):
-            p = _price_value(x)
-            if p and p > 0:
+    d = binance_get('/fapi/v1/ticker/price', {'symbol': s})
+    if isinstance(d, dict):
+        try:
+            p = float(d.get('price', 0))
+            if p > 0:
                 _PRICE_CACHE[s] = (now, p)
                 return p
-    k = get_bingx_klines(s, '1m', 5)
+        except Exception:
+            pass
+    
+    k = get_binance_klines(s, '1m', 5)
     if k and k[-1][4] > 0:
         _PRICE_CACHE[s] = (now, k[-1][4])
         return k[-1][4]
     return None
 
 
-def calculate_rsi(c,period=14):
-    if len(c)<period+1:return 50.0
-    g=[max(c[i]-c[i-1],0) for i in range(1,len(c))];l=[max(c[i-1]-c[i],0) for i in range(1,len(c))]
-    ag=sum(g[:period])/period;al=sum(l[:period])/period
-    for i in range(period,len(g)):
-        ag=(ag*(period-1)+g[i])/period;al=(al*(period-1)+l[i])/period
-    return 100.0 if al==0 else round(100-100/(1+ag/al),2)
+def calculate_rsi(c, period=14):
+    if len(c) < period + 1: return 50.0
+    g = [max(c[i]-c[i-1], 0) for i in range(1, len(c))]
+    l = [max(c[i-1]-c[i], 0) for i in range(1, len(c))]
+    ag = sum(g[:period]) / period
+    al = sum(l[:period]) / period
+    for i in range(period, len(g)):
+        ag = (ag * (period - 1) + g[i]) / period
+        al = (al * (period - 1) + l[i]) / period
+    return 100.0 if al == 0 else round(100 - 100 / (1 + ag / al), 2)
 
 
-def calculate_atr(k,n=14):
-    if len(k)<n+1:return None
-    tr=[max(x[2]-x[3],abs(x[2]-k[i-1][4]),abs(x[3]-k[i-1][4])) for i,x in enumerate(k[1:],1)]
-    a=sum(tr[:n])/n
-    for x in tr[n:]:a=(a*(n-1)+x)/n
+def calculate_atr(k, n=14):
+    if len(k) < n + 1: return None
+    tr = [max(x[2]-x[3], abs(x[2]-k[i-1][4]), abs(x[3]-k[i-1][4])) for i, x in enumerate(k[1:], 1)]
+    a = sum(tr[:n]) / n
+    for x in tr[n:]: a = (a * (n - 1) + x) / n
     return a
 
 
 def smart_round(v):
-    if v is None:return 0
-    try:v=float(v)
-    except Exception:return 0
-    if v>=1000:return round(v,2)
-    if v>=100:return round(v,3)
-    if v>=1:return round(v,4)
-    if v>=.1:return round(v,5)
-    return round(v,8)
+    if v is None: return 0
+    try: v = float(v)
+    except Exception: return 0
+    if v >= 1000: return round(v, 2)
+    if v >= 100: return round(v, 3)
+    if v >= 1: return round(v, 4)
+    if v >= 0.1: return round(v, 5)
+    return round(v, 8)
 
 
 def analyze_pure_smc_safe(klines):
@@ -289,7 +263,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     p = get_current_price(symbol, True)
     if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
 
-    k1 = get_bingx_klines(symbol, interval, 100)
+    k1 = get_binance_klines(symbol, interval, 100)
     if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
 
     c = [x[4] for x in k1]
@@ -298,7 +272,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     smc_trend, ob_level, key_level, smc_score = analyze_pure_smc_safe(k1)
 
-    k4h = get_bingx_klines(symbol, '4h', 50)
+    k4h = get_binance_klines(symbol, '4h', 50)
     trend_4h, _, _, _ = analyze_pure_smc_safe(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50)
 
     last_candle_red = k1[-1][4] < k1[-1][1]
@@ -378,7 +352,7 @@ def get_top_futures_symbols(limit=25):
     cand = []
     for x in rows:
         try:
-            s = str(x.get('symbol', '')).replace('-', '').upper()
+            s = str(x.get('symbol', '')).upper()
             v = float(x.get('quoteVolume', 0))
             if s in sy and s.endswith('USDT') and v > 0:
                 cand.append((s, v))
@@ -398,7 +372,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v33.0',
+        '🤖 Binance Ultra Safe SMC Scanner v33.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
