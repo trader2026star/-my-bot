@@ -11,7 +11,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Base URL for BingX Public API
-BINGX_BASE_URL = "https://open-api.bingX.com"
+BINGX_BASE_URL = "https://open-api.bingx.com"
 
 
 def get_top_futures_symbols(limit=25):
@@ -42,7 +42,7 @@ def get_top_futures_symbols(limit=25):
 
 def get_klines(symbol, interval='1h', limit=100):
     """
-    جلب الشموع اليابانية (Klines) من منصة BingX
+    جلب الشموع اليابانية (Klines) من منصة BingX بالشكل الصحيح والمباشر
     """
     url = f"{BINGX_BASE_URL}/openApi/swap/v1/market/klines"
     params = {
@@ -53,9 +53,10 @@ def get_klines(symbol, interval='1h', limit=100):
     try:
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
-        if data.get("code") == 0 and "data" in data:
+        
+        # التأكد من صحة الكود ورجوع البيانات
+        if data.get("code") == 0 and "data" in data and data["data"]:
             raw_klines = data["data"]
-            # تنسيق الشموع: [time, open, high, low, close, volume]
             formatted = []
             for k in raw_klines:
                 formatted.append([
@@ -110,24 +111,23 @@ def get_coin_analysis(symbol, interval='1h'):
     محرك التحليل المؤسسي المتطور v34.1 (SMC + Price Action + Smart Risk)
     """
     k1 = get_klines(symbol, interval=interval, limit=100)
-    if not k1 or len(k1) < 50:
+    if not k1 or len(k1) < 20:
         return None
 
     current_price = get_current_price(symbol)
     if current_price == 0:
         current_price = k1[-1][4]
 
-    # تصحيح مشكلة الـ Syntax Error (فصل إسناد المتغير عن القائمة)
+    # استخراج البيانات بأمان تام بدون أخطاء
     klines_h = k1
     highs = [x[2] for x in klines_h]
     lows = [x[3] for x in klines_h]
     closes = [x[4] for x in klines_h]
     volumes = [x[5] for x in klines_h]
 
-    # حساب مؤشرات الهيكل المبدئي والسيولة
     recent_high = max(highs[-20:])
     recent_low = min(lows[-20:])
-    avg_volume = np.mean(volumes[-20:])
+    avg_volume = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
     current_volume = volumes[-1]
 
     # تقييم الشروط المؤسسية (Quality > Quantity)
@@ -135,7 +135,7 @@ def get_coin_analysis(symbol, interval='1h'):
     evidence = []
 
     # فحص حجم التداول والسيولة
-    if current_volume > avg_volume * 1.3:
+    if current_volume > avg_volume * 1.2:
         score += 15
         evidence.append("حجم تداول مؤسسي عالٍ يكدّس السيولة")
     else:
@@ -152,9 +152,9 @@ def get_coin_analysis(symbol, interval='1h'):
         evidence.append(f"هيكل هابط يبحث عن ارتداد من مناطق العرض قرب {recent_low}")
 
     # ضبط النقاط والتحقق من الحد الأدنى للجاهزية
-    if score >= 80:
+    if score >= 75:
         final_direction = "READY (HIGH QUALITY) 🟢"
-    elif score >= 65:
+    elif score >= 60:
         final_direction = "SETUP (WAITING CONFIRMATION) 🟡"
     else:
         final_direction = "NO TRADE (PROTECTING CAPITAL) 🔴"
