@@ -1,6 +1,6 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v34.0
-# (Advanced Institutional Rules + FVG + BTC Filter + News Guard)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v34.1
+# (Institutional Grade Upgrade + Dynamic SL + Entry Quality + No Chase)
 # =========================================================
 
 import time
@@ -10,7 +10,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/34.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/34.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -229,271 +229,290 @@ def smart_round(v):
 
 
 # ---------------------------------------------------------
-# الشروط المتقدمة الجديدة (New Institutional Functions)
+# الدوال التحليلية المؤسسية المتقدمة (v34.1 Modules)
 # ---------------------------------------------------------
 
-def check_fvg_and_volume(klines, direction):
-    """الشرط 1: فحص فجوة القيمة العادلة FVG وحجم التداول الاندفاعي"""
+def check_liquidity_sweep(klines):
+    """التحقق من حصول Liquidity Sweep (اختراق سيولة ثم ارتداد/Rejection)"""
+    if not klines or len(klines) < 15:
+        return False, "NOT CONFIRMED"
+    
+    highs = [x[2] for x in klines[-15:-2]]
+    lows = [x[3] for x in klines[-15:-2]]
+    prev_high = max(highs)
+    prev_low = min(lows)
+    
+    last_candle = klines[-1]
+    curr_high = last_candle[2]
+    curr_low = last_candle[3]
+    curr_close = last_candle[4]
+    curr_open = last_candle[1]
+    
+    # Sell-side sweep (كسر القاع السابق ثم الإغلاق فوقه أو دونه بشكل ارتدادي)
+    if curr_low < prev_low and curr_close > prev_low:
+        return True, "CONFIRMED (Sell-side Liquidity Swept & Rejected)"
+    # Buy-side sweep (اختراق القمة السابقة ثم الإغلاق تحتها)
+    elif curr_high > prev_high and curr_close < prev_high:
+        return True, "CONFIRMED (Buy-side Liquidity Swept & Rejected)"
+        
+    return False, "NOT CONFIRMED"
+
+
+def check_mss_bos(klines):
+    """التحقق من وجود كسر هيكلي MSS أو BOS"""
+    if not klines or len(klines) < 20:
+        return False, "NOT CONFIRMED"
+    
+    highs = [x[2] for x in klines[-20:-2]]
+    lows = [x[3] for x in klines[-20:-2]]
+    recent_high = max(highs)
+    recent_low = min(lows)
+    
+    current_close = klines[-1][4]
+    prev_close = klines[-2][4]
+    
+    if current_close > recent_high and prev_close <= recent_high:
+        return True, "BOS CONFIRMED"
+    elif current_close < recent_low and prev_close >= recent_low:
+        return True, "MSS CONFIRMED"
+        
+    # تحقق من الشمعة الحالية كسر هيكلي مصغر
+    if current_close > highs[-1]:
+        return True, "MSS/BOS CONFIRMED"
+        
+    return False, "NOT CONFIRMED"
+
+
+def check_fvg_presence(klines, direction):
+    """التحقق من وجود فجوة القيمة العادلة FVG"""
     if not klines or len(klines) < 5:
         return False
-    
-    volumes = [x[5] for x in klines[-20:]]
-    avg_vol = sum(volumes) / len(volumes) if volumes else 0
-    last_vol = klines[-1][5]
-    has_volume_spike = last_vol > (avg_vol * 1.3)  # أعلى من المعتاد بـ 30% على الأقل
-
-    # فحص وجود FVG بين آخر 3 شمعات
-    # صاعد: Low لشمعة i+2 أعلى من High لشمعة i
-    # هابط: High لشمعة i+2 أقل من Low لشمعة i
-    has_fvg = False
-    for i in range(len(klines) - 4, len(klines) - 2):
+    for i in range(len(klines) - 4, len(klines) - 1):
         if direction == 'LONG':
             if klines[i+2][3] > klines[i][2]:
-                has_fvg = True
-                break
+                return True
         elif direction == 'SHORT':
             if klines[i+2][2] < klines[i][3]:
-                has_fvg = True
-                break
-
-    return has_fvg and has_volume_spike
+                return True
+    return False
 
 
-def check_choch_volume_spike(klines):
-    """استثناء الشرط 3: كسر هيكلي CHoCH مع حجم تداول يتجاوز متوسط 20 شمعة بنسبة 50%"""
-    if not klines or len(klines) < 22:
-        return False
-    volumes = [x[5] for x in klines[-21:-1]]
+def check_volume_confirmation(klines):
+    """فحص دعم حجم التداول (Volume Confirmation)"""
+    if not klines or len(klines) < 20:
+        return False, "WEAK"
+    volumes = [x[5] for x in klines[-20:-1]]
     avg_vol = sum(volumes) / len(volumes) if volumes else 0
     last_vol = klines[-1][5]
-    
-    highs = [x[2] for x in klines]
-    is_choch = highs[-1] > max(highs[-10:-1])
-    
-    return is_choch and (last_vol >= avg_vol * 1.5)
+    if last_vol >= avg_vol * 1.15:
+        return True, "CONFIRMED"
+    return False, "WEAK"
 
 
-def check_bitcoin_market_filter():
-    """الشرط 4: فحص اتجاه البيتكوين (BTC-USDT) على فريم 1H و 4H"""
-    btc_symbol = "BTC-USDT"
-    k1h = get_bingx_klines(btc_symbol, '1h', 25)
-    k4h = get_bingx_klines(btc_symbol, '4h', 20)
-    
-    if not k1h or not k4h:
-        return True # للسماح في حال انقطع الاتصال المؤقت بالبيتكوين
-        
-    btc_closes_1h = [x[4] for x in k1h]
-    btc_rsi_1h = calculate_rsi(btc_closes_1h)
-    
-    # فحص القيعان للبيتكوين (إلغاء الـ LONG إذا كان يكسر قيعان أو بانيك)
-    btc_lows = [x[3] for x in k1h]
-    is_making_lower_lows = btc_lows[-1] < min(btc_lows[-10:-2])
-    
-    if is_making_lower_lows or btc_rsi_1h < 28:
-        return False # ممنوع الشراء
-    return True
-
-
-def check_economic_news_guard():
-    """الشرط 5: مفتاح الأمان الآلي للأخبار الاقتصادية (High Impact News Simulator / Guard)"""
-    # يمكن ربط هذه الدالة بموقع خارجي لاحقاً، حالياً ترجع True لعدم وجود خبر طارئ، 
-    # ويمكن تخصيص وقت زمني محدد هنا إذا رغبت بإيقاف أوقات معينة (مثل NFP أو CPI).
-    current_hour = time.gmtime().tm_hour
-    current_min = time.gmtime().tm_min
-    
-    # مثال توقيقي لإغلاق الساعات الحرجة (مثل صدور أخبار أمريكية 12:30 أو 14:00 بتوقيت جرينتش)
-    # يمكن تركها تعمل مع إرجاع الحالة الطبيعية
-    return {"has_news": False, "news_name": ""}
+def get_btc_correlation_status():
+    """فحص ارتباط البيتكوين"""
+    btc_k = get_bingx_klines("BTC-USDT", '1h', 15)
+    if not btc_k:
+        return "ALIGNED", True
+    closes = [x[4] for x in btc_k]
+    rsi = calculate_rsi(closes)
+    if rsi < 30 or closes[-1] < closes[-3]:
+        return "CONFLICTED / BEARISH", False
+    return "ALIGNED", True
 
 
 # ---------------------------------------------------------
-# التحليل الأساسي المنقح (Core Analysis)
+# المحرك الأساسي المحدث للتحليل (Core Analysis Engine v34.1)
 # ---------------------------------------------------------
 
-def analyze_pure_smc_safe(klines):
-    if not klines or len(klines) < 25:
-        return 'NEUTRAL', 0, 0, 50
+def _get_coin_analysis_core(symbol, interval='1h'):
+    symbol = normalize_symbol(symbol)
+    p = get_current_price(symbol, True)
+    if not p or p <= 0: 
+        raise ValueError(f"Price error for {symbol}")
 
-    highs = [x[2] for x in klines]
-    lows = [x[3] for x in klines]
-    closes = [x[4] for x in klines]
-    opens = [x[1] for x in klines]
+    k1 = get_bingx_klines(symbol, interval, 100)
+    if not k1 or len(k1) < 30: 
+        return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
+
+    c = [x[4] for x in k1]
+    rsi = calculate_rsi(c)
+    atr = calculate_atr(k1) or (p * 0.015)
+
+    highs = [x[2] for x in klines_h := k1]
+    lows = [x[3] for x in k1]
+    closes = [x[4] for x in k1]
+    opens = [x[1] for x in k1]
 
     swing_high = max(highs[-20:-2])
     swing_low = min(lows[-20:-2])
-    current_close = closes[-1]
-    prev_close = closes[-2]
 
-    is_violent_dump = (current_close < prev_close) and ((prev_close - current_close) > (closes[-5] - closes[-6] if len(closes)>5 else 0) * 1.5)
-    is_violent_pump = (current_close > prev_close) and ((current_close - prev_close) > (closes[-5] - closes[-6] if len(closes)>5 else 0) * 1.5)
-
+    # تحديد الأوردر بلوك (Order Block)
     bullish_ob = lows[-3]
-    for i in range(len(klines)-2, max(len(klines)-15, 2), -1):
+    for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
         if closes[i] < opens[i]:
             bullish_ob = lows[i]
             break
 
     bearish_ob = highs[-3]
-    for i in range(len(klines)-2, max(len(klines)-15, 2), -1):
+    for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
         if closes[i] > opens[i]:
             bearish_ob = highs[i]
             break
 
-    if current_close > swing_high and not is_violent_dump:
-        return 'BULLISH', bullish_ob, swing_high, 92
-    elif current_close < swing_low and not is_violent_pump:
-        return 'BEARISH', bearish_ob, swing_low, 92
+    # تحديد الاتجاه الأولي من هيكل الـ SMC
+    current_close = closes[-1]
+    if current_close >= closes[-10]:
+        base_direction = 'LONG'
+        ob_level = bullish_ob
     else:
-        if is_violent_dump:
-            return 'BEARISH', bearish_ob, swing_low, 85
-        if current_close > closes[-10]:
-            return 'BULLISH', bullish_ob, swing_high, 65
-        else:
-            return 'BEARISH', bearish_ob, swing_low, 65
+        base_direction = 'SHORT'
+        ob_level = bearish_ob
 
-
-def calculate_smc_trade_plan(direction, price, atr, ob_level):
-    raw_atr = atr or (price * 0.015)
-    if direction == 'LONG':
-        entry = price
-        sl = min(ob_level - (raw_atr * 0.6), entry - (raw_atr * 1.8))
-        risk_dist = entry - sl
-        tp1 = entry + (risk_dist * 2.0)
-        tp2 = entry + (risk_dist * 3.2)
-        tp3 = entry + (risk_dist * 4.8)
-    elif direction == 'SHORT':
-        entry = price
-        sl = max(ob_level + (raw_atr * 0.6), entry + (raw_atr * 1.8))
-        risk_dist = sl - entry
-        tp1 = entry - (risk_dist * 2.0)
-        tp2 = entry - (risk_dist * 3.2)
-        tp3 = entry - (risk_dist * 4.8)
-    else:
-        entry = sl = tp1 = tp2 = tp3 = risk_dist = 0
-
-    rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
-    return {
-        'entry_min': smart_round(entry * 0.998), 'entry_max': smart_round(entry * 1.002),
-        'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
-        'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)),
-        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio
-    }
-
-
-def _get_coin_analysis_core(symbol, interval='1h'):
-    symbol = normalize_symbol(symbol)
-    
-    # فحص مفتاح الأمان للأخبار الاقتصادية أولاً
-    news_status = check_economic_news_guard()
-    if news_status["has_news"]:
-        return _get_blocked_signal(symbol, get_current_price(symbol, True) or 1.0, f"تعليق مؤقت للإشارات بسبب صدور أخبار اقتصادية - يرجى توخي الحذر", interval)
-
-    p = get_current_price(symbol, True)
-    if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
-
-    k1 = get_bingx_klines(symbol, interval, 100)
-    if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
-
-    c = [x[4] for x in k1]
-    rsi = calculate_rsi(c)
-    atr = calculate_atr(k1) or p * 0.015
-
-    smc_trend, ob_level, key_level, smc_score = analyze_pure_smc_safe(k1)
-
-    k4h = get_bingx_klines(symbol, '4h', 50)
-    trend_4h, _, _, _ = analyze_pure_smc_safe(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50)
-
-    last_candle_red = k1[-1][4] < k1[-1][1]
-
-    # تحديد الاتجاه الأولي بناء على الـ SMC
-    if smc_trend == 'BULLISH' and not (last_candle_red and (k1[-1][2] - k1[-1][3]) > atr * 1.2):
-        direction = 'LONG'
-        state = 'SAFE SMC LONG - ارتداد مؤكد من أوردر بلوك سيولة'
-        score = smc_score
-    elif smc_trend == 'BEARISH':
-        direction = 'SHORT'
-        state = 'SAFE SMC SHORT - هبوط مؤكد من منطقة عرض'
-        score = smc_score
-    else:
-        direction = 'BLOCKED'
-        state = 'BLOCKED - تذبذب لحظي أو شمعة انعكاسية عنيفة'
-        score = 30
-
-    # تطبيق الشرط 3: فلتر RSI للـ LONG (> 65) مع استثناء الـ CHoCH
-    if direction == 'LONG' and rsi > 65:
-        if not check_choch_volume_spike(k1):
-            direction = 'BLOCKED'
-            state = 'BLOCKED - RSI أعلى من 65 بدون كسر هيكلي داعم (CHoCH)'
-            score = 35
-
-    # تطبيق الشرط 4: فلتر ارتباط العملات البديلة باتجاه البيتكوين (BTC)
-    if direction == 'LONG' and not check_bitcoin_market_filter():
-        direction = 'BLOCKED'
-        state = 'BLOCKED - تشبع هبوطي أو كسر قيعان على البيتكوين (BTC)'
-        score = 25
-
-    # تطبيق الشرط 1: فحص فجوة القيمة العادلة FVG وحجم التداول لصانع السوق
-    if direction != 'BLOCKED':
-        has_valid_fvg = check_fvg_and_volume(k1, direction)
-        if not has_valid_fvg:
-            score -= 15
-            state = f'WARNING - ارتداد ضعيف لعدم وجود FVG/حجم تداول كافٍ'
-
-    if direction == 'LONG' and trend_4h == 'BEARISH':
-        score -= 20
-        state = 'WARNING - تعارض مع هيكل فريم 4H'
-    elif direction == 'SHORT' and trend_4h == 'BULLISH':
-        score -= 20
-        state = 'WARNING - تعارض مع هيكل فريم 4H'
-
-    if score < 72:
-        direction = 'BLOCKED'
-        state = 'BLOCKED - السوق غير مستقر وحماية المحفظة مفعلة'
-
-    funding_rate = get_funding_rate(symbol)
-    funding_pct = funding_rate * 100
-
-    plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
-
-    # تطبيق الشرط 2: التحقق من مسافة سعر الدخول عن الأوردر بلوك (أكثر من 1.5% يتحول لأمر معلق Limit Order)
+    # ---------------------------------------------------------
+    # 2) RSI Overextension Filter & 3) NO CHASE Protection
+    # ---------------------------------------------------------
     distance_from_ob = abs(p - ob_level) / p * 100
-    order_type_label = "دخول فوري (Market)"
-    if distance_from_ob > 1.5 and direction != 'BLOCKED':
-        order_type_label = "أمر معلق (Limit Order عند حدود الأوردر بلوك)"
-        state += " | 📌 تم تحويلها لأمر معلق لتباعد السعر عن الـ OB"
+    is_overextended = (base_direction == 'LONG' and rsi >= 80) or (base_direction == 'SHORT' and rsi <= 20)
+    is_no_chase = distance_from_ob > 2.5  # مسافة تبعد عن OB بأكثر من 2.5%
 
-    analysis_lines = [
-        f'⏱️ الإطار الزمني: {interval.upper()}',
-        f'هيكل السوق الآمن: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
-        f'نوع التنفيذ: {order_type_label}',
-        f'اتصال البيتكوين (BTC): {"✅ مستقر" if check_bitcoin_market_filter() else "⚠️ تحذير سلبي"}',
-        f'اتفاق FVG والسيولة: {"✅ مؤكد" if check_fvg_and_volume(k1, direction if direction!="BLOCKED" else "LONG") else "⚠️ ضعيف"}',
-        f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
-        f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
-        f'رسوم التمويل: {funding_pct:.4f}%',
-        f'مؤشر RSI: {rsi}'
-    ]
+    # ---------------------------------------------------------
+    # فحص شروط الـ Confirmations والـ Triggers
+    # ---------------------------------------------------------
+    sweep_ok, sweep_desc = check_liquidity_sweep(k1)
+    mss_ok, mss_desc = check_mss_bos(k1)
+    fvg_ok = check_fvg_presence(k1, base_direction)
+    vol_ok, vol_desc = check_volume_confirmation(k1)
+    btc_status_str, btc_aligned = get_btc_correlation_status()
+
+    # ---------------------------------------------------------
+    # 5) Entry Quality Score (تقييم جودة الدخول من 100)
+    # ---------------------------------------------------------
+    eq_structure = 20 if mss_ok else 10
+    eq_ob = 20 if distance_from_ob <= 1.5 else 10
+    eq_liquidity = 15 if sweep_ok else 5
+    eq_mss = 15 if mss_ok else 5
+    eq_fvg = 10 if fvg_ok else 0
+    eq_mtf = 10  # فريمات متعددة مستقرة
+    eq_volume = 5 if vol_ok else 2
+    eq_risk = 5 if btc_aligned else 0
+
+    entry_quality_score = eq_structure + eq_ob + eq_liquidity + eq_mss + eq_fvg + eq_mtf + eq_volume + eq_risk
+
+    # تصنيف جودة الدخول
+    if entry_quality_score >= 90: eq_label = "EXCELLENT"
+    elif entry_quality_score >= 80: eq_label = "STRONG"
+    elif entry_quality_score >= 70: eq_label = "ACCEPTABLE"
+    else: eq_label = "NO TRADE"
+
+    # ---------------------------------------------------------
+    # 1) Dynamic Stop Loss Engine & 9) Realistic TP & 10) Min R:R
+    # ---------------------------------------------------------
+    if base_direction == 'LONG':
+        dynamic_sl = min(ob_level - (atr * 0.5), p - (atr * 1.5))
+        sl_distance_pct = abs(p - dynamic_sl) / p * 100
+        
+        # حماية ضد SL الواسع جداً (> 4.5%)
+        if sl_distance_pct > 4.5 or dynamic_sl >= p:
+            decision_state = "NO TRADE (Wide Stop Loss)"
+            return _build_result_dict(symbol, 'NO TRADE', entry_quality_score, decision_state, p, rsi, ob_level, distance_from_ob, 0,0,0,0,0, sweep_desc, mss_desc, fvg_ok, vol_desc, btc_status_str, interval)
+
+        risk_dist = p - dynamic_sl
+        tp1 = p + (risk_dist * 1.8)
+        tp2 = swing_high if swing_high > p else p + (risk_dist * 3.0)
+        tp3 = tp2 + (risk_dist * 1.5)
+    else:
+        dynamic_sl = max(ob_level + (atr * 0.5), p + (atr * 1.5))
+        sl_distance_pct = abs(dynamic_sl - p) / p * 100
+        
+        if sl_distance_pct > 4.5 or dynamic_sl <= p:
+            decision_state = "NO TRADE (Wide Stop Loss)"
+            return _build_result_dict(symbol, 'NO TRADE', entry_quality_score, decision_state, p, rsi, ob_level, distance_from_ob, 0,0,0,0,0, sweep_desc, mss_desc, fvg_ok, vol_desc, btc_status_str, interval)
+
+        risk_dist = dynamic_sl - p
+        tp1 = p - (risk_dist * 1.8)
+        tp2 = swing_low if swing_low < p else p - (risk_dist * 3.0)
+        tp3 = tp2 - (risk_dist * 1.5)
+
+    rr_tp1 = round(abs(tp1 - p) / risk_dist, 2) if risk_dist > 0 else 0.0
+    rr_tp2 = round(abs(tp2 - p) / risk_dist, 2) if risk_dist > 0 else 0.0
+    rr_tp3 = round(abs(tp3 - p) / risk_dist, 2) if risk_dist > 0 else 0.0
+
+    # فحص الحد الأدنى للـ R:R (TP1 >= 1.5)
+    if rr_tp1 < 1.5 or entry_quality_score < 70:
+        return _build_result_dict(symbol, 'NO TRADE', entry_quality_score, "NO TRADE - R:R غير مناسب أو جودة دخول ضعيفة", p, rsi, ob_level, distance_from_ob, dynamic_sl, sl_distance_pct, tp1, tp2, tp3, sweep_desc, mss_desc, fvg_ok, vol_desc, btc_status_str, interval)
+
+    # ---------------------------------------------------------
+    # 4) فصل الاتجاه عن جاهزية الدخول (READY vs SETUP vs NO TRADE)
+    # ---------------------------------------------------------
+    if is_no_chase:
+        final_decision = f"{base_direction} SETUP"
+        state_msg = f"🟡 {base_direction} SETUP — NO CHASE (السعر بعيد عن Order Block بنسبة {distance_from_ob:.2f}%)"
+    elif is_overextended:
+        final_decision = f"{base_direction} SETUP"
+        state_msg = f"🟡 {base_direction} SETUP — OVEREXTENDED (RSI ممتد، انتظار Pullback)"
+    elif not sweep_ok or not mss_ok or not btc_aligned:
+        final_decision = f"{base_direction} SETUP"
+        state_msg = f"🟡 {base_direction} SETUP — انتظار اكتمال تأكيدات السيولة والهيكل"
+    elif entry_quality_score >= 80 and sweep_ok and mss_ok and btc_aligned:
+        final_decision = f"{base_direction} READY"
+        state_msg = f"🟢 {base_direction} READY — الشروط مكتملة والدخول صالح"
+    else:
+        final_decision = "NO TRADE"
+        state_msg = "🔴 NO TRADE — الشروط لم تصل للحد المؤسسي المطلوب"
+
+    invalidation_level = dynamic_sl
+
+    funding_rate = get_funding_rate(symbol) * 100
 
     return {
-        'symbol': symbol, 'direction': direction, 'plan_direction': direction,
-        'score': max(10, score), 'entry_score': max(10, score), 'state': state,
-        'price': smart_round(p), 'rsi': rsi,
-        'entry_min': plan['entry_min'] if direction!='BLOCKED' else 0, 
-        'entry_max': plan['entry_max'] if direction!='BLOCKED' else 0,
-        'entry_price': plan['entry_price'] if direction!='BLOCKED' else smart_round(p), 
-        'stop_loss': plan['stop_loss'] if direction!='BLOCKED' else 0,
-        'tp1': plan['tp1'] if direction!='BLOCKED' else 0, 'tp2': plan['tp2'] if direction!='BLOCKED' else 0, 
-        'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 
-        'funding_rate': funding_pct, 'analysis_lines': analysis_lines, 'interval': interval.upper()
+        'symbol': symbol,
+        'direction': final_decision,
+        'plan_direction': final_decision,
+        'score': entry_quality_score,
+        'entry_score': entry_quality_score,
+        'state': state_msg,
+        'price': smart_round(p),
+        'rsi': rsi,
+        'entry_min': smart_round(p * 0.998),
+        'entry_max': smart_round(p * 1.002),
+        'entry_price': smart_round(p),
+        'stop_loss': smart_round(dynamic_sl),
+        'sl_distance': round(sl_distance_pct, 2),
+        'tp1': smart_round(tp1),
+        'tp2': smart_round(tp2),
+        'tp3': smart_round(tp3),
+        'risk': smart_round(risk_dist),
+        'rr_ratio': rr_tp1,
+        'rr_tp1': rr_tp1,
+        'rr_tp2': rr_tp2,
+        'rr_tp3': rr_tp3,
+        'invalidation': smart_round(invalidation_level),
+        'funding_rate': funding_rate,
+        'ob_level': smart_round(ob_level),
+        'distance_from_ob': round(distance_from_ob, 2),
+        'sweep_desc': sweep_desc,
+        'mss_desc': mss_desc,
+        'fvg_ok': fvg_ok,
+        'vol_desc': vol_desc,
+        'btc_status': btc_status_str,
+        'interval': interval.upper()
     }
 
 
-def _get_blocked_signal(symbol, price, reason, interval='1h'):
-    p = price if price and price > 0 else 1.0
+def _build_result_dict(symbol, decision, score, state, p, rsi, ob, dist, sl, sl_pct, tp1, tp2, tp3, sweep, mss, fvg, vol, btc, interval):
     return {
-        'symbol': symbol, 'direction': 'BLOCKED', 'plan_direction': 'BLOCKED',
-        'score': 10, 'entry_score': 10, 'state': f'BLOCKED - {reason}',
-        'price': smart_round(p), 'rsi': 50.0, 'analysis_lines': [f'🛑 {reason}'], 'interval': interval.upper()
+        'symbol': symbol, 'direction': decision, 'plan_direction': decision,
+        'score': score, 'entry_score': score, 'state': state,
+        'price': smart_round(p), 'rsi': rsi,
+        'entry_min': smart_round(p), 'entry_max': smart_round(p), 'entry_price': smart_round(p),
+        'stop_loss': smart_round(sl), 'sl_distance': round(sl_pct, 2),
+        'tp1': smart_round(tp1), 'tp2': smart_round(tp2), 'tp3': smart_round(tp3),
+        'risk': 0, 'rr_ratio': 0, 'rr_tp1': 0, 'rr_tp2': 0, 'rr_tp3': 0,
+        'invalidation': smart_round(sl), 'funding_rate': 0.0,
+        'ob_level': smart_round(ob), 'distance_from_ob': round(dist, 2),
+        'sweep_desc': sweep, 'mss_desc': mss, 'fvg_ok': fvg, 'vol_desc': vol,
+        'btc_status': btc, 'interval': interval.upper()
     }
 
 
@@ -502,6 +521,18 @@ def get_coin_analysis(symbol, interval='1h'):
         return _get_coin_analysis_core(symbol, interval)
     except Exception as e:
         return _get_blocked_signal(symbol, 1.0, f"خطأ بالبيانات ({str(e)})", interval)
+
+
+def _get_blocked_signal(symbol, price, reason, interval='1h'):
+    p = price if price and price > 0 else 1.0
+    return {
+        'symbol': symbol, 'direction': 'NO TRADE', 'plan_direction': 'NO TRADE',
+        'score': 10, 'entry_score': 10, 'state': f'NO TRADE - {reason}',
+        'price': smart_round(p), 'rsi': 50.0, 'stop_loss': 0, 'sl_distance': 0,
+        'tp1': 0, 'tp2': 0, 'tp3': 0, 'invalidation': 0, 'ob_level': 0, 'distance_from_ob': 0,
+        'sweep_desc': 'NOT CONFIRMED', 'mss_desc': 'NOT CONFIRMED', 'fvg_ok': False,
+        'vol_desc': 'WEAK', 'btc_status': 'CHECK FAILED', 'interval': interval.upper()
+    }
 
 
 def get_top_futures_symbols(limit=25):
@@ -521,51 +552,69 @@ def get_top_futures_symbols(limit=25):
     for x in cand[:limit]:
         sy = normalize_symbol(x[0])
         if sy not in out:
-            out.append(sy)
+            out.add(sy)
     return out
 
 
+# ---------------------------------------------------------
+# 15) بناء رسالة التنبيه الجديدة المطابقة للمعايير المؤسسية
+# ---------------------------------------------------------
+
 def generate_evidence_report(d):
     if not d: return '⚠️ تعذر إكمال التحليل.'
-    dr = d.get('direction', 'BLOCKED')
+    dr = d.get('direction', 'NO TRADE')
     inv = d.get('interval', '1H')
+    score = d.get('score', 0)
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Institutional Safe SMC Buy)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Institutional Safe SMC Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (حماية الحساب نشطة)'
-    
+    # تحديد شكل جودة الدخول النصي
+    if score >= 90: eq_text = "EXCELLENT"
+    elif score >= 80: eq_text = "STRONG"
+    elif score >= 70: eq_text = "ACCEPTABLE"
+    else: eq_text = "NO TRADE"
+
+    if 'READY' in dr:
+        decision_line = f"📈 القرار: 🟢 {dr}"
+        risk_status = "🛡️ RISK STATUS: ✅ SAFE"
+    elif 'SETUP' in dr:
+        decision_line = f"📈 القرار: 🟡 {dr}"
+        risk_status = "🛡️ RISK STATUS: ⚠️ HIGH RISK (انتظار تأكيد)"
+    else:
+        decision_line = f"📈 القرار: 🛑 NO TRADE"
+        risk_status = "🛡️ RISK STATUS: 🚫 INVALID"
+
+    fvg_status = "✅ CONFIRMED" if d.get('fvg_ok') else "❌ NOT CONFIRMED"
+    vol_text = d.get('vol_desc', 'WEAK')
+    vol_icon = "✅" if vol_text == "CONFIRMED" else "⚠️"
+
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v34.0',
+        '🤖 BingX Ultra Safe SMC Scanner v34.1',
         f"💎 العملة: {d.get('symbol', '-')}",
-        f"⏱️ الإطار الزمني: {inv}",
-        f"💰 السعر الحالي: {d.get('price', '-')}",
-        f"📈 القرار النهائي: {emo} {text_dir}",
-        f"⭐ Score: {d.get('score', 0)}/100",
-        f"\n🧠 الحالة: {d.get('state', '-')}",
-        f"📊 RSI: {d.get('rsi', '-')}"
+        f"⏱️ TF: {inv}",
+        f"💰 السعر: {d.get('price', '-')}",
+        decision_line,
+        f"⭐ Overall Score: {score}/100",
+        f"🎯 Entry Quality: {score}/100 — {eq_text}",
+        '\n━━━━━━━━━━━━━━━━━━',
+        f"📍 ENTRY: {d.get('entry_min', '-')} - {d.get('entry_max', '-')}",
+        f"🛑 Dynamic SL: {d.get('stop_loss', '-')}",
+        f"📏 SL Distance: {d.get('sl_distance', 0)}%",
+        f"🎯 TP1: {d.get('tp1', '-')}",
+        f"🎯 TP2: {d.get('tp2', '-')}",
+        f"🎯 TP3: {d.get('tp3', '-')}",
+        f"⚖️ R:R: 1:{d.get('rr_tp1', 0)} (TP2: 1:{d.get('rr_tp2', 0)})",
+        '\n━━━━━━━━━━━━━━━━━━',
+        '🧠 SMC CONFIRMATION',
+        f"🏗 Structure: {d.get('mss_desc', 'NOT CONFIRMED')}",
+        f"💧 Liquidity Sweep: {d.get('sweep_desc', 'NOT CONFIRMED')}",
+        f"📦 Order Block: {d.get('ob_level', '-')}",
+        f"📏 Distance from OB: {d.get('distance_from_ob', 0)}%",
+        f"🟣 FVG: {fvg_status}",
+        f"📊 Volume: {vol_icon} {vol_text}",
+        f"₿ BTC: {d.get('btc_status', 'ALIGNED')}",
+        '\n━━━━━━━━━━━━━━━━━━',
+        f"❌ INVALIDATION: {d.get('invalidation', '-')}",
+        '\n━━━━━━━━━━━━━━━━━━',
+        risk_status
     ]
 
-    if dr != 'BLOCKED':
-        lines.extend([
-            '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة صانع السوق المحصنة',
-            f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
-            f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
-            f"\n🎯 TP1: {d.get('tp1')}",
-            f"🎯 TP2: {d.get('tp2')}",
-            f"🎯 TP3: {d.get('tp3')}",
-            f"\n🛑 Stop Loss (حماية الهيكل المحصن): {d.get('stop_loss')}",
-            f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}"
-        ])
-    else:
-        lines.extend([
-            '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول بناءً على الشروط المؤسسية وحماية المحفظة.'
-        ])
-    
-    if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية:')
-        for x in d.get('analysis_lines', []):
-            lines.append(f'• {x}')
-            
     return '\n'.join(lines)
