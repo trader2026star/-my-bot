@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - Binance Ultra Safe Pure SMC Scanner v33.1
+# analysis.py - Binance Ultra Safe Pure SMC Scanner v33.2
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINANCE_URL = 'https://fapi.binance.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'Binance-UltraSMC/33.1', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'Binance-UltraSMC/33.2', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -262,6 +262,10 @@ def calculate_smc_trade_plan(direction, price, atr, ob_level):
 
 def _get_coin_analysis_core(symbol, interval='1h'):
     symbol = normalize_symbol(symbol)
+    
+    if not symbol_exists(symbol):
+        raise ValueError(f"Symbol {symbol} not traded on Binance Futures")
+
     p = get_current_price(symbol, True)
     if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
 
@@ -374,7 +378,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
     
     lines = [
-        '🤖 Binance Ultra Safe SMC Scanner v33.1',
+        '🤖 Binance Ultra Safe SMC Scanner v33.2',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
