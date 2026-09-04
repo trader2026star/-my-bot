@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.0
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.0 (Enhanced)
 # =========================================================
 
 import time
@@ -314,6 +314,14 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     k4h = get_bingx_klines(symbol, '4h', 50)
     trend_4h, _, _, _ = analyze_pure_smc_safe(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50)
 
+    # التحقق من حالة البيتكوين للتوافق
+    btc_k = get_bingx_klines('BTC-USDT', '1h', 20)
+    btc_stable = True
+    if btc_k and len(btc_k) >= 5:
+        btc_change = (btc_k[-1][4] - btc_k[-5][4]) / btc_k[-5][4]
+        if btc_change < -0.025: # هبوط حاد للبيتكوين يؤثر على السوق
+            btc_stable = False
+
     last_candle_red = k1[-1][4] < k1[-1][1]
 
     if smc_trend == 'BULLISH' and rsi < 78 and not (last_candle_red and (k1[-1][2] - k1[-1][3]) > atr * 1.2):
@@ -346,9 +354,11 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
 
     analysis_lines = [
-        f'⏱️ الإطار الزمني: {interval.upper()}',
+        f'الإطار الزمني: {interval.upper()}',
         f'هيكل السوق الآمن: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
-        f'فلتر الأمان اللحظي: {"✅ مستقر" if not last_candle_red else "⚠️ شمعة هبوط نشطة"}',
+        f'نوع التنفيذ: أمر معلق (Limit Order) عند حدود الأوردر بلوك',
+        f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ متذبذب أو هابط"}',
+        f'اتفاق FVG والسيولة: {"✅ مؤكد" if score >= 80 else "⚠️ ضعيف"}',
         f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
         f'رسوم التمويل: {funding_pct:.4f}%',
@@ -411,8 +421,8 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Safe SMC Buy Setup)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Safe SMC Sell Setup)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Institutional Safe SMC Buy)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Institutional Safe SMC Sell)'
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
     
     lines = [
