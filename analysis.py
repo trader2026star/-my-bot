@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - Binance Ultra Safe Pure SMC Scanner v33.2
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.0
 # =========================================================
 
 import time
@@ -7,9 +7,9 @@ import logging
 import threading
 import requests
 
-BINANCE_URL = 'https://fapi.binance.com'
+BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'Binance-UltraSMC/33.2', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -31,10 +31,14 @@ _REQUEST_LOCK = threading.Lock()
 
 def normalize_symbol(s):
     s = str(s).strip().upper().replace(' ', '').replace('-', '').replace('_', '').replace('/', '')
-    return s if s.endswith('USDT') else s + 'USDT'
+    if not s.endswith('USDT'):
+        s = s + '-USDT' if '-' not in s else s
+    if s.endswith('USDT') and '-' not in s:
+        s = s[:-4] + '-USDT'
+    return s
 
 
-def binance_get(path, params=None, timeout=12):
+def bingx_get(path, params=None, timeout=12):
     global _RATE_LIMIT_UNTIL, _LAST_REQUEST_TIME
     with _RATE_LOCK:
         if time.time() < _RATE_LIMIT_UNTIL: return None
@@ -43,13 +47,15 @@ def binance_get(path, params=None, timeout=12):
         if wait > 0: time.sleep(wait)
         _LAST_REQUEST_TIME = time.time()
     try:
-        r = SESSION.get(BINANCE_URL + path, params=params or {}, timeout=timeout)
+        r = SESSION.get(BINGX_URL + path, params=params or {}, timeout=timeout)
         if r.status_code != 200:
             if r.status_code == 429:
                 with _RATE_LOCK: _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, time.time() + 60)
             return None
         d = r.json()
-        return d
+        if isinstance(d, dict) and d.get('code', 0) == 0:
+            return d.get('data')
+        return d.get('data') if isinstance(d, dict) and 'data' in d else d
     except Exception:
         return None
 
@@ -58,14 +64,19 @@ def get_futures_symbols(force_refresh=False):
     global _SYMBOL_CACHE, _SYMBOL_CACHE_TIME
     if not force_refresh and _SYMBOL_CACHE and time.time()-_SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS:
         return set(_SYMBOL_CACHE)
-    d = binance_get('/fapi/v1/exchangeInfo')
+    d = bingx_get('/openApi/swap/v2/quote/contracts')
     out = set()
+    rows = []
     if isinstance(d, dict):
-        for x in d.get('symbols', []):
-            if isinstance(x, dict) and x.get('contractType') == 'PERPETUAL' and x.get('status') == 'TRADING':
-                s = str(x.get('symbol', '')).upper()
-                if s.endswith('USDT'):
-                    out.add(s)
+        rows = d.get('contracts', [])
+    elif isinstance(d, list):
+        rows = d
+    for x in rows:
+        if isinstance(x, dict):
+            s = str(x.get('symbol', '')).upper()
+            if s:
+                out.add(s)
+                out.add(normalize_symbol(s))
     if out:
         _SYMBOL_CACHE, _SYMBOL_CACHE_TIME = out, time.time()
         return set(_SYMBOL_CACHE)
@@ -74,29 +85,32 @@ def get_futures_symbols(force_refresh=False):
 
 def symbol_exists(s):
     sy = get_futures_symbols()
-    return not sy or normalize_symbol(s) in sy
+    return not sy or normalize_symbol(s) in sy or s in sy
 
 
 def _ticker_rows(force=False):
     global _TICKER_CACHE, _TICKER_CACHE_TIME
     if not force and _TICKER_CACHE is not None and time.time()-_TICKER_CACHE_TIME < TICKER_CACHE_SECONDS:
         return _TICKER_CACHE
-    x = binance_get('/fapi/v1/ticker/24hr')
+    x = bingx_get('/openApi/swap/v2/quote/ticker')
     if isinstance(x, list):
         _TICKER_CACHE, _TICKER_CACHE_TIME = x, time.time()
         return x
+    elif isinstance(x, dict) and 'tickers' in x:
+        _TICKER_CACHE, _TICKER_CACHE_TIME = x['tickers'], time.time()
+        return x['tickers']
     return []
 
 
 def get_funding_rate(symbol):
     symbol = normalize_symbol(symbol)
-    d = binance_get('/fapi/v1/premiumIndex', {'symbol': symbol})
+    d = bingx_get('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol})
     if isinstance(d, dict):
         try:
-            return float(d.get('lastFundingRate', 0))
+            return float(d.get('fundingRate', 0))
         except Exception:
             pass
-    return 0.0
+    return 0.015
 
 
 def _parse(rows):
@@ -105,7 +119,16 @@ def _parse(rows):
         return out
     for x in rows:
         try:
-            if isinstance(x, list) and len(x) >= 6:
+            if isinstance(x, dict):
+                t = int(x.get('time', x.get('openTime', 0)))
+                o = float(x.get('open', 0))
+                h = float(x.get('high', 0))
+                l = float(x.get('low', 0))
+                c = float(x.get('close', 0))
+                v = float(x.get('volume', 0))
+                if t > 0 and c > 0:
+                    out.append([t, o, h, l, c, v])
+            elif isinstance(x, list) and len(x) >= 6:
                 t, o, h, l, c, v = x[:6]
                 out.append([int(t), float(o), float(h), float(l), float(c), float(v or 0)])
         except Exception:
@@ -121,14 +144,17 @@ def _parse(rows):
     return clean
 
 
-def get_binance_klines(s, interval='1h', limit=100):
+def get_bingx_klines(s, interval='1h', limit=100):
     s = normalize_symbol(s)
     key = (s, str(interval).lower(), int(limit))
     now = time.time()
     c = _KLINE_CACHE.get(key)
     if c and now - c[0] < KLINE_CACHE_SECONDS: return c[1]
     
-    d = binance_get('/fapi/v1/klines', {'symbol': s, 'interval': str(interval).lower(), 'limit': int(limit)})
+    mp = {'1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d'}
+    bi = mp.get(str(interval).lower(), '1h')
+    
+    d = bingx_get('/openApi/swap/v2/quote/klines', {'symbol': s, 'interval': bi, 'limit': int(limit)})
     r = _parse(d)
     if r and len(r) > 0:
         _KLINE_CACHE[key] = (now, r)
@@ -142,7 +168,7 @@ def get_current_price(s, force=False):
     c = _PRICE_CACHE.get(s)
     if not force and c and now - c[0] < PRICE_CACHE_SECONDS: return c[1]
     
-    d = binance_get('/fapi/v1/ticker/price', {'symbol': s})
+    d = bingx_get('/openApi/swap/v2/quote/price', {'symbol': s})
     if isinstance(d, dict) and 'price' in d:
         try:
             p = float(d.get('price', 0))
@@ -152,7 +178,18 @@ def get_current_price(s, force=False):
         except Exception:
             pass
             
-    k = get_binance_klines(s, '1m', 5)
+    rows = _ticker_rows()
+    for x in rows:
+        if isinstance(x, dict) and str(x.get('symbol', '')).upper() in [s, s.replace('-', '')]:
+            try:
+                p = float(x.get('lastPrice', x.get('price', 0)))
+                if p > 0:
+                    _PRICE_CACHE[s] = (now, p)
+                    return p
+            except Exception:
+                pass
+                
+    k = get_bingx_klines(s, '1m', 5)
     if k and len(k) > 0 and k[-1][4] > 0:
         _PRICE_CACHE[s] = (now, k[-1][4])
         return k[-1][4]
@@ -262,14 +299,10 @@ def calculate_smc_trade_plan(direction, price, atr, ob_level):
 
 def _get_coin_analysis_core(symbol, interval='1h'):
     symbol = normalize_symbol(symbol)
-    
-    if not symbol_exists(symbol):
-        raise ValueError(f"Symbol {symbol} not traded on Binance Futures")
-
     p = get_current_price(symbol, True)
     if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
 
-    k1 = get_binance_klines(symbol, interval, 100)
+    k1 = get_bingx_klines(symbol, interval, 100)
     if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
 
     c = [x[4] for x in k1]
@@ -278,7 +311,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     smc_trend, ob_level, key_level, smc_score = analyze_pure_smc_safe(k1)
 
-    k4h = get_binance_klines(symbol, '4h', 50)
+    k4h = get_bingx_klines(symbol, '4h', 50)
     trend_4h, _, _, _ = analyze_pure_smc_safe(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50)
 
     last_candle_red = k1[-1][4] < k1[-1][1]
@@ -353,19 +386,24 @@ def get_coin_analysis(symbol, interval='1h'):
 
 
 def get_top_futures_symbols(limit=25):
-    sy = get_futures_symbols()
     rows = _ticker_rows()
     cand = []
     for x in rows:
         try:
-            s = str(x.get('symbol', '')).upper()
-            v = float(x.get('quoteVolume', 0))
-            if s in sy and s.endswith('USDT') and v > 0:
-                cand.append((s, v))
+            if isinstance(x, dict):
+                s = str(x.get('symbol', '')).upper()
+                v = float(x.get('volume', x.get('quoteVolume', 0)))
+                if s and v > 0:
+                    cand.append((s, v))
         except Exception:
             pass
     cand.sort(key=lambda x: x[1], reverse=True)
-    return [x[0] for x in cand[:limit]]
+    out = []
+    for x in cand[:limit]:
+        sy = normalize_symbol(x[0])
+        if sy not in out:
+            out.append(sy)
+    return out
 
 
 def generate_evidence_report(d):
@@ -378,7 +416,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
     
     lines = [
-        '🤖 Binance Ultra Safe SMC Scanner v33.2',
+        '🤖 BingX Ultra Safe SMC Scanner v33.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
