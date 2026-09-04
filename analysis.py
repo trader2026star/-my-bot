@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Futures AI Scanner v30.0 (Auto-Scanner & High-Accuracy Pro)
+# analysis.py - BingX Futures SMC Pro Scanner v31.0
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-SmartMoney-Scanner/30.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-SMC-Pro/31.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -203,18 +203,6 @@ def calculate_atr(k,n=14):
     return a
 
 
-def calculate_supertrend(k, period=10, multiplier=3):
-    if len(k) < period + 1: return None, 'NEUTRAL'
-    atr_val = calculate_atr(k, period)
-    if not atr_val: return None, 'NEUTRAL'
-    hl2 = [(x[2] + x[3]) / 2 for x in k]
-    basic_upperband = [hl2[i] + (multiplier * atr_val) for i in range(len(k))]
-    basic_lowerband = [hl2[i] - (multiplier * atr_val) for i in range(len(k))]
-    current_close = k[-1][4]
-    trend = 'BULLISH' if current_close > basic_lowerband[-1] else 'BEARISH'
-    return basic_lowerband[-1] if trend == 'BULLISH' else basic_upperband[-1], trend
-
-
 def smart_round(v):
     if v is None:return 0
     try:v=float(v)
@@ -226,30 +214,67 @@ def smart_round(v):
     return round(v,8)
 
 
-def calculate_smart_trade_plan(direction, price, atr):
+def analyze_smc_structure(klines):
+    """
+    منطق تحليل هيكل السوق (Smart Money Concepts - SMC)
+    البحث عن مناطق الأوردر بلوك (Order Blocks) وحالة كسر الهيكل (BOS / CHoCH)
+    """
+    if not klines or len(klines) < 20:
+        return 'NEUTRAL', 0, 0, 0
+
+    highs = [x[2] for x in klines]
+    lows = [x[3] for x in klines]
+    closes = [x[4] for x in klines]
+    opens = [x[1] for x in klines]
+
+    recent_high = max(highs[-15:-1])
+    recent_low = min(lows[-15:-1])
+    current_close = closes[-1]
+
+    # اكتشاف الـ Order Block الصاعد (آخر شمعة هابطة قبل الانفجار الصاعد)
+    bullish_ob = lows[-2] if closes[-1] > closes[-2] and closes[-2] < opens[-2] else recent_low
+    # اكتشاف الـ Order Block الهابط (آخر شمعة صاعدة قبل الانفجار الهابط)
+    bearish_ob = highs[-2] if closes[-1] < closes[-2] and closes[-2] > opens[-2] else recent_high
+
+    # فحص كسر الهيكل (Break of Structure)
+    if current_close > recent_high:
+        return 'BULLISH', bullish_ob, recent_high, 95  # هيكل صاعد قوي جداً
+    elif current_close < recent_low:
+        return 'BEARISH', bearish_ob, recent_low, 95   # هيكل هابط قوي جداً
+    else:
+        # تحديد الاتجاه العام بالاستعانة بالمتوسطات أو الشموع الأخيرة
+        if current_close > closes[-5]:
+            return 'BULLISH', bullish_ob, recent_high, 75
+        else:
+            return 'BEARISH', bearish_ob, recent_low, 75
+
+
+def calculate_smc_trade_plan(direction, price, atr, ob_level):
     raw_atr = atr or (price * 0.015)
-    sl_dist = min(max(raw_atr * 0.9, price * 0.015), price * 0.035)
+    # تظبيط وقف الخسارة خلف منطقة الأوردر بلوك أو بناءً على مسافة أمان عالية ضد الـ Fakeout
     if direction == 'LONG':
         entry = price
-        sl = entry - sl_dist
-        tp1 = entry + (sl_dist * 1.5)
-        tp2 = entry + (sl_dist * 2.3)
-        tp3 = entry + (sl_dist * 3.5)
+        sl = min(ob_level - (raw_atr * 0.5), entry - (raw_atr * 1.5))
+        risk_dist = entry - sl
+        tp1 = entry + (risk_dist * 1.8)
+        tp2 = entry + (risk_dist * 2.8)
+        tp3 = entry + (risk_dist * 4.2)
     elif direction == 'SHORT':
         entry = price
-        sl = entry + sl_dist
-        tp1 = entry - (sl_dist * 1.5)
-        tp2 = entry - (sl_dist * 2.3)
-        tp3 = entry - (sl_dist * 3.5)
+        sl = max(ob_level + (raw_atr * 0.5), entry + (raw_atr * 1.5))
+        risk_dist = sl - entry
+        tp1 = entry - (risk_dist * 1.8)
+        tp2 = entry - (risk_dist * 2.8)
+        tp3 = entry - (risk_dist * 4.2)
     else:
-        entry = sl = tp1 = tp2 = tp3 = sl_dist = 0
+        entry = sl = tp1 = tp2 = tp3 = risk_dist = 0
 
-    rr_ratio = round(abs(tp1 - entry) / sl_dist, 2) if sl_dist > 0 else 0.0
+    rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
     return {
-        'entry_min': smart_round(entry * 0.9985), 'entry_max': smart_round(entry * 1.001),
+        'entry_min': smart_round(entry * 0.998), 'entry_max': smart_round(entry * 1.002),
         'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
         'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)),
-        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(sl_dist), 'rr_ratio': rr_ratio
+        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio
     }
 
 
@@ -259,67 +284,74 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
 
     k1 = get_bingx_klines(symbol, interval, 100)
-    if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات غير كافية", interval)
+    if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات غير كافية للسوق", interval)
 
     c = [x[4] for x in k1]
     v = [x[5] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
+    # فحص السيولة وحجم التداول (يجب أن يكون قوي لتجنب الخدع)
     current_volume = v[-1]
-    avg_volume_24 = sum(v[-25:-1]) / 24 if len(v) >= 25 else sum(v) / len(v)
-    volume_ok = current_volume >= (avg_volume_24 * 1.5)
+    avg_volume = sum(v[-20:]) / 20 if len(v) >= 20 else sum(v) / len(v)
+    volume_ok = current_volume >= (avg_volume * 1.2)
 
-    double_candle_bullish = (c[-1] > c[-2]) and (c[-2] > c[-3])
-    double_candle_bearish = (c[-1] < c[-2]) and (c[-2] < c[-3])
+    # تحليل الهيكل باستخدام SMC
+    smc_trend, ob_level, key_level, smc_score = analyze_smc_structure(k1)
 
+    # فحص الفريم الأكبر 4H للتوافق التام
     k4h = get_bingx_klines(symbol, '4h', 50)
-    _, st_trend_4h = calculate_supertrend(k4h) if k4h and len(k4h) >= 15 else (None, 'BULLISH')
-    _, st_trend = calculate_supertrend(k1)
+    trend_4h, _, _, _ = analyze_smc_structure(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50)
 
-    is_long = double_candle_bullish and st_trend == 'BULLISH' and rsi < 72
-    is_short = double_candle_bearish and st_trend == 'BEARISH' and rsi > 28
-
-    if is_long and not is_short:
+    # شروط القرار النهائي بفلتر قوي
+    if smc_trend == 'BULLISH' and rsi < 75:
         direction = 'LONG'
-        state = 'CONFIRMED LONG - تأكيد شمعتين وإتجاه صاعد'
-        score = 92
-    elif is_short and not is_long:
+        state = 'SMC CONFIRMED LONG - ارتداد من منطقة سيولة (Order Block)'
+        score = smc_score
+    elif smc_trend == 'BEARISH' and rsi > 25:
         direction = 'SHORT'
-        state = 'CONFIRMED SHORT - تأكيد شمعتين وإتجاه هابط'
-        score = 90
+        state = 'SMC CONFIRMED SHORT - هبوط من منطقة عرض (Order Block)'
+        score = smc_score
     else:
         direction = 'BLOCKED'
-        state = 'BLOCKED - الشروط غير مكتملة أو تذبذب'
-        score = 20
+        state = 'BLOCKED - تذبذب السعر داخل منطقة ريلود (No Clear SMC Structure)'
+        score = 25
 
-    if direction == 'LONG' and st_trend_4h == 'BEARISH':
-        score = 85
-        state = 'WARNING - إطار 4H يعاكس الاتجاه'
+    # خصم نقاط لو الفريم الكبير معاكس
+    if direction == 'LONG' and trend_4h == 'BEARISH':
+        score -= 20
+        state = 'WARNING - صراع مع اتجاه فريم 4 ساعات'
+    elif direction == 'SHORT' and trend_4h == 'BULLISH':
+        score -= 20
+        state = 'WARNING - صراع مع اتجاه فريم 4 ساعات'
 
     if not volume_ok and direction != 'BLOCKED':
-        score = max(10, score - 20)
+        score -= 15
+
+    # حظر الصفقات لو النتيجة ضعيفة لضمان عدم ضرب الستوب
+    if score < 75:
+        direction = 'BLOCKED'
+        state = 'BLOCKED - السكور ضعيف، حماية المحفظة مفعلة'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
-    if abs(funding_pct) > 0.05:
-        score = max(10, score - 15)
 
-    plan = calculate_smart_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr)
+    plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
 
     analysis_lines = [
-        f'⏱️ الإطار الزمني للتحليل: {interval.upper()}',
-        f'مؤشر SuperTrend ({interval}): {"🟢 صاعد" if st_trend=="BULLISH" else "🔴 هابط"}',
-        f'اتجاه إطار 4H: {"🟢 صاعد" if st_trend_4h=="BULLISH" else "🔴 هابط"}',
-        f'حجم التداول: {"✅ ممتاز" if volume_ok else "⚠️ ضعف بالحجم"}',
+        f'⏱️ الإطار الزمني: {interval.upper()}',
+        f'هيكل السوق (SMC): {"🟢 صاعد (BOS)" if smc_trend=="BULLISH" else "🔴 هابط (BOS)"}',
+        f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
+        f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
+        f'حجم السيولة: {"✅ قوي ومناسب" if volume_ok else "⚠️ ضعيف"}',
         f'رسوم التمويل: {funding_pct:.4f}%',
         f'مؤشر RSI: {rsi}'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
-        'score': score, 'entry_score': score, 'state': state,
-        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': round(current_volume / (avg_volume_24 or 1), 2),
+        'score': max(10, score), 'entry_score': max(10, score), 'state': state,
+        'price': smart_round(p), 'rsi': rsi, 'volume_ratio': round(current_volume / (avg_volume or 1), 2),
         'entry_min': plan['entry_min'] if direction!='BLOCKED' else 0, 
         'entry_max': plan['entry_max'] if direction!='BLOCKED' else 0,
         'entry_price': plan['entry_price'] if direction!='BLOCKED' else smart_round(p), 
@@ -361,12 +393,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Confirmed Buy)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Confirmed Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تذبذب)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (SMC Buy Setup)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (SMC Sell Setup)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب)'
     
     lines = [
-        '🤖 BingX AI Scanner v30.0 (Pro)',
+        '🤖 BingX SMC Pro Scanner v31.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -379,19 +411,19 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة صانع السوق (SMC Plan)',
+            '📋 خطة صانع السوق الاحترافية (SMC)',
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
-            f"💰 سعر الدخول: {d.get('entry_price')}",
+            f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1: {d.get('tp1')}",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
-            f"\n🛑 Stop Loss: {d.get('stop_loss')}",
+            f"\n🛑 Stop Loss (أمان الهيكل): {d.get('stop_loss')}",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}"
         ])
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر التداول على هذه العملة مؤقتاً لحماية رأس المال.'
+            '🛑 تم حظر الدخول تماماً لحماية الرأس المال من التلاعب.'
         ])
     
     if d.get('analysis_lines'):
