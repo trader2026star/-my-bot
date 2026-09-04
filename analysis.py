@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - Binance Ultra Safe Pure SMC Scanner v33.0
+# analysis.py - Binance Ultra Safe Pure SMC Scanner v33.1
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINANCE_URL = 'https://fapi.binance.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'Binance-UltraSMC/33.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'Binance-UltraSMC/33.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -101,6 +101,8 @@ def get_funding_rate(symbol):
 
 def _parse(rows):
     out = []
+    if not isinstance(rows, list):
+        return out
     for x in rows:
         try:
             if isinstance(x, list) and len(x) >= 6:
@@ -128,7 +130,7 @@ def get_binance_klines(s, interval='1h', limit=100):
     
     d = binance_get('/fapi/v1/klines', {'symbol': s, 'interval': str(interval).lower(), 'limit': int(limit)})
     r = _parse(d)
-    if r:
+    if r and len(r) > 0:
         _KLINE_CACHE[key] = (now, r)
         return r
     return None
@@ -141,7 +143,7 @@ def get_current_price(s, force=False):
     if not force and c and now - c[0] < PRICE_CACHE_SECONDS: return c[1]
     
     d = binance_get('/fapi/v1/ticker/price', {'symbol': s})
-    if isinstance(d, dict):
+    if isinstance(d, dict) and 'price' in d:
         try:
             p = float(d.get('price', 0))
             if p > 0:
@@ -149,9 +151,9 @@ def get_current_price(s, force=False):
                 return p
         except Exception:
             pass
-    
+            
     k = get_binance_klines(s, '1m', 5)
-    if k and k[-1][4] > 0:
+    if k and len(k) > 0 and k[-1][4] > 0:
         _PRICE_CACHE[s] = (now, k[-1][4])
         return k[-1][4]
     return None
@@ -342,8 +344,8 @@ def _get_blocked_signal(symbol, price, reason, interval='1h'):
 def get_coin_analysis(symbol, interval='1h'):
     try:
         return _get_coin_analysis_core(symbol, interval)
-    except Exception:
-        return _get_blocked_signal(symbol, 1.0, "خطأ بالبيانات", interval)
+    except Exception as e:
+        return _get_blocked_signal(symbol, 1.0, f"خطأ بالبيانات ({str(e)})", interval)
 
 
 def get_top_futures_symbols(limit=25):
@@ -372,7 +374,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
     
     lines = [
-        '🤖 Binance Ultra Safe SMC Scanner v33.0',
+        '🤖 Binance Ultra Safe SMC Scanner v33.1',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
