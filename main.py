@@ -1,5 +1,5 @@
 # =========================================================
-# main.py - BingX Ultra Safe SMC Scanner v34.1
+# main.py - BingX AI Scanner v30.0 (Auto-Scanner & High-Accuracy Pro)
 # Flask + Standalone Background Thread Auto Scanner
 # =========================================================
 
@@ -56,15 +56,18 @@ if CHAT_ID_RAW:
     try:
         CHAT_ID = int(CHAT_ID_RAW)
     except ValueError:
-        CHAT_ID = None
+        logger.warning("CHAT_ID يجب أن يكون رقمًا صحيحًا، تم تجاهله.")
 
-# الفحص التلقائي كل 30 دقيقة (1800 ثانية)
+if not CHAT_ID:
+    logger.warning("تحذير: CHAT_ID غير معرف. التنبيهات التلقائية لن تُرسل حتى يتفاعل مستخدم مع البوت.")
+
+# الفحص التلقائي كل 30 دقيقة (1800 ثانية) أو حسب رغبتك
 AUTO_SCAN_INTERVAL = int(os.getenv("AUTO_SCAN_INTERVAL", "1800"))
 
-# عدد العملات التي سيتم فحصها
+# عدد العملات التي سيتم فحصها في الأمر اليدوي أو التلقائي
 AUTO_SCAN_LIMIT = int(os.getenv("AUTO_SCAN_LIMIT", "25"))
 
-# ذاكرة عامة لتتبع آخر حالة تم إرسالها لكل عملة
+# ذاكرة عامة لتتبع آخر اتجاه تم إرساله لكل عملة لمنع التكرار المزعج
 LAST_SENT_SIGNALS = {}
 LAST_ACTIVE_CHAT_ID = CHAT_ID
 
@@ -78,7 +81,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is Running Live v34.1!"
+    return "Bot is Running Live!"
 
 
 @app.route("/health")
@@ -108,14 +111,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     LAST_ACTIVE_CHAT_ID = update.effective_chat.id
 
     await update.message.reply_text(
-        "🤖 أهلاً بك في BingX Ultra Safe SMC Scanner v34.1\n\n"
-        "🚀 Auto Market Scanner يعمل تلقائياً وفق المعايير المؤسسية (Quality > Quantity).\n\n"
-        f"📡 البوت يفحص أعلى العملات سيولة كل {AUTO_SCAN_INTERVAL // 60} دقيقة.\n\n"
-        "🟢 READY = دخول صالح ومكتمل الشروط (يتم إرساله فوراً)\n"
-        "🟡 SETUP = انتظار ارتداد أو تأكيد إضافي (متابعة صامتة)\n"
-        "🔴 NO TRADE = استبعاد تام لحماية رأس المال\n\n"
+        "🤖 أهلاً بك في BingX AI Scanner v30.0 (Pro)\n\n"
+        "🚀 Auto Market Scanner يعمل تلقائياً في الخلفية.\n\n"
+        f"📡 البوت يفحص أعلى العملات سيولة في السوق كل {AUTO_SCAN_INTERVAL // 60} دقيقة.\n\n"
+        "🟢 LONG = دخول شراء مؤكد (بتأكيد شمعتين)\n"
+        "🔴 SHORT = دخول بيع مؤكد (بتأكيد شمعتين)\n\n"
         "📌 أرسل اسم أي عملة للتحليل اليدوي (مثال: BTC).\n"
-        "/scan = فحص يدوي لأفضل الفرص الجاهزة"
+        "/scan = فحص يدوي لأفضل الفرص"
     )
 
 
@@ -127,7 +129,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     LAST_ACTIVE_CHAT_ID = update.effective_chat.id
 
     await update.message.reply_text(
-        "🔍 جاري فحص سوق BingX Futures بالمعايير المؤسسية v34.1... ⏳ انتظر النتيجة..."
+        "🔍 جاري فحص BingX Futures (فلاتر الذكاء الاصطناعي والشمعتين)... ⏳ انتظر النتيجة..."
     )
 
     try:
@@ -135,7 +137,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = []
         for sym in symbols:
             d = await asyncio.to_thread(get_coin_analysis, sym, '1h')
-            if d and 'READY' in str(d.get('direction', '')) and d.get('score', 0) >= 75:
+            if d and d.get('direction') != 'BLOCKED' and d.get('score', 0) >= 80:
                 results.append(d)
     except Exception as exc:
         logger.exception("Manual scanner error: %s", exc)
@@ -144,11 +146,11 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not results:
         await update.message.reply_text(
-            "🟡 لم يتم العثور حالياً على فرص مكتملة الشروط (READY). البوت يطبق معايير صارمة لمنع المطاردة وحماية المحفظة."
+            "🟡 لم يتم العثور حالياً على فرص مكتملة الشروط (البوت يحمي المحفظة ضد التذبذب)."
         )
         return
 
-    for data in results[:3]:
+    for data in results[:5]:  # إرسال أفضل 5 فرص كحد أقصى في اليدوي لعدم الإزعاج
         try:
             message = generate_evidence_report(data)
             await update.message.reply_text(message)
@@ -169,7 +171,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     LAST_ACTIVE_CHAT_ID = update.effective_chat.id
     symbol = normalize_symbol(text)
 
-    await update.message.reply_text(f"🔍 جاري التحليل المؤسسي لـ {symbol} (v34.1)...")
+    await update.message.reply_text(f"🔍 جاري تحليل {symbol} وفق أحدث معايير الـ SMC...")
 
     try:
         data = await asyncio.to_thread(get_coin_analysis, symbol, '1h')
@@ -190,11 +192,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================================
-# BACKGROUND THREAD AUTO SCANNER (v34.1)
+# BACKGROUND THREAD AUTO SCANNER (v30.0)
 # =========================================================
 
 def start_auto_scan():
-    logger.info("BACKGROUND THREAD: Auto Scanner v34.1 started.")
+    logger.info("BACKGROUND THREAD: Auto Scanner started.")
     time.sleep(15)
 
     if not TOKEN:
@@ -208,6 +210,7 @@ def start_auto_scan():
             target_chat_id = CHAT_ID or LAST_ACTIVE_CHAT_ID
 
             if not target_chat_id:
+                logger.info("AUTO SCANNER: Waiting for a chat_id (Send /start to bot)...")
                 time.sleep(AUTO_SCAN_INTERVAL)
                 continue
 
@@ -223,23 +226,24 @@ def start_auto_scan():
                     current_direction = str(data.get("direction", "")).upper()
                     score = data.get("score", 0)
 
-                    previous_sent_status = LAST_SENT_SIGNALS.get(symbol)
+                    previous_sent_direction = LAST_SENT_SIGNALS.get(symbol)
 
-                    if 'READY' not in current_direction or score < 75:
-                        if previous_sent_status is not None:
+                    # شروط الإرسال الآلي: يجب أن تكون الفرصة مؤكدة وليست BLOCKED وبنقاط Score عالية (>85)
+                    if current_direction == 'BLOCKED' or score < 85:
+                        if previous_sent_direction is not None:
                             LAST_SENT_SIGNALS[symbol] = None
                         continue
 
-                    if current_direction == previous_sent_status:
+                    if current_direction == previous_sent_direction:
                         continue
 
                     report = generate_evidence_report(data)
-                    header = "🚨🚨 فرصة تداول مؤسسية جاهزة (Auto-Scanner v34.1) 🚨🚨\n\n"
+                    header = "🚨🚨 فرصة تداول مؤكدة (Auto-Scanner) 🚨🚨\n\n"
                     message = header + report
 
                     asyncio.run(bot.send_message(chat_id=target_chat_id, text=message))
                     LAST_SENT_SIGNALS[symbol] = current_direction
-                    logger.info("AUTO ALERT SENT (READY): %s -> %s", symbol, current_direction)
+                    logger.info("AUTO ALERT SENT: %s -> %s", symbol, current_direction)
                     time.sleep(3)
 
                 except Exception as coin_exc:
@@ -267,7 +271,7 @@ async def main_bot():
     await application.start()
     await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
-    logger.info("Telegram bot v34.1 started successfully with standard polling.")
+    logger.info("Telegram bot started successfully with standard polling.")
 
     try:
         while True:
@@ -288,11 +292,13 @@ async def main_bot():
 # =========================================================
 
 if __name__ == "__main__":
-    logger.info("Starting BingX Ultra Safe SMC Scanner v34.1...")
+    logger.info("Starting BingX AI Scanner v30.0...")
 
+    # تشغيل الفلاسك والماسح الآلي في الخلفية
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=start_auto_scan, daemon=True).start()
 
+    # تشغيل بوت التليجرام الرئيسي
     try:
         asyncio.run(main_bot())
     except (KeyboardInterrupt, SystemExit):
