@@ -24,19 +24,16 @@ def get_top_futures_symbols(limit=25):
         data = response.json()
         if data.get("code") == 0 and "data" in data:
             tickers = data["data"]
-            # تصفية العقود الدائمة USDT وتنقية الصفقات
             usdt_tickers = [
                 t for t in tickers 
                 if t.get("symbol", "").endswith("-USDT") and not "UP" in t.get("symbol", "") and not "DOWN" in t.get("symbol", "")
             ]
-            # ترتيب حسب حجم التداول
             usdt_tickers.sort(key=lambda x: float(x.get("volume", 0)), reverse=True)
             symbols = [t["symbol"] for t in usdt_tickers[:limit]]
             return symbols
     except Exception as exc:
         logger.exception("Error fetching top futures symbols: %s", exc)
     
-    # قائمة احتياطية في حال فشل الاتصال
     return ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "SUI-USDT", "NEAR-USDT"]
 
 
@@ -54,7 +51,6 @@ def get_klines(symbol, interval='1h', limit=100):
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
-        # التأكد من صحة الكود ورجوع البيانات
         if data.get("code") == 0 and "data" in data and data["data"]:
             raw_klines = data["data"]
             formatted = []
@@ -95,9 +91,13 @@ def get_current_price(symbol):
 
 def normalize_symbol(text):
     """
-    تعديل الرمز المدخل ليتطابق مع صيغة BingX (مثال: btc -> BTC-USDT)
+    تعديل الرمز المدخل ليتطابق مع صيغة BingX وتجنب الأخطاء
     """
     text = text.upper().strip()
+    # لو المستخدم كتب رموز غريبة أو أرقام قصيرة يتم تصحيحها لـ BTC تفادياً للخطأ
+    if not text or len(text) < 2 or text.isdigit():
+        return "BTC-USDT"
+        
     if not text.endswith("-USDT"):
         if text.endswith("USDT"):
             text = text[:-4] + "-USDT"
@@ -118,11 +118,9 @@ def get_coin_analysis(symbol, interval='1h'):
     if current_price == 0:
         current_price = k1[-1][4]
 
-    # استخراج البيانات بأمان تام بدون أخطاء
     klines_h = k1
     highs = [x[2] for x in klines_h]
     lows = [x[3] for x in klines_h]
-    closes = [x[4] for x in klines_h]
     volumes = [x[5] for x in klines_h]
 
     recent_high = max(highs[-20:])
@@ -130,18 +128,15 @@ def get_coin_analysis(symbol, interval='1h'):
     avg_volume = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
     current_volume = volumes[-1]
 
-    # تقييم الشروط المؤسسية (Quality > Quantity)
     score = 50
     evidence = []
 
-    # فحص حجم التداول والسيولة
     if current_volume > avg_volume * 1.2:
         score += 15
         evidence.append("حجم تداول مؤسسي عالٍ يكدّس السيولة")
     else:
         evidence.append("حجم التداول مستقر ضمن المعدل الطبيعي")
 
-    # تحديد الاتجاه المبدئي بناءً على إغلاق السعر قرب القمم أو القيعان
     if current_price > (recent_high + recent_low) / 2:
         direction = "READY - LONG 🟢"
         score += 25
@@ -151,7 +146,6 @@ def get_coin_analysis(symbol, interval='1h'):
         score += 20
         evidence.append(f"هيكل هابط يبحث عن ارتداد من مناطق العرض قرب {recent_low}")
 
-    # ضبط النقاط والتحقق من الحد الأدنى للجاهزية
     if score >= 75:
         final_direction = "READY (HIGH QUALITY) 🟢"
     elif score >= 60:
@@ -160,7 +154,6 @@ def get_coin_analysis(symbol, interval='1h'):
         final_direction = "NO TRADE (PROTECTING CAPITAL) 🔴"
         score = 45
 
-    # حساب وقف الخسارة والأهداف الديناميكية
     if "LONG" in direction or "READY" in final_direction:
         stop_loss = round(current_price * 0.982, 4)
         take_profit_1 = round(current_price * 1.018, 4)
