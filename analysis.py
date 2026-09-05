@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.3 (Optimized for Opportunities)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.1 (News Enhanced)
 # =========================================================
 
 import time
@@ -9,14 +9,14 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.3', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
 KLINE_CACHE_SECONDS = 45
 PRICE_CACHE_SECONDS = 3
 TICKER_CACHE_SECONDS = 5
-NEWS_CACHE_SECONDS = 300
+NEWS_CACHE_SECONDS = 300  # تحديث بيانات الأخبار كل 5 دقائق
 MIN_REQUEST_INTERVAL = 0.3
 _RATE_LIMIT_UNTIL = 0.0
 _LAST_REQUEST_TIME = 0.0
@@ -64,12 +64,14 @@ def bingx_get(path, params=None, timeout=12):
 
 
 def get_economic_news_status():
+    """التحقق من وجود أخبار اقتصادية قوية حالية عبر مصدر مجاني موثوق"""
     global _NEWS_CACHE, _NEWS_CACHE_TIME
     now = time.time()
     if _NEWS_CACHE is not None and now - _NEWS_CACHE_TIME < NEWS_CACHE_SECONDS:
         return _NEWS_CACHE
     
     try:
+        # استخدام مصدر بيانات اقتصادي عام للأجندة
         res = requests.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json', timeout=5)
         if res.status_code == 200:
             events = res.json()
@@ -79,11 +81,14 @@ def get_economic_news_status():
             
             for ev in events:
                 if ev.get('impact') == 'High':
-                    date_str = ev.get('date')
+                    # تحليل وقت الخبر
+                    date_str = ev.get('date') # مثال: 2026-06-08T08:30:00-04:00
                     from datetime import datetime
                     try:
+                        # تحويل التوقيت البسيط للمقارنة
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         ev_timestamp = dt.timestamp()
+                        # إذا كان الخبر خلال الساعتين الماضيتين أو القادمتين
                         if -7200 <= (ev_timestamp - current_time) <= 7200:
                             high_impact_near = True
                             event_title = ev.get('title', 'Economic Event')
@@ -97,6 +102,7 @@ def get_economic_news_status():
     except Exception:
         pass
     
+    # في حال تعذر الاتصال بمصدر الأخبار، نعتبر الوضع آمناً افتراضياً مع تسجيله
     return (False, "لا توجد أخبار قريبة مرصودة")
 
 
@@ -302,14 +308,14 @@ def analyze_pure_smc_safe(klines):
         return 'BEARISH', bearish_ob, swing_low, 92
     else:
         if is_violent_dump:
-            return 'BEARISH', bearish_ob, swing_low, 80
+            return 'BEARISH', bearish_ob, swing_low, 85
         if current_close > closes[-10]:
-            return 'BULLISH', bullish_ob, swing_high, 72
+            return 'BULLISH', bullish_ob, swing_high, 65
         else:
-            return 'BEARISH', bearish_ob, swing_low, 72
+            return 'BEARISH', bearish_ob, swing_low, 65
 
 
-def calculate_smc_trade_plan(direction, price, atr, ob_level, rsi=50):
+def calculate_smc_trade_plan(direction, price, atr, ob_level):
     raw_atr = atr or (price * 0.015)
     if direction == 'LONG':
         entry = price
@@ -329,47 +335,12 @@ def calculate_smc_trade_plan(direction, price, atr, ob_level, rsi=50):
         entry = sl = tp1 = tp2 = tp3 = risk_dist = 0
 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
-    
-    orders = []
-    is_dca_active = False
-    
-    if direction == 'LONG' and rsi > 70:
-        is_dca_active = True
-        orders = [
-            {"label": "DCA 1 (حذر - 30%)", "price": smart_round(entry), "allocation": 30},
-            {"label": "DCA 2 (الأوردر بلوك - 70%)", "price": smart_round(max(ob_level, entry * 0.95)), "allocation": 70}
-        ]
-    elif direction == 'SHORT' and rsi < 30:
-        is_dca_active = True
-        orders = [
-            {"label": "DCA 1 (حذر - 30%)", "price": smart_round(entry), "allocation": 30},
-            {"label": "DCA 2 (منطقة العرض - 70%)", "price": smart_round(min(ob_level, entry * 1.05)), "allocation": 70}
-        ]
-    else:
-        orders = [
-            {"label": "Standard Entry (100%)", "price": smart_round(entry), "allocation": 100}
-        ]
-
-    breakeven_trigger = smart_round(entry + (risk_dist if direction == 'LONG' else -risk_dist))
-
     return {
         'entry_min': smart_round(entry * 0.998), 'entry_max': smart_round(entry * 1.002),
         'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
         'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)),
-        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio,
-        'orders': orders, 'is_dca_active': is_dca_active, 'breakeven_trigger': breakeven_trigger
+        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio
     }
-
-
-def monitor_active_position(current_market_price, entry_price, breakeven_trigger, current_sl, direction):
-    try:
-        if direction == 'LONG' and current_market_price >= breakeven_trigger and current_sl < entry_price:
-            return entry_price
-        elif direction == 'SHORT' and current_market_price <= breakeven_trigger and current_sl > entry_price:
-            return entry_price
-    except Exception:
-        pass
-    return current_sl
 
 
 def _get_coin_analysis_core(symbol, interval='1h'):
@@ -389,53 +360,60 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     k4h = get_bingx_klines(symbol, '4h', 50)
     trend_4h, _, _, _ = analyze_pure_smc_safe(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50)
 
+    # التحقق من حالة البيتكوين للتوافق
     btc_k = get_bingx_klines('BTC-USDT', '1h', 20)
     btc_stable = True
     if btc_k and len(btc_k) >= 5:
         btc_change = (btc_k[-1][4] - btc_k[-5][4]) / btc_k[-5][4]
-        if btc_change < -0.03:
+        if btc_change < -0.025: # هبوط حاد للبيتكوين يؤثر على السوق
             btc_stable = False
 
+    # فحص الأخبار الاقتصادية الهامة
     has_news, news_title = get_economic_news_status()
 
-    # خفضنا تأثير تعارض فريم الـ 4 ساعات لمنح فرص أسهل دون حظر قاطع
-    if smc_trend == 'BULLISH':
+    last_candle_red = k1[-1][4] < k1[-1][1]
+
+    if smc_trend == 'BULLISH' and rsi < 78 and not (last_candle_red and (k1[-1][2] - k1[-1][3]) > atr * 1.2):
         direction = 'LONG'
-        state = 'SAFE SMC LONG - فرصة شراء مرنة'
+        state = 'SAFE SMC LONG - ارتداد مؤكد من أوردر بلوك سيولة'
         score = smc_score
-    elif smc_trend == 'BEARISH':
+    elif smc_trend == 'BEARISH' and rsi > 22:
         direction = 'SHORT'
-        state = 'SAFE SMC SHORT - فرصة بيع مرنة'
+        state = 'SAFE SMC SHORT - هبوط مؤكد من منطقة عرض'
         score = smc_score
     else:
         direction = 'BLOCKED'
-        state = 'BLOCKED - تذبذب عرضي واضح'
-        score = 40
+        state = 'BLOCKED - تذبذب لحظي أو شمعة انعكاسية عنيفة'
+        score = 30
 
     if direction == 'LONG' and trend_4h == 'BEARISH':
-        score -= 12  # خصم خفيف بدلاً من 20 لمنح فرصة
-    elif direction == 'SHORT' and trend_4h == 'BULLISH':
-        score -= 12
-
-    if has_news:
         score -= 20
+        state = 'WARNING - تعارض مع هيكل فريم 4H'
+    elif direction == 'SHORT' and trend_4h == 'BULLISH':
+        score -= 20
+        state = 'WARNING - تعارض مع هيكل فريم 4H'
 
-    # تم خفض عتبة الحظر (Score Threshold) من 72 إلى 60 لتجنب فقدان الفرص
-    if score < 60:
+    # تطبيق تأثير فلتر الأخبار (إذا وجد خبر قوي، يتم خصم نقاط أو حظر الدخول مؤقتاً لحماية المحفظة)
+    if has_news:
+        score -= 25
+        state = f'WARNING - خبر اقتصادي هام ({news_title})'
+
+    if score < 72:
         direction = 'BLOCKED'
-        state = 'BLOCKED - السكور منخفض جداً والزخم ضعيف'
+        state = 'BLOCKED - السوق غير مستقر أو وجود خبر قوي وحماية المحفظة مفعلة'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
 
-    plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level, rsi)
+    plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
-        f'هيكل السوق: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
-        f'نظام الدخول (DCA): {"⚠️ مفعّل (تشبع RSI)" if plan["is_dca_active"] else "✅ قياسي (100% دفعة واحدة)"}',
-        f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ حذر"}',
-        f'الأخبار الاقتصادية: {"⚠️ تحذير قريب" if has_news else "✅ آمن"}',
+        f'هيكل السوق الآمن: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
+        f'نوع التنفيذ: أمر معلق (Limit Order) عند حدود الأوردر بلوك',
+        f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ متذبذب أو هابط"}',
+        f'فلتر الأخبار الاقتصادية: {"⚠️ تحذير (خبر قوي قريب)" if has_news else "✅ آمن (لا توجد أخبار قوية)"}',
+        f'اتفاق FVG والسيولة: {"✅ مؤكد" if score >= 80 else "⚠️ ضعيف"}',
         f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
         f'رسوم التمويل: {funding_pct:.4f}%',
@@ -452,7 +430,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'stop_loss': plan['stop_loss'] if direction!='BLOCKED' else 0,
         'tp1': plan['tp1'] if direction!='BLOCKED' else 0, 'tp2': plan['tp2'] if direction!='BLOCKED' else 0, 
         'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 
-        'orders': plan['orders'], 'is_dca_active': plan['is_dca_active'], 'breakeven_trigger': plan['breakeven_trigger'],
         'funding_rate': funding_pct, 'analysis_lines': analysis_lines, 'interval': interval.upper()
     }
 
@@ -499,12 +476,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Flexible SMC Buy)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Flexible SMC Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العرضي)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Institutional Safe SMC Buy)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Institutional Safe SMC Sell)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف أو الأخبار)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v33.3',
+        '🤖 BingX Ultra Safe SMC Scanner v33.1',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -515,25 +492,21 @@ def generate_evidence_report(d):
     ]
 
     if dr != 'BLOCKED':
-        lines.append('\n━━━━━━━━━━━━━━━━━━')
-        lines.append('📋 خطة صانع السوق والدخول المجزأ (DCA)')
-        
-        orders = d.get('orders', [])
-        for ord_item in orders:
-            lines.append(f"• {ord_item.get('label')}: سعر {ord_item.get('price')} (نسبة: {ord_item.get('allocation')}%)")
-            
         lines.extend([
+            '\n━━━━━━━━━━━━━━━━━━',
+            '📋 خطة صانع السوق المحصنة',
+            f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
+            f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1: {d.get('tp1')}",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
-            f"\n🛑 Stop Loss: {d.get('stop_loss')}",
-            f"🔒 نقطة تفعيل تأمين الصفقة (1:1 Breakeven): {d.get('breakeven_trigger', '-')}",
+            f"\n🛑 Stop Loss (حماية الهيكل المحصن): {d.get('stop_loss')}",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}"
         ])
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول بسبب ضعف الزخم أو التذبذب العرضي.'
+            '🛑 تم حظر الدخول لوجود حركة عنيفة، تذبذب، أو خبر اقتصادي قوي.'
         ])
     
     if d.get('analysis_lines'):
