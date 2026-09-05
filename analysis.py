@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.0 (Enhanced)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.1 (News Enhanced)
 # =========================================================
 
 import time
@@ -9,13 +9,14 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
 KLINE_CACHE_SECONDS = 45
 PRICE_CACHE_SECONDS = 3
 TICKER_CACHE_SECONDS = 5
+NEWS_CACHE_SECONDS = 300  # تحديث بيانات الأخبار كل 5 دقائق
 MIN_REQUEST_INTERVAL = 0.3
 _RATE_LIMIT_UNTIL = 0.0
 _LAST_REQUEST_TIME = 0.0
@@ -25,6 +26,8 @@ _KLINE_CACHE = {}
 _PRICE_CACHE = {}
 _TICKER_CACHE = None
 _TICKER_CACHE_TIME = 0.0
+_NEWS_CACHE = None
+_NEWS_CACHE_TIME = 0.0
 _RATE_LOCK = threading.Lock()
 _REQUEST_LOCK = threading.Lock()
 
@@ -58,6 +61,49 @@ def bingx_get(path, params=None, timeout=12):
         return d.get('data') if isinstance(d, dict) and 'data' in d else d
     except Exception:
         return None
+
+
+def get_economic_news_status():
+    """التحقق من وجود أخبار اقتصادية قوية حالية عبر مصدر مجاني موثوق"""
+    global _NEWS_CACHE, _NEWS_CACHE_TIME
+    now = time.time()
+    if _NEWS_CACHE is not None and now - _NEWS_CACHE_TIME < NEWS_CACHE_SECONDS:
+        return _NEWS_CACHE
+    
+    try:
+        # استخدام مصدر بيانات اقتصادي عام للأجندة
+        res = requests.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json', timeout=5)
+        if res.status_code == 200:
+            events = res.json()
+            current_time = time.time()
+            high_impact_near = False
+            event_title = ""
+            
+            for ev in events:
+                if ev.get('impact') == 'High':
+                    # تحليل وقت الخبر
+                    date_str = ev.get('date') # مثال: 2026-06-08T08:30:00-04:00
+                    from datetime import datetime
+                    try:
+                        # تحويل التوقيت البسيط للمقارنة
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        ev_timestamp = dt.timestamp()
+                        # إذا كان الخبر خلال الساعتين الماضيتين أو القادمتين
+                        if -7200 <= (ev_timestamp - current_time) <= 7200:
+                            high_impact_near = True
+                            event_title = ev.get('title', 'Economic Event')
+                            break
+                    except Exception:
+                        pass
+            
+            _NEWS_CACHE = (high_impact_near, event_title)
+            _NEWS_CACHE_TIME = now
+            return _NEWS_CACHE
+    except Exception:
+        pass
+    
+    # في حال تعذر الاتصال بمصدر الأخبار، نعتبر الوضع آمناً افتراضياً مع تسجيله
+    return (False, "لا توجد أخبار قريبة مرصودة")
 
 
 def get_futures_symbols(force_refresh=False):
@@ -322,6 +368,9 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         if btc_change < -0.025: # هبوط حاد للبيتكوين يؤثر على السوق
             btc_stable = False
 
+    # فحص الأخبار الاقتصادية الهامة
+    has_news, news_title = get_economic_news_status()
+
     last_candle_red = k1[-1][4] < k1[-1][1]
 
     if smc_trend == 'BULLISH' and rsi < 78 and not (last_candle_red and (k1[-1][2] - k1[-1][3]) > atr * 1.2):
@@ -344,9 +393,14 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         score -= 20
         state = 'WARNING - تعارض مع هيكل فريم 4H'
 
+    # تطبيق تأثير فلتر الأخبار (إذا وجد خبر قوي، يتم خصم نقاط أو حظر الدخول مؤقتاً لحماية المحفظة)
+    if has_news:
+        score -= 25
+        state = f'WARNING - خبر اقتصادي هام ({news_title})'
+
     if score < 72:
         direction = 'BLOCKED'
-        state = 'BLOCKED - السوق غير مستقر وحماية المحفظة مفعلة'
+        state = 'BLOCKED - السوق غير مستقر أو وجود خبر قوي وحماية المحفظة مفعلة'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -358,6 +412,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'هيكل السوق الآمن: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
         f'نوع التنفيذ: أمر معلق (Limit Order) عند حدود الأوردر بلوك',
         f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ متذبذب أو هابط"}',
+        f'فلتر الأخبار الاقتصادية: {"⚠️ تحذير (خبر قوي قريب)" if has_news else "✅ آمن (لا توجد أخبار قوية)"}',
         f'اتفاق FVG والسيولة: {"✅ مؤكد" if score >= 80 else "⚠️ ضعيف"}',
         f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
@@ -423,10 +478,10 @@ def generate_evidence_report(d):
     
     if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Institutional Safe SMC Buy)'
     elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Institutional Safe SMC Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف أو الأخبار)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v33.0',
+        '🤖 BingX Ultra Safe SMC Scanner v33.1',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -451,7 +506,7 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول لوجود حركة هبوط عنيفة أو تذبذب.'
+            '🛑 تم حظر الدخول لوجود حركة عنيفة، تذبذب، أو خبر اقتصادي قوي.'
         ])
     
     if d.get('analysis_lines'):
