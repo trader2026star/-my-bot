@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.1 (News Enhanced)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v34.0 (News & Divergence Enhanced)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.1', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/34.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -71,7 +71,6 @@ def get_economic_news_status():
         return _NEWS_CACHE
     
     try:
-        # استخدام مصدر بيانات اقتصادي عام للأجندة
         res = requests.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json', timeout=5)
         if res.status_code == 200:
             events = res.json()
@@ -81,14 +80,11 @@ def get_economic_news_status():
             
             for ev in events:
                 if ev.get('impact') == 'High':
-                    # تحليل وقت الخبر
-                    date_str = ev.get('date') # مثال: 2026-06-08T08:30:00-04:00
+                    date_str = ev.get('date')
                     from datetime import datetime
                     try:
-                        # تحويل التوقيت البسيط للمقارنة
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         ev_timestamp = dt.timestamp()
-                        # إذا كان الخبر خلال الساعتين الماضيتين أو القادمتين
                         if -7200 <= (ev_timestamp - current_time) <= 7200:
                             high_impact_near = True
                             event_title = ev.get('title', 'Economic Event')
@@ -102,7 +98,6 @@ def get_economic_news_status():
     except Exception:
         pass
     
-    # في حال تعذر الاتصال بمصدر الأخبار، نعتبر الوضع آمناً افتراضياً مع تسجيله
     return (False, "لا توجد أخبار قريبة مرصودة")
 
 
@@ -360,15 +355,13 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     k4h = get_bingx_klines(symbol, '4h', 50)
     trend_4h, _, _, _ = analyze_pure_smc_safe(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50)
 
-    # التحقق من حالة البيتكوين للتوافق
     btc_k = get_bingx_klines('BTC-USDT', '1h', 20)
     btc_stable = True
     if btc_k and len(btc_k) >= 5:
         btc_change = (btc_k[-1][4] - btc_k[-5][4]) / btc_k[-5][4]
-        if btc_change < -0.025: # هبوط حاد للبيتكوين يؤثر على السوق
+        if btc_change < -0.025:
             btc_stable = False
 
-    # فحص الأخبار الاقتصادية الهامة
     has_news, news_title = get_economic_news_status()
 
     last_candle_red = k1[-1][4] < k1[-1][1]
@@ -393,7 +386,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         score -= 20
         state = 'WARNING - تعارض مع هيكل فريم 4H'
 
-    # تطبيق تأثير فلتر الأخبار (إذا وجد خبر قوي، يتم خصم نقاط أو حظر الدخول مؤقتاً لحماية المحفظة)
     if has_news:
         score -= 25
         state = f'WARNING - خبر اقتصادي هام ({news_title})'
@@ -406,6 +398,18 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     funding_pct = funding_rate * 100
 
     plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
+
+    # المنطق المضاف للنسخة v4.0 للتعامل مع تباعد السعر عن الأوردر بلوك وتعديل الحالة أوتوماتيكياً
+    divergence_flag = False
+    if direction == 'LONG':
+        if p > (ob_level + (atr * 0.8)) and p > plan['entry_max']:
+            divergence_flag = True
+    elif direction == 'SHORT':
+        if p < (ob_level - (atr * 0.8)) and p < plan['entry_min']:
+            divergence_flag = True
+
+    if divergence_flag and direction != 'BLOCKED':
+        state = f"{state} | 📌 تم تحويلها لأمر معلق لتباعد السعر عن الـ OB"
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
@@ -481,7 +485,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف أو الأخبار)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v33.1',
+        '🤖 BingX Ultra Safe SMC Scanner v34.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
