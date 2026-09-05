@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.2 (DCA & Breakeven Enhanced)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v33.3 (Optimized for Opportunities)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.2', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/33.3', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -302,11 +302,11 @@ def analyze_pure_smc_safe(klines):
         return 'BEARISH', bearish_ob, swing_low, 92
     else:
         if is_violent_dump:
-            return 'BEARISH', bearish_ob, swing_low, 85
+            return 'BEARISH', bearish_ob, swing_low, 80
         if current_close > closes[-10]:
-            return 'BULLISH', bullish_ob, swing_high, 65
+            return 'BULLISH', bullish_ob, swing_high, 72
         else:
-            return 'BEARISH', bearish_ob, swing_low, 65
+            return 'BEARISH', bearish_ob, swing_low, 72
 
 
 def calculate_smc_trade_plan(direction, price, atr, ob_level, rsi=50):
@@ -330,7 +330,6 @@ def calculate_smc_trade_plan(direction, price, atr, ob_level, rsi=50):
 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
     
-    # دمج نظام الدخول المجزأ (DCA) بناءً على حالة تشبع الـ RSI
     orders = []
     is_dca_active = False
     
@@ -363,7 +362,6 @@ def calculate_smc_trade_plan(direction, price, atr, ob_level, rsi=50):
 
 
 def monitor_active_position(current_market_price, entry_price, breakeven_trigger, current_sl, direction):
-    """مراقبة وتحديث وقف الخسارة لنقطة الدخول فور تحقيق عائد 1:1"""
     try:
         if direction == 'LONG' and current_market_price >= breakeven_trigger and current_sl < entry_price:
             return entry_price
@@ -395,39 +393,37 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     btc_stable = True
     if btc_k and len(btc_k) >= 5:
         btc_change = (btc_k[-1][4] - btc_k[-5][4]) / btc_k[-5][4]
-        if btc_change < -0.025:
+        if btc_change < -0.03:
             btc_stable = False
 
     has_news, news_title = get_economic_news_status()
-    last_candle_red = k1[-1][4] < k1[-1][1]
 
-    if smc_trend == 'BULLISH' and rsi < 78 and not (last_candle_red and (k1[-1][2] - k1[-1][3]) > atr * 1.2):
+    # خفضنا تأثير تعارض فريم الـ 4 ساعات لمنح فرص أسهل دون حظر قاطع
+    if smc_trend == 'BULLISH':
         direction = 'LONG'
-        state = 'SAFE SMC LONG - ارتداد مؤكد من أوردر بلوك سيولة'
+        state = 'SAFE SMC LONG - فرصة شراء مرنة'
         score = smc_score
-    elif smc_trend == 'BEARISH' and rsi > 22:
+    elif smc_trend == 'BEARISH':
         direction = 'SHORT'
-        state = 'SAFE SMC SHORT - هبوط مؤكد من منطقة عرض'
+        state = 'SAFE SMC SHORT - فرصة بيع مرنة'
         score = smc_score
     else:
         direction = 'BLOCKED'
-        state = 'BLOCKED - تذبذب لحظي أو شمعة انعكاسية عنيفة'
-        score = 30
+        state = 'BLOCKED - تذبذب عرضي واضح'
+        score = 40
 
     if direction == 'LONG' and trend_4h == 'BEARISH':
-        score -= 20
-        state = 'WARNING - تعارض مع هيكل فريم 4H'
+        score -= 12  # خصم خفيف بدلاً من 20 لمنح فرصة
     elif direction == 'SHORT' and trend_4h == 'BULLISH':
-        score -= 20
-        state = 'WARNING - تعارض مع هيكل فريم 4H'
+        score -= 12
 
     if has_news:
-        score -= 25
-        state = f'WARNING - خبر اقتصادي هام ({news_title})'
+        score -= 20
 
-    if score < 72:
+    # تم خفض عتبة الحظر (Score Threshold) من 72 إلى 60 لتجنب فقدان الفرص
+    if score < 60:
         direction = 'BLOCKED'
-        state = 'BLOCKED - السوق غير مستقر أو وجود خبر قوي وحماية المحفظة مفعلة'
+        state = 'BLOCKED - السكور منخفض جداً والزخم ضعيف'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -436,10 +432,10 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
-        f'هيكل السوق الآمن: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
+        f'هيكل السوق: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
         f'نظام الدخول (DCA): {"⚠️ مفعّل (تشبع RSI)" if plan["is_dca_active"] else "✅ قياسي (100% دفعة واحدة)"}',
-        f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ متذبذب أو هابط"}',
-        f'فلتر الأخبار الاقتصادية: {"⚠️ تحذير (خبر قوي قريب)" if has_news else "✅ آمن (لا توجد أخبار قوية)"}',
+        f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ حذر"}',
+        f'الأخبار الاقتصادية: {"⚠️ تحذير قريب" if has_news else "✅ آمن"}',
         f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
         f'رسوم التمويل: {funding_pct:.4f}%',
@@ -503,12 +499,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Institutional Safe SMC Buy)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Institutional Safe SMC Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف أو الأخبار)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Flexible SMC Buy)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Flexible SMC Sell)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العرضي)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v33.2',
+        '🤖 BingX Ultra Safe SMC Scanner v33.3',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -537,7 +533,7 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول لوجود حركة عنيفة، تذبذب، أو خبر اقتصادي قوي.'
+            '🛑 تم حظر الدخول بسبب ضعف الزخم أو التذبذب العرضي.'
         ])
     
     if d.get('analysis_lines'):
