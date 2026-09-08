@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v34.0 (News & Divergence Enhanced)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v35.0 (Enhanced Accuracy & Liquidity Filters)
 # =========================================================
 
 import time
@@ -9,14 +9,14 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/34.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/35.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
 KLINE_CACHE_SECONDS = 45
 PRICE_CACHE_SECONDS = 3
 TICKER_CACHE_SECONDS = 5
-NEWS_CACHE_SECONDS = 300  # تحديث بيانات الأخبار كل 5 دقائق
+NEWS_CACHE_SECONDS = 300  
 MIN_REQUEST_INTERVAL = 0.3
 _RATE_LIMIT_UNTIL = 0.0
 _LAST_REQUEST_TIME = 0.0
@@ -64,7 +64,6 @@ def bingx_get(path, params=None, timeout=12):
 
 
 def get_economic_news_status():
-    """التحقق من وجود أخبار اقتصادية قوية حالية عبر مصدر مجاني موثوق"""
     global _NEWS_CACHE, _NEWS_CACHE_TIME
     now = time.time()
     if _NEWS_CACHE is not None and now - _NEWS_CACHE_TIME < NEWS_CACHE_SECONDS:
@@ -364,6 +363,28 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     has_news, news_title = get_economic_news_status()
 
+    # ==========================================
+    added_filter_triggered = False
+    filter_reason_msg = ""
+
+    # فلتر إضافي 1: فحص ذيل الشمعة (Rejection / Liquidity Trap Filter) لمنع الوقف الوهمي
+    last_candle = k1[-1]
+    candle_body = abs(last_candle[4] - last_candle[1])
+    candle_range = last_candle[2] - last_candle[3]
+    is_long_wick = candle_range > (atr * 1.5) and (candle_body < candle_range * 0.3)
+    
+    if is_long_wick:
+        added_filter_triggered = True
+        filter_reason_msg = "ذيل شمعة عنيف (سحب سيولة متلاعب)"
+
+    # فلتر إضافي 2: فحص الفوليوم وعزم الحركة للتأكد من عدم وجود تذبذب عرضي
+    volume_recent = last_candle[5]
+    avg_volume = sum([x[5] for x in k1[-10:-1]]) / 9 if len(k1) >= 10 else volume_recent
+    if volume_recent < (avg_volume * 0.4):
+        added_filter_triggered = True
+        filter_reason_msg = "ضعف حاد في الفوليوم (حركة عرضية خاملة)"
+    # ==========================================
+
     last_candle_red = k1[-1][4] < k1[-1][1]
 
     if smc_trend == 'BULLISH' and rsi < 78 and not (last_candle_red and (k1[-1][2] - k1[-1][3]) > atr * 1.2):
@@ -380,26 +401,31 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         score = 30
 
     if direction == 'LONG' and trend_4h == 'BEARISH':
-        score -= 20
-        state = 'WARNING - تعارض مع هيكل فريم 4H'
+        score -= 25
+        state = 'WARNING - تعارض مع هيكل فريم 4H (هابط)'
     elif direction == 'SHORT' and trend_4h == 'BULLISH':
-        score -= 20
-        state = 'WARNING - تعارض مع هيكل فريم 4H'
+        score -= 25
+        state = 'WARNING - تعارض مع هيكل فريم 4H (صاعد)'
 
     if has_news:
-        score -= 25
+        score -= 30
         state = f'WARNING - خبر اقتصادي هام ({news_title})'
+
+    # تطبيق الفلتر الإضافي الجديد بقوة على السكور
+    if added_filter_triggered:
+        score -= 35
+        state = f'BLOCKED - فلتر الحماية: {filter_reason_msg}'
+        direction = 'BLOCKED'
 
     if score < 72:
         direction = 'BLOCKED'
-        state = 'BLOCKED - السوق غير مستقر أو وجود خبر قوي وحماية المحفظة مفعلة'
+        state = 'BLOCKED - السوق غير مستقر، تم حظر الصفقة لحماية المحفظة'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
 
     plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
 
-    # المنطق المضاف للنسخة v4.0 للتعامل مع تباعد السعر عن الأوردر بلوك وتعديل الحالة أوتوماتيكياً
     divergence_flag = False
     if direction == 'LONG':
         if p > (ob_level + (atr * 0.8)) and p > plan['entry_max']:
@@ -414,10 +440,10 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
         f'هيكل السوق الآمن: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
-        f'نوع التنفيذ: أمر معلق (Limit Order) عند حدود الأوردر بلوك',
+        f'نوع التنفيذ: أمر معلق (Limit Order) أو حماية متقدمة',
+        f'فلتر الفوليوم والذيل: {"⚠️ تلاعب مرصود" if added_filter_triggered else "✅ نظيف ومتزن"}',
         f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ متذبذب أو هابط"}',
-        f'فلتر الأخبار الاقتصادية: {"⚠️ تحذير (خبر قوي قريب)" if has_news else "✅ آمن (لا توجد أخبار قوية)"}',
-        f'اتفاق FVG والسيولة: {"✅ مؤكد" if score >= 80 else "⚠️ ضعيف"}',
+        f'فلتر الأخبار الاقتصادية: {"⚠️ تحذير (خبر قوي قريب)" if has_news else "✅ آمن (لا توجد أخبار)"}',
         f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
         f'رسوم التمويل: {funding_pct:.4f}%',
@@ -485,7 +511,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف أو الأخبار)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v34.0',
+        '🤖 BingX Ultra Safe SMC Scanner v35.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -501,7 +527,7 @@ def generate_evidence_report(d):
             '📋 خطة صانع السوق المحصنة',
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
-            f"\n🎯 TP1: {d.get('tp1')}",
+            f"\n🎯 TP1: {d.get('tp1')}`,
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
             f"\n🛑 Stop Loss (حماية الهيكل المحصن): {d.get('stop_loss')}",
@@ -510,7 +536,7 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول لوجود حركة عنيفة، تذبذب، أو خبر اقتصادي قوي.'
+            '🛑 تم حظر الدخول لوجود تلاعب، ضعف فوليوم، أو فخاخ سيولة.'
         ])
     
     if d.get('analysis_lines'):
