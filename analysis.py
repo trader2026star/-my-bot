@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v35.2 (Smart Whale Trap Edition)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v35.3 (Smart Whale Trap Pro Edition)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/35.2', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/35.3', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -267,7 +267,7 @@ def smart_round(v):
     return round(v, 8)
 
 
-def analyze_pure_smc_safe(klines):
+def analyze_pure_smc_safe(klines, trend_4h='NEUTRAL'):
     if not klines or len(klines) < 25:
         return 'NEUTRAL', 0, 0, 50, False
 
@@ -275,22 +275,32 @@ def analyze_pure_smc_safe(klines):
     lows = [x[3] for x in klines]
     closes = [x[4] for x in klines]
     opens = [x[1] for x in klines]
+    volumes = [x[5] for x in klines]
 
     swing_high = max(highs[-20:-2])
     swing_low = min(lows[-20:-2])
     current_close = closes[-1]
     prev_close = closes[-2]
+    current_volume = volumes[-1]
+    avg_volume = sum(volumes[-10:-1]) / 9 if len(volumes) >= 10 else current_volume
 
-    # --- كاشف مصائد الحيتان وسحب السيولة (Whale Trap / Sweep Detector) ---
+    # --- كاشف مصائد الحيتان المحصن (Enhanced Whale Trap / Sweep Detector) ---
     last_high = highs[-1]
     last_low = lows[-1]
     sweep_detected = False
     
-    # فحص سحب السيولة الوهمي (ضرب القمة أو القاع ثم العكس بقوة)
-    if last_high > swing_high and current_close < swing_high:
-        sweep_detected = True  # مصيدة صعود وهمية (Bull Trap) -> فرصة شورت قوية
-    elif last_low < swing_low and current_close > swing_low:
-        sweep_detected = True  # مصيدة هبوط وهمية (Bear Trap / Stop Hunt) -> فرصة لونج قوية
+    # فحص شروط الفوليوم العالي لتأكيد سحب السيولة الحقيقي وليس مجرد تذبذب
+    is_high_volume = current_volume >= (avg_volume * 1.2)
+
+    # مصيدة هبوط وهمية (Bear Trap / Stop Hunt) تتطلب فوليوم مؤكد وعدم معاندة فريم 4H الهابط بعنف
+    if last_low < swing_low and current_close > swing_low and is_high_volume:
+        if trend_4h != 'BEARISH':  # منع الدعم العكسي لو الـ 4 ساعات هابط كالشلال
+            sweep_detected = True  
+
+    # مصيدة صعود وهمية (Bull Trap)
+    elif last_high > swing_high and current_close < swing_high and is_high_volume:
+        if trend_4h != 'BULLISH':
+            sweep_detected = True
 
     is_violent_dump = (current_close < prev_close) and ((prev_close - current_close) > (closes[-5] - closes[-6] if len(closes)>5 else 0) * 1.5)
     is_violent_pump = (current_close > prev_close) and ((current_close - prev_close) > (closes[-5] - closes[-6] if len(closes)>5 else 0) * 1.5)
@@ -362,14 +372,15 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     k1 = get_bingx_klines(symbol, interval, 100)
     if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
 
+    k4h = get_bingx_klines(symbol, '4h', 50)
+    trend_4h, _, _, _, _ = analyze_pure_smc_safe(k4h, 'NEUTRAL') if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50, False)
+
     c = [x[4] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    smc_trend, ob_level, key_level, smc_score, whale_sweep = analyze_pure_smc_safe(k1)
-
-    k4h = get_bingx_klines(symbol, '4h', 50)
-    trend_4h, _, _, _, _ = analyze_pure_smc_safe(k4h) if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50, False)
+    # تمرير اتجاه الـ 4 ساعات لدالة التحليل لفلترة المصائد الكاذبة
+    smc_trend, ob_level, key_level, smc_score, whale_sweep = analyze_pure_smc_safe(k1, trend_4h)
 
     btc_k = get_bingx_klines('BTC-USDT', '1h', 20)
     btc_stable = True
@@ -413,7 +424,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     if whale_sweep:
         score = max(score, 94)
-        state = f'🚨 تم رصد مصيدة حيتان (Liquidity Sweep) -> دخول عكسي ذكي!'
+        state = f'🚨 تم رصد مصيدة حيتان مؤكدة بفوليوم (Liquidity Sweep) -> دخول عكسي!'
 
     if added_filter_triggered:
         score -= 10
@@ -435,7 +446,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
         f'هيكل السوق: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
-        f'كاشف مصائد الحيتان: {"🎯 تم رصد سحب سيولة (Whale Trap)" if whale_sweep else "✅ وضع طبيعي"}',
+        f'كاشف مصائد الحيتان: {"🎯 تم رصد سحب سيولة مؤكد" if whale_sweep else "✅ وضع طبيعي"}',
         f'نوع التنفيذ: أمر معلق (Limit) أو دخول مباشر',
         f'فلتر الذيل والفوليوم: {"⚠️ تنبيه طفيف" if added_filter_triggered else "✅ متزن"}',
         f'اتصال البيتكوين: {"✅ مستقر" if btc_stable else "⚠️ تحذير بسيط"}',
@@ -506,7 +517,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v35.2 (Whale Tracker)',
+        '🤖 BingX Ultra Safe SMC Scanner v35.3 (Whale Tracker Pro)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
