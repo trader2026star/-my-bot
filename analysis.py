@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v35.0 (Enhanced Accuracy & Liquidity Filters)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v35.1 (Flexible & Active)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/35.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/35.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -302,11 +302,11 @@ def analyze_pure_smc_safe(klines):
         return 'BEARISH', bearish_ob, swing_low, 92
     else:
         if is_violent_dump:
-            return 'BEARISH', bearish_ob, swing_low, 85
+            return 'BEARISH', bearish_ob, swing_low, 80
         if current_close > closes[-10]:
-            return 'BULLISH', bullish_ob, swing_high, 65
+            return 'BULLISH', bullish_ob, swing_high, 70
         else:
-            return 'BEARISH', bearish_ob, swing_low, 65
+            return 'BEARISH', bearish_ob, swing_low, 70
 
 
 def calculate_smc_trade_plan(direction, price, atr, ob_level):
@@ -358,7 +358,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     btc_stable = True
     if btc_k and len(btc_k) >= 5:
         btc_change = (btc_k[-1][4] - btc_k[-5][4]) / btc_k[-5][4]
-        if btc_change < -0.025:
+        if btc_change < -0.03:
             btc_stable = False
 
     has_news, news_title = get_economic_news_status()
@@ -369,76 +369,54 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     last_candle = k1[-1]
     candle_body = abs(last_candle[4] - last_candle[1])
     candle_range = last_candle[2] - last_candle[3]
-    is_long_wick = candle_range > (atr * 1.5) and (candle_body < candle_range * 0.3)
+    is_long_wick = candle_range > (atr * 1.8) and (candle_body < candle_range * 0.25)
     
     if is_long_wick:
         added_filter_triggered = True
-        filter_reason_msg = "ذيل شمعة عنيف (سحب سيولة متلاعب)"
+        filter_reason_msg = "ذيل شمعة طويل (تنبيه سيولة)"
 
     volume_recent = last_candle[5]
     avg_volume = sum([x[5] for x in k1[-10:-1]]) / 9 if len(k1) >= 10 else volume_recent
-    if volume_recent < (avg_volume * 0.4):
+    if volume_recent < (avg_volume * 0.25):
         added_filter_triggered = True
-        filter_reason_msg = "ضعف حاد في الفوليوم (حركة عرضية خاملة)"
+        filter_reason_msg = "ضعف فوليوم ملحوظ"
 
-    last_candle_red = k1[-1][4] < k1[-1][1]
-
-    if smc_trend == 'BULLISH' and rsi < 78 and not (last_candle_red and (k1[-1][2] - k1[-1][3]) > atr * 1.2):
+    if smc_trend == 'BULLISH' and rsi < 85:
         direction = 'LONG'
-        state = 'SAFE SMC LONG - ارتداد مؤكد من أوردر بلوك سيولة'
+        state = 'SAFE SMC LONG - فرصة ارتداد صاعد'
         score = smc_score
-    elif smc_trend == 'BEARISH' and rsi > 22:
+    elif smc_trend == 'BEARISH' and rsi > 15:
         direction = 'SHORT'
-        state = 'SAFE SMC SHORT - هبوط مؤكد من منطقة عرض'
+        state = 'SAFE SMC SHORT - فرصة هبوط من منطقة عرض'
         score = smc_score
     else:
-        direction = 'BLOCKED'
-        state = 'BLOCKED - تذبذب لحظي أو شمعة انعكاسية عنيفة'
-        score = 30
-
-    if direction == 'LONG' and trend_4h == 'BEARISH':
-        score -= 25
-        state = 'WARNING - تعارض مع هيكل فريم 4H (هابط)'
-    elif direction == 'SHORT' and trend_4h == 'BULLISH':
-        score -= 25
-        state = 'WARNING - تعارض مع هيكل فريم 4H (صاعد)'
-
-    if has_news:
-        score -= 30
-        state = f'WARNING - خبر اقتصادي هام ({news_title})'
+        direction = 'BULLISH' if rsi < 50 else 'BEARISH'
+        state = 'SMC NEUTRAL - اتجاه استرشادي حسب الزخم'
+        score = 65
 
     if added_filter_triggered:
-        score -= 35
-        state = f'BLOCKED - فلتر الحماية: {filter_reason_msg}'
-        direction = 'BLOCKED'
+        score -= 10
+        state = f'{state} | تنبيه: {filter_reason_msg}'
 
-    if score < 72:
+    if has_news:
+        score -= 15
+        state = f'{state} | تنبيه خبر: {news_title}'
+
+    if score < 50:
         direction = 'BLOCKED'
-        state = 'BLOCKED - السوق غير مستقر، تم حظر الصفقة لحماية المحفظة'
+        state = 'BLOCKED - الـ Score ضعيف جداً'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
 
     plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
 
-    divergence_flag = False
-    if direction == 'LONG':
-        if p > (ob_level + (atr * 0.8)) and p > plan['entry_max']:
-            divergence_flag = True
-    elif direction == 'SHORT':
-        if p < (ob_level - (atr * 0.8)) and p < plan['entry_min']:
-            divergence_flag = True
-
-    if divergence_flag and direction != 'BLOCKED':
-        state = f"{state} | 📌 تم تحويلها لأمر معلق لتباعد السعر عن الـ OB"
-
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
-        f'هيكل السوق الآمن: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
-        f'نوع التنفيذ: أمر معلق (Limit Order) أو حماية متقدمة',
-        f'فلتر الفوليوم والذيل: {"⚠️ تلاعب مرصود" if added_filter_triggered else "✅ نظيف ومتزن"}',
-        f'اتصال البيتكوين (BTC): {"✅ مستقر" if btc_stable else "⚠️ متذبذب أو هابط"}',
-        f'فلتر الأخبار الاقتصادية: {"⚠️ تحذير (خبر قوي قريب)" if has_news else "✅ آمن (لا توجد أخبار)"}',
+        f'هيكل السوق: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
+        f'نوع التنفيذ: أمر معلق (Limit) أو دخول مباشر',
+        f'فلتر الذيل والفوليوم: {"⚠️ تنبيه طفيف" if added_filter_triggered else "✅ متزن"}',
+        f'اتصال البيتكوين: {"✅ مستقر" if btc_stable else "⚠️ تحذير بسيط"}',
         f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
         f'رسوم التمويل: {funding_pct:.4f}%',
@@ -447,7 +425,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
-        'score': max(10, score), 'entry_score': max(10, score), 'state': state,
+        'score': max(20, score), 'entry_score': max(20, score), 'state': state,
         'price': smart_round(p), 'rsi': rsi,
         'entry_min': plan['entry_min'] if direction!='BLOCKED' else 0, 
         'entry_max': plan['entry_max'] if direction!='BLOCKED' else 0,
@@ -501,12 +479,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Institutional Safe SMC Buy)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Institutional Safe SMC Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف أو الأخبار)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (SMC Buy Opportunity)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (SMC Sell Opportunity)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v35.0',
+        '🤖 BingX Ultra Safe SMC Scanner v35.1',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -525,13 +503,13 @@ def generate_evidence_report(d):
             f"\n🎯 TP1: {d.get('tp1')}",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
-            f"\n🛑 Stop Loss (حماية الهيكل المحصن): {d.get('stop_loss')}",
+            f"\n🛑 Stop Loss (حماية الهيكل): {d.get('stop_loss')}",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}"
         ])
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول لوجود تلاعب، ضعف فوليوم، أو فخاخ سيولة.'
+            '🛑 تم حظر الدخول لعدم كفاية المعايير الفنية.'
         ])
     
     if d.get('analysis_lines'):
