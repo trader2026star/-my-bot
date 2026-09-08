@@ -363,11 +363,9 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     has_news, news_title = get_economic_news_status()
 
-    # ==========================================
     added_filter_triggered = False
     filter_reason_msg = ""
 
-    # فلتر إضافي 1: فحص ذيل الشمعة (Rejection / Liquidity Trap Filter) لمنع الوقف الوهمي
     last_candle = k1[-1]
     candle_body = abs(last_candle[4] - last_candle[1])
     candle_range = last_candle[2] - last_candle[3]
@@ -377,13 +375,11 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         added_filter_triggered = True
         filter_reason_msg = "ذيل شمعة عنيف (سحب سيولة متلاعب)"
 
-    # فلتر إضافي 2: فحص الفوليوم وعزم الحركة للتأكد من عدم وجود تذبذب عرضي
     volume_recent = last_candle[5]
     avg_volume = sum([x[5] for x in k1[-10:-1]]) / 9 if len(k1) >= 10 else volume_recent
     if volume_recent < (avg_volume * 0.4):
         added_filter_triggered = True
         filter_reason_msg = "ضعف حاد في الفوليوم (حركة عرضية خاملة)"
-    # ==========================================
 
     last_candle_red = k1[-1][4] < k1[-1][1]
 
@@ -411,7 +407,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         score -= 30
         state = f'WARNING - خبر اقتصادي هام ({news_title})'
 
-    # تطبيق الفلتر الإضافي الجديد بقوة على السكور
     if added_filter_triggered:
         score -= 35
         state = f'BLOCKED - فلتر الحماية: {filter_reason_msg}'
@@ -527,7 +522,7 @@ def generate_evidence_report(d):
             '📋 خطة صانع السوق المحصنة',
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
-            f"\n🎯 TP1: {d.get('tp1')}`,
+            f"\n🎯 TP1: {d.get('tp1')}",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
             f"\n🛑 Stop Loss (حماية الهيكل المحصن): {d.get('stop_loss')}",
