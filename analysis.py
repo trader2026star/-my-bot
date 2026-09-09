@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v39.0
+# analysis.py - BingX Institutional SMC & Risk Suite v40.0
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/39.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/40.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -275,8 +275,13 @@ def determine_strict_trend(klines_4h, klines_1h):
     return trend_4h, trend_1h
 
 
-def calculate_institutional_trade_plan(direction, price, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
+def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
     raw_atr = atr or (price * 0.015)
+    
+    # حساب متوسط مدى الشموع الأخيرة لتوقع الهدف الكلي لمدى الشمعة (Full Candle Range Target)
+    candle_ranges = [abs(x[4] - x[1]) for x in klines[-15:]] if klines and len(klines) >= 15 else [raw_atr]
+    avg_candle_range = sum(candle_ranges) / len(candle_ranges) if candle_ranges else raw_atr
+
     if direction == 'LONG':
         entry = price
         sl = min(ob_level - (raw_atr * 0.5), entry - (raw_atr * 1.5))
@@ -284,6 +289,8 @@ def calculate_institutional_trade_plan(direction, price, atr, ob_level, portfoli
         tp1 = entry + (risk_dist * 2.0)
         tp2 = entry + (risk_dist * 3.5)
         tp3 = entry + (risk_dist * 5.0)
+        # الهدف الكلي لمدى الشمعة الصاعدة (من بداية الاندفاع وحتى استنفاد كامل مدى الشمعة المعياري)
+        full_range_target = entry + (avg_candle_range * 2.2)
     elif direction == 'SHORT':
         entry = price
         sl = max(ob_level + (raw_atr * 0.5), entry + (raw_atr * 1.5))
@@ -291,23 +298,24 @@ def calculate_institutional_trade_plan(direction, price, atr, ob_level, portfoli
         tp1 = entry - (risk_dist * 2.0)
         tp2 = entry - (risk_dist * 3.5)
         tp3 = entry - (risk_dist * 5.0)
+        # الهدف الكلي لمدى الشمعة الهابطة
+        full_range_target = entry - (avg_candle_range * 2.2)
     else:
-        entry = sl = tp1 = tp2 = tp3 = risk_dist = 0
+        entry = sl = tp1 = tp2 = tp3 = full_range_target = risk_dist = 0
 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
     sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
     allowed_risk_usd = portfolio_size * (risk_pct / 100.0)
     position_size_usd = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
-    
-    # حساب Trailing Stop مقترح لنقل الوقف لنقطة الدخول فور بلوغ TP1
     breakeven_trigger = tp1
 
     return {
         'entry_min': smart_round(entry * 0.998), 'entry_max': smart_round(entry * 1.002),
         'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
         'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)),
-        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio,
-        'sl_pct': sl_pct, 'position_size_usd': position_size_usd, 'breakeven_trigger': smart_round(breakeven_trigger)
+        'tp3': smart_round(max(tp3, 0.000001)), 'full_range_target': smart_round(max(full_range_target, 0.000001)),
+        'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio, 'sl_pct': sl_pct, 
+        'position_size_usd': position_size_usd, 'breakeven_trigger': smart_round(breakeven_trigger)
     }
 
 
@@ -316,7 +324,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     p = get_current_price(symbol, True)
     if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
 
-    # أولاً: فحص حظر الأخبار الاقتصادية القوية (News Kill-Zone)
     has_news, news_title = get_economic_news_status()
     if has_news:
         return _get_blocked_signal(symbol, p, f"تم الحظر مؤقتاً بسبب قرب صدور خبر اقتصادي قوي: ({news_title})", interval)
@@ -332,7 +339,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # فحص حجم التداول (Volume Spike Filter): التحقق من أن آخر شمعة مدعومة بسيولة جيدة
     avg_vol = sum(vols[-15:]) / 15 if len(vols) >= 15 else 1.0
     last_vol = vols[-1]
     is_volume_confirmed = last_vol >= (avg_vol * 0.7)
@@ -384,7 +390,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         state = 'BLOCKED - اتجاه مذبذب وغير مستقر'
         score = 40
 
-    # خصم من النقاط إذا كان الفوليوم ضعيفاً
     if not is_volume_confirmed and direction != 'BLOCKED':
         score -= 10
         state = f'{state} | تنبيه: فوليوم التداول ضعيف نسبياً'
@@ -393,7 +398,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         direction = 'BLOCKED'
         state = 'BLOCKED - السوق لا يلبي المعايير المؤسسية الآمنة'
 
-    plan = calculate_institutional_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, atr, bearish_ob if direction=='SHORT' else bullish_ob, portfolio_size=1000.0, risk_pct=1.0)
+    plan = calculate_institutional_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, k1, atr, bearish_ob if direction=='SHORT' else bullish_ob, portfolio_size=1000.0, risk_pct=1.0)
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
@@ -415,8 +420,9 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'entry_price': plan['entry_price'] if direction!='BLOCKED' else smart_round(p), 
         'stop_loss': plan['stop_loss'] if direction!='BLOCKED' else 0,
         'tp1': plan['tp1'] if direction!='BLOCKED' else 0, 'tp2': plan['tp2'] if direction!='BLOCKED' else 0, 
-        'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 
-        'sl_pct': plan['sl_pct'], 'position_size_usd': plan['position_size_usd'], 'breakeven_trigger': plan['breakeven_trigger'],
+        'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'full_range_target': plan['full_range_target'] if direction!='BLOCKED' else 0,
+        'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 'sl_pct': plan['sl_pct'], 
+        'position_size_usd': plan['position_size_usd'], 'breakeven_trigger': plan['breakeven_trigger'],
         'funding_rate': funding_pct, 'open_interest': open_interest, 'analysis_lines': analysis_lines, 'interval': interval.upper()
     }
 
@@ -437,24 +443,6 @@ def get_coin_analysis(symbol, interval='1h'):
         return _get_blocked_signal(symbol, 1.0, f"خطأ بالبيانات ({str(e)})", interval)
 
 
-def get_top_futures_symbols(limit=25):
-    rows = _ticker_rows()
-    cand = []
-    for x in rows:
-        try:
-            if isinstance(x, dict):
-                s = str(x.get('symbol', '')).upper()
-                v = float(x.get('volume', x.get('quoteVolume', 0)))
-                if s and v > 0: cand.append((s, v))
-        except Exception: pass
-    cand.sort(key=lambda x: x[1], reverse=True)
-    out = []
-    for x in cand[:limit]:
-        sy = normalize_symbol(x[0])
-        if sy not in out: out.append(sy)
-    return out
-
-
 def generate_evidence_report(d):
     if not d: return '⚠️ تعذر إكمال التحليل.'
     dr = d.get('direction', 'BLOCKED')
@@ -465,7 +453,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX Institutional Suite v39.0',
+        '🤖 BingX Institutional Suite v40.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -484,6 +472,7 @@ def generate_evidence_report(d):
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
+            f"🚀 الهدف الكلي لمدى الشمعة (Full Range): {d.get('full_range_target')}",
             f"\n🛑 Stop Loss: {d.get('stop_loss')} (بعد بنسبة {d.get('sl_pct', 0)}%)",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
             f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
