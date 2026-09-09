@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Strict Trend Enforcement Scanner v37.0
+# analysis.py - BingX SMC Pro & Risk Management Scanner v38.0
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-StrictSMC/37.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-SMCPro/38.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -258,12 +258,10 @@ def smart_round(v):
 
 
 def determine_strict_trend(klines_4h, klines_1h):
-    """تحديد الاتجاه بصرامة تامة بناءً على فريم 4 ساعات وفريم الساعة لضمان عدم التناقض"""
     if not klines_4h or len(klines_4h) < 15:
         trend_4h = 'NEUTRAL'
     else:
         closes_4h = [x[4] for x in klines_4h]
-        # مقارنة السعر الحالي مع متوسط آخر 10 شمعات 4 ساعات لتحديد الاتجاه العام بوضوح
         ma_4h = sum(closes_4h[-10:]) / 10
         trend_4h = 'BULLISH' if closes_4h[-1] > ma_4h else 'BEARISH'
 
@@ -277,7 +275,7 @@ def determine_strict_trend(klines_4h, klines_1h):
     return trend_4h, trend_1h
 
 
-def calculate_smc_trade_plan(direction, price, atr, ob_level):
+def calculate_smc_trade_plan(direction, price, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
     raw_atr = atr or (price * 0.015)
     if direction == 'LONG':
         entry = price
@@ -297,11 +295,18 @@ def calculate_smc_trade_plan(direction, price, atr, ob_level):
         entry = sl = tp1 = tp2 = tp3 = risk_dist = 0
 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
+    
+    # حساب نسبة الـ SL% وحجم الصفقة (Position Size) بناءً على إدارة المخاطر
+    sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
+    allowed_risk_usd = portfolio_size * (risk_pct / 100.0)
+    position_size_usd = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
+
     return {
         'entry_min': smart_round(entry * 0.998), 'entry_max': smart_round(entry * 1.002),
         'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
         'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)),
-        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio
+        'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio,
+        'sl_pct': sl_pct, 'position_size_usd': position_size_usd
     }
 
 
@@ -314,15 +319,12 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
 
     k4h = get_bingx_klines(symbol, '4h', 50)
-    
-    # تحديد الاتجاه بصرامة تامة لعدم تضارب الفريمات
     trend_4h, trend_1h = determine_strict_trend(k4h, k1)
 
     c = [x[4] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # الأوردر بلوك (Order Block) الحقيقي من آخر قمم وقيعان
     highs = [x[2] for x in k1]
     lows = [x[3] for x in k1]
     closes = [x[4] for x in k1]
@@ -343,10 +345,8 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
-
     has_news, news_title = get_economic_news_status()
 
-    # القاعدة الصارمة لمنع التناقض: الاتجاه يجب أن يتطابق أو يكون الفريم الأكبر مسيطراً تماماً
     if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
         direction = 'LONG'
         state = 'STRICT TREND LONG - توافق تجمعي صاعد قاطع'
@@ -356,7 +356,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         state = 'STRICT TREND SHORT - توافق تجمعي هابط قاطع'
         score = 85
     elif trend_4h == 'BULLISH' and trend_1h == 'BEARISH':
-        # تصحيح مؤقت في اتجاه صاعد عام
         if rsi < 40:
             direction = 'LONG'
             state = 'LONG (تصحيح داخل ترند صاعد 4H - مناطق شراء)'
@@ -366,9 +365,8 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             state = 'BLOCKED - تداخل بين 4H الصاعد و 1H الهابط (منطقة انتظار)'
             score = 45
     elif trend_4h == 'BEARISH' and trend_1h == 'BULLISH':
-        # ارتداد وهمي عكس الاتجاه العام الهابط (وهو سبب الخسارة السابق) -> يتم منعه بحزم!
         direction = 'SHORT'
-        state = 'STRICT SHORT - منع ارتداد 1H الوهمي والالتزام بترند 4H الهابط الأساسي'
+        state = 'STRICT SHORT - منع ارتداد 1H الوهمي والالتزام بترند 4H الهابط'
         score = 80
     else:
         direction = 'BLOCKED'
@@ -383,7 +381,8 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         direction = 'BLOCKED'
         state = 'BLOCKED - السوق مذبذب ولا توجد صفقة آمنة حالياً'
 
-    plan = calculate_smz = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, atr, bearish_ob if direction=='SHORT' else bullish_ob)
+    # افتراض محفظة بقيمة 1,000$ ومخاطرة 1% (قابلة للتعديل حسب رغبتك)
+    plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, atr, bearish_ob if direction=='SHORT' else bullish_ob, portfolio_size=1000.0, risk_pct=1.0)
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
@@ -405,6 +404,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'stop_loss': plan['stop_loss'] if direction!='BLOCKED' else 0,
         'tp1': plan['tp1'] if direction!='BLOCKED' else 0, 'tp2': plan['tp2'] if direction!='BLOCKED' else 0, 
         'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 
+        'sl_pct': plan['sl_pct'], 'position_size_usd': plan['position_size_usd'],
         'funding_rate': funding_pct, 'open_interest': open_interest, 'analysis_lines': analysis_lines, 'interval': interval.upper()
     }
 
@@ -453,7 +453,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب والخسارة)'
     
     lines = [
-        '🤖 BingX Strict Trend Scanner v37.0',
+        '🤖 BingX SMC Pro & Risk Manager v38.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -466,14 +466,15 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة التداول الصارمة',
+            '📋 خطة التداول الحصينة وإدارة المخاطر',
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1: {d.get('tp1')}",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
-            f"\n🛑 Stop Loss: {d.get('stop_loss')}",
-            f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}"
+            f"\n🛑 Stop Loss: {d.get('stop_loss')} (بعد بنسبة {d.get('sl_pct', 0)}%)",
+            f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
+            f"🛡️ حجم الصفقة المقترح (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
         ])
     else:
         lines.extend([
