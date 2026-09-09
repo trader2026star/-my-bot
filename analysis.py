@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX SMC Pro & Risk Management Scanner v38.0
+# analysis.py - BingX Institutional SMC & Risk Suite v39.0
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-SMCPro/38.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/39.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -84,7 +84,7 @@ def get_economic_news_status():
                         ev_timestamp = dt.timestamp()
                         if -7200 <= (ev_timestamp - current_time) <= 7200:
                             high_impact_near = True
-                            event_title = ev.get('title', 'Economic Event')
+                            event_title = ev.get('title', 'High Impact Economic Event')
                             break
                     except Exception:
                         pass
@@ -275,7 +275,7 @@ def determine_strict_trend(klines_4h, klines_1h):
     return trend_4h, trend_1h
 
 
-def calculate_smc_trade_plan(direction, price, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
+def calculate_institutional_trade_plan(direction, price, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
     raw_atr = atr or (price * 0.015)
     if direction == 'LONG':
         entry = price
@@ -295,18 +295,19 @@ def calculate_smc_trade_plan(direction, price, atr, ob_level, portfolio_size=100
         entry = sl = tp1 = tp2 = tp3 = risk_dist = 0
 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
-    
-    # حساب نسبة الـ SL% وحجم الصفقة (Position Size) بناءً على إدارة المخاطر
     sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
     allowed_risk_usd = portfolio_size * (risk_pct / 100.0)
     position_size_usd = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
+    
+    # حساب Trailing Stop مقترح لنقل الوقف لنقطة الدخول فور بلوغ TP1
+    breakeven_trigger = tp1
 
     return {
         'entry_min': smart_round(entry * 0.998), 'entry_max': smart_round(entry * 1.002),
         'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
         'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)),
         'tp3': smart_round(max(tp3, 0.000001)), 'risk': smart_round(risk_dist), 'rr_ratio': rr_ratio,
-        'sl_pct': sl_pct, 'position_size_usd': position_size_usd
+        'sl_pct': sl_pct, 'position_size_usd': position_size_usd, 'breakeven_trigger': smart_round(breakeven_trigger)
     }
 
 
@@ -315,6 +316,11 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     p = get_current_price(symbol, True)
     if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
 
+    # أولاً: فحص حظر الأخبار الاقتصادية القوية (News Kill-Zone)
+    has_news, news_title = get_economic_news_status()
+    if has_news:
+        return _get_blocked_signal(symbol, p, f"تم الحظر مؤقتاً بسبب قرب صدور خبر اقتصادي قوي: ({news_title})", interval)
+
     k1 = get_bingx_klines(symbol, interval, 100)
     if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
 
@@ -322,8 +328,14 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     trend_4h, trend_1h = determine_strict_trend(k4h, k1)
 
     c = [x[4] for x in k1]
+    vols = [x[5] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
+
+    # فحص حجم التداول (Volume Spike Filter): التحقق من أن آخر شمعة مدعومة بسيولة جيدة
+    avg_vol = sum(vols[-15:]) / 15 if len(vols) >= 15 else 1.0
+    last_vol = vols[-1]
+    is_volume_confirmed = last_vol >= (avg_vol * 0.7)
 
     highs = [x[2] for x in k1]
     lows = [x[3] for x in k1]
@@ -345,49 +357,49 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
-    has_news, news_title = get_economic_news_status()
 
     if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
         direction = 'LONG'
-        state = 'STRICT TREND LONG - توافق تجمعي صاعد قاطع'
-        score = 85
+        state = 'INSTITUTIONAL LONG - توافق تجمعي صاعد قاطع'
+        score = 88
     elif trend_4h == 'BEARISH' and trend_1h == 'BEARISH':
         direction = 'SHORT'
-        state = 'STRICT TREND SHORT - توافق تجمعي هابط قاطع'
-        score = 85
+        state = 'INSTITUTIONAL SHORT - توافق تجمعي هابط قاطع'
+        score = 88
     elif trend_4h == 'BULLISH' and trend_1h == 'BEARISH':
         if rsi < 40:
             direction = 'LONG'
-            state = 'LONG (تصحيح داخل ترند صاعد 4H - مناطق شراء)'
-            score = 72
+            state = 'LONG (تصحيح صحي داخل ترند صاعد 4H)'
+            score = 75
         else:
             direction = 'BLOCKED'
-            state = 'BLOCKED - تداخل بين 4H الصاعد و 1H الهابط (منطقة انتظار)'
+            state = 'BLOCKED - تداخل بين 4H الصاعد و 1H الهابط'
             score = 45
     elif trend_4h == 'BEARISH' and trend_1h == 'BULLISH':
         direction = 'SHORT'
-        state = 'STRICT SHORT - منع ارتداد 1H الوهمي والالتزام بترند 4H الهابط'
-        score = 80
+        state = 'INSTITUTIONAL SHORT - قمع ارتداد 1H الوهمي ومطابقة ترند 4H'
+        score = 82
     else:
         direction = 'BLOCKED'
-        state = 'BLOCKED - اتجاه غير واضح ومذبذب'
+        state = 'BLOCKED - اتجاه مذبذب وغير مستقر'
         score = 40
 
-    if has_news:
-        score -= 15
-        state = f'{state} | تحذير: خبر اقتصادي قوي قارب الصدور'
+    # خصم من النقاط إذا كان الفوليوم ضعيفاً
+    if not is_volume_confirmed and direction != 'BLOCKED':
+        score -= 10
+        state = f'{state} | تنبيه: فوليوم التداول ضعيف نسبياً'
 
     if score < 50:
         direction = 'BLOCKED'
-        state = 'BLOCKED - السوق مذبذب ولا توجد صفقة آمنة حالياً'
+        state = 'BLOCKED - السوق لا يلبي المعايير المؤسسية الآمنة'
 
-    # افتراض محفظة بقيمة 1,000$ ومخاطرة 1% (قابلة للتعديل حسب رغبتك)
-    plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, atr, bearish_ob if direction=='SHORT' else bullish_ob, portfolio_size=1000.0, risk_pct=1.0)
+    plan = calculate_institutional_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, atr, bearish_ob if direction=='SHORT' else bullish_ob, portfolio_size=1000.0, risk_pct=1.0)
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
         f'اتجاه الفريم الكبير (4H): {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
+        f'فلتر الفوليوم المؤسسية: {"✅ مؤكد" if is_volume_confirmed else "⚠️ ضعيف"}',
         f'العقود المفتوحة (OI): {open_interest:,.2f}',
         f'معدل التمويل (Funding): {funding_pct:.4f}%',
         f'مؤشر القوة النسبية (RSI): {rsi}',
@@ -404,7 +416,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'stop_loss': plan['stop_loss'] if direction!='BLOCKED' else 0,
         'tp1': plan['tp1'] if direction!='BLOCKED' else 0, 'tp2': plan['tp2'] if direction!='BLOCKED' else 0, 
         'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 
-        'sl_pct': plan['sl_pct'], 'position_size_usd': plan['position_size_usd'],
+        'sl_pct': plan['sl_pct'], 'position_size_usd': plan['position_size_usd'], 'breakeven_trigger': plan['breakeven_trigger'],
         'funding_rate': funding_pct, 'open_interest': open_interest, 'analysis_lines': analysis_lines, 'interval': interval.upper()
     }
 
@@ -448,12 +460,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (مع الترند العام)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (مع الترند العام)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب والخسارة)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (مؤسسي مدعوم بالترند)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (مؤسسي مدعوم بالترند)'
+    else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX SMC Pro & Risk Manager v38.0',
+        '🤖 BingX Institutional Suite v39.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -466,20 +478,20 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة التداول الحصينة وإدارة المخاطر',
+            '📋 الخطة المؤسسية وإدارة المخاطر المتقدمة',
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
-            f"\n🎯 TP1: {d.get('tp1')}",
+            f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
             f"\n🛑 Stop Loss: {d.get('stop_loss')} (بعد بنسبة {d.get('sl_pct', 0)}%)",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
-            f"🛡️ حجم الصفقة المقترح (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
+            f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
         ])
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول لأن السوق مذبذب ولا يتبع اتجاهًا واضحًا لحمايتك من الخسارة.'
+            '🛑 تم حظر التداول مؤقتاً لحماية رصيدك من أي فخاخ أو أخبار قوية.'
         ])
     
     if d.get('analysis_lines'):
