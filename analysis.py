@@ -134,6 +134,24 @@ def _ticker_rows(force=False):
     return []
 
 
+def get_top_futures_symbols(limit=25):
+    rows = _ticker_rows()
+    cand = []
+    for x in rows:
+        try:
+            if isinstance(x, dict):
+                s = str(x.get('symbol', '')).upper()
+                v = float(x.get('volume', x.get('quoteVolume', 0)))
+                if s and v > 0: cand.append((s, v))
+        except Exception: pass
+    cand.sort(key=lambda x: x[1], reverse=True)
+    out = []
+    for x in cand[:limit]:
+        sy = normalize_symbol(x[0])
+        if sy not in out: out.append(sy)
+    return out
+
+
 def get_funding_rate(symbol):
     symbol = normalize_symbol(symbol)
     d = bingx_get('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol})
@@ -277,8 +295,6 @@ def determine_strict_trend(klines_4h, klines_1h):
 
 def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
     raw_atr = atr or (price * 0.015)
-    
-    # حساب متوسط مدى الشموع الأخيرة لتوقع الهدف الكلي لمدى الشمعة (Full Candle Range Target)
     candle_ranges = [abs(x[4] - x[1]) for x in klines[-15:]] if klines and len(klines) >= 15 else [raw_atr]
     avg_candle_range = sum(candle_ranges) / len(candle_ranges) if candle_ranges else raw_atr
 
@@ -289,7 +305,6 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
         tp1 = entry + (risk_dist * 2.0)
         tp2 = entry + (risk_dist * 3.5)
         tp3 = entry + (risk_dist * 5.0)
-        # الهدف الكلي لمدى الشمعة الصاعدة (من بداية الاندفاع وحتى استنفاد كامل مدى الشمعة المعياري)
         full_range_target = entry + (avg_candle_range * 2.2)
     elif direction == 'SHORT':
         entry = price
@@ -298,7 +313,6 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
         tp1 = entry - (risk_dist * 2.0)
         tp2 = entry - (risk_dist * 3.5)
         tp3 = entry - (risk_dist * 5.0)
-        # الهدف الكلي لمدى الشمعة الهابطة
         full_range_target = entry - (avg_candle_range * 2.2)
     else:
         entry = sl = tp1 = tp2 = tp3 = full_range_target = risk_dist = 0
