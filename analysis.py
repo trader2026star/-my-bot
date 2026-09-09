@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v35.3 (Smart Whale Trap Pro Edition)
+# analysis.py - BingX Ultra Safe Pure SMC Scanner v36.0 (Smart Money Flow & Open Interest Edition)
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/35.3', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/36.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -150,7 +150,24 @@ def get_funding_rate(symbol):
             return float(d.get('fundingRate', 0))
         except Exception:
             pass
-    return 0.015
+    return 0.0
+
+
+def get_open_interest(symbol):
+    """جلب العقود المفتوحة (Open Interest) لتتبع تدفق السيولة الحقيقية للأموال"""
+    symbol = normalize_symbol(symbol)
+    d = bingx_get('/openApi/swap/v2/quote/openInterest', {'symbol': symbol})
+    if isinstance(d, dict):
+        try:
+            return float(d.get('openInterest', 0))
+        except Exception:
+            pass
+    elif isinstance(d, list) and len(d) > 0:
+        try:
+            return float(d[0].get('openInterest', 0))
+        except Exception:
+            pass
+    return 0.0
 
 
 def _parse(rows):
@@ -284,20 +301,15 @@ def analyze_pure_smc_safe(klines, trend_4h='NEUTRAL'):
     current_volume = volumes[-1]
     avg_volume = sum(volumes[-10:-1]) / 9 if len(volumes) >= 10 else current_volume
 
-    # --- كاشف مصائد الحيتان المحصن (Enhanced Whale Trap / Sweep Detector) ---
     last_high = highs[-1]
     last_low = lows[-1]
     sweep_detected = False
-    
-    # فحص شروط الفوليوم العالي لتأكيد سحب السيولة الحقيقي وليس مجرد تذبذب
     is_high_volume = current_volume >= (avg_volume * 1.2)
 
-    # مصيدة هبوط وهمية (Bear Trap / Stop Hunt) تتطلب فوليوم مؤكد وعدم معاندة فريم 4H الهابط بعنف
     if last_low < swing_low and current_close > swing_low and is_high_volume:
-        if trend_4h != 'BEARISH':  # منع الدعم العكسي لو الـ 4 ساعات هابط كالشلال
+        if trend_4h != 'BEARISH':
             sweep_detected = True  
 
-    # مصيدة صعود وهمية (Bull Trap)
     elif last_high > swing_high and current_close < swing_high and is_high_volume:
         if trend_4h != 'BULLISH':
             sweep_detected = True
@@ -379,8 +391,12 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # تمرير اتجاه الـ 4 ساعات لدالة التحليل لفلترة المصائد الكاذبة
     smc_trend, ob_level, key_level, smc_score, whale_sweep = analyze_pure_smc_safe(k1, trend_4h)
+
+    # جلب بيانات التدفق المالي الحقيقي
+    funding_rate = get_funding_rate(symbol)
+    funding_pct = funding_rate * 100
+    open_interest = get_open_interest(symbol)
 
     btc_k = get_bingx_klines('BTC-USDT', '1h', 20)
     btc_stable = True
@@ -422,6 +438,18 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         state = 'SMC NEUTRAL - اتجاه استرشادي حسب الزخم'
         score = 65
 
+    # --- فلتر التمويل والعقود المفتوحة (Smart Money & Funding Filter) ---
+    oi_status = "متزن"
+    if direction == 'LONG' and funding_pct > 0.05:
+        # التمويل إيجابي مبالغ فيه يعني صغار المتداولين مندفعين شراء، الحيتان قد تعكس عليهم
+        score -= 8
+        oi_status = "تمويل إيجابي مرتفع (احذر فخ الطمع)"
+    elif direction == 'SHORT' and funding_pct < -0.05:
+        score -= 8
+        oi_status = "تمويل سلبي مرتفع (احذر ارتداد صاعد للشورت)"
+    else:
+        score += 5  # تدفق عقلاني سليم
+
     if whale_sweep:
         score = max(score, 94)
         state = f'🚨 تم رصد مصيدة حيتان مؤكدة بفوليوم (Liquidity Sweep) -> دخول عكسي!'
@@ -436,10 +464,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     if score < 50:
         direction = 'BLOCKED'
-        state = 'BLOCKED - الـ Score ضعيف جداً'
-
-    funding_rate = get_funding_rate(symbol)
-    funding_pct = funding_rate * 100
+        state = 'BLOCKED - الـ Score ضعيف جداً بعد تصفية الفلوس'
 
     plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
 
@@ -447,18 +472,17 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'الإطار الزمني: {interval.upper()}',
         f'هيكل السوق: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
         f'كاشف مصائد الحيتان: {"🎯 تم رصد سحب سيولة مؤكد" if whale_sweep else "✅ وضع طبيعي"}',
-        f'نوع التنفيذ: أمر معلق (Limit) أو دخول مباشر',
-        f'فلتر الذيل والفوليوم: {"⚠️ تنبيه طفيف" if added_filter_triggered else "✅ متزن"}',
+        f'العقود المفتوحة (OI): {open_interest:,.2f}',
+        f'معدل التمويل (Funding): {funding_pct:.4f}% ({oi_status})',
         f'اتصال البيتكوين: {"✅ مستقر" if btc_stable else "⚠️ تحذير بسيط"}',
         f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
-        f'رسوم التمويل: {funding_pct:.4f}%',
         f'مؤشر RSI: {rsi}'
     ]
 
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
-        'score': max(20, score), 'entry_score': max(20, score), 'state': state,
+        'score': max(20, min(100, score)), 'entry_score': max(20, min(100, score)), 'state': state,
         'price': smart_round(p), 'rsi': rsi,
         'entry_min': plan['entry_min'] if direction!='BLOCKED' else 0, 
         'entry_max': plan['entry_max'] if direction!='BLOCKED' else 0,
@@ -466,7 +490,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'stop_loss': plan['stop_loss'] if direction!='BLOCKED' else 0,
         'tp1': plan['tp1'] if direction!='BLOCKED' else 0, 'tp2': plan['tp2'] if direction!='BLOCKED' else 0, 
         'tp3': plan['tp3'] if direction!='BLOCKED' else 0, 'risk': plan['risk'], 'rr_ratio': plan['rr_ratio'], 
-        'funding_rate': funding_pct, 'analysis_lines': analysis_lines, 'interval': interval.upper()
+        'funding_rate': funding_pct, 'open_interest': open_interest, 'analysis_lines': analysis_lines, 'interval': interval.upper()
     }
 
 
@@ -512,12 +536,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (SMC Buy Opportunity)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (SMC Sell Opportunity)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب العنيف)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Smart Money Buy)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Smart Money Sell)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التلاعب والتمويل العالي)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v35.3 (Whale Tracker Pro)',
+        '🤖 BingX Ultra Safe SMC Scanner v36.0 (Smart Money Flow Edition)',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -542,11 +566,11 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول لعدم كفاية المعايير الفنية.'
+            '🛑 تم حظر الدخول لعدم توازن السيولة ومعدلات التمويل.'
         ])
     
     if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية:')
+        lines.append('\n🔍 التفاصيل الفنية وتدفق الأموال:')
         for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
