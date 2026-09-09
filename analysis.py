@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Ultra Safe Pure SMC Scanner v36.0 (Smart Money Flow & Open Interest Edition)
+# analysis.py - BingX Strict Trend Enforcement Scanner v37.0
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-UltraSMC/36.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-StrictSMC/37.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -68,7 +68,6 @@ def get_economic_news_status():
     now = time.time()
     if _NEWS_CACHE is not None and now - _NEWS_CACHE_TIME < NEWS_CACHE_SECONDS:
         return _NEWS_CACHE
-    
     try:
         res = requests.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json', timeout=5)
         if res.status_code == 200:
@@ -76,7 +75,6 @@ def get_economic_news_status():
             current_time = time.time()
             high_impact_near = False
             event_title = ""
-            
             for ev in events:
                 if ev.get('impact') == 'High':
                     date_str = ev.get('date')
@@ -90,14 +88,12 @@ def get_economic_news_status():
                             break
                     except Exception:
                         pass
-            
             _NEWS_CACHE = (high_impact_near, event_title)
             _NEWS_CACHE_TIME = now
             return _NEWS_CACHE
     except Exception:
         pass
-    
-    return (False, "لا توجد أخبار قريبة مرصودة")
+    return (False, "")
 
 
 def get_futures_symbols(force_refresh=False):
@@ -106,11 +102,7 @@ def get_futures_symbols(force_refresh=False):
         return set(_SYMBOL_CACHE)
     d = bingx_get('/openApi/swap/v2/quote/contracts')
     out = set()
-    rows = []
-    if isinstance(d, dict):
-        rows = d.get('contracts', [])
-    elif isinstance(d, list):
-        rows = d
+    rows = d.get('contracts', []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
     for x in rows:
         if isinstance(x, dict):
             s = str(x.get('symbol', '')).upper()
@@ -146,34 +138,26 @@ def get_funding_rate(symbol):
     symbol = normalize_symbol(symbol)
     d = bingx_get('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol})
     if isinstance(d, dict):
-        try:
-            return float(d.get('fundingRate', 0))
-        except Exception:
-            pass
+        try: return float(d.get('fundingRate', 0))
+        except Exception: pass
     return 0.0
 
 
 def get_open_interest(symbol):
-    """جلب العقود المفتوحة (Open Interest) لتتبع تدفق السيولة الحقيقية للأموال"""
     symbol = normalize_symbol(symbol)
     d = bingx_get('/openApi/swap/v2/quote/openInterest', {'symbol': symbol})
     if isinstance(d, dict):
-        try:
-            return float(d.get('openInterest', 0))
-        except Exception:
-            pass
+        try: return float(d.get('openInterest', 0))
+        except Exception: pass
     elif isinstance(d, list) and len(d) > 0:
-        try:
-            return float(d[0].get('openInterest', 0))
-        except Exception:
-            pass
+        try: return float(d[0].get('openInterest', 0))
+        except Exception: pass
     return 0.0
 
 
 def _parse(rows):
     out = []
-    if not isinstance(rows, list):
-        return out
+    if not isinstance(rows, list): return out
     for x in rows:
         try:
             if isinstance(x, dict):
@@ -183,17 +167,13 @@ def _parse(rows):
                 l = float(x.get('low', 0))
                 c = float(x.get('close', 0))
                 v = float(x.get('volume', 0))
-                if t > 0 and c > 0:
-                    out.append([t, o, h, l, c, v])
+                if t > 0 and c > 0: out.append([t, o, h, l, c, v])
             elif isinstance(x, list) and len(x) >= 6:
                 t, o, h, l, c, v = x[:6]
                 out.append([int(t), float(o), float(h), float(l), float(c), float(v or 0)])
-        except Exception:
-            pass
-    try:
-        out.sort(key=lambda z: z[0])
-    except Exception:
-        pass
+        except Exception: pass
+    try: out.sort(key=lambda z: z[0])
+    except Exception: pass
     seen = set(); clean = []
     for x in out:
         if x[0] in seen: continue
@@ -207,10 +187,8 @@ def get_bingx_klines(s, interval='1h', limit=100):
     now = time.time()
     c = _KLINE_CACHE.get(key)
     if c and now - c[0] < KLINE_CACHE_SECONDS: return c[1]
-    
     mp = {'1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d'}
     bi = mp.get(str(interval).lower(), '1h')
-    
     d = bingx_get('/openApi/swap/v2/quote/klines', {'symbol': s, 'interval': bi, 'limit': int(limit)})
     r = _parse(d)
     if r and len(r) > 0:
@@ -224,7 +202,6 @@ def get_current_price(s, force=False):
     now = time.time()
     c = _PRICE_CACHE.get(s)
     if not force and c and now - c[0] < PRICE_CACHE_SECONDS: return c[1]
-    
     d = bingx_get('/openApi/swap/v2/quote/price', {'symbol': s})
     if isinstance(d, dict) and 'price' in d:
         try:
@@ -232,9 +209,7 @@ def get_current_price(s, force=False):
             if p > 0:
                 _PRICE_CACHE[s] = (now, p)
                 return p
-        except Exception:
-            pass
-            
+        except Exception: pass
     rows = _ticker_rows()
     for x in rows:
         if isinstance(x, dict) and str(x.get('symbol', '')).upper() in [s, s.replace('-', '')]:
@@ -243,9 +218,7 @@ def get_current_price(s, force=False):
                 if p > 0:
                     _PRICE_CACHE[s] = (now, p)
                     return p
-            except Exception:
-                pass
-                
+            except Exception: pass
     k = get_bingx_klines(s, '1m', 5)
     if k and len(k) > 0 and k[-1][4] > 0:
         _PRICE_CACHE[s] = (now, k[-1][4])
@@ -284,86 +257,42 @@ def smart_round(v):
     return round(v, 8)
 
 
-def analyze_pure_smc_safe(klines, trend_4h='NEUTRAL'):
-    if not klines or len(klines) < 25:
-        return 'NEUTRAL', 0, 0, 50, False
-
-    highs = [x[2] for x in klines]
-    lows = [x[3] for x in klines]
-    closes = [x[4] for x in klines]
-    opens = [x[1] for x in klines]
-    volumes = [x[5] for x in klines]
-
-    swing_high = max(highs[-20:-2])
-    swing_low = min(lows[-20:-2])
-    current_close = closes[-1]
-    prev_close = closes[-2]
-    current_volume = volumes[-1]
-    avg_volume = sum(volumes[-10:-1]) / 9 if len(volumes) >= 10 else current_volume
-
-    last_high = highs[-1]
-    last_low = lows[-1]
-    sweep_detected = False
-    is_high_volume = current_volume >= (avg_volume * 1.2)
-
-    if last_low < swing_low and current_close > swing_low and is_high_volume:
-        if trend_4h != 'BEARISH':
-            sweep_detected = True  
-
-    elif last_high > swing_high and current_close < swing_high and is_high_volume:
-        if trend_4h != 'BULLISH':
-            sweep_detected = True
-
-    is_violent_dump = (current_close < prev_close) and ((prev_close - current_close) > (closes[-5] - closes[-6] if len(closes)>5 else 0) * 1.5)
-    is_violent_pump = (current_close > prev_close) and ((current_close - prev_close) > (closes[-5] - closes[-6] if len(closes)>5 else 0) * 1.5)
-
-    bullish_ob = lows[-3]
-    for i in range(len(klines)-2, max(len(klines)-15, 2), -1):
-        if closes[i] < opens[i]:
-            bullish_ob = lows[i]
-            break
-
-    bearish_ob = highs[-3]
-    for i in range(len(klines)-2, max(len(klines)-15, 2), -1):
-        if closes[i] > opens[i]:
-            bearish_ob = highs[i]
-            break
-
-    if sweep_detected:
-        if last_low < swing_low:
-            return 'BULLISH', bullish_ob, swing_low, 95, True
-        else:
-            return 'BEARISH', bearish_ob, swing_high, 95, True
-
-    if current_close > swing_high and not is_violent_dump:
-        return 'BULLISH', bullish_ob, swing_high, 92, False
-    elif current_close < swing_low and not is_violent_pump:
-        return 'BEARISH', bearish_ob, swing_low, 92, False
+def determine_strict_trend(klines_4h, klines_1h):
+    """تحديد الاتجاه بصرامة تامة بناءً على فريم 4 ساعات وفريم الساعة لضمان عدم التناقض"""
+    if not klines_4h or len(klines_4h) < 15:
+        trend_4h = 'NEUTRAL'
     else:
-        if is_violent_dump:
-            return 'BEARISH', bearish_ob, swing_low, 80, False
-        if current_close > closes[-10]:
-            return 'BULLISH', bullish_ob, swing_high, 70, False
-        else:
-            return 'BEARISH', bearish_ob, swing_low, 70, False
+        closes_4h = [x[4] for x in klines_4h]
+        # مقارنة السعر الحالي مع متوسط آخر 10 شمعات 4 ساعات لتحديد الاتجاه العام بوضوح
+        ma_4h = sum(closes_4h[-10:]) / 10
+        trend_4h = 'BULLISH' if closes_4h[-1] > ma_4h else 'BEARISH'
+
+    if not klines_1h or len(klines_1h) < 15:
+        return trend_4h, 'NEUTRAL'
+    
+    closes_1h = [x[4] for x in klines_1h]
+    ma_1h = sum(closes_1h[-10:]) / 10
+    trend_1h = 'BULLISH' if closes_1h[-1] > ma_1h else 'BEARISH'
+
+    return trend_4h, trend_1h
 
 
 def calculate_smc_trade_plan(direction, price, atr, ob_level):
     raw_atr = atr or (price * 0.015)
     if direction == 'LONG':
         entry = price
-        sl = min(ob_level - (raw_atr * 0.6), entry - (raw_atr * 1.8))
+        sl = min(ob_level - (raw_atr * 0.5), entry - (raw_atr * 1.5))
         risk_dist = entry - sl
         tp1 = entry + (risk_dist * 2.0)
-        tp2 = entry + (risk_dist * 3.2)
-        tp3 = entry + (risk_dist * 4.8)
+        tp2 = entry + (risk_dist * 3.5)
+        tp3 = entry + (risk_dist * 5.0)
     elif direction == 'SHORT':
         entry = price
-        sl = max(ob_level + (raw_atr * 0.6), entry + (raw_atr * 1.8))
+        sl = max(ob_level + (raw_atr * 0.5), entry + (raw_atr * 1.5))
         risk_dist = sl - entry
         tp1 = entry - (risk_dist * 2.0)
-        tp2 = entry - (risk_dist * 3.2)
-        tp3 = entry - (risk_dist * 4.8)
+        tp2 = entry - (risk_dist * 3.5)
+        tp3 = entry - (risk_dist * 5.0)
     else:
         entry = sl = tp1 = tp2 = tp3 = risk_dist = 0
 
@@ -385,99 +314,85 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
 
     k4h = get_bingx_klines(symbol, '4h', 50)
-    trend_4h, _, _, _, _ = analyze_pure_smc_safe(k4h, 'NEUTRAL') if k4h and len(k4h) >= 20 else ('NEUTRAL', 0, 0, 50, False)
+    
+    # تحديد الاتجاه بصرامة تامة لعدم تضارب الفريمات
+    trend_4h, trend_1h = determine_strict_trend(k4h, k1)
 
     c = [x[4] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    smc_trend, ob_level, key_level, smc_score, whale_sweep = analyze_pure_smc_safe(k1, trend_4h)
+    # الأوردر بلوك (Order Block) الحقيقي من آخر قمم وقيعان
+    highs = [x[2] for x in k1]
+    lows = [x[3] for x in k1]
+    closes = [x[4] for x in k1]
+    opens = [x[1] for x in k1]
 
-    # جلب بيانات التدفق المالي الحقيقي
+    bullish_ob = lows[-3]
+    for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
+        if closes[i] < opens[i]:
+            bullish_ob = lows[i]
+            break
+
+    bearish_ob = highs[-3]
+    for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
+        if closes[i] > opens[i]:
+            bearish_ob = highs[i]
+            break
+
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
 
-    btc_k = get_bingx_klines('BTC-USDT', '1h', 20)
-    btc_stable = True
-    if btc_k and len(btc_k) >= 5:
-        btc_change = (btc_k[-1][4] - btc_k[-5][4]) / btc_k[-5][4]
-        if btc_change < -0.03:
-            btc_stable = False
-
     has_news, news_title = get_economic_news_status()
 
-    added_filter_triggered = False
-    filter_reason_msg = ""
-
-    last_candle = k1[-1]
-    candle_body = abs(last_candle[4] - last_candle[1])
-    candle_range = last_candle[2] - last_candle[3]
-    is_long_wick = candle_range > (atr * 1.8) and (candle_body < candle_range * 0.25)
-    
-    if is_long_wick and not whale_sweep:
-        added_filter_triggered = True
-        filter_reason_msg = "ذيل شمعة طويل (تنبيه سيولة)"
-
-    volume_recent = last_candle[5]
-    avg_volume = sum([x[5] for x in k1[-10:-1]]) / 9 if len(k1) >= 10 else volume_recent
-    if volume_recent < (avg_volume * 0.25):
-        added_filter_triggered = True
-        filter_reason_msg = "ضعف فوليوم ملحوظ"
-
-    if smc_trend == 'BULLISH' and rsi < 85:
+    # القاعدة الصارمة لمنع التناقض: الاتجاه يجب أن يتطابق أو يكون الفريم الأكبر مسيطراً تماماً
+    if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
         direction = 'LONG'
-        state = 'SAFE SMC LONG - فرصة ارتداد صاعد'
-        score = smc_score
-    elif smc_trend == 'BEARISH' and rsi > 15:
+        state = 'STRICT TREND LONG - توافق تجمعي صاعد قاطع'
+        score = 85
+    elif trend_4h == 'BEARISH' and trend_1h == 'BEARISH':
         direction = 'SHORT'
-        state = 'SAFE SMC SHORT - فرصة هبوط من منطقة عرض'
-        score = smc_score
+        state = 'STRICT TREND SHORT - توافق تجمعي هابط قاطع'
+        score = 85
+    elif trend_4h == 'BULLISH' and trend_1h == 'BEARISH':
+        # تصحيح مؤقت في اتجاه صاعد عام
+        if rsi < 40:
+            direction = 'LONG'
+            state = 'LONG (تصحيح داخل ترند صاعد 4H - مناطق شراء)'
+            score = 72
+        else:
+            direction = 'BLOCKED'
+            state = 'BLOCKED - تداخل بين 4H الصاعد و 1H الهابط (منطقة انتظار)'
+            score = 45
+    elif trend_4h == 'BEARISH' and trend_1h == 'BULLISH':
+        # ارتداد وهمي عكس الاتجاه العام الهابط (وهو سبب الخسارة السابق) -> يتم منعه بحزم!
+        direction = 'SHORT'
+        state = 'STRICT SHORT - منع ارتداد 1H الوهمي والالتزام بترند 4H الهابط الأساسي'
+        score = 80
     else:
-        direction = 'BULLISH' if rsi < 50 else 'BEARISH'
-        state = 'SMC NEUTRAL - اتجاه استرشادي حسب الزخم'
-        score = 65
-
-    # --- فلتر التمويل والعقود المفتوحة (Smart Money & Funding Filter) ---
-    oi_status = "متزن"
-    if direction == 'LONG' and funding_pct > 0.05:
-        # التمويل إيجابي مبالغ فيه يعني صغار المتداولين مندفعين شراء، الحيتان قد تعكس عليهم
-        score -= 8
-        oi_status = "تمويل إيجابي مرتفع (احذر فخ الطمع)"
-    elif direction == 'SHORT' and funding_pct < -0.05:
-        score -= 8
-        oi_status = "تمويل سلبي مرتفع (احذر ارتداد صاعد للشورت)"
-    else:
-        score += 5  # تدفق عقلاني سليم
-
-    if whale_sweep:
-        score = max(score, 94)
-        state = f'🚨 تم رصد مصيدة حيتان مؤكدة بفوليوم (Liquidity Sweep) -> دخول عكسي!'
-
-    if added_filter_triggered:
-        score -= 10
-        state = f'{state} | تنبيه: {filter_reason_msg}'
+        direction = 'BLOCKED'
+        state = 'BLOCKED - اتجاه غير واضح ومذبذب'
+        score = 40
 
     if has_news:
         score -= 15
-        state = f'{state} | تنبيه خبر: {news_title}'
+        state = f'{state} | تحذير: خبر اقتصادي قوي قارب الصدور'
 
     if score < 50:
         direction = 'BLOCKED'
-        state = 'BLOCKED - الـ Score ضعيف جداً بعد تصفية الفلوس'
+        state = 'BLOCKED - السوق مذبذب ولا توجد صفقة آمنة حالياً'
 
-    plan = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'LONG', p, atr, ob_level)
+    plan = calculate_smz = calculate_smc_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, atr, bearish_ob if direction=='SHORT' else bullish_ob)
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
-        f'هيكل السوق: {"🟢 صاعد" if smc_trend=="BULLISH" else "🔴 هابط"}',
-        f'كاشف مصائد الحيتان: {"🎯 تم رصد سحب سيولة مؤكد" if whale_sweep else "✅ وضع طبيعي"}',
+        f'اتجاه الفريم الكبير (4H): {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
+        f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
         f'العقود المفتوحة (OI): {open_interest:,.2f}',
-        f'معدل التمويل (Funding): {funding_pct:.4f}% ({oi_status})',
-        f'اتصال البيتكوين: {"✅ مستقر" if btc_stable else "⚠️ تحذير بسيط"}',
-        f'اتجاه فريم 4H: {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
-        f'منطقة الأوردر بلوك: {smart_round(ob_level)}',
-        f'مؤشر RSI: {rsi}'
+        f'معدل التمويل (Funding): {funding_pct:.4f}%',
+        f'مؤشر القوة النسبية (RSI): {rsi}',
+        f'المنطقة الفنية (OB): {smart_round(bearish_ob if direction=="SHORT" else bullish_ob)}'
     ]
 
     return {
@@ -518,16 +433,13 @@ def get_top_futures_symbols(limit=25):
             if isinstance(x, dict):
                 s = str(x.get('symbol', '')).upper()
                 v = float(x.get('volume', x.get('quoteVolume', 0)))
-                if s and v > 0:
-                    cand.append((s, v))
-        except Exception:
-            pass
+                if s and v > 0: cand.append((s, v))
+        except Exception: pass
     cand.sort(key=lambda x: x[1], reverse=True)
     out = []
     for x in cand[:limit]:
         sy = normalize_symbol(x[0])
-        if sy not in out:
-            out.append(sy)
+        if sy not in out: out.append(sy)
     return out
 
 
@@ -536,12 +448,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (Smart Money Buy)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (Smart Money Sell)'
-    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التلاعب والتمويل العالي)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (مع الترند العام)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (مع الترند العام)'
+    else: emo, text_dir = '🛑', 'BLOCKED (تجنب التذبذب والخسارة)'
     
     lines = [
-        '🤖 BingX Ultra Safe SMC Scanner v36.0 (Smart Money Flow Edition)',
+        '🤖 BingX Strict Trend Scanner v37.0',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -554,23 +466,23 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 خطة صانع السوق المحصنة',
+            '📋 خطة التداول الصارمة',
             f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1: {d.get('tp1')}",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
-            f"\n🛑 Stop Loss (حماية الهيكل): {d.get('stop_loss')}",
+            f"\n🛑 Stop Loss: {d.get('stop_loss')}",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}"
         ])
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر الدخول لعدم توازن السيولة ومعدلات التمويل.'
+            '🛑 تم حظر الدخول لأن السوق مذبذب ولا يتبع اتجاهًا واضحًا لحمايتك من الخسارة.'
         ])
     
     if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية وتدفق الأموال:')
+        lines.append('\n🔍 التفاصيل الفنية:')
         for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
