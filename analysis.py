@@ -1,6 +1,6 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v42.0
-# (أحدث نسخة: صائد سحب السيولة الحقيقي - Liquidity Sweep & CHoCH)
+# analysis.py - BingX Institutional SMC & Risk Suite v43.0
+# (النسخة المحصنة: درع سحب السيولة + مسافة أمان مضاعفة للوقف)
 # =========================================================
 
 import time
@@ -10,7 +10,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/42.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalShield/43.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -282,45 +282,39 @@ def smart_round(v):
 
 
 def analyze_liquidity_sweep_and_choch(klines):
-    """
-    منطق سحب السيولة الحديث (Liquidity Sweep & CHoCH):
-    - نبحث عن شمعة سابقة كسرت قاعاً سابقاً (Sweep of Lows) وأغلقت فوقه (False Breakdown).
-    - أو كسر قمة وسحب سيولة علوية ثم هبطت (للـ Short).
-    """
     if len(klines) < 20:
         return 'NONE', 0.0, 0.0
 
     recent_lows = [x[3] for x in klines[-15:-2]]
     prev_lowest = min(recent_lows) if recent_lows else klines[-5][3]
     
-    last_candle = klines[-1]  # [t, o, h, l, c, v]
+    last_candle = klines[-1]
     prev_candle = klines[-2]
     
-    # شرط سحب سيولة الشراء (Bullish Liquidity Sweep):
-    # السعر نزل كسر أدنى قاع سابق (Low < prev_lowest) لكن الشمعة أغلقت مرتفعة أو الشمعة الحالية ارتدت بقوة (CHoCH)
     is_swept_low = prev_candle[3] < prev_lowest and prev_candle[4] > prev_lowest
     is_bullish_choch = last_candle[4] > last_candle[1] and last_candle[4] > prev_candle[2]
 
-    # شرط سحب سيولة البيع (Bearish Liquidity Sweep):
     recent_highs = [x[2] for x in klines[-15:-2]]
     prev_highest = max(recent_highs) if recent_highs else klines[-5][2]
     is_swept_high = prev_candle[2] > prev_highest and prev_candle[4] < prev_highest
     is_bearish_choch = last_candle[4] < last_candle[1] and last_candle[4] < prev_candle[3]
 
     if is_swept_low or is_bullish_choch:
-        return 'LONG', prev_lowest, max(prev_lowest * 0.985, last_candle[3] - (last_candle[4]*0.005))
+        return 'LONG', prev_lowest, prev_lowest
     elif is_swept_high or is_bearish_choch:
-        return 'SHORT', prev_highest, min(prev_highest * 1.015, last_candle[2] + (last_candle[4]*0.005))
+        return 'SHORT', prev_highest, prev_highest
 
     return 'NEUTRAL', prev_lowest, prev_highest
 
 
 def calculate_institutional_trade_plan(direction, price, klines, atr, structural_stop, portfolio_size=1000.0, risk_pct=1.0):
     raw_atr = atr or (price * 0.015)
+    buffer_margin = raw_atr * 0.75  # مسافة أمان مضاعفة لحماية الوقف من ذيول التلاعب والصيد الوهمي
     
     if direction == 'LONG':
         entry = price
-        sl = structural_stop if (structural_stop > 0 and structural_stop < entry) else entry - (raw_atr * 1.2)
+        base_sl = structural_stop if (structural_stop > 0 and structural_stop < entry) else entry - (raw_atr * 1.2)
+        sl = base_sl - buffer_margin  # إبعاد الوقف مسافة أمان إضافية للأسفل
         risk_dist = entry - sl
         tp1 = entry + (risk_dist * 2.0)
         tp2 = entry + (risk_dist * 3.5)
@@ -328,7 +322,8 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, structural
         full_range_target = entry + (risk_dist * 4.0)
     else:
         entry = price
-        sl = structural_stop if (structural_stop > 0 and structural_stop > entry) else entry + (raw_atr * 1.2)
+        base_sl = structural_stop if (structural_stop > 0 and structural_stop > entry) else entry + (raw_atr * 1.2)
+        sl = base_sl + buffer_margin  # إبعاد الوقف مسافة أمان إضافية للأعلى
         risk_dist = sl - entry
         tp1 = entry - (risk_dist * 2.0)
         tp2 = entry - (risk_dist * 3.5)
@@ -366,7 +361,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # تشغيل محرك سحب السيولة الحديث (Liquidity Sweep & CHoCH)
     sweep_dir, sweep_level, structural_sl = analyze_liquidity_sweep_and_choch(k1)
 
     funding_rate = get_funding_rate(symbol)
@@ -375,30 +369,29 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     if sweep_dir == 'LONG':
         direction = 'LONG'
-        state = '⚡ LIQUIDITY SWEEP LONG - تم كسح سيولة القاع وتأكيد الانعكاس (CHoCH)'
-        score = 94
+        state = '⚡ INSTITUTIONAL BUFFER LONG - كسح سيولة حقيقي مع درع حماية الأمان'
+        score = 95
     elif sweep_dir == 'SHORT':
         direction = 'SHORT'
-        state = '⚡ LIQUIDITY SWEEP SHORT - تم كسح سيولة القمة وتأكيد الهبوط'
-        score = 94
+        state = '⚡ INSTITUTIONAL BUFFER SHORT - كسح سيولة علوية مع درع حماية الأمان'
+        score = 95
     else:
-        # فحص بديل يعتمد على هيكل السوق الكلاسيكي لو لم يحدث سحب سيولة مباشر
         ma_fast = sum(c[-10:]) / 10
         if c[-1] > ma_fast and rsi < 65:
             direction = 'LONG'
-            state = '🟢 TREND CONTINUATION LONG - صعود هيكلي مستمر'
+            state = '🟢 TREND CONTINUATION LONG'
             score = 78
         else:
             direction = 'SHORT'
-            state = '🔴 TREND CONTINUATION SHORT - ضغط هيكل سلبي'
+            state = '🔴 TREND CONTINUATION SHORT'
             score = 78
 
     plan = calculate_institutional_trade_plan(direction, p, k1, atr, structural_sl, portfolio_size=1000.0, risk_pct=1.0)
 
     analysis_lines = [
-        f'📖 القصة السعرية لهيكل السوق: البوت يعمل حالياً بأحدث بروتوكول سحب السيولة (Liquidity Sweep) لتجنب الفخاخ الوهمية.',
+        f'📖 النظام الحديث v43.0: تم تفعيل درع الحماية المضاعف (Buffer Zone) لإبعاد الوقف عن نطاق ذيول التلاعب.',
         f'الإطار الزمني: {interval.upper()}',
-        f'حالة سحب السيولة: {"🟢 تم رصد كسح قاع حقيقي وانعكاس مؤكد" if sweep_dir in ["LONG", "SHORT"] else "⚪ حركة ترند اعتيادية"}',
+        f'حالة سحب السيولة: {"🟢 مؤكد مع مسافة أمان إضافية" if sweep_dir in ["LONG", "SHORT"] else "⚪ حركة ترند اعتيادية"}',
         f'العقود المفتوحة (OI): {open_interest:,.2f}',
         f'معدل التمويل (Funding): {funding_pct:.4f}%',
         f'مؤشر القوة النسبية (RSI): {rsi}'
@@ -429,7 +422,7 @@ def scan_for_emerging_trends(limit_symbols=35):
             sweep_dir, _, _ = analyze_liquidity_sweep_and_choch(k1)
             if sweep_dir in ['LONG', 'SHORT']:
                 rsi = calculate_rsi([x[4] for x in k1])
-                spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 95, 'action': f'⚡ تم رصد كسح سيولة ({sweep_dir})'})
+                spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 95, 'action': f'⚡ محصن بمدى أمان ({sweep_dir})'})
         except Exception:
             continue
     return spark_signals
@@ -438,16 +431,16 @@ def scan_for_emerging_trends(limit_symbols=35):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح صائد السيولة (v42.0):\nلا توجد حالات كسح سيولة مؤكدة حالياً."
+        return "🔍 ماسح حماية الستوبات (v43.0):\nلا توجد حالات مؤكدة حالياً ضمن معايير الدرع."
 
     lines = [
-        "⚡ تقرير ماسح سيولة الهوامير (v42.0)",
-        "العملات التي قامت بكسح السيولة وضرب الوقف الوهمي ثم ارتدت:",
+        "🛡️ تقرير الماسح المحصن (v43.0)",
+        "العملات التي تجاوزت فخاخ التلاعب وتمتلك مسافة أمان كافية:",
         "━━━━━━━━━━━━━━━━━━"
     ]
     for idx, item in enumerate(results[:10], 1):
         lines.append(f"{idx}. 💎 **{item['symbol']}**\n   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}`\n   {item['action']}\n")
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة لفحصها بالسيستم الجديد!")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة لفحصها بالنسخة المحصنة!")
     return '\n'.join(lines)
 
 
@@ -476,12 +469,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (سحب سيولة حقيقي وانعكاس)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (سحب سيولة علوية وهبوط)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (سحب سيولة + درع أمان للوقف)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (سحب سيولة + درع أمان للوقف)'
     else: emo, text_dir = '🛑', 'BLOCKED'
     
     lines = [
-        '🤖 BingX Institutional Suite v42.0 [صائد السيولة]',
+        '🤖 BingX Institutional Suite v43.0 [النسخة المحصنة]',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -494,14 +487,14 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية المبنية على هيكل السيولة',
+            '📋 الخطة المؤسسية المحصنة ضد الصيد الوهمي',
             f"\n📍 منطقة الدخول المبكر:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
             f"🚀 الهدف الكلي: {d.get('full_range_target')}",
-            f"\n🛑 Stop Loss: {d.get('stop_loss')} (محمي تحت ذيل شمعة الكسح الحقيقي | بنسبة {d.get('sl_pct', 0)}%)",
+            f"\n🛑 Stop Loss: {d.get('stop_loss')} (محمي خلف درع الأمان المضاعف | بنسبة {d.get('sl_pct', 0)}%)",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
             f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
         ])
