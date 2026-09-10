@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v41.5
+# analysis.py - BingX Institutional SMC & Risk Suite v41.6
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.5', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.6', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -179,17 +179,13 @@ def get_open_interest(symbol):
 
 
 def get_whale_order_book_analysis(symbol, current_price):
-    """
-    تحليل دفاتر أوامر الحيتان وجدران السيولة (Whale Orders & Liquidity Walls)
-    يسحب أعماق دفتر الأوامر من BingX ويستخرج أكبر جدران الشراء والبيع
-    """
     symbol = normalize_symbol(symbol)
     d = bingx_get('/openApi/swap/v2/quote/depth', {'symbol': symbol, 'limit': 100})
     if not isinstance(d, dict):
-        return {"buy_walls": [], "sell_walls": [], "summary": "تعذر سحب بيانات جدران السيولة"}
+        return {"buy_walls": [], "sell_walls": [], "walls_lines": []}
 
-    bids = d.get('bids', [])  # [price, qty]
-    asks = d.get('asks', [])  # [price, qty]
+    bids = d.get('bids', [])
+    asks = d.get('asks', [])
 
     parsed_bids = []
     for b in bids:
@@ -211,18 +207,17 @@ def get_whale_order_book_analysis(symbol, current_price):
         except Exception:
             pass
 
-    # ترتيب حسب القيمة الكبرى بالدولار (أكبر جدران الحيتان)
     parsed_bids.sort(key=lambda x: x[2], reverse=True)
     parsed_asks.sort(key=lambda x: x[2], reverse=True)
 
-    top_bids = parsed_bids[:3]  # أقوى 3 جدران شراء (دعم الحيتان)
-    top_asks = parsed_asks[:3]  # أقوى 3 جدران بيع (مقاومة الحيتان)
+    top_bids = parsed_bids[:3]
+    top_asks = parsed_asks[:3]
 
     walls_summary = []
     for p, q, val in top_asks:
-        walls_summary.append(f"🔴 جدار بيع (Sell Wall): السعر {smart_round(p)} | القيمة: ${val:,.0f}")
+        walls_summary.append(f"🔴 جدار بيع (مقاومة حيتان): السعر `{smart_round(p)}` | القيمة: `${val:,.0f}`")
     for p, q, val in top_bids:
-        walls_summary.append(f"🟢 جدار شراء (Buy Wall): السعر {smart_round(p)} | القيمة: ${val:,.0f}")
+        walls_summary.append(f"🟢 جدار شراء (دعم حيتان قوی): السعر `{smart_round(p)}` | القيمة: `${val:,.0f}`")
 
     return {
         'buy_walls': top_bids,
@@ -435,8 +430,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
-
-    # جلب تحليل جدران السيولة وأوامر الحيتان
     whale_data = get_whale_order_book_analysis(symbol, p)
 
     if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
@@ -475,7 +468,20 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     plan = calculate_institutional_trade_plan(direction if direction != 'BLOCKED' else 'SHORT', p, k1, atr, bearish_ob if direction=='SHORT' else bullish_ob, portfolio_size=1000.0, risk_pct=1.0)
 
+    # صياغة قصة السوق السعرية (Market Narrative Story)
+    low_range_100 = min([x[3] for x in k1[-24:]])
+    high_range_100 = max([x[2] for x in k1[-24:]])
+    total_vol_24h = sum([x[5] for x in k1[-24:]]) * p / 2  # تقدير تقريبي للسيولة
+    
+    narrative_summary = (
+        f"تحرك السعر مؤخراً ضمن نطاق بين قاع `{smart_round(low_range_100)}` وقمة `{smart_round(high_range_100)}` "
+        f"مع فوليوم تداول إجمالي نشط. "
+        f"الإطار العام يعكس سيطرة {'المشترين (صاعد)' if trend_4h=='BULLISH' else 'البائعين (هابط)'} على فريم 4H، "
+        f"بينما تظهر جدران السيولة المعلقة تمركز الحيتان عند مستويات الدعم والمقاومة الحرجة."
+    )
+
     analysis_lines = [
+        f'📖 القصة السعرية: {narrative_summary}',
         f'الإطار الزمني: {interval.upper()}',
         f'اتجاه الفريم الكبير (4H): {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
@@ -513,8 +519,7 @@ def scan_for_emerging_trends(limit_symbols=35):
     for sym in top_syms:
         try:
             k1 = get_bingx_klines(sym, '1h', 30)
-            if not k1 or len(k1) < 20:
-                continue
+            if not k1 or len(k1) < 20: continue
 
             closes = [x[4] for x in k1]
             opens = [x[1] for x in k1]
@@ -533,17 +538,10 @@ def scan_for_emerging_trends(limit_symbols=35):
             if is_huge_effort:
                 rsi = calculate_rsi(closes)
                 p = get_current_price(sym)
-                
                 if last_close > last_open:
-                    spark_signals.append({
-                        'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 90,
-                        'type': 'BUMP_START', 'action': '🟢 شرارة صعود (BUMP)'
-                    })
+                    spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 90, 'type': 'BUMP_START', 'action': '🟢 شرارة صعود (BUMP)'})
                 else:
-                    spark_signals.append({
-                        'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 90,
-                        'type': 'DUMP_START', 'action': '🔴 شرارة هبوط (DUMP)'
-                    })
+                    spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 90, 'type': 'DUMP_START', 'action': '🔴 شرارة هبوط (DUMP)'})
         except Exception:
             continue
 
@@ -553,21 +551,15 @@ def scan_for_emerging_trends(limit_symbols=35):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح شرر السوق والبمب/الدامب (v41.5):\nلم يتم رصد انفجارات سعرية جديدة (بمب أو دامب) في الشمعة الحالية. السوق هادئ."
+        return "🔍 ماسح شرر السوق والبمب/الدامب (v41.6):\nلم يتم رصد انفجارات سعرية جديدة في الشمعة الحالية. السوق هادئ."
 
     lines = [
-        "⚡ تقرير ماسح شرر السوق (البمب والدامب من البداية - v41.5)",
-        "العملات التي سجلت للتو أول شمعة انفجار (صعوداً أو هبوطاً) بفوليوم عالي:",
+        "⚡ تقرير ماسح شرر السوق (البمب والدامب - v41.6)",
+        "العملات التي سجلت للتو أول شمعة انفجار بفوليوم عالي:",
         "━━━━━━━━━━━━━━━━━━"
     ]
-
     for idx, item in enumerate(results[:10], 1):
-        lines.append(
-            f"{idx}. 💎 **{item['symbol']}**\n"
-            f"   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}`\n"
-            f"   {item['action']}\n"
-        )
-
+        lines.append(f"{idx}. 💎 **{item['symbol']}**\n   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}`\n   {item['action']}\n")
     lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة من القائمة لعرض خطتها المؤسسية الكاملة!")
     return '\n'.join(lines)
 
@@ -584,7 +576,6 @@ def _get_blocked_signal(symbol, price, reason, interval='1h'):
 def get_coin_analysis(symbol, interval='1h'):
     if normalize_symbol(symbol) == 'TREND_COMMAND':
         return generate_trend_scan_report()
-
     try:
         return _get_coin_analysis_core(symbol, interval)
     except Exception as e:
@@ -594,7 +585,6 @@ def get_coin_analysis(symbol, interval='1h'):
 def generate_evidence_report(d):
     if isinstance(d, str):
         return d
-
     if not d: return '⚠️ تعذر إكمال التحليل.'
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
@@ -604,7 +594,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX Institutional Suite v41.5',
+        '🤖 BingX Institutional Suite v41.6',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -635,7 +625,7 @@ def generate_evidence_report(d):
         ])
     
     if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية:')
+        lines.append('\n🔍 التفاصيل الفنية والقصة السعرية:')
         for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
