@@ -2,14 +2,10 @@
 import time
 import logging
 
-# إعداد السجل (Logs) لمتابعة حالة البوت بدقة
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_top_futures_symbols():
-    """
-    إرجاع قائمة العملات المتاحة للمسح والتداول على العقود الآجلة
-    مع حماية ضد الأخطاء لضمان استقرار السيرفر على Render
-    """
+    """إرجاع قائمة العملات المتاحة للمسح والتداول"""
     symbols = [
         "DASH-USDT", 
         "SOPH-USDT", 
@@ -19,17 +15,14 @@ def get_top_futures_symbols():
         "BNB-USDT",
         "XRP-USDT"
     ]
-    logging.info(f"تم جلب {len(symbols)} عملة بنجاح للمسح المؤسسي.")
     return symbols
 
+def get_coin_analysis(symbol, current_price=0.0, h4_trend="LONG", h1_trend="LONG"):
+    """دالة التحليل المطلوبة بواسطة main.py لمنع أي خطأ استيراد"""
+    return evaluate_institutional_signal(symbol, current_price, h4_trend, h1_trend)
+
 def evaluate_institutional_signal(symbol, current_price, h4_trend, h1_trend):
-    """
-    منطق التحليل المؤسسي وقفل الشمعة لمنع التخبط اللحظي
-    وفلترة السيولة وهيكل الـ SMC
-    """
-    logging.info(f"جاري فحص العملة {symbol} عند السعر {current_price} | اتجاه 4H: {h4_trend} | اتجاه 1H: {h1_trend}")
-    
-    # التأكد من توافق فريم الماكرو 4H مع فريم 1H لمنع الإشارات الوهمية
+    """منطق التحليل المؤسسي وقفل الشمعة لمنع التخبط اللحظي"""
     if h4_trend == h1_trend:
         return {
             "status": "APPROVED",
@@ -43,7 +36,7 @@ def evaluate_institutional_signal(symbol, current_price, h4_trend, h1_trend):
     return {
         "status": "WAITING",
         "signal": "NEUTRAL",
-        "message": "لا يوجد توافق زمني بين فريم الـ 4H والـ 1H، الانتظار لحين اكتمال الهيكل أفضل."
+        "message": "لا يوجد توافق زمني بين فريم الـ 4H والـ 1H، الانتظار أفضل."
     }
 
 class InstitutionalEngine:
@@ -56,43 +49,33 @@ class InstitutionalEngine:
         self.tp1 = 0.0
 
     def process_candle_lock(self, current_candle_time, h4_trend, h1_trend, current_price):
-        """
-        محرك قفل الشمعة الإلزامي (Candle State Lock)
-        يمنع البوت تماماً من تغيير الإشارة أو عكس الاتجاه طوال مدة شمعة الـ 4 ساعات
-        """
-        # التحقق من حالة القفل النشط
         if self.locked_signal and time.time() < self.lock_expiry_time:
-            logging.info(f"القفل الإلزامي نشط للعملة {self.symbol}. الإشارة المثبتة: {self.locked_signal}")
             return {
                 "status": "LOCKED",
-                "message": "قفل الشمعة مفعل: ممنوع تغيير الاتجاه أو إعادة الحساب حتى إغلاق شمعة الماكرو.",
+                "message": "قفل الشمعة مفعل: ممنوع تغيير الاتجاه حتى إغلاق شمعة الماكرو.",
                 "signal": self.locked_signal,
                 "entry": self.entry_price,
                 "stop_loss": self.stop_loss,
                 "tp1": self.tp1
             }
 
-        # فحص الشروط الجديدة في حال انتهاء القفل أو بدايته
         if h4_trend == h1_trend:
             self.locked_signal = h4_trend
             self.entry_price = current_price
             self.stop_loss = current_price * 0.985 if h4_trend == "LONG" else current_price * 1.015
             self.tp1 = current_price * 1.03 if h4_trend == "LONG" else current_price * 0.97
+            self.lock_expiry_time = time.time() + 14400  # 4 ساعات
             
-            # تثبيت القفل لمدة 4 ساعات كاملة (14400 ثانية)
-            self.lock_expiry_time = time.time() + 14400  
-            
-            logging.info(f"تم تفعيل قفل جديد للعملة {self.symbol} باتجاه {self.locked_signal} لمدة 4 ساعات.")
             return {
                 "status": "NEW_LOCK",
                 "signal": self.locked_signal,
                 "entry": self.entry_price,
                 "stop_loss": self.stop_loss,
                 "tp1": self.tp1,
-                "note": "تم تفعيل القفل الإلزامي بنجاح والأرقام ثابتة."
+                "note": "تم تفعيل القفل الإلزامي بنجاح."
             }
         
         return {
             "status": "IDLE",
-            "message": "في انتظار اكتمال الهيكل المؤسسي وسحب السيولة."
+            "message": "في انتظار اكتمال الهيكل المؤسسي."
         }
