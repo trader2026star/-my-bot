@@ -1,6 +1,6 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v41.7
-# (مُخصص لاكتشاف جدران الشراء في القيعان الحمراء واقتناص الصفقات المبكرة)
+# analysis.py - BingX Institutional SMC & Risk Suite v41.8
+# (مُخصص لاكتشاف قيعان التجميع الحقيقي وفلترة التصريف والفخاخ الخبيثة)
 # =========================================================
 
 import time
@@ -10,7 +10,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.7', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.8', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -167,6 +167,20 @@ def get_funding_rate(symbol):
     return 0.0
 
 
+def get_open_interest_history(symbol):
+    symbol = normalize_symbol(symbol)
+    d = bingx_get('/openApi/swap/v1/market/openInterestHist', {'symbol': symbol, 'period': '1h', 'limit': 5})
+    if isinstance(d, list) and len(d) > 0:
+        vals = []
+        for item in d:
+            try:
+                vals.append(float(item.get('openInterest', 0)))
+            except Exception:
+                pass
+        return vals
+    return []
+
+
 def get_open_interest(symbol):
     symbol = normalize_symbol(symbol)
     d = bingx_get('/openApi/swap/v2/quote/openInterest', {'symbol': symbol})
@@ -194,7 +208,7 @@ def get_whale_order_book_analysis(symbol, current_price):
             p = float(b[0])
             qty = float(b[1])
             usd_val = p * qty
-            if p < current_price:  # فقط جدران الشراء تحت السعر الحالي
+            if p < current_price:
                 parsed_bids.append((p, qty, usd_val))
         except Exception:
             pass
@@ -205,7 +219,7 @@ def get_whale_order_book_analysis(symbol, current_price):
             p = float(a[0])
             qty = float(a[1])
             usd_val = p * qty
-            if p > current_price:  # فقط جدران البيع فوق السعر الحالي
+            if p > current_price:
                 parsed_asks.append((p, qty, usd_val))
         except Exception:
             pass
@@ -318,7 +332,7 @@ def calculate_rsi(c, period=14):
 
 
 def calculate_atr(k, n=14):
-    if len(k) < n + 1: return None
+    if len(k) < n + 1: None
     tr = [max(x[2]-x[3], abs(x[2]-k[i-1][4]), abs(x[3]-k[i-1][4])) for i, x in enumerate(k[1:], 1)]
     a = sum(tr[:n]) / n
     for x in tr[n:]: a = (a * (n - 1) + x) / n
@@ -343,7 +357,6 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, support_wa
 
     if direction == 'LONG':
         entry = price
-        # الوقف يتحط تحت جدار حماية الحوت مباشرة عشان نكون آمنين
         sl = support_wall_price if (support_wall_price > 0 and support_wall_price < entry) else min(entry - (raw_atr * 1.5), entry * 0.97)
         risk_dist = entry - sl
         tp1 = entry + (risk_dist * 2.0)
@@ -392,41 +405,41 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
 
-    # فحص جدران الحيتان والأوبن بوك أولاً (أساس اتخاذ القرار المبكر)
+    # فحوصات الأوبن بوك وتجميع الحيتان
     whale_data = get_whale_order_book_analysis(symbol, p)
     max_buy_wall_val = whale_data.get('max_buy_wall_val', 0)
     max_buy_wall_price = whale_data.get('max_buy_wall_price', 0)
 
-    # شروط الشموع الحمراء وتجميع الحيتان في القاع
-    is_red_candle = c[-1] < c[-2] or c[-1] < c[-3]  # شموع هابطة/حمراء حديثة
-    has_giant_buy_wall = max_buy_wall_val >= 500000  # جدار شراء بأكثر من نصف مليون دولار يدافع من التحت
+    # فلتر كشف التصريف (هل العقود المفتوحة تهبط بشراسة مع السعر؟)
+    oi_history = get_open_interest_history(symbol)
+    is_distribution = False
+    if len(oi_history) >= 3:
+        # إذا كانت العقود المفتوحة تنخفض بوضوح خلال آخر الشموع والسعر ينزل -> تصريف حقيقي (خبيث)
+        if oi_history[-1] < oi_history[-2] < oi_history[-3] and c[-1] < c[-2]:
+            is_distribution = True
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
 
-    # الاستراتيجية الجديدة: اقتناص القيعان الحمراء بوجود جدار شراء قوي للحيتان
+    # إذا تم كشف تصريف حقيقي، البوت يحظر الصفقة فوراً لحمايتك من الفخ
+    if is_distribution:
+        return _get_blocked_signal(symbol, p, "تحذير: تم رصد تصريف حقيقي وهروب رؤوس الأموال (فخ هبوطي خبيث)", interval)
+
+    has_giant_buy_wall = max_buy_wall_val >= 500000
+
     if has_giant_buy_wall:
         direction = 'LONG'
-        state = '🐳 WHALE ACCUMULATION LONG - اقتناص قاع الشمعة الحمراء بوجود جدار دعم عملاق'
+        state = '🐳 REAL ACCUMULATION LONG - تجميع حقيقي مؤكد ودعم حيتان قوي في القاع'
         score = 92
     elif rsi < 35:
         direction = 'LONG'
-        state = '🟢 OVERSOLD LONG - تشبع بيعي قاسي وإمكانية ارتداد من القاع'
+        state = '🟢 OVERSOLD LONG - تشبع بيعي نظيف وإمكانية ارتداد'
         score = 80
     else:
-        # الوضع الافتراضي الكلاسيكي إذا لم يوجد جدار شراء ضخم
-        k4h = get_bingx_klines(symbol, '4h', 50)
-        closes_1h = [x[4] for x in k1]
-        ma_1h = sum(closes_1h[-10:]) / 10
-        if closes_1h[-1] > ma_1h:
-            direction = 'LONG'
-            state = 'INSTITUTIONAL LONG - صعود معتاد'
-            score = 75
-        else:
-            direction = 'SHORT'
-            state = 'INSTITUTIONAL SHORT - ضغط بيعي مستمر'
-            score = 75
+        direction = 'SHORT'
+        state = 'INSTITUTIONAL SHORT - ضغط هابط مستمر'
+        score = 75
 
     plan = calculate_institutional_trade_plan(direction, p, k1, atr, max_buy_wall_price, portfolio_size=1000.0, risk_pct=1.0)
 
@@ -434,15 +447,15 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     high_range_100 = max([x[2] for x in k1[-24:]])
     
     narrative_summary = (
-        f"رصد السوق تحرك السعر نحو مناطق الدعم بين قاع `{smart_round(low_range_100)}` وقمة `{smart_round(high_range_100)}`. "
-        f"{'تم رصد تمركز حوت ضخم يدافع بجدار شرائي قوي قرب القاع، مما يرجح بناء مراكز تجميعية مبكرة.' if has_giant_buy_wall else 'الحركة الحالية تخضع للمراقبة الفنية.'}"
+        f"رصد السوق تحرك السعر بين قاع `{smart_round(low_range_100)}` وقمة `{smart_round(high_range_100)}`. "
+        f"{'التدفق النقدي والعقود المفتوحة تؤكد وجود تجميع حقيقي ودفاع من الحيتان.' if has_giant_buy_wall else 'الحركة تخضع للمراقبة.'}"
     )
 
     analysis_lines = [
-        f'📖 القصة السعرية وتجميع الحيتان: {narrative_summary}',
+        f'📖 القصة السعرية وفلتر كشف التصريف: {narrative_summary}',
         f'الإطار الزمني: {interval.upper()}',
-        f'حالة الشموع الحمراء (القاع): {"🔴 تختبر الدعم وتستعد للارتداد" if is_red_candle else "⚪ مستقرة"}',
-        f'فلتر جدران الحيتان: {"✅ جدار شراء مؤسسي ضخم محمي" if has_giant_buy_wall else "⚠️ عادي"}',
+        f'فلتر كشف التصريف (Distribution): {"🟢 آمن (لا يوجد تصريف خبيث)" if not is_distribution else "🛑 خطر (تصريف حقيقي)"}',
+        f'فلتر جدران الحيتان: {"✅ جدار شراء قوي محمي" if has_giant_buy_wall else "⚠️ عادي"}',
         f'العقود المفتوحة (OI): {open_interest:,.2f}',
         f'معدل التمويل (Funding): {funding_pct:.4f}%',
         f'مؤشر القوة النسبية (RSI): {rsi}'
@@ -475,9 +488,9 @@ def scan_for_emerging_trends(limit_symbols=35):
             if not k1 or len(k1) < 15: continue
             p = get_current_price(sym)
             whale_data = get_whale_order_book_analysis(sym, p)
-            if whale_data.get('max_buy_wall_val', 0) >= 800000:  # عملات تحتها جدران شراء بأكثر من 800 ألف دولار
+            if whale_data.get('max_buy_wall_val', 0) >= 800000:
                 rsi = calculate_rsi([x[4] for x in k1])
-                spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 95, 'action': '🟢 قاع تجميع حيتان (Buy Wall Detected)'})
+                spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 95, 'action': '🟢 قاع تجميع حقيقي مؤكد'})
         except Exception:
             continue
     return spark_signals
@@ -486,16 +499,16 @@ def scan_for_emerging_trends(limit_symbols=35):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح قيعان الحيتان (v41.7):\nلا توجد جدران شراء ضخمة مرصودة حالياً."
+        return "🔍 ماسح قيعان التجميع الحقيقي (v41.8):\nلا توجد فرص تجميع خالية من التصريف حالياً."
 
     lines = [
-        "🐳 تقرير ماسح قيعان تجميع الحيتان (v41.7)",
-        "العملات التي شكلت جدران شراء ضخمة في القيعان الحمراء:",
+        "🛡️ تقرير ماسح قيعان الحيتان وكشف التصريف (v41.8)",
+        "العملات التي أثبتت خلوها من التصريف ووجود تجميع حقيقي:",
         "━━━━━━━━━━━━━━━━━━"
     ]
     for idx, item in enumerate(results[:10], 1):
         lines.append(f"{idx}. 💎 **{item['symbol']}**\n   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}`\n   {item['action']}\n")
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة لعرض خطة اقتناص القاع الكاملة!")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة لفحصها بالكامل!")
     return '\n'.join(lines)
 
 
@@ -524,12 +537,12 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (اقتناص قاع مؤسسي مبكر)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (تجميع حقيقي خالٍ من التصريف)'
     elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT'
-    else: emo, text_dir = '🛑', 'BLOCKED'
+    else: emo, text_dir = '🛑', 'BLOCKED (محمي من التصريف والفخاخ)'
     
     lines = [
-        '🤖 BingX Institutional Suite v41.7 [صائد القيعان]',
+        '🤖 BingX Institutional Suite v41.8 [مضاد التصريف]',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -542,7 +555,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية لاقتناص القاع وإدارة المخاطر',
+            '📋 الخطة المؤسسية المصفاة وإدارة المخاطر',
             f"\n📍 منطقة الدخول المبكر:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
@@ -556,11 +569,11 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر التداول مؤقتاً.'
+            '🛑 تم حظر التداول لتجنب فخاخ التصريف.'
         ])
     
     if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية وتجميع الحيتان:')
+        lines.append('\n🔍 التفاصيل الفنية وفلتر كشف التصريف:')
         for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
