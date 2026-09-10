@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v41.1
+# analysis.py - BingX Institutional SMC & Risk Suite v41.2
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.1', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.2', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -33,6 +33,10 @@ _REQUEST_LOCK = threading.Lock()
 
 
 def normalize_symbol(s):
+    s_clean = str(s).strip().lower()
+    if s_clean in ['ترند', 'trend', 'scan_trend', 'trend_command']:
+        return 'TREND_COMMAND'
+        
     s = str(s).strip().upper().replace(' ', '').replace('-', '').replace('_', '').replace('/', '')
     if not s.endswith('USDT'):
         s = s + '-USDT' if '-' not in s else s
@@ -116,6 +120,7 @@ def get_futures_symbols(force_refresh=False):
 
 
 def symbol_exists(s):
+    if normalize_symbol(s) == 'TREND_COMMAND': return True
     sy = get_futures_symbols()
     return not sy or normalize_symbol(s) in sy or s in sy
 
@@ -478,10 +483,10 @@ def scan_for_emerging_trends(limit_symbols=30):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=35)
     if not results:
-        return "🔍 ماسح الترندات (v41.1):\nلم يتم رصد عملات بدأت ترنداً صاعداً قوياً في هذه اللحظة بالذات. السوق هادئ، جرب البحث لاحقاً أو افحص عملة معينة."
+        return "🔍 ماسح الترندات (v41.2):\nلم يتم رصد عملات بدأت ترنداً صاعداً قوياً في هذه اللحظة بالذات. السوق هادئ، جرب البحث لاحقاً أو افحص عملة معينة."
 
     lines = [
-        "🚀 تقرير ماسح الترندات المؤسسية (v41.1)",
+        "🚀 تقرير ماسح الترندات المؤسسية (v41.2)",
         "العملات التي تبدأ تشكيل ترند صاعد حقيقي بفوليوم وتوافق فريمات:",
         "━━━━━━━━━━━━━━━━━━"
     ]
@@ -507,9 +512,7 @@ def _get_blocked_signal(symbol, price, reason, interval='1h'):
 
 
 def get_coin_analysis(symbol, interval='1h'):
-    # التحقق مما إذا كان المدخل أمر مسح ترند وليس اسم عملة
-    clean_sym = str(symbol).strip().lower()
-    if clean_sym in ['ترند', 'trend', 'scan_trend']:
+    if normalize_symbol(symbol) == 'TREND_COMMAND':
         return generate_trend_scan_report()
 
     try:
@@ -531,7 +534,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX Institutional Suite v41.1',
+        '🤖 BingX Institutional Suite v41.2',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
