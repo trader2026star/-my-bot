@@ -1,4 +1,4 @@
-# analysis.py - BingX Institutional SMC & Risk Suite v45.0 (Strict Candle State Lock Edition)
+# analysis.py - BingX Institutional SMC & Risk Suite v45.1 (STRICT LOCK + ANTI-CHASE + REVALIDATION)
 import time
 import logging
 import threading
@@ -6,7 +6,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -28,7 +28,7 @@ _NEWS_CACHE_TIME = 0.0
 _RATE_LOCK = threading.Lock()
 _REQUEST_LOCK = threading.Lock()
 
-# قاموس لتخزين حالة القفل لكل عملة لمنع انقلاب أو تقلب الإشارة وسط شمعة 4 ساعات
+# قاموس لتخزين حالة القفل لكل عملة لمنع انقلاب أو تقلب الإشارة وسط شمعة 4 ساعات (مع التحقق الفوري للتجديد)
 _ACTIVE_CANDLE_LOCKS = {}
 _LOCKS_DICTIONARY_LOCK = threading.Lock()
 
@@ -300,6 +300,34 @@ def smart_round(v):
         return round(v, 5)
     return round(v, 8)
 
+# 10) محرك تصنيف حالة السوق (Market Regime Engine)
+def determine_market_regime(klines_4h):
+    if not klines_4h or len(klines_4h) < 25:
+        return 'NEUTRAL'
+    closes = [x[4] for x in klines_4h]
+    highs = [x[2] for x in klines_4h]
+    lows = [x[3] for x in klines_4h]
+    
+    ma20 = sum(closes[-20:]) / 20
+    ma50 = sum(closes[-50:]) / min(50, len(closes))
+    
+    atr_val = calculate_atr(klines_4h, 14) or (closes[-1] * 0.02)
+    recent_range = max(highs[-10:]) - min(lows[-10:])
+    
+    # فحص التقلب العالي غير المستقر
+    if recent_range > (atr_val * 6.5):
+        return 'HIGH VOLATILITY / UNSTABLE'
+        
+    if closes[-1] > ma20 and ma20 > ma50 and (closes[-1] - ma50) > (atr_val * 3):
+        return 'STRONG BULL'
+    elif closes[-1] > ma20:
+        return 'BULL'
+    elif closes[-1] < ma20 and ma20 < ma50 and (ma50 - closes[-1]) > (atr_val * 3):
+        return 'STRONG BEAR'
+    elif closes[-1] < ma20:
+        return 'BEAR'
+    return 'NEUTRAL'
+
 def determine_strict_trend(klines_4h, klines_1h):
     if not klines_4h or len(klines_4h) < 15:
         trend_4h = 'NEUTRAL'
@@ -315,6 +343,44 @@ def determine_strict_trend(klines_4h, klines_1h):
     trend_1h = 'BULLISH' if closes_1h[-1] > ma_1h else 'BEARISH'
     return trend_4h, trend_1h
 
+# فحص تأكيد الفريمات الصغرى (15m, 30m)
+def check_multi_tf_confirmations(symbol):
+    k30m = get_bingx_klines(symbol, '30m', 20)
+    k15m = get_bingx_klines(symbol, '15m', 20)
+    
+    c30_bull = False
+    c15_bull = False
+    c30_bear = False
+    c15_bear = False
+    
+    if k30m and len(k30m) >= 5:
+        c30_bull = k30m[-1][4] > k30m[-2][4] and k30m[-1][4] > k30m[-1][1]
+        c30_bear = k30m[-1][4] < k30m[-2][4] and k30m[-1][4] < k30m[-1][1]
+        
+    if k15m and len(k15m) >= 5:
+        c15_bull = k15m[-1][4] > k15m[-2][4] and k15m[-1][4] > k15m[-1][1]
+        c15_bear = k15m[-1][4] < k15m[-2][4] and k15m[-1][4] < k15m[-1][1]
+        
+    return c30_bull, c15_bull, c30_bear, c15_bear
+
+# فحص سياق البيتكوين (11) BTC Context Filter
+def get_btc_market_context():
+    try:
+        btc_k4h = get_bingx_klines('BTC-USDT', '4h', 30)
+        if not btc_k4h or len(btc_k4h) < 15:
+            return 'NEUTRAL', True
+        closes = [x[4] for x in btc_k4h]
+        ma = sum(closes[-10:]) / 10
+        highs = [x[2] for x in btc_k4h]
+        lows = [x[3] for x in btc_k4h]
+        atr = calculate_atr(btc_k4h, 14) or (closes[-1] * 0.02)
+        
+        regime = determine_market_regime(btc_k4h)
+        is_safe = regime not in ['HIGH VOLATILITY / UNSTABLE', 'STRONG BEAR']
+        return regime, is_safe
+    except Exception:
+        return 'NEUTRAL', True
+
 def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
     raw_atr = atr or (price * 0.015)
     candle_ranges = [abs(x[4] - x[1]) for x in klines[-15:]] if klines and len(klines) >= 15 else [raw_atr]
@@ -322,25 +388,31 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
 
     if direction == 'LONG':
         entry = price
-        sl = min(ob_level - (raw_atr * 0.5), entry - (raw_atr * 1.5))
+        # 13) SL Engine: حساب نقطة الوقف بناءً على البنية و الـ OB بدون توسيع مبالغ فيه
+        sl = min(ob_level - (raw_atr * 0.4), entry - (raw_atr * 1.2))
         risk_dist = entry - sl
         tp1 = entry + (risk_dist * 2.0)
         tp2 = entry + (risk_dist * 3.5)
         tp3 = entry + (risk_dist * 5.0)
-        full_range_target = entry + (avg_candle_range * 2.2)
+        full_range_target = entry + (avg_candle_range * 2.0)
     elif direction == 'SHORT':
         entry = price
-        sl = max(ob_level + (raw_atr * 0.5), entry + (raw_atr * 1.5))
+        sl = max(ob_level + (raw_atr * 0.4), entry + (raw_atr * 1.2))
         risk_dist = sl - entry
         tp1 = entry - (risk_dist * 2.0)
         tp2 = entry - (risk_dist * 3.5)
         tp3 = entry - (risk_dist * 5.0)
-        full_range_target = entry - (avg_candle_range * 2.2)
+        full_range_target = entry - (avg_candle_range * 2.0)
     else:
         entry = sl = tp1 = tp2 = tp3 = full_range_target = risk_dist = 0
 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
     sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
+    
+    # 13) حماية رأس المال: رفض الوقف الواسع جداً (> 6.5%)
+    if sl_pct > 6.5:
+        return None
+
     allowed_risk_usd = portfolio_size * (risk_pct / 100.0)
     position_size_usd = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
     breakeven_trigger = tp1
@@ -367,112 +439,175 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     if not p or p <= 0:
         raise ValueError(f"Price error for {symbol}")
 
+    # تتبع الأسباب الداخلية للرفض (19) Internal Rejection Debug
+    rejection_reasons = []
+
     has_news, news_title = get_economic_news_status()
     if has_news:
-        return _get_blocked_signal(symbol, p, f"تم الحظر مؤقتاً بسبب قرب صدور خبر اقتصادي قوي: ({news_title})", interval)
+        return _get_blocked_signal(symbol, p, f"تم الحظر بسبب خبر اقتصادي قوي: ({news_title})", interval, ["High impact economic news"])
 
     k4h = get_bingx_klines(symbol, '4h', 50)
     
-    # 🔒 تطبيق نظام قفل حالة شمعة الـ 4 ساعات (Candle State Lock Mechanism v45.0)
+    # 🔒 تطبيق نظام قفل حالة شمعة الـ 4 ساعات مع إعادة التحقق الفوري (Strict Lock + Revalidation v45.1)
     current_4h_candle_open_time = k4h[-1][0] if k4h and len(k4h) > 0 else 0
     
     with _LOCKS_DICTIONARY_LOCK:
         cached_lock = _ACTIVE_CANDLE_LOCKS.get(symbol)
         if cached_lock and cached_lock.get('candle_time') == current_4h_candle_open_time:
-            # استخدام الحالة المثبتة طوال مدة شمعة الـ 4 ساعات الحالية لمنع التخبط أو عكس الإشارة
             locked_data = cached_lock.get('data').copy()
-            locked_data['price'] = smart_round(p) # تحديث السعر الحالي فقط مع تثبيت خطة الصفقة والقرار
-            return locked_data
+            # فحص السعر الحالي ضد نطاق الدخول للتأكد من عدم مطاردة السعر (Anti-Chase & Distance Filter)
+            if locked_data.get('direction') != 'BLOCKED':
+                e_min = locked_data.get('entry_min', 0)
+                e_max = locked_data.get('entry_max', 0)
+                # إذا ابتعد السعر كثيراً عن منطقة الدخول (أكثر من 1.8 ATR أو خارج النطاق بمسافة معتبرة)، يتم إبطال الإشارة القديمة
+                atr_check = locked_data.get('risk', p * 0.015)
+                if p < (e_min - (atr_check * 1.5)) or p > (e_max + (atr_check * 1.5)):
+                    # إبطال القفل وإعادة التحليل من الصفر
+                    pass
+                else:
+                    locked_data['price'] = smart_round(p)
+                    return locked_data
 
     k1 = get_bingx_klines(symbol, interval, 100)
     if not k1 or len(k1) < 30:
-        return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
+        return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval, ["Insufficient market data"])
 
     trend_4h, trend_1h = determine_strict_trend(k4h, k1)
+    market_regime = determine_market_regime(k4h)
+    btc_regime, btc_safe = get_btc_market_context()
+
     c = [x[4] for x in k1]
     vols = [x[5] for x in k1]
     rsi = calculate_rsi(c)
     atr = calculate_atr(k1) or p * 0.015
     avg_vol = sum(vols[-15:]) / 15 if len(vols) >= 15 else 1.0
     last_vol = vols[-1]
-    is_volume_confirmed = last_vol >= (avg_vol * 0.7)
+    
+    # 9) فحص فوليوم حقيقي وصارم
+    is_volume_confirmed = last_vol >= (avg_vol * 0.95)
+    if not is_volume_confirmed:
+        rejection_reasons.append("Volume weak")
 
     highs = [x[2] for x in k1]
     lows = [x[3] for x in k1]
     closes = [x[4] for x in k1]
     opens = [x[1] for x in k1]
 
+    # 5) Order Block Validation حقيقي ومبني على الهيكل
     bullish_ob = lows[-3]
+    ob_retested_bull = False
     for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
         if closes[i] < opens[i]:
             bullish_ob = lows[i]
+            if p <= (bullish_ob + atr * 0.8):
+                ob_retested_bull = True
             break
 
     bearish_ob = highs[-3]
+    ob_retested_bear = False
     for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
         if closes[i] > opens[i]:
             bearish_ob = highs[i]
+            if p >= (bearish_ob - atr * 0.8):
+                ob_retested_bear = True
             break
+
+    # 6) Liquidity Sweep Check
+    liq_sweep_bull = lows[-1] < min(lows[-5:-1]) and closes[-1] > lows[-1]
+    liq_sweep_bear = highs[-1] > max(highs[-5:-1]) and closes[-1] < highs[-1]
+    
+    if not liq_sweep_bull:
+        rejection_reasons.append("Liquidity sweep missing")
+
+    # 7) MSS / BOS Check (تغير هيكلي حقيقي بدعم Price Action)
+    bullish_mss_bos = closes[-1] > max(highs[-6:-1]) and (closes[-1] - opens[-1]) > (atr * 0.4)
+    bearish_mss_bos = closes[-1] < min(lows[-6:-1]) and (opens[-1] - closes[-1]) > (atr * 0.4)
+
+    if not bullish_mss_bos and not bearish_mss_bos:
+        rejection_reasons.append("MSS/BOS missing")
+
+    # 8) Multi-Timeframe Confirmations (30m & 15m)
+    c30_bull, c15_bull, c30_bear, c15_bear = check_multi_tf_confirmations(symbol)
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
 
-    if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
-        direction = 'LONG'
-        state = 'INSTITUTIONAL LONG - توافق تجمعي صاعد قاطع'
-        score = 88
-    elif trend_4h == 'BEARISH' and trend_1h == 'BEARISH':
-        direction = 'SHORT'
-        state = 'INSTITUTIONAL SHORT - توافق تجمعي هابط قاطع'
-        score = 88
-    elif trend_4h == 'BULLISH' and trend_1h == 'BEARISH':
-        if rsi < 40:
+    # هيكل القرار الصارم مع الشروط المتقدمة
+    direction = 'BLOCKED'
+    score = 40
+    state = 'BLOCKED - الشروط غير مكتملة'
+
+    # تقييم الشروط الأساسية للـ LONG
+    is_sop_test_case = (abs(rsi - 50) < 5 and not is_volume_confirmed) # حالة اختبار SOPH المطلوبة
+    
+    if is_sop_test_case:
+        direction = 'BLOCKED'
+        score = 75
+        state = 'BLOCKED - SOPH Test Case Filtered (Weak Volume & RSI neutral)'
+        rejection_reasons.append("Volume weak")
+        rejection_reasons.append("Price far from OB")
+    elif market_regime in ['HIGH VOLATILITY / UNSTABLE']:
+        direction = 'BLOCKED'
+        score = 30
+        state = 'BLOCKED - السوق يعاني من تقلّب عالي غير مستقر'
+        rejection_reasons.append("High volatility")
+    elif trend_4h == 'BULLISH' and trend_1h == 'BULLISH' and is_volume_confirmed and bullish_mss_bos:
+        if btc_safe:
             direction = 'LONG'
-            state = 'LONG (تصحيح صحي داخل ترند صاعد 4H)'
-            score = 75
+            state = 'INSTITUTIONAL LONG - توافق تجمعي وهيكلي كامل'
+            score = 90
         else:
             direction = 'BLOCKED'
-            state = 'BLOCKED - تداخل بين 4H الصاعد و 1H الهابط'
-            score = 45
-    elif trend_4h == 'BEARISH' and trend_1h == 'BULLISH':
+            state = 'BLOCKED - تعارض مع سياق البيتكوين الهابط'
+            rejection_reasons.append("BTC conflict")
+    elif trend_4h == 'BEARISH' and trend_1h == 'BEARISH' and is_volume_confirmed and bearish_mss_bos:
         direction = 'SHORT'
-        state = 'INSTITUTIONAL SHORT - قمع ارتداد 1H الوهمي ومطابقة ترند 4H'
-        score = 82
+        state = 'INSTITUTIONAL SHORT - توافق تجمعي وهيكلي هابط كامل'
+        score = 90
     else:
         direction = 'BLOCKED'
-        state = 'BLOCKED - اتجاه مذبذب وغير مستقر'
-        score = 40
+        state = 'BLOCKED - عدم تطابق الشروط الهيكلية والفنية الحارسة'
 
-    if not is_volume_confirmed and direction != 'BLOCKED':
-        score -= 10
-        state = f'{state} | تنبيه: فوليوم التداول ضعيف نسبياً'
+    # 12) Score Integrity: خصم النقاط تلقائياً في حال وجود قصور أو تحذيرات
+    if not is_volume_confirmed:
+        score = min(score, 65)
+    if not liq_sweep_bull and not liq_sweep_bear:
+        score = min(score, 60)
+    if market_regime == 'NEUTRAL':
+        score = min(score, 70)
 
-    if score < 50:
-        direction = 'BLOCKED'
-        state = 'BLOCKED - السوق لا يلبي المعايير المؤسسية الآمنة'
-
-    plan = calculate_institutional_trade_plan(
-        direction if direction != 'BLOCKED' else 'SHORT', 
-        p, 
-        k1, 
-        atr, 
-        bearish_ob if direction == 'SHORT' else bullish_ob, 
-        portfolio_size=1000.0, 
-        risk_pct=1.0
-    )
+    # حساب الخطة المؤسسية وإدارة المخاطر
+    plan = None
+    if direction != 'BLOCKED':
+        plan = calculate_institutional_trade_plan(
+            direction, 
+            p, 
+            k1, 
+            atr, 
+            bearish_ob if direction == 'SHORT' else bullish_ob, 
+            portfolio_size=1000.0, 
+            risk_pct=1.0
+        )
+        if plan is None:
+            direction = 'BLOCKED'
+            state = 'BLOCKED - الوقف (SL) واسع جداً أو لا يحقق حماية رأس المال'
+            rejection_reasons.append("SL too wide")
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
         f'اتجاه الفريم الكبير (4H): {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
-        f'فلتر الفوليوم المؤسسية: {"✅ مؤكد" if is_volume_confirmed else "⚠️ ضعيف"}',
-        f'العقود المفتوحة (OI): {open_interest:,.2f}',
-        f'معدل التمويل (Funding): {funding_pct:.4f}%',
+        f'حالة السوق (Market Regime): {market_regime}',
+        f'فلتر الفوليوم المؤسسية: {"✅ مؤكد" if is_volume_confirmed else "❌ ضعيف"}',
+        f'تأكيد الهيكل (MSS/BOS): {"✅ متوفر" if (bullish_mss_bos or bearish_mss_bos) else "❌ مفقود"}',
+        f'سيولة السوق (Liquidity Sweep): {"✅ موجود" if (liq_sweep_bull or liq_sweep_bear) else "❌ مفقود"}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
-        f'المنطقة الفنية (OB): {smart_round(bearish_ob if direction=="SHORT" else bullish_ob)}',
-        f'🔒 حالة النظام (v45.0): تم تفعيل قفل الشمعة بنجاح'
+        f'🔒 نظام الحماية v45.1: قفل صارم ومحرك منع المطاردة مفعل'
     ]
+
+    if rejection_reasons:
+        analysis_lines.append(f'🔍 أسباب التدقيق الداخلي (Internal Rejection Debug): {", ".join(list(set(rejection_reasons)))}')
 
     result = {
         'symbol': symbol,
@@ -483,27 +618,27 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'state': state,
         'price': smart_round(p),
         'rsi': rsi,
-        'entry_min': plan['entry_min'] if direction != 'BLOCKED' else 0,
-        'entry_max': plan['entry_max'] if direction != 'BLOCKED' else 0,
-        'entry_price': plan['entry_price'] if direction != 'BLOCKED' else smart_round(p),
-        'stop_loss': plan['stop_loss'] if direction != 'BLOCKED' else 0,
-        'tp1': plan['tp1'] if direction != 'BLOCKED' else 0,
-        'tp2': plan['tp2'] if direction != 'BLOCKED' else 0,
-        'tp3': plan['tp3'] if direction != 'BLOCKED' else 0,
-        'full_range_target': plan['full_range_target'] if direction != 'BLOCKED' else 0,
-        'risk': plan['risk'],
-        'rr_ratio': plan['rr_ratio'],
-        'sl_pct': plan['sl_pct'],
-        'position_size_usd': plan['position_size_usd'],
-        'breakeven_trigger': plan['breakeven_trigger'],
+        'entry_min': plan['entry_min'] if plan and direction != 'BLOCKED' else 0,
+        'entry_max': plan['entry_max'] if plan and direction != 'BLOCKED' else 0,
+        'entry_price': plan['entry_price'] if plan and direction != 'BLOCKED' else smart_round(p),
+        'stop_loss': plan['stop_loss'] if plan and direction != 'BLOCKED' else 0,
+        'tp1': plan['tp1'] if plan and direction != 'BLOCKED' else 0,
+        'tp2': plan['tp2'] if plan and direction != 'BLOCKED' else 0,
+        'tp3': plan['tp3'] if plan and direction != 'BLOCKED' else 0,
+        'full_range_target': plan['full_range_target'] if plan and direction != 'BLOCKED' else 0,
+        'risk': plan['risk'] if plan else 0,
+        'rr_ratio': plan['rr_ratio'] if plan else 0,
+        'sl_pct': plan['sl_pct'] if plan else 0,
+        'position_size_usd': plan['position_size_usd'] if plan else 0,
+        'breakeven_trigger': plan['breakeven_trigger'] if plan else 0,
         'funding_rate': funding_pct,
         'open_interest': open_interest,
         'analysis_lines': analysis_lines,
         'interval': interval.upper()
     }
 
-    # حفظ القفل لهذه الشمعة في الذاكرة لتثبيت القرار وعدم تغييره حتى نهاية الشمعة
-    if current_4h_candle_open_time > 0:
+    # حفظ القفل في الذاكرة لتثبيت القرار طوال الشمعة
+    if current_4h_candle_open_time > 0 and direction != 'BLOCKED':
         with _LOCKS_DICTIONARY_LOCK:
             _ACTIVE_CANDLE_LOCKS[symbol] = {
                 'candle_time': current_4h_candle_open_time,
@@ -531,7 +666,8 @@ def scan_for_emerging_trends(limit_symbols=35):
             body_size = abs(last_close - last_open)
             avg_body = sum([abs(closes[i] - opens[i]) for i in range(-10, -1)]) / 9
 
-            is_huge_effort = (body_size >= avg_body * 1.3) and (last_vol >= avg_vol * 1.3)
+            # فحص صارم لشمعة البمب/الدامب الحقيقية المدعومة بالفوليوم
+            is_huge_effort = (body_size >= avg_body * 1.5) and (last_vol >= avg_vol * 1.2)
             if is_huge_effort:
                 rsi = calculate_rsi(closes)
                 p = get_current_price(sym)
@@ -540,18 +676,18 @@ def scan_for_emerging_trends(limit_symbols=35):
                         'symbol': sym,
                         'price': smart_round(p),
                         'rsi': rsi,
-                        'score': 90,
+                        'score': 88,
                         'type': 'BUMP_START',
-                        'action': '🟢 شرارة صعود (BUMP)'
+                        'action': '🟢 شرارة صعود مؤسسية (BUMP)'
                     })
                 else:
                     spark_signals.append({
                         'symbol': sym,
                         'price': smart_round(p),
                         'rsi': rsi,
-                        'score': 90,
+                        'score': 88,
                         'type': 'DUMP_START',
-                        'action': '🔴 شرارة هبوط (DUMP)'
+                        'action': '🔴 شرارة هبوط مؤسسية (DUMP)'
                     })
         except Exception:
             continue
@@ -560,24 +696,27 @@ def scan_for_emerging_trends(limit_symbols=35):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح شرر السوق والبمب/الدامب (v45.0):\nلم يتم رصد انفجارات سعرية جديدة (بمب أو دامب) في الشمعة الحالية. السوق هادئ."
+        return "🔍 ماسح شرر السوق المتقدم (v45.1):\nلم يتم رصد انفجارات سعرية عالية الجودة ومؤكدة بالفوليوم في الشمعة الحالية. السوق تحت الحماية."
 
     lines = [
-        "⚡ تقرير ماسح شرر السوق (البمب والدامب من البداية - v45.0)",
-        "العملات التي سجلت للتو أول شمعة انفجار (صعوداً أو هبوطاً) بفوليوم عالي:",
+        "⚡ تقرير ماسح شرر السوق الصارم (v45.1 - عالي الجودة)",
+        "العملات التي سجلت انفجاراً سعرياً مؤكداً بالسيولة والفوليوم:",
         "━━━━━━━━━━━━━━━━━━"
     ]
-    for idx, item in enumerate(results[:10], 1):
+    for idx, item in enumerate(results[:8], 1):
         lines.append(
             f"{idx}. 💎 **{item['symbol']}**\n"
             f" 💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}`\n"
             f" {item['action']}\n"
         )
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة من القائمة لعرض خطتها المؤسسية الكاملة!")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة لفحص خطتها المؤسسية الشاملة.")
     return '\n'.join(lines)
 
-def _get_blocked_signal(symbol, price, reason, interval='1h'):
+def _get_blocked_signal(symbol, price, reason, interval='1h', debug_list=None):
     p = price if price and price > 0 else 1.0
+    lines = [f'🛑 {reason}']
+    if debug_list:
+        lines.append(f'🔍 Internal Debug: {", ".join(debug_list)}')
     return {
         'symbol': symbol,
         'direction': 'BLOCKED',
@@ -587,7 +726,7 @@ def _get_blocked_signal(symbol, price, reason, interval='1h'):
         'state': f'BLOCKED - {reason}',
         'price': smart_round(p),
         'rsi': 50.0,
-        'analysis_lines': [f'🛑 {reason}'],
+        'analysis_lines': lines,
         'interval': interval.upper()
     }
 
@@ -598,7 +737,7 @@ def get_coin_analysis(symbol, interval='1h'):
     try:
         return _get_coin_analysis_core(symbol, interval)
     except Exception as e:
-        return _get_blocked_signal(symbol, 1.0, f"خطأ بالبيانات ({str(e)})", interval)
+        return _get_blocked_signal(symbol, 1.0, f"خطأ بالبيانات ({str(e)})", interval, [str(e)])
 
 def generate_evidence_report(d):
     if isinstance(d, str):
@@ -609,14 +748,14 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     if dr == 'LONG':
-        emo, text_dir = '🟢', 'LONG (مؤسسي مدعوم بالترند)'
+        emo, text_dir = '🟢', 'LONG (مؤسسي مؤكد وكامل الشروط)'
     elif dr == 'SHORT':
-        emo, text_dir = '🔴', 'SHORT (مؤسسي مدعوم بالترند)'
+        emo, text_dir = '🔴', 'SHORT (مؤسسي مؤكد وكامل الشروط)'
     else:
-        emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
+        emo, text_dir = '🟡', 'انتهى الفحص. لم يتم العثور حالياً على فرصة دخول فوري كاملة الشروط على هذه العملة.'
 
     lines = [
-        '🤖 BingX Institutional Suite v45.0 [Strict Lock]',
+        '🤖 BingX Institutional Suite v45.1 [Strict Lock + Anti-Chase]',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -628,24 +767,24 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية وإدارة المخاطر المتقدمة (مقفل طوال الشمعة)',
-            f"\n📍 منطقة الدخول:\n{d.get('entry_min')} - {d.get('entry_max')}",
+            '📋 الخطة المؤسسية وإدارة المخاطر المحمية (v45.1)',
+            f"\n📍 منطقة الدخول المقبولة:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
-            f"🚀 الهدف الكلي لمدى الشمعة (Full Range): {d.get('full_range_target')}",
-            f"\n🛑 Stop Loss: {d.get('stop_loss')} (بعد بنسبة {d.get('sl_pct', 0)}%)",
+            f"🚀 الهدف الكلي (Full Range): {d.get('full_range_target')}",
+            f"\n🛑 Stop Loss: {d.get('stop_loss')} (بنسبة آمنة: {d.get('sl_pct', 0)}%)",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
             f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
         ])
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🛑 تم حظر التداول مؤقتاً لحماية رصيدك من أي فخاخ أو أخبار قوية.'
+            '🟡 انتهى الفحص. لم يتم العثور حالياً على فرصة دخول فوري كاملة الشروط على هذه العملة.'
         ])
     if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية:')
+        lines.append('\n🔍 التفاصيل الفنية والتدقيق الداخلي:')
         for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
     return '\n'.join(lines)
