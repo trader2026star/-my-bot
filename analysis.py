@@ -1,4 +1,4 @@
-# analysis.py - BingX Institutional SMC & Risk Suite v45.3 (BALANCED INSTITUTIONAL ENTRY ENGINE)
+# analysis.py - BingX Institutional SMC & Risk Suite v45.4 (Balanced Institutional Entry Engine + Minimum Confirmation Gate)
 import time
 import logging
 import threading
@@ -6,7 +6,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.3', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.4', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -407,7 +407,7 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
     sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
     
-    # 13) SL Validation (الحدود المعمول بها: <=5% طبيعي، 5-7% يحتاج setup قوي، >7% بلوك)
+    # 13) SL Validation (<=5% Normal, 5-7% needs strong setup + Core Gate, >7% Block)
     if sl_pct > 7.0:
         return None
 
@@ -442,7 +442,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         return _get_blocked_signal(symbol, p, f"تم الحظر بسبب خبر اقتصادي قوي: ({news_title})", interval, ["High impact economic news"])
 
     k4h = get_bingx_klines(symbol, '4h', 50)
-    
     current_4h_candle_open_time = k4h[-1][0] if k4h and len(k4h) > 0 else 0
     
     with _LOCKS_DICTIONARY_LOCK:
@@ -453,7 +452,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
                 e_min = locked_data.get('entry_min', 0)
                 e_max = locked_data.get('entry_max', 0)
                 atr_check = locked_data.get('risk', p * 0.015)
-                # فحص Anti-Chase (11 & 12) Real-Time Final Check
+                # Anti-Chase check
                 if p < (e_min - (atr_check * 1.8)) or p > (e_max + (atr_check * 1.8)):
                     pass 
                 else:
@@ -479,26 +478,22 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     avg_vol = sum(vols[-15:]) / 15 if len(vols) >= 15 else 1.0
     last_vol = vols[-1]
 
-    # 7) Volume Filter
+    # 9) Volume Filter
     if last_vol >= (avg_vol * 1.2):
         volume_status = 'STRONG'
-        vol_score = 5
     elif last_vol >= (avg_vol * 0.8):
         volume_status = 'NORMAL'
-        vol_score = 3
     elif last_vol >= (avg_vol * 0.4):
         volume_status = 'WEAK'
-        vol_score = 0
     else:
         volume_status = 'EXTREMELY WEAK'
-        vol_score = -10
 
     highs = [x[2] for x in k1]
     lows = [x[3] for x in k1]
     closes = [x[4] for x in k1]
     opens = [x[1] for x in k1]
 
-    # 2) Core Setup Detection: Valid OB / Demand / Supply / Retest Zone
+    # Order Block Detection
     bullish_ob = lows[-3]
     ob_valid_bull = False
     for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
@@ -517,15 +512,15 @@ def _get_coin_analysis_core(symbol, interval='1h'):
                 ob_valid_bear = True
             break
 
-    # 11) Entry Location & Anti-Chase
+    # 10) Entry Location & Anti-Chase
     is_near_entry_long = ob_valid_bull or (p <= lows[-1] + atr * 2.5)
     is_near_entry_short = ob_valid_bear or (p >= highs[-1] - atr * 2.5)
 
-    # 6) Liquidity Sweep (Adaptive)
+    # Liquidity Sweep
     liq_sweep_bull = lows[-1] < min(lows[-6:-1]) and closes[-1] > lows[-1]
     liq_sweep_bear = highs[-1] > max(highs[-6:-1]) and closes[-1] < highs[-1]
 
-    # 5) MSS / BOS (Adaptive - يكفي أحدهما)
+    # MSS / BOS
     displacement_bull = (closes[-1] - opens[-1]) > (atr * 0.3)
     displacement_bear = (opens[-1] - closes[-1]) > (atr * 0.3)
 
@@ -537,19 +532,42 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     has_mss_or_bos_bull = (mss_bull or bos_bull)
     has_mss_or_bos_bear = (mss_bear or bos_bear)
 
-    # 9) Market Regime & Direction Bias
-    if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
-        structure_bias = 'LONG'
-    elif trend_4h == 'BEARISH' and trend_1h == 'BEARISH':
-        structure_bias = 'SHORT'
-    else:
-        structure_bias = 'CONFLICTING'
+    # 4) STAR Protection / Counter-Trend & Conflict Checks
+    is_conflict = (trend_4h != trend_1h)
+    
+    # 4) حماية خاصة من حالات STAR والأوضاع الضعيفة
+    if trend_4h == 'BEARISH' and trend_1h == 'BULLISH' and volume_status == 'WEAK' and not has_mss_or_bos_bull and not liq_sweep_bull:
+        return _get_blocked_signal(symbol, p, "BLOCKED - (تعارض 4H صاعد/1H هابط أو بالعكس مع فوليوم ضعيف وغياب MSS/Liquidity)", interval, ["STAR protection triggered"])
 
-    # 3) Confirmation Score Calculator (Total = 100)
+    # Counter-trend checks
+    is_counter_trend_long = (trend_4h == 'BEARISH' and trend_1h == 'BULLISH')
+    is_counter_trend_short = (trend_4h == 'BULLISH' and trend_1h == 'BEARISH')
+
+    # 2) Minimum Confirmation Gate (Archetypes A, B, C)
+    # Archetype A: MSS/BOS Entry
+    arch_a_long = ob_valid_bull and is_near_entry_long and has_mss_or_bos_bull and not is_counter_trend_long
+    arch_a_short = ob_valid_bear and is_near_entry_short and has_mss_or_bos_bear and not is_counter_trend_short
+
+    # Archetype B: Liquidity Sweep Reversal (Allows without MSS/BOS if strong sweep & rejection/displacement)
+    arch_b_long = ob_valid_bull and liq_sweep_bull and (displacement_bull or closes[-1] > opens[-1]) and is_near_entry_long
+    arch_b_short = ob_valid_bear and liq_sweep_bear and (displacement_bear or closes[-1] < opens[-1]) and is_near_entry_short
+
+    # Archetype C: Breakout + Retest
+    arch_c_long = bos_bull and ob_valid_bull and displacement_bull and volume_status in ['STRONG', 'NORMAL']
+    arch_c_short = bos_bear and ob_valid_bear and displacement_bear and volume_status in ['STRONG', 'NORMAL']
+
+    # 6) Same-Direction Setup (Allow without MSS/BOS if strong OB, retest, and rejection/displacement)
+    same_dir_long = (trend_4h == 'BULLISH' and trend_1h == 'BULLISH') and ob_valid_bull and is_near_entry_long and (displacement_bull or closes[-1] > opens[-1])
+    same_dir_short = (trend_4h == 'BEARISH' and trend_1h == 'BEARISH') and ob_valid_bear and is_near_entry_short and (displacement_bear or closes[-1] < opens[-1])
+
+    core_gate_long = arch_a_long or arch_b_long or arch_c_long or same_dir_long
+    core_gate_short = arch_a_short or arch_b_short or arch_c_short or same_dir_short
+
+    # 8) Scoring System (Total = 100)
     def compute_conf_score(is_long=True):
         score = 0
         if is_long:
-            if structure_bias in ['LONG', 'CONFLICTING']: score += 20
+            if trend_4h == 'BULLISH': score += 20
             if ob_valid_bull: score += 20
             if is_near_entry_long: score += 15
             if has_mss_or_bos_bull: score += 15
@@ -560,7 +578,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             if btc_status == 'BULLISH': score += 5
             elif btc_status == 'BEARISH': score -= 5
         else:
-            if structure_bias in ['SHORT', 'CONFLICTING']: score += 20
+            if trend_4h == 'BEARISH': score += 20
             if ob_valid_bear: score += 20
             if is_near_entry_short: score += 15
             if has_mss_or_bos_bear: score += 15
@@ -575,12 +593,12 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     score_long = compute_conf_score(True)
     score_short = compute_conf_score(False)
 
-    # 4) Dynamic Thresholds
+    # 7) Dynamic Thresholds
     if market_regime in ['STRONG BULL', 'STRONG BEAR', 'BULL', 'BEAR']:
         base_threshold = 63
     elif market_regime == 'HIGH VOLATILITY':
         base_threshold = 72
-    elif structure_bias == 'CONFLICTING':
+    elif is_conflict:
         base_threshold = 75
     else:
         base_threshold = 65
@@ -589,25 +607,30 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     chosen_score = 0
     state = 'NO TRADE - لم يتم استيفاء معايير الدخول'
 
-    # 2) CORE SETUP إلزامي (Anti-Weak-Signal Gate)
-    core_setup_long = (ob_valid_bull or is_near_entry_long) and (structure_bias != 'SHORT' or market_regime in ['BULL', 'STRONG BULL']) and volume_status != 'EXTREMELY WEAK'
-    core_setup_short = (ob_valid_bear or is_near_entry_short) and (structure_bias != 'LONG' or market_regime in ['BEAR', 'STRONG BEAR']) and volume_status != 'EXTREMELY WEAK'
-
     plan = None
-    if core_setup_long and score_long >= base_threshold:
-        temp_plan = calculate_institutional_trade_plan('LONG', p, k1, atr, bullish_ob, 1000.0, 1.0)
-        if temp_plan and temp_plan['rr_ratio'] >= 1.5:
-            plan = temp_plan
-            direction = 'LONG'
-            chosen_score = score_long
-            state = 'MARKET LONG - صفقة مؤسسية مؤكدة'
-    elif core_setup_short and score_short >= base_threshold:
-        temp_plan = calculate_institutional_trade_plan('SHORT', p, k1, atr, bearish_ob, 1000.0, 1.0)
-        if temp_plan and temp_plan['rr_ratio'] >= 1.5:
-            plan = temp_plan
-            direction = 'SHORT'
-            chosen_score = score_short
-            state = 'MARKET SHORT - صفقة مؤسسية هابطة مؤكدة'
+
+    # Final Decision Engine with Core Gate & Score Check (17, 24)
+    # حماية IOST: إذا تخطينا الـ Threshold ولكن الـ Core Gate فشل -> NO TRADE حتمي مع توضيح السبب
+    if score_long >= base_threshold:
+        if not core_gate_long:
+            return _get_blocked_signal(symbol, p, f"NO TRADE - Score ({score_long}) اجتاز الحد الأدنى ولكن Core Gate فشل (Missing Archetype)", interval, [f"Score: {score_long}", f"Threshold: {base_threshold}", "Core Gate: FAILED"])
+        else:
+            temp_plan = calculate_institutional_trade_plan('LONG', p, k1, atr, bullish_ob, 1000.0, 1.0)
+            if temp_plan and temp_plan['rr_ratio'] >= 1.5:
+                plan = temp_plan
+                direction = 'LONG'
+                chosen_score = score_long
+                state = 'MARKET LONG - صفقة مؤسسية مؤكدة بالكامل'
+    elif score_short >= base_threshold:
+        if not core_gate_short:
+            return _get_blocked_signal(symbol, p, f"NO TRADE - Score ({score_short}) اجتاز الحد الأدنى ولكن Core Gate فشل (Missing Archetype)", interval, [f"Score: {score_short}", f"Threshold: {base_threshold}", "Core Gate: FAILED"])
+        else:
+            temp_plan = calculate_institutional_trade_plan('SHORT', p, k1, atr, bearish_ob, 1000.0, 1.0)
+            if temp_plan and temp_plan['rr_ratio'] >= 1.5:
+                plan = temp_plan
+                direction = 'SHORT'
+                chosen_score = score_short
+                state = 'MARKET SHORT - صفقة مؤسسية هابطة مؤكدة بالكامل'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -619,15 +642,13 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
         f'حالة السوق (Market Regime): {market_regime}',
         f'فلتر الفوليوم: {volume_status}',
-        f'هيكل السعر (MSS/BOS): {"✅ متوفر" if (has_mss_or_bos_bull or has_mss_or_bos_bear) else "⚠️ غير إلزامي (مقبول)"}',
+        f'هيكل السعر (MSS/BOS): {"✅ متوفر" if (has_mss_or_bos_bull or has_mss_or_bos_bear) else "⚠️ غير إلزامي بناءً على Archetype"}',
         f'سحب السيولة (Liquidity Sweep): {"✅ موجود" if (liq_sweep_bull or liq_sweep_bear) else "⚠️ غير إلزامي"}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
         f'Confirmation Score: {max(score_long, score_short)} (الحد الأدنى المطلوب: {base_threshold})',
-        f'🔒 نظام v45.3: Balanced Institutional Entry Engine مفعل'
+        f'Core Gate Status: {"✅ PASS" if (core_gate_long or core_gate_short) else "❌ FAILED"}',
+        f'🔒 نظام v45.4: Balanced Institutional Entry Engine + Minimum Confirmation Gate مفعل'
     ]
-
-    if direction == 'BLOCKED':
-        analysis_lines.append(f'🔍 التدقيق الداخلي: Score L: {score_long}, Score S: {score_short}, Thresh: {base_threshold}')
 
     result = {
         'symbol': symbol,
@@ -666,8 +687,8 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     return result
 
-def scan_for_emerging_trends(limit_symbols=40):
-    top_syms = get_top_futures_symbols(limit=limit_symbols)
+def scan_for_emerging_trends(limit_symbol_count=40):
+    top_syms = get_top_futures_symbols(limit=limit_symbol_count)
     qualified_opportunities = []
 
     for sym in top_syms:
@@ -676,7 +697,6 @@ def scan_for_emerging_trends(limit_symbols=40):
             if res and res.get('direction') in ['LONG', 'SHORT']:
                 score = res.get('score', 0)
                 rr = res.get('rr_ratio', 0)
-                # تصنيف الجودة (18) Quality Tiers
                 if score >= 80:
                     tier = 'A+'
                 elif score >= 72:
@@ -691,22 +711,21 @@ def scan_for_emerging_trends(limit_symbols=40):
         except Exception:
             continue
 
-    # ترتيب الفرص حسب الجودة والـ R:R (16)
     qualified_opportunities.sort(key=lambda x: (x[0], x[1]), reverse=True)
     
     out_results = []
-    for item in qualified_opportunities[:3]: # أفضل 1 إلى 3 فرص فقط
+    for item in qualified_opportunities[:3]:
         out_results.append(item[2])
     return out_results
 
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbol_count=45)
     if not results:
-        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مكتملة الشروط في السوق (النظام يحمي المحفظة ضد التذبذب العشوائي)."
+        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مكتملة الشروط (Core Gate & Score) في السوق."
 
     lines = [
-        "🤖 BingX Institutional Suite v45.3 [Balanced Institutional Entry Engine]",
-        "⚡ أفضل الفرص المؤسسية المتاحة حالياً:",
+        "🤖 BingX Institutional Suite v45.4 [Balanced Institutional Entry Engine + Min Confirmation Gate]",
+        "⚡ أفضل الفرص المؤسسية المؤكدة حالياً:",
         "━━━━━━━━━━━━━━━━━━"
     ]
     for idx, d in enumerate(results, 1):
@@ -764,7 +783,7 @@ def generate_evidence_report(d):
         emo, text_dir = '🟡', 'NO TRADE'
 
     lines = [
-        '🤖 BingX Institutional Suite v45.3 [Balanced Institutional Entry Engine]',
+        '🤖 BingX Institutional Suite v45.4 [Balanced Institutional Entry Engine + Min Confirmation Gate]',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -776,7 +795,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية وإدارة المخاطر (v45.3)',
+            '📋 الخطة المؤسسية وإدارة المخاطر (v45.4)',
             f"\n📍 منطقة الدخول المقبولة:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
@@ -790,7 +809,7 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🟡 NO TRADE - المعايير لم تصل لحد القبول المطلوب.'
+            '🟡 NO TRADE - المعايير لم تصل لحد القبول المطلوب (لم يتحقق Core Gate أو الشروط الأساسية).'
         ])
     if d.get('analysis_lines'):
         lines.append('\n🔍 التفاصيل الفنية والتدقيق الداخلي:')
