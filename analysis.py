@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v41.3
+# analysis.py - BingX Institutional SMC & Risk Suite v41.4
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.3', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.4', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -448,12 +448,12 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
 def scan_for_emerging_trends(limit_symbols=35):
     """
-    ماسح قيعان وأول شرارة صعود (v41.3):
-    يبحث عن العملات التي كانت في منطقة تجميع/قاع خلال الشموع السابقة،
-    وفجأة بدأت الشمعة الأخيرة (أو قبل الأخيرة) تعطي أول إشارة صعود قوية مع فوليوم.
+    ماسح شرر السوق (البمب والدامب من البداية - v41.4):
+    يبحث عن العملات التي تبدأ بأول شمعة انفجار حقيقي (سواء صعوداً 'BUMP' أو هبوطاً 'DUMP')
+    مع فوليوم تداول عالي مفاجئ لتكون جاهزاً للصفقة في أول الثواني.
     """
     top_syms = get_top_futures_symbols(limit=limit_symbols)
-    emerging_trends = []
+    spark_signals = []
 
     for sym in top_syms:
         try:
@@ -463,62 +463,66 @@ def scan_for_emerging_trends(limit_symbols=35):
 
             closes = [x[4] for x in k1]
             opens = [x[1] for x in k1]
-            lows = [x[3] for x in k1]
             vols = [x[5] for x in k1]
 
-            # التأكد أن السعر كان في مسار هابط أو تجميعي هادئ (قاع) في آخر 5-10 شمعات
-            # مقارنة السعر الحالي بمنتصف الشموع السابقة للتأكد أنه ليس بصعود قديم
-            recent_low = min(lows[-10:-2])
             avg_vol = sum(vols[-15:-2]) / 13 if len(vols) >= 15 else 1.0
-
-            # شروط "أول شمعة انطلاق من القاع":
-            # 1. الشمعة الأخيرة خضراء قوية (إغلاق أعلى من الافتتاح بشكل ملحوظ)
-            # 2. فوليوم الشمعة الأخيرة أعلى من متوسط الفوليوم السابق (دخول سيولة فجأة)
-            # 3. مؤشر القوة النسبية RSI مناسب للصعود من القاع (ليس متضخماً فوق 70، بل بين 35 و 60)
             last_close = closes[-1]
             last_open = opens[-1]
             last_vol = vols[-1]
             
-            is_green_candle = last_close > last_open
-            body_size = last_close - last_open
+            body_size = abs(last_close - last_open)
             avg_body = sum([abs(closes[i] - opens[i]) for i in range(-10, -1)]) / 9
-            
-            # الشمعة الحالية هي شرارة الانطلاق (حجم جسم الشمعة أكبر من المتوسط وفوليوم عالي)
-            is_spark_start = is_green_candle and (body_size >= avg_body * 1.2) and (last_vol >= avg_vol * 1.3)
 
-            if is_spark_start:
+            # شروط شرارة البمب أو الدامب الفوري:
+            # حجم جسم الشمعة الأخيرة أعلى بـ 1.3 مرة على الأقل من المتوسط، وفوليوم عالي
+            is_huge_effort = (body_size >= avg_body * 1.3) and (last_vol >= avg_vol * 1.3)
+
+            if is_huge_effort:
                 rsi = calculate_rsi(closes)
-                if 35 <= rsi <= 62:  # في بداية الحركة وليس في التشبع الشرائي
-                    p = get_current_price(sym)
-                    emerging_trends.append({
+                p = get_current_price(sym)
+                
+                if last_close > last_open:
+                    # صعود (بمب) من القاع / البداية
+                    spark_signals.append({
                         'symbol': sym,
                         'price': smart_round(p),
                         'rsi': rsi,
-                        'score': 92,
-                        'type': 'BOTTOM_BREAKOUT_START'
+                        'score': 90,
+                        'type': 'BUMP_START',
+                        'action': '🟢 شرارة صعود (BUMP)'
+                    })
+                else:
+                    # هبوط (دامب) من القمة / البداية
+                    spark_signals.append({
+                        'symbol': sym,
+                        'price': smart_round(p),
+                        'rsi': rsi,
+                        'score': 90,
+                        'type': 'DUMP_START',
+                        'action': '🔴 شرارة هبوط (DUMP)'
                     })
         except Exception:
             continue
 
-    return emerging_trends
+    return spark_signals
 
 
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح القيعان والانطلاقات (v41.3):\nلم يتم رصد عملات تبدأ الانطلاق من القاع الآن. السوق يتحرك ببطء أو ينتظر سيولة جديدة، جرب لاحقاً."
+        return "🔍 ماسح شرر السوق والبمب/الدامب (v41.4):\nلم يتم رصد انفجارات سعرية جديدة (بمب أو دامب) في الشمعة الحالية. السوق هادئ."
 
     lines = [
-        "🚀 تقرير ماسح صيد القيعان وأول شرارة صعود (v41.3)",
-        "العملات التي أظهرت فجأة دخول سيولة وبدأت أول شمعة انطلاق من القاع:",
+        "⚡ تقرير ماسح شرر السوق (البمب والدامب من البداية - v41.4)",
+        "العملات التي سجلت للتو أول شمعة انفجار (صعوداً أو هبوطاً) بفوليوم عالي:",
         "━━━━━━━━━━━━━━━━━━"
     ]
 
     for idx, item in enumerate(results[:10], 1):
         lines.append(
             f"{idx}. 💎 **{item['symbol']}**\n"
-            f"   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}` | ⭐ Score: `{item['score']}`\n"
-            f"   🟢 الحالة: أول شمعة انطلاق من القاع بجهد سيولة عالي\n"
+            f"   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}`\n"
+            f"   {item['action']}\n"
         )
 
     lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة من القائمة لعرض خطتها المؤسسية الكاملة!")
@@ -557,7 +561,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX Institutional Suite v41.3',
+        '🤖 BingX Institutional Suite v41.4',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
