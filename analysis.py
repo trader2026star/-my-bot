@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v41.0
+# analysis.py - BingX Institutional SMC & Risk Suite v41.1
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -442,10 +442,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
 
 def scan_for_emerging_trends(limit_symbols=30):
-    """
-    خاصية (ترند): تفحص السيولة وأعلى العملات تداولاً وتبحث عن العملات
-    التي بدأت تشكل ترنداً حقيقياً في بدايته (توافق صاعد بفوليوم قوي).
-    """
     top_syms = get_top_futures_symbols(limit=limit_symbols)
     emerging_trends = []
 
@@ -458,13 +454,11 @@ def scan_for_emerging_trends(limit_symbols=30):
 
             trend_4h, trend_1h = determine_strict_trend(k4h, k1)
             
-            # نشترط أن يكون الفريمان صاعدان (بداية ترند حقيقي) أو ارتداد قوي مدعوم
             if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
                 c = [x[4] for x in k1]
                 vols = [x[5] for x in k1]
                 avg_vol = sum(vols[-15:]) / 15 if len(vols) >= 15 else 1.0
                 
-                # فحص ما إذا كان هناك تسارع حديث في الفوليوم (بداية اشتعال الشمعة/الترند)
                 if vols[-1] >= (avg_vol * 0.8) or vols[-2] >= (avg_vol * 0.8):
                     p = get_current_price(sym)
                     rsi = calculate_rsi(c)
@@ -478,20 +472,16 @@ def scan_for_emerging_trends(limit_symbols=30):
         except Exception:
             continue
 
-    # ترتيب النتائج إن أمكن
     return emerging_trends
 
 
 def generate_trend_scan_report():
-    """
-    توليد تقرير منسق عند طلب أمر (ترند)
-    """
     results = scan_for_emerging_trends(limit_symbols=35)
     if not results:
-        return "🔍 ماسح الترندات (v41.0):\nلم يتم رصد عملات بدأت ترنداً صاعداً قوياً في هذه اللحظة بالذات. السوق هادئ، جرب البحث لاحقاً أو افحص عملة معينة."
+        return "🔍 ماسح الترندات (v41.1):\nلم يتم رصد عملات بدأت ترنداً صاعداً قوياً في هذه اللحظة بالذات. السوق هادئ، جرب البحث لاحقاً أو افحص عملة معينة."
 
     lines = [
-        "🚀 تقرير ماسح الترندات المؤسسية (v41.0)",
+        "🚀 تقرير ماسح الترندات المؤسسية (v41.1)",
         "العملات التي تبدأ تشكيل ترند صاعد حقيقي بفوليوم وتوافق فريمات:",
         "━━━━━━━━━━━━━━━━━━"
     ]
@@ -503,7 +493,7 @@ def generate_trend_scan_report():
             f"   🟢 الحالة: بداية ترند صاعد مؤسسي مؤكد\n"
         )
 
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة من القمة لتفصيل خطتها الكاملة وضرباتها الحسابية!")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة من القائمة لتفصيل خطتها الكاملة!")
     return '\n'.join(lines)
 
 
@@ -517,8 +507,9 @@ def _get_blocked_signal(symbol, price, reason, interval='1h'):
 
 
 def get_coin_analysis(symbol, interval='1h'):
-    # دعم أمر (ترند) مباشرة لو المستخدم كتبه كأمر بحث
-    if str(symbol).strip().lower() in ['ترند', 'trend', 'SCAN_TREND']:
+    # التحقق مما إذا كان المدخل أمر مسح ترند وليس اسم عملة
+    clean_sym = str(symbol).strip().lower()
+    if clean_sym in ['ترند', 'trend', 'scan_trend']:
         return generate_trend_scan_report()
 
     try:
@@ -528,7 +519,6 @@ def get_coin_analysis(symbol, interval='1h'):
 
 
 def generate_evidence_report(d):
-    # إذا كان الناتج عبارة عن تقرير نصي مباشر لعملية (ترند)
     if isinstance(d, str):
         return d
 
@@ -541,7 +531,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX Institutional Suite v41.0',
+        '🤖 BingX Institutional Suite v41.1',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
