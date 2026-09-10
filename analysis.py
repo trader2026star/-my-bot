@@ -1,6 +1,6 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v43.0
-# (النسخة المحصنة: درع سحب السيولة + مسافة أمان مضاعفة للوقف)
+# analysis.py - BingX Institutional SMC & Risk Suite v44.0
+# (النسخة المتطورة: محرك فريم 4 ساعات + درع الوقف + العداد الزمني)
 # =========================================================
 
 import time
@@ -10,7 +10,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalShield/43.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalShield/44.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -205,14 +205,14 @@ def _parse(rows):
     return clean
 
 
-def get_bingx_klines(s, interval='1h', limit=100):
+def get_bingx_klines(s, interval='4h', limit=100):
     s = normalize_symbol(s)
     key = (s, str(interval).lower(), int(limit))
     now = time.time()
     c = _KLINE_CACHE.get(key)
     if c and now - c[0] < KLINE_CACHE_SECONDS: return c[1]
     mp = {'1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d'}
-    bi = mp.get(str(interval).lower(), '1h')
+    bi = mp.get(str(interval).lower(), '4h')
     d = bingx_get('/openApi/swap/v2/quote/klines', {'symbol': s, 'interval': bi, 'limit': int(limit)})
     r = _parse(d)
     if r and len(r) > 0:
@@ -243,7 +243,7 @@ def get_current_price(s, force=False):
                     _PRICE_CACHE[s] = (now, p)
                     return p
             except Exception: pass
-    k = get_bingx_klines(s, '1m', 5)
+    k = get_bingx_klines(s, '4h', 5)
     if k and len(k) > 0 and k[-1][4] > 0:
         _PRICE_CACHE[s] = (now, k[-1][4])
         return k[-1][4]
@@ -281,7 +281,7 @@ def smart_round(v):
     return round(v, 8)
 
 
-def analyze_liquidity_sweep_and_choch(klines):
+def analyze_macro_liquidity_sweep(klines):
     if len(klines) < 20:
         return 'NONE', 0.0, 0.0
 
@@ -307,28 +307,28 @@ def analyze_liquidity_sweep_and_choch(klines):
     return 'NEUTRAL', prev_lowest, prev_highest
 
 
-def calculate_institutional_trade_plan(direction, price, klines, atr, structural_stop, portfolio_size=1000.0, risk_pct=1.0):
-    raw_atr = atr or (price * 0.015)
-    buffer_margin = raw_atr * 0.75  # مسافة أمان مضاعفة لحماية الوقف من ذيول التلاعب والصيد الوهمي
+def calculate_macro_trade_plan(direction, price, klines, atr, structural_stop, portfolio_size=1000.0, risk_pct=1.0):
+    raw_atr = atr or (price * 0.02)
+    buffer_margin = raw_atr * 0.9  # مسافة أمان أوسع لفريم 4 ساعات لحماية الصفقة من التلاعب الطويل
     
     if direction == 'LONG':
         entry = price
-        base_sl = structural_stop if (structural_stop > 0 and structural_stop < entry) else entry - (raw_atr * 1.2)
-        sl = base_sl - buffer_margin  # إبعاد الوقف مسافة أمان إضافية للأسفل
+        base_sl = structural_stop if (structural_stop > 0 and structural_stop < entry) else entry - (raw_atr * 1.5)
+        sl = base_sl - buffer_margin
         risk_dist = entry - sl
-        tp1 = entry + (risk_dist * 2.0)
-        tp2 = entry + (risk_dist * 3.5)
-        tp3 = entry + (risk_dist * 5.0)
-        full_range_target = entry + (risk_dist * 4.0)
+        tp1 = entry + (risk_dist * 2.5)
+        tp2 = entry + (risk_dist * 4.0)
+        tp3 = entry + (risk_dist * 6.0)
+        full_range_target = entry + (risk_dist * 5.0)
     else:
         entry = price
-        base_sl = structural_stop if (structural_stop > 0 and structural_stop > entry) else entry + (raw_atr * 1.2)
-        sl = base_sl + buffer_margin  # إبعاد الوقف مسافة أمان إضافية للأعلى
+        base_sl = structural_stop if (structural_stop > 0 and structural_stop > entry) else entry + (raw_atr * 1.5)
+        sl = base_sl + buffer_margin
         risk_dist = sl - entry
-        tp1 = entry - (risk_dist * 2.0)
-        tp2 = entry - (risk_dist * 3.5)
-        tp3 = entry - (risk_dist * 5.0)
-        full_range_target = entry - (risk_dist * 4.0)
+        tp1 = entry - (risk_dist * 2.5)
+        tp2 = entry - (risk_dist * 4.0)
+        tp3 = entry - (risk_dist * 6.0)
+        full_range_target = entry - (risk_dist * 5.0)
 
     rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
     sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
@@ -336,7 +336,7 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, structural
     position_size_usd = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
 
     return {
-        'entry_min': smart_round(entry * 0.998), 'entry_max': smart_round(entry * 1.002),
+        'entry_min': smart_round(entry * 0.997), 'entry_max': smart_round(entry * 1.003),
         'entry_price': smart_round(entry), 'stop_loss': smart_round(max(sl, 0.000001)),
         'tp1': smart_round(max(tp1, 0.000001)), 'tp2': smart_round(max(tp2, 0.000001)),
         'tp3': smart_round(max(tp3, 0.000001)), 'full_range_target': smart_round(max(full_range_target, 0.000001)),
@@ -345,7 +345,7 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, structural
     }
 
 
-def _get_coin_analysis_core(symbol, interval='1h'):
+def _get_coin_analysis_core(symbol, interval='4h'):
     symbol = normalize_symbol(symbol)
     p = get_current_price(symbol, True)
     if not p or p <= 0: raise ValueError(f"Price error for {symbol}")
@@ -355,13 +355,13 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         return _get_blocked_signal(symbol, p, f"تم الحظر مؤقتاً بسبب قرب صدور خبر اقتصادي قوي: ({news_title})", interval)
 
     k1 = get_bingx_klines(symbol, interval, 100)
-    if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval)
+    if not k1 or len(k1) < 30: return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية على فريم 4H", interval)
 
     c = [x[4] for x in k1]
     rsi = calculate_rsi(c)
-    atr = calculate_atr(k1) or p * 0.015
+    atr = calculate_atr(k1) or p * 0.02
 
-    sweep_dir, sweep_level, structural_sl = analyze_liquidity_sweep_and_choch(k1)
+    sweep_dir, sweep_level, structural_sl = analyze_macro_liquidity_sweep(k1)
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -369,29 +369,29 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     if sweep_dir == 'LONG':
         direction = 'LONG'
-        state = '⚡ INSTITUTIONAL BUFFER LONG - كسح سيولة حقيقي مع درع حماية الأمان'
-        score = 95
+        state = '⚡ MACRO 4H SWEEP LONG - صيد سيولة فريم 4 ساعات مع درع الأمان وزدوج العداد الزمني'
+        score = 96
     elif sweep_dir == 'SHORT':
         direction = 'SHORT'
-        state = '⚡ INSTITUTIONAL BUFFER SHORT - كسح سيولة علوية مع درع حماية الأمان'
-        score = 95
+        state = '⚡ MACRO 4H SWEEP SHORT - صيد سيولة علوية فريم 4 ساعات مع درع الأمان الزمني'
+        score = 96
     else:
         ma_fast = sum(c[-10:]) / 10
         if c[-1] > ma_fast and rsi < 65:
             direction = 'LONG'
-            state = '🟢 TREND CONTINUATION LONG'
-            score = 78
+            state = '🟢 MACRO 4H TREND CONTINUATION LONG'
+            score = 80
         else:
             direction = 'SHORT'
-            state = '🔴 TREND CONTINUATION SHORT'
-            score = 78
+            state = '🔴 MACRO 4H TREND CONTINUATION SHORT'
+            score = 80
 
-    plan = calculate_institutional_trade_plan(direction, p, k1, atr, structural_sl, portfolio_size=1000.0, risk_pct=1.0)
+    plan = calculate_macro_trade_plan(direction, p, k1, atr, structural_sl, portfolio_size=1000.0, risk_pct=1.0)
 
     analysis_lines = [
-        f'📖 النظام الحديث v43.0: تم تفعيل درع الحماية المضاعف (Buffer Zone) لإبعاد الوقف عن نطاق ذيول التلاعب.',
+        f'📖 النظام المتقدم v44.0: تفعيل محرك فريم (4H) مع نظام الخروج الزمني بنهاية عمر الشمعة.',
         f'الإطار الزمني: {interval.upper()}',
-        f'حالة سحب السيولة: {"🟢 مؤكد مع مسافة أمان إضافية" if sweep_dir in ["LONG", "SHORT"] else "⚪ حركة ترند اعتيادية"}',
+        f'حالة سحب السيولة: {"🟢 مؤكد على فريم 4H مع مسافة أمان كبرى" if sweep_dir in ["LONG", "SHORT"] else "⚪ حركة ترند رئيسية على 4H"}',
         f'العقود المفتوحة (OI): {open_interest:,.2f}',
         f'معدل التمويل (Funding): {funding_pct:.4f}%',
         f'مؤشر القوة النسبية (RSI): {rsi}'
@@ -416,13 +416,13 @@ def scan_for_emerging_trends(limit_symbols=35):
 
     for sym in top_syms:
         try:
-            k1 = get_bingx_klines(sym, '1h', 25)
+            k1 = get_bingx_klines(sym, '4h', 25)
             if not k1 or len(k1) < 20: continue
             p = get_current_price(sym)
-            sweep_dir, _, _ = analyze_liquidity_sweep_and_choch(k1)
+            sweep_dir, _, _ = analyze_macro_liquidity_sweep(k1)
             if sweep_dir in ['LONG', 'SHORT']:
                 rsi = calculate_rsi([x[4] for x in k1])
-                spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 95, 'action': f'⚡ محصن بمدى أمان ({sweep_dir})'})
+                spark_signals.append({'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 96, 'action': f'⚡ فرصة 4H كبرى ({sweep_dir})'})
         except Exception:
             continue
     return spark_signals
@@ -431,20 +431,20 @@ def scan_for_emerging_trends(limit_symbols=35):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح حماية الستوبات (v43.0):\nلا توجد حالات مؤكدة حالياً ضمن معايير الدرع."
+        return "🔍 ماسح فريم 4 ساعات (v44.0):\nلا توجد حالات سحب سيولة كبرى على فريم 4H حالياً."
 
     lines = [
-        "🛡️ تقرير الماسح المحصن (v43.0)",
-        "العملات التي تجاوزت فخاخ التلاعب وتمتلك مسافة أمان كافية:",
+        "🛡️ تقرير ماسح الفريمات الكبرى (v44.0)",
+        "العملات التي شكلت إشارات هيكلية على فريم 4 ساعات:",
         "━━━━━━━━━━━━━━━━━━"
     ]
     for idx, item in enumerate(results[:10], 1):
         lines.append(f"{idx}. 💎 **{item['symbol']}**\n   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}`\n   {item['action']}\n")
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة لفحصها بالنسخة المحصنة!")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة لتحليلها بنظام الـ 4 ساعات والعد الزمني!")
     return '\n'.join(lines)
 
 
-def _get_blocked_signal(symbol, price, reason, interval='1h'):
+def _get_blocked_signal(symbol, price, reason, interval='4h'):
     p = price if price and price > 0 else 1.0
     return {
         'symbol': symbol, 'direction': 'BLOCKED', 'plan_direction': 'BLOCKED',
@@ -453,7 +453,7 @@ def _get_blocked_signal(symbol, price, reason, interval='1h'):
     }
 
 
-def get_coin_analysis(symbol, interval='1h'):
+def get_coin_analysis(symbol, interval='4h'):
     if normalize_symbol(symbol) == 'TREND_COMMAND':
         return generate_trend_scan_report()
     try:
@@ -467,16 +467,16 @@ def generate_evidence_report(d):
         return d
     if not d: return '⚠️ تعذر إكمال التحليل.'
     dr = d.get('direction', 'BLOCKED')
-    inv = d.get('interval', '1H')
+    inv = d.get('interval', '4H')
     
-    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (سحب سيولة + درع أمان للوقف)'
-    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (سحب سيولة + درع أمان للوقف)'
+    if dr == 'LONG': emo, text_dir = '🟢', 'LONG (محرك 4H + درع الأمان الزمني)'
+    elif dr == 'SHORT': emo, text_dir = '🔴', 'SHORT (محرك 4H + درع الأمان الزمني)'
     else: emo, text_dir = '🛑', 'BLOCKED'
     
     lines = [
-        '🤖 BingX Institutional Suite v43.0 [النسخة المحصنة]',
+        '🤖 BingX Institutional Suite v44.0 [محرك فريم 4 ساعات والعد الزمني]',
         f"💎 العملة: {d.get('symbol', '-')}",
-        f"⏱️ الإطار الزمني: {inv}",
+        f"⏱️ الإطار الزمني الأساسي: {inv} (شمعة ماكرو)",
         f"💰 السعر الحالي: {d.get('price', '-')}",
         f"📈 القرار النهائي: {emo} {text_dir}",
         f"⭐ Score: {d.get('score', 0)}/100",
@@ -487,16 +487,17 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية المحصنة ضد الصيد الوهمي',
+            '📋 الخطة المؤسسية الكبرى (منتهي الصلاحية بنهاية شمعة 4H)',
             f"\n📍 منطقة الدخول المبكر:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
             f"🎯 TP2: {d.get('tp2')}",
             f"🎯 TP3: {d.get('tp3')}",
-            f"🚀 الهدف الكلي: {d.get('full_range_target')}",
-            f"\n🛑 Stop Loss: {d.get('stop_loss')} (محمي خلف درع الأمان المضاعف | بنسبة {d.get('sl_pct', 0)}%)",
+            f"🚀 الهدف الكلي (Full Range): {d.get('full_range_target')}",
+            f"\n🛑 Stop Loss: {d.get('stop_loss')} (محمي خلف درع الأمان الماكروني | بنسبة {d.get('sl_pct', 0)}%)",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
-            f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
+            f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$",
+            f"⏳ تنبيه العد الزمني: تُغلق الصفقة أوتوماتيكياً عند اكتمال مدة شمعة الـ 4 ساعات الحالية إذا لم تضرب الأهداف."
         ])
     else:
         lines.extend([
@@ -505,7 +506,7 @@ def generate_evidence_report(d):
         ])
     
     if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية وهيكل السوق:')
+        lines.append('\n🔍 التفاصيل الفنية وهيكل الماكرو:')
         for x in d.get('analysis_lines', []):
             lines.append(f'• {x}')
             
