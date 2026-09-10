@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v41.2
+# analysis.py - BingX Institutional SMC & Risk Suite v41.3
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.2', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.3', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -139,7 +139,7 @@ def _ticker_rows(force=False):
     return []
 
 
-def get_top_futures_symbols(limit=25):
+def get_top_futures_symbols(limit=30):
     rows = _ticker_rows()
     cand = []
     for x in rows:
@@ -446,33 +446,56 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     }
 
 
-def scan_for_emerging_trends(limit_symbols=30):
+def scan_for_emerging_trends(limit_symbols=35):
+    """
+    ماسح قيعان وأول شرارة صعود (v41.3):
+    يبحث عن العملات التي كانت في منطقة تجميع/قاع خلال الشموع السابقة،
+    وفجأة بدأت الشمعة الأخيرة (أو قبل الأخيرة) تعطي أول إشارة صعود قوية مع فوليوم.
+    """
     top_syms = get_top_futures_symbols(limit=limit_symbols)
     emerging_trends = []
 
     for sym in top_syms:
         try:
-            k1 = get_bingx_klines(sym, '1h', 40)
-            k4h = get_bingx_klines(sym, '4h', 20)
-            if not k1 or not k4h or len(k1) < 25 or len(k4h) < 10:
+            k1 = get_bingx_klines(sym, '1h', 30)
+            if not k1 or len(k1) < 20:
                 continue
 
-            trend_4h, trend_1h = determine_strict_trend(k4h, k1)
+            closes = [x[4] for x in k1]
+            opens = [x[1] for x in k1]
+            lows = [x[3] for x in k1]
+            vols = [x[5] for x in k1]
+
+            # التأكد أن السعر كان في مسار هابط أو تجميعي هادئ (قاع) في آخر 5-10 شمعات
+            # مقارنة السعر الحالي بمنتصف الشموع السابقة للتأكد أنه ليس بصعود قديم
+            recent_low = min(lows[-10:-2])
+            avg_vol = sum(vols[-15:-2]) / 13 if len(vols) >= 15 else 1.0
+
+            # شروط "أول شمعة انطلاق من القاع":
+            # 1. الشمعة الأخيرة خضراء قوية (إغلاق أعلى من الافتتاح بشكل ملحوظ)
+            # 2. فوليوم الشمعة الأخيرة أعلى من متوسط الفوليوم السابق (دخول سيولة فجأة)
+            # 3. مؤشر القوة النسبية RSI مناسب للصعود من القاع (ليس متضخماً فوق 70، بل بين 35 و 60)
+            last_close = closes[-1]
+            last_open = opens[-1]
+            last_vol = vols[-1]
             
-            if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
-                c = [x[4] for x in k1]
-                vols = [x[5] for x in k1]
-                avg_vol = sum(vols[-15:]) / 15 if len(vols) >= 15 else 1.0
-                
-                if vols[-1] >= (avg_vol * 0.8) or vols[-2] >= (avg_vol * 0.8):
+            is_green_candle = last_close > last_open
+            body_size = last_close - last_open
+            avg_body = sum([abs(closes[i] - opens[i]) for i in range(-10, -1)]) / 9
+            
+            # الشمعة الحالية هي شرارة الانطلاق (حجم جسم الشمعة أكبر من المتوسط وفوليوم عالي)
+            is_spark_start = is_green_candle and (body_size >= avg_body * 1.2) and (last_vol >= avg_vol * 1.3)
+
+            if is_spark_start:
+                rsi = calculate_rsi(closes)
+                if 35 <= rsi <= 62:  # في بداية الحركة وليس في التشبع الشرائي
                     p = get_current_price(sym)
-                    rsi = calculate_rsi(c)
                     emerging_trends.append({
                         'symbol': sym,
                         'price': smart_round(p),
                         'rsi': rsi,
-                        'score': 88,
-                        'type': 'BULLISH_TREND_START'
+                        'score': 92,
+                        'type': 'BOTTOM_BREAKOUT_START'
                     })
         except Exception:
             continue
@@ -481,13 +504,13 @@ def scan_for_emerging_trends(limit_symbols=30):
 
 
 def generate_trend_scan_report():
-    results = scan_for_emerging_trends(limit_symbols=35)
+    results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح الترندات (v41.2):\nلم يتم رصد عملات بدأت ترنداً صاعداً قوياً في هذه اللحظة بالذات. السوق هادئ، جرب البحث لاحقاً أو افحص عملة معينة."
+        return "🔍 ماسح القيعان والانطلاقات (v41.3):\nلم يتم رصد عملات تبدأ الانطلاق من القاع الآن. السوق يتحرك ببطء أو ينتظر سيولة جديدة، جرب لاحقاً."
 
     lines = [
-        "🚀 تقرير ماسح الترندات المؤسسية (v41.2)",
-        "العملات التي تبدأ تشكيل ترند صاعد حقيقي بفوليوم وتوافق فريمات:",
+        "🚀 تقرير ماسح صيد القيعان وأول شرارة صعود (v41.3)",
+        "العملات التي أظهرت فجأة دخول سيولة وبدأت أول شمعة انطلاق من القاع:",
         "━━━━━━━━━━━━━━━━━━"
     ]
 
@@ -495,10 +518,10 @@ def generate_trend_scan_report():
         lines.append(
             f"{idx}. 💎 **{item['symbol']}**\n"
             f"   💰 السعر: `{item['price']}` | 📊 RSI: `{item['rsi']}` | ⭐ Score: `{item['score']}`\n"
-            f"   🟢 الحالة: بداية ترند صاعد مؤسسي مؤكد\n"
+            f"   🟢 الحالة: أول شمعة انطلاق من القاع بجهد سيولة عالي\n"
         )
 
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة من القائمة لتفصيل خطتها الكاملة!")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة من القائمة لعرض خطتها المؤسسية الكاملة!")
     return '\n'.join(lines)
 
 
@@ -534,7 +557,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX Institutional Suite v41.2',
+        '🤖 BingX Institutional Suite v41.3',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
