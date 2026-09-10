@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC & Risk Suite v41.4
+# analysis.py - BingX Institutional SMC & Risk Suite v41.5
 # =========================================================
 
 import time
@@ -9,7 +9,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.4', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/41.5', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -176,6 +176,59 @@ def get_open_interest(symbol):
         try: return float(d[0].get('openInterest', 0))
         except Exception: pass
     return 0.0
+
+
+def get_whale_order_book_analysis(symbol, current_price):
+    """
+    تحليل دفاتر أوامر الحيتان وجدران السيولة (Whale Orders & Liquidity Walls)
+    يسحب أعماق دفتر الأوامر من BingX ويستخرج أكبر جدران الشراء والبيع
+    """
+    symbol = normalize_symbol(symbol)
+    d = bingx_get('/openApi/swap/v2/quote/depth', {'symbol': symbol, 'limit': 100})
+    if not isinstance(d, dict):
+        return {"buy_walls": [], "sell_walls": [], "summary": "تعذر سحب بيانات جدران السيولة"}
+
+    bids = d.get('bids', [])  # [price, qty]
+    asks = d.get('asks', [])  # [price, qty]
+
+    parsed_bids = []
+    for b in bids:
+        try:
+            p = float(b[0])
+            qty = float(b[1])
+            usd_val = p * qty
+            parsed_bids.append((p, qty, usd_val))
+        except Exception:
+            pass
+
+    parsed_asks = []
+    for a in asks:
+        try:
+            p = float(a[0])
+            qty = float(a[1])
+            usd_val = p * qty
+            parsed_asks.append((p, qty, usd_val))
+        except Exception:
+            pass
+
+    # ترتيب حسب القيمة الكبرى بالدولار (أكبر جدران الحيتان)
+    parsed_bids.sort(key=lambda x: x[2], reverse=True)
+    parsed_asks.sort(key=lambda x: x[2], reverse=True)
+
+    top_bids = parsed_bids[:3]  # أقوى 3 جدران شراء (دعم الحيتان)
+    top_asks = parsed_asks[:3]  # أقوى 3 جدران بيع (مقاومة الحيتان)
+
+    walls_summary = []
+    for p, q, val in top_asks:
+        walls_summary.append(f"🔴 جدار بيع (Sell Wall): السعر {smart_round(p)} | القيمة: ${val:,.0f}")
+    for p, q, val in top_bids:
+        walls_summary.append(f"🟢 جدار شراء (Buy Wall): السعر {smart_round(p)} | القيمة: ${val:,.0f}")
+
+    return {
+        'buy_walls': top_bids,
+        'sell_walls': top_asks,
+        'walls_lines': walls_summary
+    }
 
 
 def _parse(rows):
@@ -383,6 +436,9 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
 
+    # جلب تحليل جدران السيولة وأوامر الحيتان
+    whale_data = get_whale_order_book_analysis(symbol, p)
+
     if trend_4h == 'BULLISH' and trend_1h == 'BULLISH':
         direction = 'LONG'
         state = 'INSTITUTIONAL LONG - توافق تجمعي صاعد قاطع'
@@ -430,6 +486,10 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'المنطقة الفنية (OB): {smart_round(bearish_ob if direction=="SHORT" else bullish_ob)}'
     ]
 
+    if whale_data.get('walls_lines'):
+        analysis_lines.append('--- خريطة جدران الحيتان (Whale Walls) ---')
+        analysis_lines.extend(whale_data['walls_lines'])
+
     return {
         'symbol': symbol, 'direction': direction, 'plan_direction': direction,
         'score': max(20, min(100, score)), 'entry_score': max(20, min(100, score)), 'state': state,
@@ -447,11 +507,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
 
 def scan_for_emerging_trends(limit_symbols=35):
-    """
-    ماسح شرر السوق (البمب والدامب من البداية - v41.4):
-    يبحث عن العملات التي تبدأ بأول شمعة انفجار حقيقي (سواء صعوداً 'BUMP' أو هبوطاً 'DUMP')
-    مع فوليوم تداول عالي مفاجئ لتكون جاهزاً للصفقة في أول الثواني.
-    """
     top_syms = get_top_futures_symbols(limit=limit_symbols)
     spark_signals = []
 
@@ -473,8 +528,6 @@ def scan_for_emerging_trends(limit_symbols=35):
             body_size = abs(last_close - last_open)
             avg_body = sum([abs(closes[i] - opens[i]) for i in range(-10, -1)]) / 9
 
-            # شروط شرارة البمب أو الدامب الفوري:
-            # حجم جسم الشمعة الأخيرة أعلى بـ 1.3 مرة على الأقل من المتوسط، وفوليوم عالي
             is_huge_effort = (body_size >= avg_body * 1.3) and (last_vol >= avg_vol * 1.3)
 
             if is_huge_effort:
@@ -482,24 +535,14 @@ def scan_for_emerging_trends(limit_symbols=35):
                 p = get_current_price(sym)
                 
                 if last_close > last_open:
-                    # صعود (بمب) من القاع / البداية
                     spark_signals.append({
-                        'symbol': sym,
-                        'price': smart_round(p),
-                        'rsi': rsi,
-                        'score': 90,
-                        'type': 'BUMP_START',
-                        'action': '🟢 شرارة صعود (BUMP)'
+                        'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 90,
+                        'type': 'BUMP_START', 'action': '🟢 شرارة صعود (BUMP)'
                     })
                 else:
-                    # هبوط (دامب) من القمة / البداية
                     spark_signals.append({
-                        'symbol': sym,
-                        'price': smart_round(p),
-                        'rsi': rsi,
-                        'score': 90,
-                        'type': 'DUMP_START',
-                        'action': '🔴 شرارة هبوط (DUMP)'
+                        'symbol': sym, 'price': smart_round(p), 'rsi': rsi, 'score': 90,
+                        'type': 'DUMP_START', 'action': '🔴 شرارة هبوط (DUMP)'
                     })
         except Exception:
             continue
@@ -510,10 +553,10 @@ def scan_for_emerging_trends(limit_symbols=35):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbols=40)
     if not results:
-        return "🔍 ماسح شرر السوق والبمب/الدامب (v41.4):\nلم يتم رصد انفجارات سعرية جديدة (بمب أو دامب) في الشمعة الحالية. السوق هادئ."
+        return "🔍 ماسح شرر السوق والبمب/الدامب (v41.5):\nلم يتم رصد انفجارات سعرية جديدة (بمب أو دامب) في الشمعة الحالية. السوق هادئ."
 
     lines = [
-        "⚡ تقرير ماسح شرر السوق (البمب والدامب من البداية - v41.4)",
+        "⚡ تقرير ماسح شرر السوق (البمب والدامب من البداية - v41.5)",
         "العملات التي سجلت للتو أول شمعة انفجار (صعوداً أو هبوطاً) بفوليوم عالي:",
         "━━━━━━━━━━━━━━━━━━"
     ]
@@ -561,7 +604,7 @@ def generate_evidence_report(d):
     else: emo, text_dir = '🛑', 'BLOCKED (محمي من تقلبات السوق)'
     
     lines = [
-        '🤖 BingX Institutional Suite v41.4',
+        '🤖 BingX Institutional Suite v41.5',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
