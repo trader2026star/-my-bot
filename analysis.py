@@ -1,4 +1,4 @@
-# analysis.py - Institutional Suite v45.0 Full Production Version
+# analysis.py - Institutional Suite v45.0 Ultimate Production Version
 import time
 import logging
 
@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def get_top_futures_symbols():
     """إرجاع قائمة العملات المتاحة للمسح والتداول"""
-    symbols = [
+    return [
         "DASH-USDT", 
         "SOPH-USDT", 
         "BTC-USDT", 
@@ -15,10 +15,13 @@ def get_top_futures_symbols():
         "BNB-USDT",
         "XRP-USDT"
     ]
-    return symbols
 
 def get_coin_analysis(symbol, current_price=0.0, h4_trend="LONG", h1_trend="LONG"):
-    """دالة التحليل المطلوبة بواسطة main.py لمنع أي خطأ استيراد"""
+    """دالة التحليل الأساسية المطلوبة بواسطة main.py لمنع أي خطأ استيراد"""
+    return evaluate_institutional_signal(symbol, current_price, h4_trend, h1_trend)
+
+def analyze_coin(symbol, current_price=0.0, h4_trend="LONG", h1_trend="LONG"):
+    """دالة بديلة لاحتواء أي استيراد مختلف في main.py"""
     return evaluate_institutional_signal(symbol, current_price, h4_trend, h1_trend)
 
 def evaluate_institutional_signal(symbol, current_price, h4_trend, h1_trend):
