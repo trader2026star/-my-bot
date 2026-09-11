@@ -1,4 +1,4 @@
-# analysis.py - BingX Institutional SMC & Risk Suite v46.2 (Optimized Threshold Patch)
+# analysis.py - BingX Fallen Angel & Candle Target Suite v47.0
 import time
 import logging
 import threading
@@ -6,14 +6,13 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.2', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-FallenAngel/47.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
 KLINE_CACHE_SECONDS = 45
 PRICE_CACHE_SECONDS = 3
 TICKER_CACHE_SECONDS = 5
-NEWS_CACHE_SECONDS = 300
 MIN_REQUEST_INTERVAL = 0.3
 _RATE_LIMIT_UNTIL = 0.0
 _LAST_REQUEST_TIME = 0.0
@@ -23,21 +22,10 @@ _KLINE_CACHE = {}
 _PRICE_CACHE = {}
 _TICKER_CACHE = None
 _TICKER_CACHE_TIME = 0.0
-_NEWS_CACHE = None
-_NEWS_CACHE_TIME = 0.0
 _RATE_LOCK = threading.Lock()
 _REQUEST_LOCK = threading.Lock()
 
-_ACTIVE_CANDLE_LOCKS = {}
-_LOCKS_DICTIONARY_LOCK = threading.Lock()
-
 def normalize_symbol(s):
-    s_clean = str(s).strip().lower()
-    if s_clean in ['ترند', 'trend', 'scan_trend', 'trend_command']:
-        return 'TREND_COMMAND'
-    if s_clean in ['debugscan', 'debug']:
-        return 'DEBUG_SCAN_COMMAND'
-
     s = str(s).strip().upper().replace(' ', '').replace('-', '').replace('_', '').replace('/', '')
     if not s.endswith('USDT'):
         s = s + '-USDT' if '-' not in s else s
@@ -68,121 +56,6 @@ def bingx_get(path, params=None, timeout=12):
             return d.get('data') if isinstance(d, dict) and 'data' in d else d
         except Exception:
             return None
-
-def get_economic_news_status():
-    global _NEWS_CACHE, _NEWS_CACHE_TIME
-    now = time.time()
-    if _NEWS_CACHE is not None and now - _NEWS_CACHE_TIME < NEWS_CACHE_SECONDS:
-        return _NEWS_CACHE
-    try:
-        res = requests.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json', timeout=5)
-        if res.status_code == 200:
-            events = res.json()
-            current_time = time.time()
-            high_impact_near = False
-            event_title = ""
-            for ev in events:
-                if ev.get('impact') == 'High':
-                    date_str = ev.get('date')
-                    from datetime import datetime
-                    try:
-                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                        ev_timestamp = dt.timestamp()
-                        if -7200 <= (ev_timestamp - current_time) <= 7200:
-                            high_impact_near = True
-                            event_title = ev.get('title', 'High Impact Economic Event')
-                            break
-                    except Exception:
-                        pass
-            _NEWS_CACHE = (high_impact_near, event_title)
-            _NEWS_CACHE_TIME = now
-            return _NEWS_CACHE
-    except Exception:
-        pass
-    return (False, "")
-
-def get_futures_symbols(force_refresh=False):
-    global _SYMBOL_CACHE, _SYMBOL_CACHE_TIME
-    if not force_refresh and _SYMBOL_CACHE and time.time() - _SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS:
-        return set(_SYMBOL_CACHE)
-    d = bingx_get('/openApi/swap/v2/quote/contracts')
-    out = set()
-    rows = d.get('contracts', []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
-    for x in rows:
-        if isinstance(x, dict):
-            s = str(x.get('symbol', '')).upper()
-            if s:
-                out.add(s)
-                out.add(normalize_symbol(s))
-    if out:
-        _SYMBOL_CACHE, _SYMBOL_CACHE_TIME = out, time.time()
-        return set(_SYMBOL_CACHE)
-    return set(_SYMBOL_CACHE)
-
-def symbol_exists(s):
-    norm = normalize_symbol(s)
-    if norm in ['TREND_COMMAND', 'DEBUG_SCAN_COMMAND']:
-        return True
-    sy = get_futures_symbols()
-    return not sy or norm in sy or s in sy
-
-def _ticker_rows(force=False):
-    global _TICKER_CACHE, _TICKER_CACHE_TIME
-    if not force and _TICKER_CACHE is not None and time.time() - _TICKER_CACHE_TIME < TICKER_CACHE_SECONDS:
-        return _TICKER_CACHE
-    x = bingx_get('/openApi/swap/v2/quote/ticker')
-    if isinstance(x, list):
-        _TICKER_CACHE, _TICKER_CACHE_TIME = x, time.time()
-        return x
-    elif isinstance(x, dict) and 'tickers' in x:
-        _TICKER_CACHE, _TICKER_CACHE_TIME = x['tickers'], time.time()
-        return x['tickers']
-    return []
-
-def get_top_futures_symbols(limit=50):
-    rows = _ticker_rows()
-    cand = []
-    for x in rows:
-        try:
-            if isinstance(x, dict):
-                s = str(x.get('symbol', '')).upper()
-                v = float(x.get('volume', x.get('quoteVolume', 0)))
-                if s and v > 0:
-                    cand.append((s, v))
-        except Exception:
-            pass
-    cand.sort(key=lambda x: x[1], reverse=True)
-    out = []
-    for x in cand[:limit]:
-        sy = normalize_symbol(x[0])
-        if sy not in out:
-            out.append(sy)
-    return out
-
-def get_funding_rate(symbol):
-    symbol = normalize_symbol(symbol)
-    d = bingx_get('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol})
-    if isinstance(d, dict):
-        try:
-            return float(d.get('fundingRate', 0))
-        except Exception:
-            pass
-    return 0.0
-
-def get_open_interest(symbol):
-    symbol = normalize_symbol(symbol)
-    d = bingx_get('/openApi/swap/v2/quote/openInterest', {'symbol': symbol})
-    if isinstance(d, dict):
-        try:
-            return float(d.get('openInterest', 0))
-        except Exception:
-            pass
-    elif isinstance(d, list) and len(d) > 0:
-        try:
-            return float(d[0].get('openInterest', 0))
-        except Exception:
-            pass
-    return 0.0
 
 def _parse(rows):
     out = []
@@ -248,16 +121,6 @@ def get_current_price(s, force=False):
                 return p
         except Exception:
             pass
-    rows = _ticker_rows()
-    for x in rows:
-        if isinstance(x, dict) and str(x.get('symbol', '')).upper() in [s, s.replace('-', '')]:
-            try:
-                p = float(x.get('lastPrice', x.get('price', 0)))
-                if p > 0:
-                    _PRICE_CACHE[s] = (now, p)
-                    return p
-            except Exception:
-                pass
     k = get_bingx_klines(s, '1m', 5)
     if k and len(k) > 0 and k[-1][4] > 0:
         _PRICE_CACHE[s] = (now, k[-1][4])
@@ -302,487 +165,105 @@ def smart_round(v):
         return round(v, 5)
     return round(v, 8)
 
-def determine_market_regime(klines_4h):
-    if not klines_4h or len(klines_4h) < 25:
-        return 'NEUTRAL'
-    closes = [x[4] for x in klines_4h]
-    highs = [x[2] for x in klines_4h]
-    lows = [x[3] for x in klines_4h]
-    
-    ma20 = sum(closes[-20:]) / 20
-    ma50 = sum(closes[-50:]) / min(50, len(closes))
-    
-    atr_val = calculate_atr(klines_4h, 14) or (closes[-1] * 0.02)
-    recent_range = max(highs[-10:]) - min(lows[-10:])
-    
-    if recent_range > (atr_val * 8.0):
-        return 'EXTREME VOLATILITY'
-    elif recent_range > (atr_val * 5.5):
-        return 'HIGH VOLATILITY'
-        
-    if closes[-1] > ma20 and ma20 > ma50:
-        return 'STRONG BULL'
-    elif closes[-1] > ma20:
-        return 'BULL'
-    elif closes[-1] < ma20 and ma20 < ma50:
-        return 'STRONG BEAR'
-    elif closes[-1] < ma20:
-        return 'BEAR'
-    return 'NEUTRAL'
-
-def determine_strict_trend(klines_4h, klines_1h):
-    if not klines_4h or len(klines_4h) < 15:
-        trend_4h = 'NEUTRAL'
-    else:
-        closes_4h = [x[4] for x in klines_4h]
-        ma_4h = sum(closes_4h[-10:]) / 10
-        trend_4h = 'BULLISH' if closes_4h[-1] > ma_4h else 'BEARISH'
-
-    if not klines_1h or len(klines_1h) < 15:
-        return trend_4h, 'NEUTRAL'
-    closes_1h = [x[4] for x in klines_1h]
-    ma_1h = sum(closes_1h[-10:]) / 10
-    trend_1h = 'BULLISH' if closes_1h[-1] > ma_1h else 'BEARISH'
-    return trend_4h, trend_1h
-
-def check_multi_tf_confirmations(symbol):
-    k30m = get_bingx_klines(symbol, '30m', 15)
-    k15m = get_bingx_klines(symbol, '15m', 20)
-    
-    c30_bull = False
-    c15_bull = False
-    c30_bear = False
-    c15_bear = False
-    
-    if k30m and len(k30m) >= 3:
-        recent_30 = k30m[-3:]
-        c30_bull = any(x[4] > x[1] for x in recent_30) or (k30m[-1][4] > k30m[-2][4])
-        c30_bear = any(x[4] < x[1] for x in recent_30) or (k30m[-1][4] < k30m[-2][4])
-        
-    if k15m and len(k15m) >= 4:
-        recent_15 = k15m[-4:]
-        c15_bull = any(x[4] > x[1] for x in recent_15) or (k15m[-1][4] > k15m[-2][4])
-        c15_bear = any(x[4] < x[1] for x in recent_15) or (k15m[-1][4] < k15m[-2][4])
-        
-    return c30_bull, c15_bull, c30_bear, c15_bear
-
-def get_btc_market_context():
-    try:
-        btc_k4h = get_bingx_klines('BTC-USDT', '4h', 30)
-        if not btc_k4h or len(btc_k4h) < 15:
-            return 'NEUTRAL', 'SAFE'
-        regime = determine_market_regime(btc_k4h)
-        if regime == 'EXTREME VOLATILITY':
-            return regime, 'CRASH_OR_EXTREME'
-        elif regime in ['BULL', 'STRONG BULL']:
-            return regime, 'BULLISH'
-        elif regime in ['BEAR', 'STRONG BEAR']:
-            return regime, 'BEARISH'
-        return regime, 'NEUTRAL'
-    except Exception:
-        return 'NEUTRAL', 'SAFE'
-
-def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, portfolio_size=1000.0, risk_pct=1.0):
-    raw_atr = atr or (price * 0.015)
-    
-    if direction == 'LONG':
-        entry = price
-        sl = min(ob_level - (raw_atr * 0.4), entry - (raw_atr * 1.5))
-        risk_dist = entry - sl
-        tp1 = entry + (risk_dist * 1.5)
-        tp2 = entry + (risk_dist * 2.5)
-        tp3 = entry + (risk_dist * 4.0)
-        tp4 = entry + (risk_dist * 5.5)
-        full_range_target = tp4
-    elif direction == 'SHORT':
-        entry = price
-        sl = max(ob_level + (raw_atr * 0.4), entry + (raw_atr * 1.5))
-        risk_dist = sl - entry
-        tp1 = entry - (risk_dist * 1.5)
-        tp2 = entry - (risk_dist * 2.5)
-        tp3 = entry - (risk_dist * 4.0)
-        tp4 = entry - (risk_dist * 5.5)
-        full_range_target = tp4
-    else:
-        entry = sl = tp1 = tp2 = tp3 = tp4 = full_range_target = risk_dist = 0
-
-    rr_ratio = 5.5 if risk_dist > 0 else 0.0
-    sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
-    
-    if sl_pct > 8.5:
-        return None
-
-    allowed_risk_usd = portfolio_size * (risk_pct / 100.0)
-    position_size_usd = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
-    breakeven_trigger = tp1
-
-    return {
-        'entry_min': smart_round(entry * 0.998),
-        'entry_max': smart_round(entry * 1.002),
-        'entry_price': smart_round(entry),
-        'stop_loss': smart_round(max(sl, 0.000001)),
-        'tp1': smart_round(max(tp1, 0.000001)),
-        'tp2': smart_round(max(tp2, 0.000001)),
-        'tp3': smart_round(max(tp3, 0.000001)),
-        'tp4': smart_round(max(tp4, 0.000001)),
-        'full_range_target': smart_round(max(full_range_target, 0.000001)),
-        'risk': smart_round(risk_dist),
-        'rr_ratio': rr_ratio,
-        'sl_pct': sl_pct,
-        'position_size_usd': position_size_usd,
-        'breakeven_trigger': smart_round(breakeven_trigger)
-    }
-
 def _get_coin_analysis_core(symbol, interval='1h'):
     symbol = normalize_symbol(symbol)
     p = get_current_price(symbol, True)
     if not p or p <= 0:
         raise ValueError(f"Price error for {symbol}")
 
-    has_news, news_title = get_economic_news_status()
-    if has_news:
-        return _get_blocked_signal(symbol, p, f"تم الحظر بسبب خبر اقتصادي قوي: ({news_title})", interval, ["High impact economic news"])
+    k1 = get_bingx_klines(symbol, interval, 50)
+    if not k1 or len(k1) < 20:
+        raise ValueError("Insufficient data")
 
-    k4h = get_bingx_klines(symbol, '4h', 50)
-    current_4h_candle_open_time = k4h[-1][0] if k4h and len(k4h) > 0 else 0
-    
-    with _LOCKS_DICTIONARY_LOCK:
-        cached_lock = _ACTIVE_CANDLE_LOCKS.get(symbol)
-        if cached_lock and cached_lock.get('candle_time') == current_4h_candle_open_time:
-            locked_data = cached_lock.get('data').copy()
-            if locked_data.get('direction') != 'BLOCKED':
-                e_min = locked_data.get('entry_min', 0)
-                e_max = locked_data.get('entry_max', 0)
-                atr_check = locked_data.get('risk', p * 0.015)
-                if not (p < (e_min - (atr_check * 3.0)) or p > (e_max + (atr_check * 3.0))):
-                    locked_data['price'] = smart_round(p)
-                    return locked_data
-
-    k1 = get_bingx_klines(symbol, interval, 100)
-    if not k1 or len(k1) < 30:
-        return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval, ["Insufficient market data"])
-
-    trend_4h, trend_1h = determine_strict_trend(k4h, k1)
-    market_regime = determine_market_regime(k4h)
-    btc_regime, btc_status = get_btc_market_context()
-
-    if market_regime == 'EXTREME VOLATILITY' or btc_status == 'CRASH_OR_EXTREME':
-        return _get_blocked_signal(symbol, p, "BLOCKED - حالة سوق شديدة التقلب (Extreme Volatility)", interval, ["Extreme market condition"])
-
-    c = [x[4] for x in k1]
-    vols = [x[5] for x in k1]
-    rsi = calculate_rsi(c)
-    atr = calculate_atr(k1) or p * 0.015
-    avg_vol = sum(vols[-15:]) / 15 if len(vols) >= 15 else 1.0
-    last_vol = vols[-1]
-
-    if last_vol >= (avg_vol * 1.1):
-        volume_status = 'STRONG'
-    elif last_vol >= (avg_vol * 0.7):
-        volume_status = 'NORMAL'
-    elif last_vol >= (avg_vol * 0.3):
-        volume_status = 'WEAK'
-    else:
-        volume_status = 'EXTREMELY WEAK'
-
+    closes = [x[4] for x in k1]
     highs = [x[2] for x in k1]
     lows = [x[3] for x in k1]
-    closes = [x[4] for x in k1]
     opens = [x[1] for x in k1]
+    
+    rsi = calculate_rsi(closes)
+    atr = calculate_atr(k1) or (p * 0.015)
 
-    # Order Block Detection
-    bullish_ob = lows[-3]
-    for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
-        if closes[i] < opens[i]:
-            bullish_ob = lows[i]
-            break
+    # تحديد الاتجاه بناءً على السعر الحالي مقارنة بمتوسط الشمعات الأخيرة (Fallen Angel Style Setup)
+    ma20 = sum(closes[-20:]) / 20
+    direction = 'SHORT' if p < ma20 or closes[-1] < opens[-1] else 'LONG'
 
-    bearish_ob = highs[-3]
-    for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
-        if closes[i] > opens[i]:
-            bearish_ob = highs[i]
-            break
-
-    liq_sweep_bull = lows[-1] < min(lows[-6:-1])
-    liq_sweep_bear = highs[-1] > max(highs[-6:-1])
-
-    displacement_bull = (closes[-1] - opens[-1]) > (atr * 0.05)
-    displacement_bear = (opens[-1] - closes[-1]) > (atr * 0.05)
-
-    mss_bull = closes[-1] > max(highs[-7:-1]) or displacement_bull
-    bos_bull = closes[-1] > highs[-2] or displacement_bull
-    mss_bear = closes[-1] < min(lows[-7:-1]) or displacement_bear
-    bos_bear = closes[-1] < lows[-2] or displacement_bear
-
-    has_mss_or_bos_bull = (mss_bull or bos_bull)
-    has_mss_or_bos_bear = (mss_bear or bos_bear)
-
-    c30_b, c15_b, c30_be, c15_be = check_multi_tf_confirmations(symbol)
-
-    volume_filter_passed_long = (volume_status != 'EXTREMELY WEAK')
-    volume_filter_passed_short = (volume_status != 'EXTREMELY WEAK')
-
-    confirmation_candle_bull = (closes[-1] >= opens[-1]) or (closes[-1] >= closes[-2])
-    confirmation_candle_bear = (closes[-1] <= opens[-1]) or (closes[-1] <= closes[-2])
-
-    def get_location_category(is_long=True):
-        if is_long:
-            dist_to_ob = p - bullish_ob
-            if -atr * 2.0 <= dist_to_ob <= atr * 5.0:
-                return 'ACCEPTABLE'
-            elif p > highs[-1] + atr * 8.0 and rsi > 90:
-                return 'CHASE'
-            else:
-                return 'ACCEPTABLE'
-        else:
-            dist_to_ob = bearish_ob - p
-            if -atr * 2.0 <= dist_to_ob <= atr * 5.0:
-                return 'ACCEPTABLE'
-            elif p < lows[-1] - atr * 8.0 and rsi < 10:
-                return 'CHASE'
-            else:
-                return 'ACCEPTABLE'
-
-    loc_long = get_location_category(True)
-    loc_short = get_location_category(False)
-
-    def compute_conf_score(is_long=True):
-        score = 50
-        if is_long:
-            if trend_4h == 'BULLISH': score += 12
-            if trend_1h == 'BULLISH': score += 12
-            if has_mss_or_bos_bull: score += 10
-            if liq_sweep_bull: score += 8
-            if c15_b or c30_b: score += 8
-            if displacement_bull: score += 10
-            if confirmation_candle_bull: score += 10
-        else:
-            if trend_4h == 'BEARISH': score += 12
-            if trend_1h == 'BEARISH': score += 12
-            if has_mss_or_bos_bear: score += 10
-            if liq_sweep_bear: score += 8
-            if c15_be or c30_be: score += 8
-            if displacement_bear: score += 10
-            if confirmation_candle_bear: score += 10
-        return max(40, min(100, score))
-
-    score_long = compute_conf_score(True)
-    score_short = compute_conf_score(False)
-
-    # تم تخفيض عتبة القبول الأساسية هنا إلى 50 لضمان خروج صفقات أكثر مرونة
-    base_threshold = 50
-
-    direction = 'BLOCKED'
-    chosen_score = 0
-    state = 'NO TRADE'
-    plan = None
-
-    long_blocked = False
-    if loc_long == 'CHASE' or not volume_filter_passed_long or score_long < base_threshold:
-        long_blocked = True
-
-    temp_long_plan = None
-    if not long_blocked:
-        temp_long_plan = calculate_institutional_trade_plan('LONG', p, k1, atr, bullish_ob, 1000.0, 1.0)
-        if not temp_long_plan or temp_long_plan['rr_ratio'] < 1.1:
-            long_blocked = True
-
-    short_blocked = False
-    if loc_short == 'CHASE' or not volume_filter_passed_short or score_short < base_threshold:
-        short_blocked = True
-
-    temp_short_plan = None
-    if not short_blocked:
-        temp_short_plan = calculate_institutional_trade_plan('SHORT', p, k1, atr, bearish_ob, 1000.0, 1.0)
-        if not temp_short_plan or temp_short_plan['rr_ratio'] < 1.1:
-            short_blocked = True
-
-    valid_long = not long_blocked and temp_long_plan
-    valid_short = not short_blocked and temp_short_plan
-
-    if valid_long and valid_short:
-        if score_long >= score_short:
-            direction = 'LONG'
-            plan = temp_long_plan
-            chosen_score = score_long
-            state = 'MARKET LONG - الأعلى سكوراً (v46.2)'
-        else:
-            direction = 'SHORT'
-            plan = temp_short_plan
-            chosen_score = score_short
-            state = 'MARKET SHORT - الأعلى سكوراً (v46.2)'
-    elif valid_long:
-        direction = 'LONG'
-        plan = temp_long_plan
-        chosen_score = score_long
-        state = 'MARKET LONG - مؤكد (v46.2)'
-    elif valid_short:
-        direction = 'SHORT'
-        plan = temp_short_plan
-        chosen_score = score_short
-        state = 'MARKET SHORT - مؤكد (v46.2)'
+    # حساب النطاق ومستويات الدخول المماثلة للصورة (Entry Range)
+    if direction == 'SHORT':
+        entry_min = smart_round(p * 0.998)
+        entry_max = smart_round(p * 1.004)
+        entry_price = smart_round(p)
+        stop_loss = smart_round(max(highs[-1], p + (atr * 1.2)))
+        
+        risk_dist = stop_loss - entry_price
+        tp1 = smart_round(entry_price - (risk_dist * 1.0))
+        tp2 = smart_round(entry_price - (risk_dist * 1.8))
+        tp3 = smart_round(entry_price - (risk_dist * 2.6))
+        tp4 = smart_round(entry_price - (risk_dist * 3.5))
+        
+        # هدف الشمعة (Candle Target): يعتمد على قاع الشمعة الحالية أو قاع الشمعة السابقة
+        candle_target = smart_round(min(lows[-1], lows[-2]))
     else:
-        # إذا لم يتحقق الشرط تماماً، نختار الاتجاه الأقرب بناءً على السكور الأعلى لتجنب حظر الكل
-        if score_long >= score_short and temp_long_plan:
-            direction = 'LONG'
-            plan = temp_long_plan
-            chosen_score = score_long
-            state = 'MARKET LONG - تخفيف القيود (v46.2)'
-        elif temp_short_plan:
-            direction = 'SHORT'
-            plan = temp_short_plan
-            chosen_score = score_short
-            state = 'MARKET SHORT - تخفيف القيود (v46.2)'
-        else:
-            direction = 'BLOCKED'
-            state = 'NO TRADE'
+        entry_min = smart_round(p * 0.996)
+        entry_max = smart_round(p * 1.002)
+        entry_price = smart_round(p)
+        stop_loss = smart_round(min(lows[-1], p - (atr * 1.2)))
+        
+        risk_dist = entry_price - stop_loss
+        tp1 = smart_round(entry_price + (risk_dist * 1.0))
+        tp2 = smart_round(entry_price + (risk_dist * 1.8))
+        tp3 = smart_round(entry_price + (risk_dist * 2.6))
+        tp4 = smart_round(entry_price + (risk_dist * 3.5))
+        
+        # هدف الشمعة (Candle Target): يعتمد على قمة الشمعة الحالية أو قمة الشمعة السابقة
+        candle_target = smart_round(max(highs[-1], highs[-2]))
 
-    funding_rate = get_funding_rate(symbol)
-    funding_pct = funding_rate * 100
-    open_interest = get_open_interest(symbol)
+    sl_pct = round((abs(entry_price - stop_loss) / entry_price) * 100, 2)
+    rr_ratio = round(risk_dist / (risk_dist if risk_dist > 0 else 1), 1)
 
-    analysis_lines = [
-        f'الإطار الزمني: {interval.upper()}',
-        f'اتجاه الفريم الكبير (4H): {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
-        f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
-        f'حالة السوق (Market Regime): {market_regime}',
-        f'مؤشر القوة النسبية (RSI): {rsi}',
-        f'Confirmation Score: {max(score_long, score_short)} (الحد الأدنى المعدل: {base_threshold})',
-        f'🔒 نظام v46.2: مرونة تامة في القبول مفعلة'
-    ]
-
-    result = {
-        'symbol': symbol,
-        'direction': direction,
-        'plan_direction': direction,
-        'score': max(45, min(100, chosen_score if chosen_score > 0 else max(score_long, score_short))),
-        'entry_score': max(45, min(100, chosen_score if chosen_score > 0 else max(score_long, score_short))),
-        'state': state,
-        'price': smart_round(p),
-        'rsi': rsi,
-        'entry_min': plan['entry_min'] if plan and direction != 'BLOCKED' else smart_round(p * 0.998),
-        'entry_max': plan['entry_max'] if plan and direction != 'BLOCKED' else smart_round(p * 1.002),
-        'entry_price': plan['entry_price'] if plan and direction != 'BLOCKED' else smart_round(p),
-        'stop_loss': plan['stop_loss'] if plan and direction != 'BLOCKED' else smart_round(p * 0.97),
-        'tp1': plan['tp1'] if plan and direction != 'BLOCKED' else smart_round(p * 1.02),
-        'tp2': plan['tp2'] if plan and direction != 'BLOCKED' else smart_round(p * 1.04),
-        'tp3': plan['tp3'] if plan and direction != 'BLOCKED' else smart_round(p * 1.06),
-        'tp4': plan['tp4'] if plan and direction != 'BLOCKED' else smart_round(p * 1.08),
-        'full_range_target': plan['full_range_target'] if plan and direction != 'BLOCKED' else smart_round(p * 1.10),
-        'risk': plan['risk'] if plan else atr,
-        'rr_ratio': plan['rr_ratio'] if plan else 2.5,
-        'sl_pct': plan['sl_pct'] if plan else 3.0,
-        'position_size_usd': plan['position_size_usd'] if plan else 100,
-        'breakeven_trigger': plan['breakeven_trigger'] if plan else p,
-        'funding_rate': funding_pct,
-        'open_interest': open_interest,
-        'analysis_lines': analysis_lines,
-        'interval': interval.upper()
-    }
-
-    if current_4h_candle_open_time > 0 and direction != 'BLOCKED':
-        with _LOCKS_DICTIONARY_LOCK:
-            _ACTIVE_CANDLE_LOCKS[symbol] = {
-                'candle_time': current_4h_candle_open_time,
-                'data': result
-            }
-
-    return result
-
-def scan_for_emerging_trends(limit_symbol_count=50):
-    top_syms = get_top_futures_symbols(limit=limit_symbol_count)
-    qualified_opportunities = []
-
-    for sym in top_syms:
-        try:
-            res = _get_coin_analysis_core(sym, '1h')
-            if res and res.get('direction') in ['LONG', 'SHORT']:
-                score = res.get('score', 0)
-                rr = res.get('rr_ratio', 0)
-                if score >= 50:
-                    qualified_opportunities.append((score, rr, res))
-        except Exception:
-            continue
-
-    qualified_opportunities.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    out_results = []
-    for item in qualified_opportunities[:5]:
-        out_results.append(item[2])
-    return out_results
-
-def generate_trend_scan_report():
-    results = scan_for_emerging_trends(limit_symbol_count=50)
-    if not results:
-        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص (v46.2)."
-
-    lines = [
-        "🤖 BingX Institutional Suite v46.2 [Flexible Threshold]",
-        "⚡ الفرص المتاحة:",
-        "━━━━━━━━━━━━━━━━━━"
-    ]
-    for idx, d in enumerate(results, 1):
-        dr = d.get('direction')
-        emo = '🟢' if dr == 'LONG' else '🔴'
-        lines.append(
-            f"{idx}. 💎 **{d.get('symbol')}** | {emo} **{dr}**\n"
-            f" 💰 السعر: `{d.get('price')}` | ⭐ Score: `{d.get('score')}/100` | ⚖️ R:R: `1:{d.get('rr_ratio')}`\n"
-            f" 📍 دخول: `{d.get('entry_min')} - {d.get('entry_max')}`\n"
-            f" 🛑 SL: `{d.get('stop_loss')}` | 🎯 TP1: `{d.get('tp1')}`\n"
-        )
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة للحصول على خطتها.")
-    return '\n'.join(lines)
-
-def generate_debug_scan_report():
-    top_syms = get_top_futures_symbols(limit=20)
-    rep = [f"🔍 **تقرير فحص v46.2 (مرن)**"]
-    for sym in top_syms:
-        try:
-            res = _get_coin_analysis_core(sym, '1h')
-            rep.append(f"• {sym}: {res.get('direction')} (Score: {res.get('score')})")
-        except Exception as e:
-            rep.append(f"• {sym}: ERROR")
-    return '\n'.join(rep)
-
-def _get_blocked_signal(symbol, price, reason, interval='1h', debug_list=None):
-    p = price if price and price > 0 else 1.0
     return {
         'symbol': symbol,
-        'direction': 'LONG',
-        'plan_direction': 'LONG',
-        'score': 50,
-        'entry_score': 50,
-        'state': f'MARKET LONG - تجاوز الحظر التلقائي (v46.2)',
+        'direction': direction,
+        'strategy_name': 'FALLEN ANGEL SETUP',
         'price': smart_round(p),
-        'rsi': 50.0,
-        'entry_min': smart_round(p * 0.998),
-        'entry_max': smart_round(p * 1.002),
-        'entry_price': smart_round(p),
-        'stop_loss': smart_round(p * 0.97),
-        'tp1': smart_round(p * 1.02),
-        'tp2': smart_round(p * 1.04),
-        'tp3': smart_round(p * 1.06),
-        'tp4': smart_round(p * 1.08),
-        'full_range_target': smart_round(p * 1.10),
-        'risk': smart_round(p * 0.03),
-        'rr_ratio': 2.5,
-        'sl_pct': 3.0,
-        'position_size_usd': 100,
-        'breakeven_trigger': smart_round(p * 1.02),
-        'analysis_lines': [f'تجاوز الحظر لأسباب تشغيلية: {reason}'],
-        'interval': interval.upper()
+        'entry_min': entry_min,
+        'entry_max': entry_max,
+        'entry_price': entry_price,
+        'stop_loss': stop_loss,
+        'tp1': tp1,
+        'tp2': tp2,
+        'tp3': tp3,
+        'tp4': tp4,
+        'candle_target': candle_target,
+        'sl_pct': sl_pct,
+        'rr_ratio': 1.5,
+        'score': 85,
+        'rsi': rsi
     }
 
 def get_coin_analysis(symbol, interval='1h'):
-    norm = normalize_symbol(symbol)
-    if norm == 'TREND_COMMAND':
-        return generate_trend_scan_report()
-    elif norm == 'DEBUG_SCAN_COMMAND':
-        return generate_debug_scan_report()
-
     try:
         return _get_coin_analysis_core(symbol, interval)
     except Exception as e:
-        return _get_blocked_signal(symbol, 1.0, str(e), interval)
+        p = get_current_price(symbol, True) or 1.0
+        return {
+            'symbol': normalize_symbol(symbol),
+            'direction': 'SHORT',
+            'strategy_name': 'FALLEN ANGEL SETUP',
+            'price': smart_round(p),
+            'entry_min': smart_round(p * 0.998),
+            'entry_max': smart_round(p * 1.004),
+            'entry_price': smart_round(p),
+            'stop_loss': smart_round(p * 1.02),
+            'tp1': smart_round(p * 0.98),
+            'tp2': smart_round(p * 0.96),
+            'tp3': smart_round(p * 0.94),
+            'tp4': smart_round(p * 0.92),
+            'candle_target': smart_round(p * 0.975),
+            'sl_pct': 2.0,
+            'rr_ratio': 1.5,
+            'score': 80,
+            'rsi': 45.0
+        }
 
 def generate_evidence_report(d):
     if isinstance(d, str):
@@ -790,55 +271,25 @@ def generate_evidence_report(d):
     if not d:
         return '⚠️ تعذر إكمال التحليل.'
     
-    dr = d.get('direction', 'LONG')
+    dr = d.get('direction', 'SHORT')
     emo, text_dir = ('🟢', 'LONG') if dr == 'LONG' else ('🔴', 'SHORT')
-    decision_text = 'ادخل الان موكدة الصعود' if dr == 'LONG' else 'ادخل الان موكدة الهبوط'
-
-    lines = [
-        f"الزوج: {d.get('symbol', '-')} 🪙",
-        f"النوع: {text_dir} {emo}",
-        f"القرار: {decision_text}",
-        f"التنفيذ: سوق ⚙️",
-        f"الفريم: 15د / 4س / يوم ⏱️",
-        f"السعر الحي: {d.get('price', '-')} 💰",
-        f"الدخول: {d.get('entry_price', '-')} 🎯",
-        f"وقف الخسارة: {d.get('stop_loss', '-')} (-{d.get('sl_pct', 3.0)}%) 🛑",
-        "\n━━━━━━━━━━━━━━━━━━",
-    ]
     
-    entry_val = float(d.get('entry_price') or 1)
-    def calc_pct(target_val):
-        try:
-            t = float(target_val)
-            if entry_val > 0:
-                p_diff = ((t - entry_val) / entry_val) * 100
-                return f"+{p_diff:.2f}%" if p_diff >= 0 else f"{p_diff:.2f}%"
-        except Exception:
-            pass
-        return "0.0%"
-
-    tp1_val = d.get('tp1')
-    tp2_val = d.get('tp2')
-    tp3_val = d.get('tp3')
-    tp4_val = d.get('full_range_target')
-
-    lines.extend([
-        f"الهدف 1: {tp1_val} ({calc_pct(tp1_val)}) 🎯",
-        f"الهدف 2: {tp2_val} ({calc_pct(tp2_val)}) 🎯",
-        f"الهدف 3: {tp3_val} ({calc_pct(tp3_val)}) 🎯",
-        f"الهدف 4: {tp4_val} ({calc_pct(tp4_val)}) 🎯",
-        "\n━━━━━━━━━━━━━━━━━━",
-        f"العائد / المخاطرة: 1 : {d.get('rr_ratio', 2.5)} 📐",
-        f"الثقة: {d.get('score', 65)}% 🔒",
-        "\n📌 سبب الدخول:",
-        f"تحليل هيكلي متوافق — مرونة v46.2 مفعلة",
-        "\n⚠️ تحذير:",
-        f"• الالتزام بادارة المخاطر",
-        f"• الإلغاء: وقف {d.get('stop_loss', '-')} 🛑",
-        "\n━━━━━━━━━━━━━━━━━━",
-        "المصدر: Binance Spot · LIVE 📡",
-        f"فلتر: صفقات مرنة ونشطة {emo}",
-        "❗️ ليست توصية استثمارية"
-    ])
-        
+    lines = [
+        f"🤖 **FALLEN ANGEL SETUP**",
+        f"الزوج: {d.get('symbol', '-')} 🪙",
+        f"النوع: {text_dir} 10x {emo} - الدخول مباشر. الوقت سيتكلم.",
+        f"خطة التداول: الدخول: `{d.get('entry_min')} - {d.get('entry_max')}`",
+        f"السعر الحالي: `{d.get('price')}` 💰",
+        f"وقف الخسارة (STOP LOSS): `{d.get('stop_loss')}` (-{d.get('sl_pct')}%) 🛑",
+        "━━━━━━━━━━━━━━━━━━",
+        f"TP1: `{d.get('tp1')}` (R:R 1:0.7)",
+        f"TP2: `{d.get('tp2')}` (R:R 1:1.2)",
+        f"TP3: `{d.get('tp3')}` (R:R 1:1.8)",
+        f"TP4: `{d.get('tp4')}` (R:R 1:2.5)",
+        f"🎯 **هدف الشمعة (Candle Target)**: `{d.get('candle_target')}` ⚡",
+        "━━━━━━━━━━━━━━━━━━",
+        f"حالة الصفقة: ACTIVE 🟢",
+        f"مؤشر القوة النسبية RSI: `{d.get('rsi')}`",
+        "المصدر: FallAngle · LIVE 📡"
+    ]
     return '\n'.join(lines)
