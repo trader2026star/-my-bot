@@ -1,4 +1,4 @@
-# analysis.py - BingX Institutional SMC & Risk Suite v46.0 (Smart Confirmation & Trend Filter Patch)
+# analysis.py - BingX Institutional SMC & Risk Suite v46.1 (Smart Score Comparison Patch)
 import time
 import logging
 import threading
@@ -6,7 +6,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -531,7 +531,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
 
     c30_b, c15_b, c30_be, c15_be = check_multi_tf_confirmations(symbol)
 
-    # Smart Confirmation & Filters (v46.0 Additions)
+    # Smart Confirmation & Filters
     volume_filter_passed_long = (volume_status != 'EXTREMELY WEAK') or (last_vol >= avg_vol * 0.5 and has_displacement_bull)
     volume_filter_passed_short = (volume_status != 'EXTREMELY WEAK') or (last_vol >= avg_vol * 0.5 and has_displacement_bear)
 
@@ -606,52 +606,64 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     state = 'NO TRADE - لم يتم استيفاء معايير التأكيد الذكي'
     plan = None
 
+    # تقييم الـ Long
     long_blocked = False
-    if loc_long == 'CHASE':
-        long_blocked = True
-    elif not volume_filter_passed_long:
-        long_blocked = True
-    elif not confirmation_candle_bull:
-        long_blocked = True
-    elif not btc_trend_allows_long:
-        long_blocked = True
-    elif score_long < base_threshold:
+    if loc_long == 'CHASE' or not volume_filter_passed_long or not confirmation_candle_bull or not btc_trend_allows_long or score_long < base_threshold:
         long_blocked = True
 
-    if not long_blocked and score_long >= base_threshold:
-        temp_plan = calculate_institutional_trade_plan('LONG', p, k1, atr, bullish_ob if ob_valid_bull else lows[-1], 1000.0, 1.0)
-        min_rr_req = 1.2
-        if temp_plan and temp_plan['rr_ratio'] >= min_rr_req:
-            plan = temp_plan
+    temp_long_plan = None
+    if not long_blocked:
+        temp_long_plan = calculate_institutional_trade_plan('LONG', p, k1, atr, bullish_ob if ob_valid_bull else lows[-1], 1000.0, 1.0)
+        if not temp_long_plan or temp_long_plan['rr_ratio'] < 1.2:
+            long_blocked = True
+
+    # تقييم الـ Short
+    short_blocked = False
+    if loc_short == 'CHASE' or not volume_filter_passed_short or not confirmation_candle_bear or not btc_trend_allows_short or score_short < base_threshold:
+        short_blocked = True
+
+    temp_short_plan = None
+    if not short_blocked:
+        temp_short_plan = calculate_institutional_trade_plan('SHORT', p, k1, atr, bearish_ob if ob_valid_bear else highs[-1], 1000.0, 1.0)
+        if not temp_short_plan or temp_short_plan['rr_ratio'] < 1.2:
+            short_blocked = True
+
+    # المقارنة العادلة واختيار الاتجاه الأقوى بناءً على الـ Score
+    valid_long = not long_blocked and temp_long_plan
+    valid_short = not short_blocked and temp_short_plan
+
+    if valid_long and valid_short:
+        if score_long >= score_short:
             direction = 'LONG'
+            plan = temp_long_plan
             chosen_score = score_long
-            state = 'MARKET LONG - مؤكد بالتأكيد الذكي والشمعة التوافقية (v46.0)'
-
-    if direction == 'BLOCKED':
-        short_blocked = False
-        if loc_short == 'CHASE':
-            short_blocked = True
-        elif not volume_filter_passed_short:
-            short_blocked = True
-        elif not confirmation_candle_bear:
-            short_blocked = True
-        elif not btc_trend_allows_short:
-            short_blocked = True
-        elif score_short < base_threshold:
-            short_blocked = True
-
-        if not short_blocked and score_short >= base_threshold:
-            temp_plan = calculate_institutional_trade_plan('SHORT', p, k1, atr, bearish_ob if ob_valid_bear else highs[-1], 1000.0, 1.0)
-            min_rr_req = 1.2
-            if temp_plan and temp_plan['rr_ratio'] >= min_rr_req:
-                plan = temp_plan
-                direction = 'SHORT'
-                chosen_score = score_short
-                state = 'MARKET SHORT - مؤكد بالتأكيد الذكي للشمعة الهابطة (v46.0)'
+            state = 'MARKET LONG - الأعلى سكوراً وتأكيداً (v46.1)'
+        else:
+            direction = 'SHORT'
+            plan = temp_short_plan
+            chosen_score = score_short
+            state = 'MARKET SHORT - الأعلى سكوراً وتأكيداً (v46.1)'
+    elif valid_long:
+        direction = 'LONG'
+        plan = temp_long_plan
+        chosen_score = score_long
+        state = 'MARKET LONG - مؤكد بالتأكيد الذكي (v46.1)'
+    elif valid_short:
+        direction = 'SHORT'
+        plan = temp_short_plan
+        chosen_score = score_short
+        state = 'MARKET SHORT - مؤكد بالتأكيد الذكي (v46.1)'
+    else:
+        direction = 'BLOCKED'
+        state = 'NO TRADE - لم يتم استيفاء معايير التأكيد الذكي'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
     open_interest = get_open_interest(symbol)
+
+    active_vol_filter = volume_filter_passed_long if direction == 'LONG' else (volume_filter_passed_short if direction == 'SHORT' else True)
+    active_conf_candle = confirmation_candle_bull if direction == 'LONG' else (confirmation_candle_bear if direction == 'SHORT' else True)
+    active_loc = loc_long if direction == 'LONG' else (loc_short if direction == 'SHORT' else 'قيد الفحص')
 
     analysis_lines = [
         f'الإطار الزمني: {interval.upper()}',
@@ -659,12 +671,12 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
         f'حالة السوق (Market Regime): {market_regime}',
         f'حالة البيتكوين (BTC Context): {btc_status}',
-        f'فلتر الفوليوم الإلزامي: {"✅ مجتاز" if (volume_filter_passed_long if direction=="LONG" else volume_filter_passed_short) else "❌ مرفوض (ضعيف)"}',
-        f'تأكيد الشمعة الحالية: {"✅ مؤكدة" if (confirmation_candle_bull if direction=="LONG" else confirmation_candle_bear) else "❌ غير مؤكدة"}',
-        f'موقع الدخول (Entry Location): {loc_long if direction=="LONG" else (loc_short if direction=="SHORT" else "قيد الفحص")}',
+        f'فلتر الفوليوم الإلزامي: {"✅ مجتاز" if active_vol_filter else "❌ مرفوض (ضعيف)"}',
+        f'تأكيد الشمعة الحالية: {"✅ مؤكدة" if active_conf_candle else "❌ غير مؤكدة"}',
+        f'موقع الدخول (Entry Location): {active_loc}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
         f'Confirmation Score: {max(score_long, score_short)} (الحد الأدنى المحسن: {base_threshold})',
-        f'🔒 نظام v46.0: Smart Confirmation & Trend Filter مفعل'
+        f'🔒 نظام v46.1: Smart Score Comparison مفعل'
     ]
 
     result = {
@@ -737,11 +749,11 @@ def scan_for_emerging_trends(limit_symbol_count=50):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbol_count=50)
     if not results:
-        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مؤكدة (v46.0)."
+        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مؤكدة (v46.1)."
 
     lines = [
-        "🤖 BingX Institutional Suite v46.0 [Smart Confirmation & Trend Filter]",
-        "⚡ الفرص المؤكدة ذات الفلترة الذكية:",
+        "🤖 BingX Institutional Suite v46.1 [Smart Score Comparison]",
+        "⚡ الفرص المؤكدة للأعلى سكوراً:",
         "━━━━━━━━━━━━━━━━━━"
     ]
     for idx, d in enumerate(results, 1):
@@ -780,7 +792,7 @@ def generate_debug_scan_report():
             details.append(f"• {sym}: ERROR ({str(e)})")
 
     rep = [
-        f"🔍 **تقرير فحص التأكيد الذكي (Debug Scan v46.0)**",
+        f"🔍 **تقرير فحص التأكيد الذكي (Debug Scan v46.1)**",
         f"• إجمالي العملات المفحوصة: {scanned}",
         f"• اجتازت شروط التأكيد والـ Score: {passed_score}",
         f"• إجمالي الصفقات المؤكدة (MARKET): {final_markets}",
@@ -875,18 +887,18 @@ def generate_evidence_report(d):
             f"العائد / المخاطرة: 1 : {d.get('rr_ratio', 5.5)} 📐",
             f"الثقة: {d.get('score', 67)}% 🔒",
             "\n📌 سبب الدخول:",
-            f"صعود متوافق 15د/4س — إدارة مخاطرة مفعلة",
+            f"تحليل هيكلي متوافق — إدارة مخاطرة مفعلة",
             "\n⚠️ تحذير:",
-            f"• تشبع شرائي",
+            f"• التزام بادارة المخاطر",
             f"• الإلغاء: وقف {d.get('stop_loss', '-')} 🛑",
             "\n━━━━━━━━━━━━━━━━━━",
             "المصدر: Binance Spot · LIVE 📡",
-            f"فلتر: {'شراء فقط — لا شورت' if dr == 'LONG' else 'بيع فقط — لا لونج'} {emo}",
+            f"فلتر: {'شراء أو بيع بحسب الأعلى سكوراً' if dr in ['LONG', 'SHORT'] else 'متوقف'} {emo}",
             "❗️ ليست توصية استثمارية"
         ])
     else:
         lines.extend([
-            "🟡 NO TRADE - لم يتم استيفاء معايير التأكيد الذكي (v46.0)."
+            "🟡 NO TRADE - لم يتم استيفاء معايير التأكيد الذكي (v46.1)."
         ])
         
     return '\n'.join(lines)
