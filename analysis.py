@@ -1,4 +1,4 @@
-# analysis.py - BingX Institutional SMC & Risk Suite v45.9 (Advanced Position Sizing & Risk Management Patch)
+# analysis.py - BingX Institutional SMC & Risk Suite v46.0 [Persistent Trade Tracking & SMC Engine]
 import time
 import logging
 import threading
@@ -6,7 +6,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.9', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -30,6 +30,10 @@ _REQUEST_LOCK = threading.Lock()
 
 _ACTIVE_CANDLE_LOCKS = {}
 _LOCKS_DICTIONARY_LOCK = threading.Lock()
+
+# نظام الذاكرة المستمرة للصفقات النشطة لضمان عدم تغير الإشارة مع التذبذب اللحظي
+_PERSISTENT_ACTIVE_TRADES = {}
+_TRADES_LOCK = threading.Lock()
 
 def normalize_symbol(s):
     s_clean = str(s).strip().lower()
@@ -338,7 +342,7 @@ def determine_strict_trend(klines_4h, klines_1h):
         ma_4h = sum(closes_4h[-10:]) / 10
         trend_4h = 'BULLISH' if closes_4h[-1] > ma_4h else 'BEARISH'
 
-    if not klines_1h or len(klines_1h) < 15:
+    if not klines_1h or len(kline_1h := klines_1h) < 15: # Safe fallback
         return trend_4h, 'NEUTRAL'
     closes_1h = [x[4] for x in klines_1h]
     ma_1h = sum(closes_1h[-10:]) / 10
@@ -443,27 +447,32 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     if not p or p <= 0:
         raise ValueError(f"Price error for {symbol}")
 
+    # فحص نظام الذاكرة المستمرة للصفقة النشطة لضمان ثبات الإشارة وعدم تراجعها عشوائياً
+    with _TRADES_LOCK:
+        if symbol in _PERSISTENT_ACTIVE_TRADES:
+            active_trade = _PERSISTENT_ACTIVE_TRADES[symbol]
+            sl_val = active_trade.get('stop_loss', 0)
+            tp3_val = active_trade.get('tp3', 0)
+            trade_dir = active_trade.get('direction')
+            
+            # التحقق هل السعر ضرب الوقف أو الأهداف النهائية
+            is_stopped = (trade_dir == 'LONG' and p <= sl_val) or (trade_dir == 'SHORT' and p >= sl_val)
+            is_target_hit = (trade_dir == 'LONG' and p >= tp3_val) or (trade_dir == 'SHORT' and p <= tp3_val)
+            
+            if is_stopped or is_target_hit:
+                # انتهاء الصفقة (ضرب الوقف أو تحقيق الهدف) -> نحذفها من الذاكرة ونسمح بتحليل جديد
+                del _PERSISTENT_ACTIVE_TRADES[symbol]
+            else:
+                # الصفقة لا تزال قائمة وآمنة -> نحدث السعر الحالي ونعيد نفس الخطة الاستثمارية بثبات تام
+                active_trade['price'] = smart_round(p)
+                active_trade['rsi'] = calculate_rsi([x[4] for x in (get_bingx_klines(symbol, interval, 30) or [[0,0,0,0,p,0]])])
+                return active_trade
+
     has_news, news_title = get_economic_news_status()
     if has_news:
         return _get_blocked_signal(symbol, p, f"تم الحظر بسبب خبر اقتصادي قوي: ({news_title})", interval, ["High impact economic news"])
 
     k4h = get_bingx_klines(symbol, '4h', 50)
-    current_4h_candle_open_time = k4h[-1][0] if k4h and len(k4h) > 0 else 0
-    
-    with _LOCKS_DICTIONARY_LOCK:
-        cached_lock = _ACTIVE_CANDLE_LOCKS.get(symbol)
-        if cached_lock and cached_lock.get('candle_time') == current_4h_candle_open_time:
-            locked_data = cached_lock.get('data').copy()
-            if locked_data.get('direction') != 'BLOCKED':
-                e_min = locked_data.get('entry_min', 0)
-                e_max = locked_data.get('entry_max', 0)
-                atr_check = locked_data.get('risk', p * 0.015)
-                if p < (e_min - (atr_check * 2.2)) or p > (e_max + (atr_check * 2.2)):
-                    pass 
-                else:
-                    locked_data['price'] = smart_round(p)
-                    return locked_data
-
     k1 = get_bingx_klines(symbol, interval, 100)
     if not k1 or len(k1) < 30:
         return _get_blocked_signal(symbol, p, "بيانات السوق غير كافية", interval, ["Insufficient market data"])
@@ -496,7 +505,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     closes = [x[4] for x in k1]
     opens = [x[1] for x in k1]
 
-    # Order Block Detection
+    # Order Block Detection (SMC Logic)
     bullish_ob = lows[-3]
     ob_valid_bull = False
     for i in range(len(k1)-2, max(len(k1)-15, 2), -1):
@@ -544,8 +553,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
                 return 'GOOD'
             elif p <= highs[-1] + atr * 4.0:
                 return 'ACCEPTABLE'
-            elif p > highs[-1] + atr * 4.0 and rsi > 78:
-                return 'CHASE'
             else:
                 return 'FAR'
         else:
@@ -556,8 +563,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
                 return 'GOOD'
             elif p >= lows[-1] - atr * 4.0:
                 return 'ACCEPTABLE'
-            elif p < lows[-1] - atr * 4.0 and rsi < 22:
-                return 'CHASE'
             else:
                 return 'FAR'
 
@@ -639,7 +644,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             elif btc_status == 'BULLISH': score -= 5
             if has_displacement_bear: score += 5
         
-        # Penalize if counter-trend in weak volume market regime
         if market_regime == "BEAR" and volume_status == "WEAK" and is_long:
             score -= 20
 
@@ -681,7 +685,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             plan = temp_plan
             direction = 'LONG'
             chosen_score = score_long
-            state = 'MARKET LONG - صفقة مؤسسية مؤكدة (v45.9)'
+            state = 'MARKET LONG - صفقة مؤسسية مؤكدة (SMC v46.0)'
 
     if direction == 'BLOCKED':
         short_blocked = False
@@ -705,7 +709,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
                 plan = temp_plan
                 direction = 'SHORT'
                 chosen_score = score_short
-                state = 'MARKET SHORT - صفقة مؤسسية هابطة مؤكدة (v45.9)'
+                state = 'MARKET SHORT - صفقة مؤسسية هابطة مؤكدة (SMC v46.0)'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -723,7 +727,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'Confirmation Score: {max(score_long, score_short)} (الحد الأدنى: {base_threshold})',
         f'Core Evidence Gate: {"✅ PASS" if (core_evidence_long or core_evidence_short) else "❌ FAILED"}',
         f'Final Gate: {"HARD BLOCK" if volume_risk_status.startswith("BLOCKED") or counter_trend_risk_status == "BLOCKED" else "PASS"}',
-        f'🔒 نظام v45.9: Advanced Sizing & Institutional Risk Suite مفعل'
+        f'🔒 نظام v46.0: Persistent SMC & Institutional Risk Suite مفعل'
     ]
 
     result = {
@@ -757,12 +761,10 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'interval': interval.upper()
     }
 
-    if current_4h_candle_open_time > 0 and direction != 'BLOCKED':
-        with _LOCKS_DICTIONARY_LOCK:
-            _ACTIVE_CANDLE_LOCKS[symbol] = {
-                'candle_time': current_4h_candle_open_time,
-                'data': result
-            }
+    # حفظ الصفقة في الذاكرة المستمرة طالما أنها إشارة حقيقية (LONG أو SHORT) لضمان ثباتها للنظرة لقدام
+    if direction in ['LONG', 'SHORT']:
+        with _TRADES_LOCK:
+            _PERSISTENT_ACTIVE_TRADES[symbol] = result
 
     return result
 
@@ -800,10 +802,10 @@ def scan_for_emerging_trends(limit_symbol_count=50):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbol_count=50)
     if not results:
-        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مكتملة الشروط القابلة للتنفيذ (v45.9)."
+        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مكتملة الشروط القابلة للتنفيذ (v46.0)."
 
     lines = [
-        "🤖 BingX Institutional Suite v45.9 [Advanced Sizing & Risk Suite]",
+        "🤖 BingX Institutional Suite v46.0 [Persistent SMC & Sizing Suite]",
         "⚡ أفضل الفرص التنفيذية المؤكدة حالياً:",
         "━━━━━━━━━━━━━━━━━━"
     ]
@@ -816,7 +818,7 @@ def generate_trend_scan_report():
             f" 📍 دخول: `{d.get('entry_min')} - {d.get('entry_max')}`\n"
             f" 🛑 SL: `{d.get('stop_loss')}` | 🎯 TP1: `{d.get('tp1')}`\n"
         )
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة للحصول على الخطة التفصيلية.")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة للحصول على الخطة التفصيلية الثابتة.")
     return '\n'.join(lines)
 
 def generate_debug_scan_report():
@@ -843,7 +845,7 @@ def generate_debug_scan_report():
             details.append(f"• {sym}: ERROR ({str(e)})")
 
     rep = [
-        f"🔍 **تقرير فحص التصحيح والاختبار (Debug Scan v45.9)**",
+        f"🔍 **تقرير فحص التصحيح والاختبار (Debug Scan v46.0)**",
         f"• إجمالي العملات المفحوصة: {scanned}",
         f"• اجتازت الحد الأدنى للـ Score: {passed_score}",
         f"• إجمالي الصفقات القابلة للتنفيذ (MARKET): {final_markets}",
@@ -898,7 +900,7 @@ def generate_evidence_report(d):
         emo, text_dir = '🟡', 'NO TRADE'
 
     lines = [
-        '🤖 BingX Institutional Suite v45.9 [Advanced Sizing & Risk Suite]',
+        '🤖 BingX Institutional Suite v46.0 [Persistent SMC & Sizing Suite]',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -910,7 +912,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية وإدارة المخاطر (v45.9)',
+            '📋 الخطة المؤسسية وإدارة المخاطر (v46.0 - مستمرة حتى الأهداف)',
             f"\n📍 منطقة الدخول المقبولة:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
@@ -926,7 +928,7 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🟡 NO TRADE - لم يتم استيفاء المعايير التنفيذية (v45.9).'
+            '🟡 NO TRADE - لم يتم استيفاء المعايير التنفيذية (v46.0).'
         ])
     if d.get('analysis_lines'):
         lines.append('\n🔍 التفاصيل الفنية والتدقيق الداخلي:')
