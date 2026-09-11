@@ -1,4 +1,4 @@
-# analysis.py - BingX Institutional SMC & Risk Suite v45.9 (Early Momentum & Fast Capture Patch)
+# analysis.py - BingX Institutional SMC & Risk Suite v46.0 (Smart Confirmation & Trend Filter Patch)
 import time
 import logging
 import threading
@@ -6,7 +6,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.9', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -512,7 +512,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     liq_sweep_bull = lows[-1] < min(lows[-6:-1]) and closes[-1] > lows[-1]
     liq_sweep_bear = highs[-1] > max(highs[-6:-1]) and closes[-1] < highs[-1]
 
-    # MSS / BOS & Displacement (v45.9: Relaxed early momentum thresholds)
+    # MSS / BOS & Displacement
     displacement_bull = (closes[-1] - opens[-1]) > (atr * 0.10)
     displacement_bear = (opens[-1] - closes[-1]) > (atr * 0.10)
 
@@ -527,6 +527,19 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     has_displacement_bear = displacement_bear or (closes[-1] <= opens[-1])
 
     c30_b, c15_b, c30_be, c15_be = check_multi_tf_confirmations(symbol)
+
+    # Smart Confirmation & Filters (v46.0 Additions)
+    # 1. Volume Confirmation Filter: Reject if volume is extremely weak unless strong confirmation
+    volume_filter_passed_long = (volume_status != 'EXTREMELY WEAK') or (last_vol >= avg_vol * 0.5 and has_displacement_bull)
+    volume_filter_passed_short = (volume_status != 'EXTREMELY WEAK') or (last_vol >= avg_vol * 0.5 and has_displacement_bear)
+
+    # 2. Confirmation Candle / Price Action Filter (Current candle must close bullish/bearish relative to open or previous)
+    confirmation_candle_bull = (closes[-1] > opens[-1]) or (closes[-1] >= closes[-2])
+    confirmation_candle_bear = (closes[-1] < opens[-1]) or (closes[-1] <= closes[-2])
+
+    # 3. BTC & Trend Alignment Filter
+    btc_trend_allows_long = (btc_status != 'BEARISH')
+    btc_trend_allows_short = (btc_status != 'BULLISH')
 
     def get_location_category(is_long=True):
         if is_long:
@@ -557,34 +570,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     loc_long = get_location_category(True)
     loc_short = get_location_category(False)
 
-    same_dir_bull = (trend_4h == 'BULLISH' or trend_1h == 'BULLISH')
-    same_dir_bear = (trend_4h == 'BEARISH' or trend_1h == 'BEARISH')
-    counter_trend_long = False
-    counter_trend_short = False
-
-    # Core Evidence & Volume Risk Rules (v45.9: Early Momentum & Fast Capture)
-    volume_risk_status = "NORMAL"
-    counter_trend_risk_status = "NORMAL"
-
-    pat1_long = has_mss_or_bos_bull and loc_long in ['EXCELLENT', 'GOOD', 'ACCEPTABLE']
-    pat2_long = liq_sweep_bull or has_displacement_bull
-    pat3_long = bos_bull or volume_status in ['STRONG', 'NORMAL', 'WEAK', 'EXTREMELY WEAK']
-    pat4_long = (has_mss_or_bos_bull or has_displacement_bull) and loc_long in ['EXCELLENT', 'GOOD', 'ACCEPTABLE']
-
-    pat1_short = has_mss_or_bos_bear and loc_short in ['EXCELLENT', 'GOOD', 'ACCEPTABLE']
-    pat2_short = liq_sweep_bear or has_displacement_bear
-    pat3_short = bos_bear or volume_status in ['STRONG', 'NORMAL', 'WEAK', 'EXTREMELY WEAK']
-    pat4_short = (has_mss_or_bos_bear or has_displacement_bear) and loc_short in ['EXCELLENT', 'GOOD', 'ACCEPTABLE']
-
-    core_evidence_long = pat1_long or pat2_long or pat3_long or pat4_long or True
-    core_evidence_short = pat1_short or pat2_short or pat3_short or pat4_short or True
-
-    counter_trend_blocked_long = False
-    counter_trend_blocked_short = False
-
-    is_star_conflict_long = False
-    is_star_conflict_short = False
-
     def compute_conf_score(is_long=True):
         score = 50
         if is_long:
@@ -596,6 +581,8 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             if liq_sweep_bull: score += 10
             if c15_b or c30_b: score += 5
             if has_displacement_bull: score += 10
+            if confirmation_candle_bull: score += 10
+            if volume_filter_passed_long: score += 5
         else:
             if trend_4h == 'BEARISH': score += 15
             if trend_1h == 'BEARISH': score += 15
@@ -605,49 +592,63 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             if liq_sweep_bear: score += 10
             if c15_be or c30_be: score += 5
             if has_displacement_bear: score += 10
+            if confirmation_candle_bear: score += 10
+            if volume_filter_passed_short: score += 5
         return max(40, min(100, score))
 
     score_long = compute_conf_score(True)
     score_short = compute_conf_score(False)
 
-    base_threshold = 45
+    base_threshold = 60  # Increased threshold for stricter confirmation
 
     direction = 'BLOCKED'
     chosen_score = 0
-    state = 'NO TRADE - لم يتم استيفاء معايير الدخول'
+    state = 'NO TRADE - لم يتم استيفاء معايير التأكيد الذكي'
     plan = None
 
-    # Final Decision Engine (v45.9: Fast Capture / Early Momentum)
+    # Final Decision Engine with Smart Confirmation Filters (v46.0)
     long_blocked = False
     if loc_long == 'CHASE':
+        long_blocked = True
+    elif not volume_filter_passed_long:
+        long_blocked = True
+    elif not confirmation_candle_bull:
+        long_blocked = True
+    elif not btc_trend_allows_long:
         long_blocked = True
     elif score_long < base_threshold:
         long_blocked = True
 
     if not long_blocked and score_long >= base_threshold:
         temp_plan = calculate_institutional_trade_plan('LONG', p, k1, atr, bullish_ob if ob_valid_bull else lows[-1], 1000.0, 1.0)
-        min_rr_req = 1.1
+        min_rr_req = 1.2
         if temp_plan and temp_plan['rr_ratio'] >= min_rr_req:
             plan = temp_plan
             direction = 'LONG'
             chosen_score = score_long
-            state = 'MARKET LONG - اقتناص العزم المبكر (v45.9)'
+            state = 'MARKET LONG - مؤكد بالتأكيد الذكي والشمعة التوافقية (v46.0)'
 
     if direction == 'BLOCKED':
         short_blocked = False
         if loc_short == 'CHASE':
+            short_blocked = True
+        elif not volume_filter_passed_short:
+            short_blocked = True
+        elif not confirmation_candle_bear:
+            short_blocked = True
+        elif not btc_trend_allows_short:
             short_blocked = True
         elif score_short < base_threshold:
             short_blocked = True
 
         if not short_blocked and score_short >= base_threshold:
             temp_plan = calculate_institutional_trade_plan('SHORT', p, k1, atr, bearish_ob if ob_valid_bear else highs[-1], 1000.0, 1.0)
-            min_rr_req = 1.1
+            min_rr_req = 1.2
             if temp_plan and temp_plan['rr_ratio'] >= min_rr_req:
                 plan = temp_plan
                 direction = 'SHORT'
                 chosen_score = score_short
-                state = 'MARKET SHORT - اقتناص العزم الهابط المبكر (v45.9)'
+                state = 'MARKET SHORT - مؤكد بالتأكيد الذكي للشمعة الهابطة (v46.0)'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -658,14 +659,13 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'اتجاه الفريم الكبير (4H): {"🟢 صاعد" if trend_4h=="BULLISH" else "🔴 هابط"}',
         f'اتجاه فريم الساعة (1H): {"🟢 صاعد" if trend_1h=="BULLISH" else "🔴 هابط"}',
         f'حالة السوق (Market Regime): {market_regime}',
-        f'فلتر الفوليوم: {volume_status}',
-        f'Volume Risk: {volume_risk_status}',
-        f'موقع الدخول (Entry Location): {loc_long if direction=="LONG" else (loc_short if direction=="SHORT" else "مرن للاقتناص")}',
+        f'حالة البيتكوين (BTC Context): {btc_status}',
+        f'فلتر الفوليوم الإلزامي: {"✅ مجتاز" if (volume_filter_passed_long if direction=="LONG" else volume_filter_passed_short) else "❌ مرفوض (ضعيف)"}',
+        f'تأكيد الشمعة الحالية: {"✅ مؤكدة" if (confirmation_candle_bull if direction=="LONG" else confirmation_candle_bear) else "❌ غير مؤكدة"}',
+        f'موقع الدخول (Entry Location): {loc_long if direction=="LONG" else (loc_short if direction=="SHORT" else "قيد الفحص")}',
         f'مؤشر القوة النسبية (RSI): {rsi}',
-        f'Confirmation Score: {max(score_long, score_short)} (الحد الأدنى المتسارع: {base_threshold})',
-        f'Core Evidence Gate: {"✅ PASS (Early Capture)"}',
-        f'Final Gate: PASS',
-        f'🔒 نظام v45.9: Early Momentum & Fast Capture مفعل'
+        f'Confirmation Score: {max(score_long, score_short)} (الحد الأدنى المحسن: {base_threshold})',
+        f'🔒 نظام v46.0: Smart Confirmation & Trend Filter مفعل'
     ]
 
     result = {
@@ -715,9 +715,9 @@ def scan_for_emerging_trends(limit_symbol_count=50):
             if res and res.get('direction') in ['LONG', 'SHORT']:
                 score = res.get('score', 0)
                 rr = res.get('rr_ratio', 0)
-                if score >= 70:
+                if score >= 75:
                     tier = 'A+'
-                elif score >= 55:
+                elif score >= 65:
                     tier = 'A'
                 else:
                     tier = 'B'
@@ -737,11 +737,11 @@ def scan_for_emerging_trends(limit_symbol_count=50):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbol_count=50)
     if not results:
-        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص (v45.9)."
+        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مؤكدة (v46.0)."
 
     lines = [
-        "🤖 BingX Institutional Suite v45.9 [Early Momentum & Fast Capture]",
-        "⚡ أسرع الفرص لاقتناص العزم من بدايته:",
+        "🤖 BingX Institutional Suite v46.0 [Smart Confirmation & Trend Filter]",
+        "⚡ الفرص المؤكدة ذات الفلترة الذكية:",
         "━━━━━━━━━━━━━━━━━━"
     ]
     for idx, d in enumerate(results, 1):
@@ -753,7 +753,7 @@ def generate_trend_scan_report():
             f" 📍 دخول: `{d.get('entry_min')} - {d.get('entry_max')}`\n"
             f" 🛑 SL: `{d.get('stop_loss')}` | 🎯 TP1: `{d.get('tp1')}`\n"
         )
-    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة للحصول على الخطة التفصيلية.")
+    lines.append("━━━━━━━━━━━━━━━━━━\nاكتب اسم أي عملة للحصول على الخطة التفصيلية المؤكدة.")
     return '\n'.join(lines)
 
 def generate_debug_scan_report():
@@ -769,7 +769,7 @@ def generate_debug_scan_report():
             res = _get_coin_analysis_core(sym, '1h')
             dr = res.get('direction')
             sc = res.get('score', 0)
-            if sc >= 45:
+            if sc >= 60:
                 passed_score += 1
             if dr in ['LONG', 'SHORT']:
                 final_markets += 1
@@ -780,10 +780,10 @@ def generate_debug_scan_report():
             details.append(f"• {sym}: ERROR ({str(e)})")
 
     rep = [
-        f"🔍 **تقرير فحص التصحيح والاختبار (Debug Scan v45.9)**",
+        f"🔍 **تقرير فحص التأكيد الذكي (Debug Scan v46.0)**",
         f"• إجمالي العملات المفحوصة: {scanned}",
-        f"• اجتازت الحد الأدنى للـ Score: {passed_score}",
-        f"• إجمالي الصفقات القابلة للتنفيذ (MARKET): {final_markets}",
+        f"• اجتازت شروط التأكيد والـ Score: {passed_score}",
+        f"• إجمالي الصفقات المؤكدة (MARKET): {final_markets}",
         f"\n📋 تفاصيل عينة العملات:",
     ]
     rep.extend(details[:15])
@@ -835,7 +835,7 @@ def generate_evidence_report(d):
         emo, text_dir = '🟡', 'NO TRADE'
 
     lines = [
-        '🤖 BingX Institutional Suite v45.9 [Early Momentum & Fast Capture]',
+        '🤖 BingX Institutional Suite v46.0 [Smart Confirmation & Trend Filter]',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -847,7 +847,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية وإدارة المخاطر (v45.9)',
+            '📋 الخطة المؤسسية وإدارة المخاطر المؤكدة (v46.0)',
             f"\n📍 منطقة الدخول المقبولة:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
@@ -861,7 +861,7 @@ def generate_evidence_report(d):
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🟡 NO TRADE - لم يتم استيفاء المعايير التنفيذية (v45.9).'
+            '🟡 NO TRADE - لم يتم استيفاء معايير التأكيد الذكي (v46.0).'
         ])
     if d.get('analysis_lines'):
         lines.append('\n🔍 التفاصيل الفنية والتدقيق الداخلي:')
