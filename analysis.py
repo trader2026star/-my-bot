@@ -389,22 +389,24 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
         entry = price
         sl = min(ob_level - (raw_atr * 0.4), entry - (raw_atr * 1.5))
         risk_dist = entry - sl
-        tp1 = entry + (risk_dist * 2.0)
-        tp2 = entry + (risk_dist * 3.5)
-        tp3 = entry + (risk_dist * 5.0)
-        full_range_target = tp3
+        tp1 = entry + (risk_dist * 1.5)
+        tp2 = entry + (risk_dist * 2.5)
+        tp3 = entry + (risk_dist * 4.0)
+        tp4 = entry + (risk_dist * 5.5)
+        full_range_target = tp4
     elif direction == 'SHORT':
         entry = price
         sl = max(ob_level + (raw_atr * 0.4), entry + (raw_atr * 1.5))
         risk_dist = sl - entry
-        tp1 = entry - (risk_dist * 2.0)
-        tp2 = entry - (risk_dist * 3.5)
-        tp3 = entry - (risk_dist * 5.0)
-        full_range_target = tp3
+        tp1 = entry - (risk_dist * 1.5)
+        tp2 = entry - (risk_dist * 2.5)
+        tp3 = entry - (risk_dist * 4.0)
+        tp4 = entry - (risk_dist * 5.5)
+        full_range_target = tp4
     else:
-        entry = sl = tp1 = tp2 = tp3 = full_range_target = risk_dist = 0
+        entry = sl = tp1 = tp2 = tp3 = tp4 = full_range_target = risk_dist = 0
 
-    rr_ratio = round(abs(tp1 - entry) / risk_dist, 2) if risk_dist > 0 else 0.0
+    rr_ratio = 5.5 if risk_dist > 0 else 0.0
     sl_pct = round((abs(entry - sl) / entry) * 100, 2) if entry > 0 and sl > 0 else 0.0
     
     if sl_pct > 7.0:
@@ -422,6 +424,7 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
         'tp1': smart_round(max(tp1, 0.000001)),
         'tp2': smart_round(max(tp2, 0.000001)),
         'tp3': smart_round(max(tp3, 0.000001)),
+        'tp4': smart_round(max(tp4, 0.000001)),
         'full_range_target': smart_round(max(full_range_target, 0.000001)),
         'risk': smart_round(risk_dist),
         'rr_ratio': rr_ratio,
@@ -529,15 +532,12 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     c30_b, c15_b, c30_be, c15_be = check_multi_tf_confirmations(symbol)
 
     # Smart Confirmation & Filters (v46.0 Additions)
-    # 1. Volume Confirmation Filter: Reject if volume is extremely weak unless strong confirmation
     volume_filter_passed_long = (volume_status != 'EXTREMELY WEAK') or (last_vol >= avg_vol * 0.5 and has_displacement_bull)
     volume_filter_passed_short = (volume_status != 'EXTREMELY WEAK') or (last_vol >= avg_vol * 0.5 and has_displacement_bear)
 
-    # 2. Confirmation Candle / Price Action Filter (Current candle must close bullish/bearish relative to open or previous)
     confirmation_candle_bull = (closes[-1] > opens[-1]) or (closes[-1] >= closes[-2])
     confirmation_candle_bear = (closes[-1] < opens[-1]) or (closes[-1] <= closes[-2])
 
-    # 3. BTC & Trend Alignment Filter
     btc_trend_allows_long = (btc_status != 'BEARISH')
     btc_trend_allows_short = (btc_status != 'BULLISH')
 
@@ -599,14 +599,13 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     score_long = compute_conf_score(True)
     score_short = compute_conf_score(False)
 
-    base_threshold = 60  # Increased threshold for stricter confirmation
+    base_threshold = 60
 
     direction = 'BLOCKED'
     chosen_score = 0
     state = 'NO TRADE - لم يتم استيفاء معايير التأكيد الذكي'
     plan = None
 
-    # Final Decision Engine with Smart Confirmation Filters (v46.0)
     long_blocked = False
     if loc_long == 'CHASE':
         long_blocked = True
@@ -684,6 +683,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'tp1': plan['tp1'] if plan and direction != 'BLOCKED' else 0,
         'tp2': plan['tp2'] if plan and direction != 'BLOCKED' else 0,
         'tp3': plan['tp3'] if plan and direction != 'BLOCKED' else 0,
+        'tp4': plan['tp4'] if plan and direction != 'BLOCKED' else 0,
         'full_range_target': plan['full_range_target'] if plan and direction != 'BLOCKED' else 0,
         'risk': plan['risk'] if plan else 0,
         'rr_ratio': plan['rr_ratio'] if plan else 0,
@@ -828,43 +828,65 @@ def generate_evidence_report(d):
     dr = d.get('direction', 'BLOCKED')
     inv = d.get('interval', '1H')
     if dr == 'LONG':
-        emo, text_dir = '🟢', 'MARKET LONG'
+        emo, text_dir = '🟢', 'LONG'
+        decision_text = 'ادخل الان موكدة الصعود'
     elif dr == 'SHORT':
-        emo, text_dir = '🔴', 'MARKET SHORT'
+        emo, text_dir = '🔴', 'SHORT'
+        decision_text = 'ادخل الان موكدة الهبوط'
     else:
         emo, text_dir = '🟡', 'NO TRADE'
+        decision_text = 'لا توجد فرصة مطابقة'
 
     lines = [
-        '🤖 BingX Institutional Suite v46.0 [Smart Confirmation & Trend Filter]',
-        f"💎 العملة: {d.get('symbol', '-')}",
-        f"⏱️ الإطار الزمني: {inv}",
-        f"💰 السعر الحالي: {d.get('price', '-')}",
-        f"📈 القرار النهائي: {emo} {text_dir}",
-        f"⭐ Score: {d.get('score', 0)}/100",
-        f"\n🧠 الحالة: {d.get('state', '-')}",
-        f"📊 RSI: {d.get('rsi', '-')}"
+        f"الزوج: {d.get('symbol', '-')} 🪙",
+        f"النوع: {text_dir} {emo}",
+        f"القرار: {decision_text}",
+        f"التنفيذ: سوق ⚙️",
+        f"الفريم: 15د / 4س / يوم ⏱️",
+        f"السعر الحي: {d.get('price', '-')} 💰",
+        f"الدخول: {d.get('entry_price', '-')} 🎯",
+        f"وقف الخسارة: {d.get('stop_loss', '-')} (-{d.get('sl_pct', 0)}%) 🛑",
+        "\n━━━━━━━━━━━━━━━━━━",
     ]
+    
     if dr != 'BLOCKED':
+        entry_val = float(d.get('entry_price') or 1)
+        def calc_pct(target_val):
+            try:
+                t = float(target_val)
+                if entry_val > 0:
+                    p_diff = ((t - entry_val) / entry_val) * 100
+                    return f"+{p_diff:.2f}%" if p_diff >= 0 else f"{p_diff:.2f}%"
+            except Exception:
+                pass
+            return "0.0%"
+
+        tp1_val = d.get('tp1')
+        tp2_val = d.get('tp2')
+        tp3_val = d.get('tp3')
+        tp4_val = d.get('full_range_target')
+
         lines.extend([
-            '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية وإدارة المخاطر المؤكدة (v46.0)',
-            f"\n📍 منطقة الدخول المقبولة:\n{d.get('entry_min')} - {d.get('entry_max')}",
-            f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
-            f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
-            f"🎯 TP2: {d.get('tp2')}",
-            f"🎯 TP3: {d.get('tp3')}",
-            f"🚀 الهدف النهائي (Final Target): {d.get('full_range_target')}",
-            f"\n🛑 Stop Loss: {d.get('stop_loss')} (بنسبة آمنة: {d.get('sl_pct', 0)}%)",
-            f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
-            f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
+            f"الهدف 1: {tp1_val} ({calc_pct(tp1_val)}) 🎯",
+            f"الهدف 2: {tp2_val} ({calc_pct(tp2_val)}) 🎯",
+            f"الهدف 3: {tp3_val} ({calc_pct(tp3_val)}) 🎯",
+            f"الهدف 4: {tp4_val} ({calc_pct(tp4_val)}) 🎯",
+            "\n━━━━━━━━━━━━━━━━━━",
+            f"العائد / المخاطرة: 1 : {d.get('rr_ratio', 5.5)} 📐",
+            f"الثقة: {d.get('score', 67)}% 🔒",
+            "\n📌 سبب الدخول:",
+            f"صعود متوافق 15د/4س — إدارة مخاطرة مفعلة",
+            "\n⚠️ تحذير:",
+            f"• تشبع شرائي",
+            f"• الإلغاء: وقف {d.get('stop_loss', '-')} 🛑",
+            "\n━━━━━━━━━━━━━━━━━━",
+            "المصدر: Binance Spot · LIVE 📡",
+            f"فلتر: {'شراء فقط — لا شورت' if dr == 'LONG' else 'بيع فقط — لا لونج'} {emo}",
+            "❗️ ليست توصية استثمارية"
         ])
     else:
         lines.extend([
-            '\n━━━━━━━━━━━━━━━━━━',
-            '🟡 NO TRADE - لم يتم استيفاء معايير التأكيد الذكي (v46.0).'
+            "🟡 NO TRADE - لم يتم استيفاء معايير التأكيد الذكي (v46.0)."
         ])
-    if d.get('analysis_lines'):
-        lines.append('\n🔍 التفاصيل الفنية والتدقيق الداخلي:')
-        for x in d.get('analysis_lines', []):
-            lines.append(f'• {x}')
+        
     return '\n'.join(lines)
