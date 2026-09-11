@@ -1,4 +1,4 @@
-# analysis.py - BingX Institutional SMC & Risk Suite v45.8 (Volume Risk + Counter-Trend Protection + Target Integrity Patch)
+# analysis.py - BingX Institutional SMC & Risk Suite v45.9 (Advanced Position Sizing & Risk Management Patch)
 import time
 import logging
 import threading
@@ -6,7 +6,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.8', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/45.9', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -411,7 +411,11 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
         return None
 
     allowed_risk_usd = portfolio_size * (risk_pct / 100.0)
-    position_size_usd = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
+    position_size_spot = round(allowed_risk_usd / (sl_pct / 100.0), 2) if sl_pct > 0 else 0.0
+    
+    suggested_leverage = max(1, round(position_size_spot / portfolio_size))
+    position_size_futures = round(position_size_spot / suggested_leverage, 2)
+    
     breakeven_trigger = tp1
 
     return {
@@ -426,7 +430,10 @@ def calculate_institutional_trade_plan(direction, price, klines, atr, ob_level, 
         'risk': smart_round(risk_dist),
         'rr_ratio': rr_ratio,
         'sl_pct': sl_pct,
-        'position_size_usd': position_size_usd,
+        'position_size_usd': position_size_spot,
+        'position_size_spot': position_size_spot,
+        'position_size_futures': position_size_futures,
+        'suggested_leverage': suggested_leverage,
         'breakeven_trigger': smart_round(breakeven_trigger)
     }
 
@@ -562,7 +569,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     counter_trend_long = (trend_4h != trend_1h and trend_1h == 'BULLISH')
     counter_trend_short = (trend_4h != trend_1h and trend_1h == 'BEARISH')
 
-    # Core Evidence & Volume Risk Rules (v45.8)
     volume_risk_status = "NORMAL"
     counter_trend_risk_status = "NORMAL"
 
@@ -579,7 +585,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     core_evidence_long = pat1_long or pat2_long or pat3_long or pat4_long
     core_evidence_short = pat1_short or pat2_short or pat3_short or pat4_short
 
-    # Counter-Trend + Extremely Weak Volume Protection (v45.8)
     counter_trend_blocked_long = False
     counter_trend_blocked_short = False
 
@@ -633,6 +638,11 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             if btc_status == 'BEARISH': score += 5
             elif btc_status == 'BULLISH': score -= 5
             if has_displacement_bear: score += 5
+        
+        # Penalize if counter-trend in weak volume market regime
+        if market_regime == "BEAR" and volume_status == "WEAK" and is_long:
+            score -= 20
+
         return max(0, min(100, score))
 
     score_long = compute_conf_score(True)
@@ -650,8 +660,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     state = 'NO TRADE - لم يتم استيفاء معايير الدخول'
     plan = None
 
-    # Final Decision Engine (v45.8 strict hard-block priority)
-    # Evaluate LONG Candidate
     long_blocked = False
     if not ob_valid_bull:
         long_blocked = True
@@ -673,9 +681,8 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             plan = temp_plan
             direction = 'LONG'
             chosen_score = score_long
-            state = 'MARKET LONG - صفقة مؤسسية مؤكدة (v45.8)'
+            state = 'MARKET LONG - صفقة مؤسسية مؤكدة (v45.9)'
 
-    # If LONG not chosen, evaluate SHORT Candidate
     if direction == 'BLOCKED':
         short_blocked = False
         if not ob_valid_bear:
@@ -698,7 +705,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
                 plan = temp_plan
                 direction = 'SHORT'
                 chosen_score = score_short
-                state = 'MARKET SHORT - صفقة مؤسسية هابطة مؤكدة (v45.8)'
+                state = 'MARKET SHORT - صفقة مؤسسية هابطة مؤكدة (v45.9)'
 
     funding_rate = get_funding_rate(symbol)
     funding_pct = funding_rate * 100
@@ -716,7 +723,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         f'Confirmation Score: {max(score_long, score_short)} (الحد الأدنى: {base_threshold})',
         f'Core Evidence Gate: {"✅ PASS" if (core_evidence_long or core_evidence_short) else "❌ FAILED"}',
         f'Final Gate: {"HARD BLOCK" if volume_risk_status.startswith("BLOCKED") or counter_trend_risk_status == "BLOCKED" else "PASS"}',
-        f'🔒 نظام v45.8: Institutional SMC & Risk Suite مفعل'
+        f'🔒 نظام v45.9: Advanced Sizing & Institutional Risk Suite مفعل'
     ]
 
     result = {
@@ -740,6 +747,9 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'rr_ratio': plan['rr_ratio'] if plan else 0,
         'sl_pct': plan['sl_pct'] if plan else 0,
         'position_size_usd': plan['position_size_usd'] if plan else 0,
+        'position_size_spot': plan['position_size_spot'] if plan else 0,
+        'position_size_futures': plan['position_size_futures'] if plan else 0,
+        'suggested_leverage': plan['suggested_leverage'] if plan else 1,
         'breakeven_trigger': plan['breakeven_trigger'] if plan else 0,
         'funding_rate': funding_pct,
         'open_interest': open_interest,
@@ -790,10 +800,10 @@ def scan_for_emerging_trends(limit_symbol_count=50):
 def generate_trend_scan_report():
     results = scan_for_emerging_trends(limit_symbol_count=50)
     if not results:
-        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مكتملة الشروط القابلة للتنفيذ (v45.8)."
+        return "🟡 NO TRADE - لم يتم العثور حالياً على فرص مكتملة الشروط القابلة للتنفيذ (v45.9)."
 
     lines = [
-        "🤖 BingX Institutional Suite v45.8 [Volume Risk & Target Integrity]",
+        "🤖 BingX Institutional Suite v45.9 [Advanced Sizing & Risk Suite]",
         "⚡ أفضل الفرص التنفيذية المؤكدة حالياً:",
         "━━━━━━━━━━━━━━━━━━"
     ]
@@ -833,7 +843,7 @@ def generate_debug_scan_report():
             details.append(f"• {sym}: ERROR ({str(e)})")
 
     rep = [
-        f"🔍 **تقرير فحص التصحيح والاختبار (Debug Scan v45.8)**",
+        f"🔍 **تقرير فحص التصحيح والاختبار (Debug Scan v45.9)**",
         f"• إجمالي العملات المفحوصة: {scanned}",
         f"• اجتازت الحد الأدنى للـ Score: {passed_score}",
         f"• إجمالي الصفقات القابلة للتنفيذ (MARKET): {final_markets}",
@@ -888,7 +898,7 @@ def generate_evidence_report(d):
         emo, text_dir = '🟡', 'NO TRADE'
 
     lines = [
-        '🤖 BingX Institutional Suite v45.8 [Volume Risk & Target Integrity]',
+        '🤖 BingX Institutional Suite v45.9 [Advanced Sizing & Risk Suite]',
         f"💎 العملة: {d.get('symbol', '-')}",
         f"⏱️ الإطار الزمني: {inv}",
         f"💰 السعر الحالي: {d.get('price', '-')}",
@@ -900,7 +910,7 @@ def generate_evidence_report(d):
     if dr != 'BLOCKED':
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '📋 الخطة المؤسسية وإدارة المخاطر (v45.8)',
+            '📋 الخطة المؤسسية وإدارة المخاطر (v45.9)',
             f"\n📍 منطقة الدخول المقبولة:\n{d.get('entry_min')} - {d.get('entry_max')}",
             f"💰 سعر الدخول الفعلي: {d.get('entry_price')}",
             f"\n🎯 TP1 (هدف التأمين): {d.get('tp1')} -> (عند الوصول له ارفع الوقف لـ Break-Even)",
@@ -909,12 +919,14 @@ def generate_evidence_report(d):
             f"🚀 الهدف النهائي (Final Target): {d.get('full_range_target')}",
             f"\n🛑 Stop Loss: {d.get('stop_loss')} (بنسبة آمنة: {d.get('sl_pct', 0)}%)",
             f"⚖️ Risk:Reward: 1 : {d.get('rr_ratio', 0.0)}",
-            f"🛡️ حجم الصفقة الآمن (محفظة 1000$ بمخاطرة 1%): ~{d.get('position_size_usd', 0)}$"
+            f"\n🛡️ إدارة رأس المال الحسابية (محفظة 1000$ بمخاطرة 1%):",
+            f"• حجم الصفقة الفوري (SPOT): {d.get('position_size_spot', 0)}$",
+            f"• حجم صفقة العقود (FUTURES): {d.get('position_size_futures', 0)}$ برافعة مالية مقترحة {d.get('suggested_leverage', 1)}x"
         ])
     else:
         lines.extend([
             '\n━━━━━━━━━━━━━━━━━━',
-            '🟡 NO TRADE - لم يتم استيفاء المعايير التنفيذية (v45.8).'
+            '🟡 NO TRADE - لم يتم استيفاء المعايير التنفيذية (v45.9).'
         ])
     if d.get('analysis_lines'):
         lines.append('\n🔍 التفاصيل الفنية والتدقيق الداخلي:')
