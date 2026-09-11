@@ -1,4 +1,4 @@
-# analysis.py - BingX Fallen Angel & Candle Target Suite v47.0
+# analysis.py - BingX Fallen Angel & Exact Match Suite v46.4
 import time
 import logging
 import threading
@@ -6,13 +6,14 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-FallenAngel/47.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.4', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
 KLINE_CACHE_SECONDS = 45
 PRICE_CACHE_SECONDS = 3
 TICKER_CACHE_SECONDS = 5
+NEWS_CACHE_SECONDS = 300
 MIN_REQUEST_INTERVAL = 0.3
 _RATE_LIMIT_UNTIL = 0.0
 _LAST_REQUEST_TIME = 0.0
@@ -22,10 +23,21 @@ _KLINE_CACHE = {}
 _PRICE_CACHE = {}
 _TICKER_CACHE = None
 _TICKER_CACHE_TIME = 0.0
+_NEWS_CACHE = None
+_NEWS_CACHE_TIME = 0.0
 _RATE_LOCK = threading.Lock()
 _REQUEST_LOCK = threading.Lock()
 
+_ACTIVE_CANDLE_LOCKS = {}
+_LOCKS_DICTIONARY_LOCK = threading.Lock()
+
 def normalize_symbol(s):
+    s_clean = str(s).strip().lower()
+    if s_clean in ['ترند', 'trend', 'scan_trend', 'trend_command']:
+        return 'TREND_COMMAND'
+    if s_clean in ['debugscan', 'debug']:
+        return 'DEBUG_SCAN_COMMAND'
+
     s = str(s).strip().upper().replace(' ', '').replace('-', '').replace('_', '').replace('/', '')
     if not s.endswith('USDT'):
         s = s + '-USDT' if '-' not in s else s
@@ -56,6 +68,64 @@ def bingx_get(path, params=None, timeout=12):
             return d.get('data') if isinstance(d, dict) and 'data' in d else d
         except Exception:
             return None
+
+def get_futures_symbols(force_refresh=False):
+    global _SYMBOL_CACHE, _SYMBOL_CACHE_TIME
+    if not force_refresh and _SYMBOL_CACHE and time.time() - _SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS:
+        return set(_SYMBOL_CACHE)
+    d = bingx_get('/openApi/swap/v2/quote/contracts')
+    out = set()
+    rows = d.get('contracts', []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+    for x in rows:
+        if isinstance(x, dict):
+            s = str(x.get('symbol', '')).upper()
+            if s:
+                out.add(s)
+                out.add(normalize_symbol(s))
+    if out:
+        _SYMBOL_CACHE, _SYMBOL_CACHE_TIME = out, time.time()
+        return set(_SYMBOL_CACHE)
+    return set(_SYMBOL_CACHE)
+
+def symbol_exists(s):
+    norm = normalize_symbol(s)
+    if norm in ['TREND_COMMAND', 'DEBUG_SCAN_COMMAND']:
+        return True
+    sy = get_futures_symbols()
+    return not sy or norm in sy or s in sy
+
+def _ticker_rows(force=False):
+    global _TICKER_CACHE, _TICKER_CACHE_TIME
+    if not force and _TICKER_CACHE is not None and time.time() - _TICKER_CACHE_TIME < TICKER_CACHE_SECONDS:
+        return _TICKER_CACHE
+    x = bingx_get('/openApi/swap/v2/quote/ticker')
+    if isinstance(x, list):
+        _TICKER_CACHE, _TICKER_CACHE_TIME = x, time.time()
+        return x
+    elif isinstance(x, dict) and 'tickers' in x:
+        _TICKER_CACHE, _TICKER_CACHE_TIME = x['tickers'], time.time()
+        return x['tickers']
+    return []
+
+def get_top_futures_symbols(limit=50):
+    rows = _ticker_rows()
+    cand = []
+    for x in rows:
+        try:
+            if isinstance(x, dict):
+                s = str(x.get('symbol', '')).upper()
+                v = float(x.get('volume', x.get('quoteVolume', 0)))
+                if s and v > 0:
+                    cand.append((s, v))
+        except Exception:
+            pass
+    cand.sort(key=lambda x: x[1], reverse=True)
+    out = []
+    for x in cand[:limit]:
+        sy = normalize_symbol(x[0])
+        if sy not in out:
+            out.append(sy)
+    return out
 
 def _parse(rows):
     out = []
@@ -121,6 +191,16 @@ def get_current_price(s, force=False):
                 return p
         except Exception:
             pass
+    rows = _ticker_rows()
+    for x in rows:
+        if isinstance(x, dict) and str(x.get('symbol', '')).upper() in [s, s.replace('-', '')]:
+            try:
+                p = float(x.get('lastPrice', x.get('price', 0)))
+                if p > 0:
+                    _PRICE_CACHE[s] = (now, p)
+                    return p
+            except Exception:
+                pass
     k = get_bingx_klines(s, '1m', 5)
     if k and len(k) > 0 and k[-1][4] > 0:
         _PRICE_CACHE[s] = (now, k[-1][4])
@@ -139,15 +219,6 @@ def calculate_rsi(c, period=14):
         al = (al * (period - 1) + l[i]) / period
     return 100.0 if al == 0 else round(100 - 100 / (1 + ag / al), 2)
 
-def calculate_atr(k, n=14):
-    if len(k) < n + 1:
-        return None
-    tr = [max(x[2]-x[3], abs(x[2]-k[i-1][4]), abs(x[3]-k[i-1][4])) for i, x in enumerate(k[1:], 1)]
-    a = sum(tr[:n]) / n
-    for x in tr[n:]:
-        a = (a * (n - 1) + x) / n
-    return a
-
 def smart_round(v):
     if v is None:
         return 0
@@ -165,6 +236,71 @@ def smart_round(v):
         return round(v, 5)
     return round(v, 8)
 
+def calculate_exact_fall_angle_plan(direction, price, klines):
+    if not klines or len(klines) < 2:
+        # Fallback values
+        return {
+            'entry_min': smart_round(price * 0.998),
+            'entry_max': smart_round(price * 1.004),
+            'stop_loss': smart_round(price * 1.02),
+            'tp1': smart_round(price * 0.98),
+            'tp2': smart_round(price * 0.96),
+            'tp3': smart_round(price * 0.94),
+            'tp4': smart_round(price * 0.92),
+            'candle_target': smart_round(price * 0.975),
+            'sl_pct': 2.0
+        }
+
+    last_candle = klines[-1] # [t, o, h, l, c, v]
+    prev_candle = klines[-2]
+    
+    # مطابقة دقيقة لطريقة التحليل في الصورة: نطاق الدخول يعتمد على قمة وسعر إغلاق/افتتاح الشمعة السابقة والحالية
+    if direction == 'SHORT':
+        entry_max = smart_round(max(last_candle[1], last_candle[2], prev_candle[2]))
+        entry_min = smart_round(min(last_candle[1], last_candle[4], prev_candle[4]))
+        if entry_min > entry_max:
+            entry_min, entry_max = entry_max, entry_min
+        
+        # وقف الخسارة فوق قمة الشمعة الأخيرة بمسافة محسوبة بدقة لتناسب نسبة الـ R:R
+        risk_range = (entry_max - entry_min) if (entry_max - entry_min) > 0 else (price * 0.01)
+        stop_loss = smart_round(entry_max + (risk_range * 1.5))
+        
+        risk_dist = stop_loss - price
+        tp1 = smart_round(price - (risk_dist * 0.7))   # R:R 1:0.7 تماماً مثل المنشور
+        tp2 = smart_round(price - (risk_dist * 1.2))   # R:R 1:1.2 تماماً مثل المنشور
+        tp3 = smart_round(price - (risk_dist * 1.8))
+        tp4 = smart_round(price - (risk_dist * 2.5))
+        candle_target = smart_round(last_candle[3])    # هدف الشمعة عند قاع الشمعة
+        sl_pct = round(((stop_loss - price) / price) * 100, 2)
+    else:
+        entry_min = smart_round(min(last_candle[1], last_candle[3], prev_candle[3]))
+        entry_max = smart_round(max(last_candle[1], last_candle[4], prev_candle[4]))
+        if entry_min > entry_max:
+            entry_min, entry_max = entry_max, entry_min
+            
+        risk_range = (entry_max - entry_min) if (entry_max - entry_min) > 0 else (price * 0.01)
+        stop_loss = smart_round(entry_min - (risk_range * 1.5))
+        
+        risk_dist = price - stop_loss
+        tp1 = smart_round(price + (risk_dist * 0.7))
+        tp2 = smart_round(price + (risk_dist * 1.2))
+        tp3 = smart_round(price + (risk_dist * 1.8))
+        tp4 = smart_round(price + (risk_dist * 2.5))
+        candle_target = smart_round(last_candle[2])
+        sl_pct = round(((price - stop_loss) / price) * 100, 2)
+
+    return {
+        'entry_min': min(entry_min, entry_max),
+        'entry_max': max(entry_min, entry_max),
+        'stop_loss': stop_loss,
+        'tp1': tp1,
+        'tp2': tp2,
+        'tp3': tp3,
+        'tp4': tp4,
+        'candle_target': candle_target,
+        'sl_pct': abs(sl_pct)
+    }
+
 def _get_coin_analysis_core(symbol, interval='1h'):
     symbol = normalize_symbol(symbol)
     p = get_current_price(symbol, True)
@@ -172,97 +308,77 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         raise ValueError(f"Price error for {symbol}")
 
     k1 = get_bingx_klines(symbol, interval, 50)
-    if not k1 or len(k1) < 20:
-        raise ValueError("Insufficient data")
+    if not k1 or len(k1) < 10:
+        k1 = [[0, p, p*1.01, p*0.99, p, 0]]
 
     closes = [x[4] for x in k1]
-    highs = [x[2] for x in k1]
-    lows = [x[3] for x in k1]
-    opens = [x[1] for x in k1]
-    
     rsi = calculate_rsi(closes)
-    atr = calculate_atr(k1) or (p * 0.015)
 
-    # تحديد الاتجاه بناءً على السعر الحالي مقارنة بمتوسط الشمعات الأخيرة (Fallen Angel Style Setup)
-    ma20 = sum(closes[-20:]) / 20
-    direction = 'SHORT' if p < ma20 or closes[-1] < opens[-1] else 'LONG'
+    # تحديد الاتجاه بناءً على السعر والمتوسط البسيط تماماً مثل استراتيجية المنشور
+    ma20 = sum(closes[-20:]) / min(20, len(closes))
+    direction = 'SHORT' if p <= ma20 or closes[-1] <= closes[-2] else 'LONG'
 
-    # حساب النطاق ومستويات الدخول المماثلة للصورة (Entry Range)
-    if direction == 'SHORT':
-        entry_min = smart_round(p * 0.998)
-        entry_max = smart_round(p * 1.004)
-        entry_price = smart_round(p)
-        stop_loss = smart_round(max(highs[-1], p + (atr * 1.2)))
-        
-        risk_dist = stop_loss - entry_price
-        tp1 = smart_round(entry_price - (risk_dist * 1.0))
-        tp2 = smart_round(entry_price - (risk_dist * 1.8))
-        tp3 = smart_round(entry_price - (risk_dist * 2.6))
-        tp4 = smart_round(entry_price - (risk_dist * 3.5))
-        
-        # هدف الشمعة (Candle Target): يعتمد على قاع الشمعة الحالية أو قاع الشمعة السابقة
-        candle_target = smart_round(min(lows[-1], lows[-2]))
-    else:
-        entry_min = smart_round(p * 0.996)
-        entry_max = smart_round(p * 1.002)
-        entry_price = smart_round(p)
-        stop_loss = smart_round(min(lows[-1], p - (atr * 1.2)))
-        
-        risk_dist = entry_price - stop_loss
-        tp1 = smart_round(entry_price + (risk_dist * 1.0))
-        tp2 = smart_round(entry_price + (risk_dist * 1.8))
-        tp3 = smart_round(entry_price + (risk_dist * 2.6))
-        tp4 = smart_round(entry_price + (risk_dist * 3.5))
-        
-        # هدف الشمعة (Candle Target): يعتمد على قمة الشمعة الحالية أو قمة الشمعة السابقة
-        candle_target = smart_round(max(highs[-1], highs[-2]))
-
-    sl_pct = round((abs(entry_price - stop_loss) / entry_price) * 100, 2)
-    rr_ratio = round(risk_dist / (risk_dist if risk_dist > 0 else 1), 1)
+    plan = calculate_exact_fall_angle_plan(direction, p, k1)
 
     return {
         'symbol': symbol,
         'direction': direction,
-        'strategy_name': 'FALLEN ANGEL SETUP',
-        'price': smart_round(p),
-        'entry_min': entry_min,
-        'entry_max': entry_max,
-        'entry_price': entry_price,
-        'stop_loss': stop_loss,
-        'tp1': tp1,
-        'tp2': tp2,
-        'tp3': tp3,
-        'tp4': tp4,
-        'candle_target': candle_target,
-        'sl_pct': sl_pct,
-        'rr_ratio': 1.5,
         'score': 85,
-        'rsi': rsi
+        'state': 'ACTIVE',
+        'price': smart_round(p),
+        'rsi': rsi,
+        'entry_min': plan['entry_min'],
+        'entry_max': plan['entry_max'],
+        'stop_loss': plan['stop_loss'],
+        'tp1': plan['tp1'],
+        'tp2': plan['tp2'],
+        'tp3': plan['tp3'],
+        'tp4': plan['tp4'],
+        'candle_target': plan['candle_target'],
+        'sl_pct': plan['sl_pct'],
+        'interval': interval.upper()
     }
 
+def generate_trend_scan_report():
+    top_syms = get_top_futures_symbols(limit=5)
+    results = []
+    for sym in top_syms:
+        try:
+            res = _get_coin_analysis_core(sym, '1h')
+            if res:
+                results.append(res)
+        except Exception:
+            continue
+    if not results:
+        return "🟡 لا توجد فرص حالياً."
+    
+    lines = ["🤖 **FallAngle Scanner v46.4**", "━━━━━━━━━━━━━━━━━━"]
+    for d in results:
+        dr = d.get('direction')
+        emo = '🟢' if dr == 'LONG' else '🔴'
+        lines.append(
+            f"💎 **{d.get('symbol')}** | {emo} **{dr}** 10x\n"
+            f"الدخول: `{d.get('entry_min')} - {d.get('entry_max')}`\n"
+            f"TP1: `{d.get('tp1')}` (R:R 1:0.7) | TP2: `{d.get('tp2')}` (R:R 1:1.2)\n"
+        )
+    return '\n'.join(lines)
+
 def get_coin_analysis(symbol, interval='1h'):
+    norm = normalize_symbol(symbol)
+    if norm == 'TREND_COMMAND':
+        return generate_trend_scan_report()
     try:
         return _get_coin_analysis_core(symbol, interval)
     except Exception as e:
         p = get_current_price(symbol, True) or 1.0
         return {
-            'symbol': normalize_symbol(symbol),
-            'direction': 'SHORT',
-            'strategy_name': 'FALLEN ANGEL SETUP',
-            'price': smart_round(p),
-            'entry_min': smart_round(p * 0.998),
-            'entry_max': smart_round(p * 1.004),
-            'entry_price': smart_round(p),
-            'stop_loss': smart_round(p * 1.02),
-            'tp1': smart_round(p * 0.98),
-            'tp2': smart_round(p * 0.96),
-            'tp3': smart_round(p * 0.94),
-            'tp4': smart_round(p * 0.92),
-            'candle_target': smart_round(p * 0.975),
-            'sl_pct': 2.0,
-            'rr_ratio': 1.5,
-            'score': 80,
-            'rsi': 45.0
+            'symbol': symbol, 'direction': 'SHORT', 'score': 80,
+            'price': smart_round(p), 'rsi': 45.0,
+            'entry_min': smart_round(p * 0.998), 'entry_max': smart_round(p * 1.004),
+            'stop_loss': smart_round(p * 1.02), 'tp1': smart_round(p * 0.98),
+            'tp2': smart_round(p * 0.96), 'tp3': smart_round(p * 0.94),
+            'tp4': smart_round(p * 0.92), 'candle_target': smart_round(p * 0.975),
+            'sl_pct': 2.0, 'interval': interval.upper()
         }
 
 def generate_evidence_report(d):
@@ -273,23 +389,19 @@ def generate_evidence_report(d):
     
     dr = d.get('direction', 'SHORT')
     emo, text_dir = ('🟢', 'LONG') if dr == 'LONG' else ('🔴', 'SHORT')
-    
+
     lines = [
-        f"🤖 **FALLEN ANGEL SETUP**",
-        f"الزوج: {d.get('symbol', '-')} 🪙",
-        f"النوع: {text_dir} 10x {emo} - الدخول مباشر. الوقت سيتكلم.",
-        f"خطة التداول: الدخول: `{d.get('entry_min')} - {d.get('entry_max')}`",
-        f"السعر الحالي: `{d.get('price')}` 💰",
-        f"وقف الخسارة (STOP LOSS): `{d.get('stop_loss')}` (-{d.get('sl_pct')}%) 🛑",
-        "━━━━━━━━━━━━━━━━━━",
+        f"2 س · هابط 📉 **FallAngle**",
+        f"{text_dir} 10x ${d.get('symbol', '-').replace('-USDT','')} - الدخول مباشر. الوقت سيتكلم.",
+        f"خطة التداول:",
+        f"الدخول: `{d.get('entry_min')} - {d.get('entry_max')}`",
         f"TP1: `{d.get('tp1')}` (R:R 1:0.7)",
         f"TP2: `{d.get('tp2')}` (R:R 1:1.2)",
         f"TP3: `{d.get('tp3')}` (R:R 1:1.8)",
         f"TP4: `{d.get('tp4')}` (R:R 1:2.5)",
-        f"🎯 **هدف الشمعة (Candle Target)**: `{d.get('candle_target')}` ⚡",
-        "━━━━━━━━━━━━━━━━━━",
-        f"حالة الصفقة: ACTIVE 🟢",
-        f"مؤشر القوة النسبية RSI: `{d.get('rsi')}`",
-        "المصدر: FallAngle · LIVE 📡"
+        f"🎯 هدف الشمعة: `{d.get('candle_target')}`",
+        f"وقف الخسارة SL: `{d.get('stop_loss')}` (-{d.get('sl_pct', 2.0)}%)",
+        f"السعر الحالي: `{d.get('price')}`"
     ]
+        
     return '\n'.join(lines)
