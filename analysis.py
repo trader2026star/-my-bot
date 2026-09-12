@@ -1,4 +1,4 @@
-# analysis.py - BingX Fallen Angel & Exact Match Suite v46.4
+# analysis.py - BingX Fallen Angel & Pin Bar Suite v46.5
 import time
 import logging
 import threading
@@ -6,7 +6,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.4', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/46.5', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -236,9 +236,44 @@ def smart_round(v):
         return round(v, 5)
     return round(v, 8)
 
+def find_pin_bar_target(direction, klines):
+    """
+    البحث عن شمعة الدبوس (Pin Bar) في آخر الشموع لتحديد هدف ذيل الشمعة بدقة كهدف مستقل.
+    """
+    if not klines or len(klines) < 3:
+        return 0
+    
+    # فحص آخر 3 شموع للبحث عن شمعة ذات ذيل بارز (Pin Bar)
+    best_pin_target = 0
+    for i in range(-1, -4, -1):
+        c = klines[i] # [t, o, h, l, c, v]
+        o, h, l, close_val = c[1], c[2], c[3], c[4]
+        body = abs(close_val - o)
+        total_range = h - l
+        if total_range == 0:
+            continue
+        
+        if direction == 'SHORT':
+        # في حالة الشورت: نبحث عن شمعة ذات ذيل علوي طويل (Shooting Star / Pin Bar)
+            upper_wick = h - max(o, close_val)
+            if upper_wick > (body * 1.8) and upper_wick >= (total_range * 0.5):
+                best_pin_target = h # ذيل الشمعة العلوي كمنطقة رفض أو هدف ارتداد
+                break
+        else:
+            # في حالة اللونغ: نبحث عن شمعة ذات ذيل سفلي طويل (Hammer / Pin Bar)
+            lower_wick = min(o, close_val) - l
+            if lower_wick > (body * 1.8) and lower_wick >= (total_range * 0.5):
+                best_pin_target = l # ذيل الشمعة السفلي كهدف
+                break
+                
+    if best_pin_target == 0:
+        # لو لم توجد شمعة دبوس مطابقة بدقة، يتم اختيار قاع أو قمة آخر شمعة
+        best_pin_target = klines[-1][3] if direction == 'SHORT' else klines[-1][2]
+        
+    return smart_round(best_pin_target)
+
 def calculate_exact_fall_angle_plan(direction, price, klines):
     if not klines or len(klines) < 2:
-        # Fallback values
         return {
             'entry_min': smart_round(price * 0.998),
             'entry_max': smart_round(price * 1.004),
@@ -248,29 +283,29 @@ def calculate_exact_fall_angle_plan(direction, price, klines):
             'tp3': smart_round(price * 0.94),
             'tp4': smart_round(price * 0.92),
             'candle_target': smart_round(price * 0.975),
+            'pin_bar_target': smart_round(price * 0.97),
             'sl_pct': 2.0
         }
 
-    last_candle = klines[-1] # [t, o, h, l, c, v]
+    last_candle = klines[-1]
     prev_candle = klines[-2]
     
-    # مطابقة دقيقة لطريقة التحليل في الصورة: نطاق الدخول يعتمد على قمة وسعر إغلاق/افتتاح الشمعة السابقة والحالية
     if direction == 'SHORT':
         entry_max = smart_round(max(last_candle[1], last_candle[2], prev_candle[2]))
         entry_min = smart_round(min(last_candle[1], last_candle[4], prev_candle[4]))
         if entry_min > entry_max:
             entry_min, entry_max = entry_max, entry_min
         
-        # وقف الخسارة فوق قمة الشمعة الأخيرة بمسافة محسوبة بدقة لتناسب نسبة الـ R:R
         risk_range = (entry_max - entry_min) if (entry_max - entry_min) > 0 else (price * 0.01)
         stop_loss = smart_round(entry_max + (risk_range * 1.5))
         
         risk_dist = stop_loss - price
-        tp1 = smart_round(price - (risk_dist * 0.7))   # R:R 1:0.7 تماماً مثل المنشور
-        tp2 = smart_round(price - (risk_dist * 1.2))   # R:R 1:1.2 تماماً مثل المنشور
+        tp1 = smart_round(price - (risk_dist * 0.7))
+        tp2 = smart_round(price - (risk_dist * 1.2))
         tp3 = smart_round(price - (risk_dist * 1.8))
         tp4 = smart_round(price - (risk_dist * 2.5))
-        candle_target = smart_round(last_candle[3])    # هدف الشمعة عند قاع الشمعة
+        candle_target = smart_round(last_candle[3])
+        pin_bar_target = find_pin_bar_target('SHORT', klines)
         sl_pct = round(((stop_loss - price) / price) * 100, 2)
     else:
         entry_min = smart_round(min(last_candle[1], last_candle[3], prev_candle[3]))
@@ -287,6 +322,7 @@ def calculate_exact_fall_angle_plan(direction, price, klines):
         tp3 = smart_round(price + (risk_dist * 1.8))
         tp4 = smart_round(price + (risk_dist * 2.5))
         candle_target = smart_round(last_candle[2])
+        pin_bar_target = find_pin_bar_target('LONG', klines)
         sl_pct = round(((price - stop_loss) / price) * 100, 2)
 
     return {
@@ -298,6 +334,7 @@ def calculate_exact_fall_angle_plan(direction, price, klines):
         'tp3': tp3,
         'tp4': tp4,
         'candle_target': candle_target,
+        'pin_bar_target': pin_bar_target,
         'sl_pct': abs(sl_pct)
     }
 
@@ -314,7 +351,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     closes = [x[4] for x in k1]
     rsi = calculate_rsi(closes)
 
-    # تحديد الاتجاه بناءً على السعر والمتوسط البسيط تماماً مثل استراتيجية المنشور
     ma20 = sum(closes[-20:]) / min(20, len(closes))
     direction = 'SHORT' if p <= ma20 or closes[-1] <= closes[-2] else 'LONG'
 
@@ -335,6 +371,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'tp3': plan['tp3'],
         'tp4': plan['tp4'],
         'candle_target': plan['candle_target'],
+        'pin_bar_target': plan['pin_bar_target'],
         'sl_pct': plan['sl_pct'],
         'interval': interval.upper()
     }
@@ -352,14 +389,14 @@ def generate_trend_scan_report():
     if not results:
         return "🟡 لا توجد فرص حالياً."
     
-    lines = ["🤖 **FallAngle Scanner v46.4**", "━━━━━━━━━━━━━━━━━━"]
+    lines = ["🤖 **FallAngle & PinBar Scanner v46.5**", "━━━━━━━━━━━━━━━━━━"]
     for d in results:
         dr = d.get('direction')
         emo = '🟢' if dr == 'LONG' else '🔴'
         lines.append(
             f"💎 **{d.get('symbol')}** | {emo} **{dr}** 10x\n"
             f"الدخول: `{d.get('entry_min')} - {d.get('entry_max')}`\n"
-            f"TP1: `{d.get('tp1')}` (R:R 1:0.7) | TP2: `{d.get('tp2')}` (R:R 1:1.2)\n"
+            f"هدف الدبوس: `{d.get('pin_bar_target')}` | TP1: `{d.get('tp1')}`\n"
         )
     return '\n'.join(lines)
 
@@ -378,7 +415,7 @@ def get_coin_analysis(symbol, interval='1h'):
             'stop_loss': smart_round(p * 1.02), 'tp1': smart_round(p * 0.98),
             'tp2': smart_round(p * 0.96), 'tp3': smart_round(p * 0.94),
             'tp4': smart_round(p * 0.92), 'candle_target': smart_round(p * 0.975),
-            'sl_pct': 2.0, 'interval': interval.upper()
+            'pin_bar_target': smart_round(p * 0.97), 'sl_pct': 2.0, 'interval': interval.upper()
         }
 
 def generate_evidence_report(d):
@@ -391,7 +428,7 @@ def generate_evidence_report(d):
     emo, text_dir = ('🟢', 'LONG') if dr == 'LONG' else ('🔴', 'SHORT')
 
     lines = [
-        f"2 س · هابط 📉 **FallAngle**",
+        f"2 س · {text_dir} 📉 **FallAngle**",
         f"{text_dir} 10x ${d.get('symbol', '-').replace('-USDT','')} - الدخول مباشر. الوقت سيتكلم.",
         f"خطة التداول:",
         f"الدخول: `{d.get('entry_min')} - {d.get('entry_max')}`",
@@ -400,6 +437,7 @@ def generate_evidence_report(d):
         f"TP3: `{d.get('tp3')}` (R:R 1:1.8)",
         f"TP4: `{d.get('tp4')}` (R:R 1:2.5)",
         f"🎯 هدف الشمعة: `{d.get('candle_target')}`",
+        f"📌 هدف الدبوس (Pin Bar): `{d.get('pin_bar_target')}`",
         f"وقف الخسارة SL: `{d.get('stop_loss')}` (-{d.get('sl_pct', 2.0)}%)",
         f"السعر الحالي: `{d.get('price')}`"
     ]
