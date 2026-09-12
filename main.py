@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 
 from analysis import (
-    get_top_futures_symbols,
+    get_futures_symbols,
     get_coin_analysis,
     generate_evidence_report,
     normalize_symbol,
@@ -133,11 +133,12 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        symbols = await asyncio.to_thread(get_top_futures_symbols, limit=AUTO_SCAN_LIMIT)
+        symbols_set = await asyncio.to_thread(get_futures_symbols, False)
+        symbols = list(symbols_set)[:AUTO_SCAN_LIMIT]
         results = []
         for sym in symbols:
             d = await asyncio.to_thread(get_coin_analysis, sym, '1h')
-            if d and d.get('direction') != 'BLOCKED' and d.get('score', 0) >= 80:
+            if isinstance(d, dict) and d.get('direction') != 'BLOCKED' and d.get('score', 0) >= 80:
                 results.append(d)
     except Exception as exc:
         logger.exception("Manual scanner error: %s", exc)
@@ -214,13 +215,15 @@ def start_auto_scan():
                 time.sleep(AUTO_SCAN_INTERVAL)
                 continue
 
-            symbols = get_top_futures_symbols(limit=AUTO_SCAN_LIMIT)
+            symbols_set = get_futures_symbols(False)
+            symbols = list(symbols_set)[:AUTO_SCAN_LIMIT]
+
             for symbol in symbols:
                 try:
                     data = get_coin_analysis(symbol, '1h')
                     time.sleep(1.5)
 
-                    if not data:
+                    if not isinstance(data, dict):
                         continue
 
                     current_direction = str(data.get("direction", "")).upper()
