@@ -1,5 +1,5 @@
 # =========================================================
-# main.py - BingX AI Scanner v30.0 (Auto-Scanner & High-Accuracy Pro)
+# main.py - BingX AI Scanner v47.0 (Auto-Scanner & High-Accuracy Pro)
 # Flask + Standalone Background Thread Auto Scanner
 # =========================================================
 
@@ -111,7 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     LAST_ACTIVE_CHAT_ID = update.effective_chat.id
 
     await update.message.reply_text(
-        "🤖 أهلاً بك في BingX AI Scanner v30.0 (Pro)\n\n"
+        "🤖 أهلاً بك في BingX AI Scanner v47.0 (Pro)\n\n"
         "🚀 Auto Market Scanner يعمل تلقائياً في الخلفية.\n\n"
         f"📡 البوت يفحص أعلى العملات سيولة في السوق كل {AUTO_SCAN_INTERVAL // 60} دقيقة.\n\n"
         "🟢 LONG = دخول شراء مؤكد (بتأكيد شمعتين)\n"
@@ -192,7 +192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================================
-# BACKGROUND THREAD AUTO SCANNER (v30.0)
+# BACKGROUND THREAD AUTO SCANNER (v47.0)
 # =========================================================
 
 def start_auto_scan():
@@ -292,7 +292,7 @@ async def main_bot():
 # =========================================================
 
 if __name__ == "__main__":
-    logger.info("Starting BingX AI Scanner v30.0...")
+    logger.info("Starting BingX AI Scanner v47.0...")
 
     # تشغيل الفلاسك والماسح الآلي في الخلفية
     threading.Thread(target=run_flask, daemon=True).start()
