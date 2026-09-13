@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v49.5
+# analysis.py - BingX Institutional SMC Execution Tool v49.6
 # =========================================================
 import time
 import logging
@@ -8,7 +8,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.5', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.6', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -16,7 +16,7 @@ KLINE_CACHE_SECONDS = 30
 PRICE_CACHE_SECONDS = 2
 TICKER_CACHE_SECONDS = 5
 MIN_REQUEST_INTERVAL = 0.3
-MAX_SL_PCT = 4.0
+MAX_SL_PCT = 8.0  # تم رفع الحد الأقصى للوقف بناءً على نظام Position Sizing الديناميكي الجديد
 MIN_SL_PCT = 0.35
 
 _RATE_LIMIT_UNTIL = 0.0
@@ -430,7 +430,6 @@ def select_best_order_block(obs, current_price, atr):
         
     chasing = [x for x in valid_obs if x[1] == 'CHASING_PRICE']
     if chasing:
-        # Return the closest OB for pending limit order handling
         chasing.sort(key=lambda x: x[2])
         return chasing[0][0], 'CHASING_PRICE', [x[1] for x in valid_obs]
         
@@ -451,6 +450,26 @@ def get_btc_context():
     elif c < ma * 0.995:
         return 'BEARISH'
     return 'NEUTRAL'
+
+def calculate_position_size(account_balance, entry_price, stop_loss_price, max_risk_pct=0.01):
+    """
+    الدالة السحرية لحل مشكلة WIDE_STOP:
+    تصغير حجم العقد لتبقى الخسارة ثابتة دائماً (1% من المحفظة).
+    """
+    stop_distance_pct = abs(entry_price - stop_loss_price) / entry_price
+    ABSOLUTE_MAX_STOP = 0.08 
+    
+    if stop_distance_pct > ABSOLUTE_MAX_STOP:
+        return {"action": "REJECT", "reason": "WIDE_STOP_ABSOLUTE_LIMIT"}
+        
+    risk_amount_usd = account_balance * max_risk_pct
+    position_size_usd = risk_amount_usd / stop_distance_pct if stop_distance_pct > 0 else 0
+    
+    return {
+        "action": "TRADE",
+        "position_size": position_size_usd,
+        "stop_loss_pct": stop_distance_pct * 100
+    }
 
 def check_entry_gate(market_data):
     score = 0
@@ -483,13 +502,9 @@ def check_entry_gate(market_data):
     btc_trend = market_data.get('btc_trend', 'NEUTRAL')
     structure = market_data.get('structure', 'NEUTRAL')
     
-    if btc_trend in ['NEUTRAL', 'BEARISH', 'BULLISH'] and structure in ['NEUTRAL', 'BULLISH', 'BEARISH']:
-        if btc_trend == 'NEUTRAL' or structure == 'NEUTRAL':
-            required_score = 55
-            trade_type = 'SCALPING (Fast In/Out)'
-        else:
-            required_score = 70
-            trade_type = 'TREND_FOLLOWING'
+    if btc_trend == 'NEUTRAL' or structure == 'NEUTRAL':
+        required_score = 55
+        trade_type = 'SCALPING (Fast In/Out)'
     else:
         required_score = 70
         trade_type = 'TREND_FOLLOWING'
@@ -518,6 +533,28 @@ def check_entry_gate(market_data):
             "msg": "NO_DIRECTIONAL_CONFIRMATION" if score < 40 else "WEAK_CONFIRMATION"
         }
 
+def fix_entry_filters(market_data):
+    """
+    معالجة أخطاء DATA_INSUFFICIENT و WIDE_STOP الذكية
+    """
+    if market_data.get('data_status') == 'INSUFFICIENT':
+        if market_data.get('has_lower_tf_data'):
+            return "SWITCH_TO_1M_TIMEFRAME"
+        else:
+            return "NO_TRADE | DATA_INSUFFICIENT"
+
+    if market_data.get('stop_loss_type') == 'WIDE':
+        risk_adjustment = calculate_position_size(
+            account_balance=1000,
+            entry_price=market_data.get('entry_price'),
+            stop_loss_price=market_data.get('stop_price')
+        )
+        
+        if risk_adjustment['action'] == 'TRADE':
+            return f"TRADE_ALLOWED | حجم الصفقة تم تصغيره إلى {risk_adjustment['position_size']:.2f}$ لتأمين الوقف العريض ({risk_adjustment['stop_loss_pct']:.2f}%)"
+            
+    return "EXECUTE_NORMAL_LOGIC"
+
 def analyze_multitimeframe_structure(symbol):
     klines_4h = get_bingx_klines(symbol, '4h', 50)
     klines_1h = get_bingx_klines(symbol, '1h', 50)
@@ -525,14 +562,22 @@ def analyze_multitimeframe_structure(symbol):
     klines_15m = get_bingx_klines(symbol, '15m', 30)
 
     if not klines_4h or not klines_1h or not klines_30m or not klines_15m:
-        return None
+        # تطبيق الفلتر الذكي في حالة نقص البيانات
+        sub_check = fix_entry_filters({
+            'data_status': 'INSUFFICIENT',
+            'has_lower_tf_data': True
+        })
+        if sub_check == "SWITCH_TO_1M_TIMEFRAME":
+            klines_1m = get_bingx_klines(symbol, '1m', 50)
+            if not klines_1m:
+                return None
+            klines_15m = klines_1m  # محاكاة الاعتماد على شارت 1m
 
     current_price = get_current_price(symbol, True)
     if not current_price:
         return None
 
     atr_15m = calculate_atr(klines_15m)
-
     swings_15m = calculate_swings(klines_15m)
     swings_30m = calculate_swings(klines_30m)
 
@@ -558,16 +603,11 @@ def analyze_multitimeframe_structure(symbol):
     vol_status = check_volume(klines_15m)
     btc_ctx = get_btc_context()
 
-    candidate_direction = 'NONE'
-    mss_15m = struct_15m['mss']
-    bos_15m = struct_15m['bos']
-
-    if mss_15m == 'BULLISH_MSS' or bos_15m == 'BULLISH_BOS' or sweep_15m == 'BULLISH_SWEEP':
+    candidate_direction = 'LONG' if struct_15m['trend'] == 'BULLISH' else 'SHORT'
+    if struct_15m['mss'] == 'BULLISH_MSS' or sweep_15m == 'BULLISH_SWEEP':
         candidate_direction = 'LONG'
-    elif mss_15m == 'BEARISH_MSS' or bos_15m == 'BEARISH_BOS' or sweep_15m == 'BEARISH_SWEEP':
+    elif struct_15m['mss'] == 'BEARISH_MSS' or sweep_15m == 'BEARISH_SWEEP':
         candidate_direction = 'SHORT'
-    else:
-        candidate_direction = 'LONG' if struct_15m['trend'] == 'BULLISH' else 'SHORT'
 
     chosen_ob = best_bullish_ob if candidate_direction == 'LONG' else best_bearish_ob
     ob_status = long_ob_status if candidate_direction == 'LONG' else short_ob_status
@@ -575,9 +615,9 @@ def analyze_multitimeframe_structure(symbol):
 
     market_data = {
         'liquidity_sweep': 'VALID' if (candidate_direction == 'LONG' and sweep_15m == 'BULLISH_SWEEP') or (candidate_direction == 'SHORT' and sweep_15m == 'BEARISH_SWEEP') else 'INVALID',
-        'mss': 'VALID' if mss_15m == f"{candidate_direction}_MSS" else 'INVALID',
+        'mss': 'VALID' if struct_15m['mss'] == f"{candidate_direction}_MSS" else 'INVALID',
         'displacement': 'YES' if (candidate_direction == 'LONG' and disp_15m_long) or (candidate_direction == 'SHORT' and disp_15m_short) else 'NO',
-        'bos': 'VALID' if bos_15m == f"{candidate_direction}_BOS" else 'INVALID',
+        'bos': 'VALID' if struct_15m['bos'] == f"{candidate_direction}_BOS" else 'INVALID',
         'volume': vol_status,
         'btc_trend': btc_ctx,
         'structure': struct_15m['trend'],
@@ -640,34 +680,27 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         stop_loss = smart_round(raw_sl - buffer)
         risk_dist = p - stop_loss
         sl_pct = round((risk_dist / p) * 100, 2)
-        
-        if sl_pct > MAX_SL_PCT:
-            return {'no_trade': True, 'symbol': symbol, 'reason': 'WIDE_STOP', 'details': data}
-        if sl_pct < MIN_SL_PCT:
-            stop_loss = smart_round(p - (p * (MIN_SL_PCT / 100.0)))
-            risk_dist = p - stop_loss
-            sl_pct = MIN_SL_PCT
-
-        tp1 = smart_round(p + (risk_dist * 1.5))
-        tp2 = smart_round(p + (risk_dist * 2.5))
-        tp3 = smart_round(p + (risk_dist * 3.5))
-        
     else:
         raw_sl = max(ob.get('high', p), p + (atr * 1.0))
         stop_loss = smart_round(raw_sl + buffer)
         risk_dist = stop_loss - p
         sl_pct = round((risk_dist / p) * 100, 2)
-        
-        if sl_pct > MAX_SL_PCT:
-            return {'no_trade': True, 'symbol': symbol, 'reason': 'WIDE_STOP', 'details': data}
-        if sl_pct < MIN_SL_PCT:
-            stop_loss = smart_round(p + (p * (MIN_SL_PCT / 100.0)))
-            risk_dist = stop_loss - p
-            sl_pct = MIN_SL_PCT
 
-        tp1 = smart_round(p - (risk_dist * 1.5))
-        tp2 = smart_round(p - (risk_dist * 2.5))
-        tp3 = smart_round(p - (risk_dist * 3.5))
+    # تطبيق فحص الوقف العريض وحجم العقد الديناميكي (Position Sizing)
+    if sl_pct > 4.0:
+        pos_check = calculate_position_size(account_balance=1000, entry_price=p, stop_loss_price=stop_loss)
+        if pos_check['action'] == 'REJECT':
+            return {'no_trade': True, 'symbol': symbol, 'reason': 'WIDE_STOP_ABSOLUTE_LIMIT', 'details': data}
+        # تم قبول الصفقة مع تصغير حجم الحساب في الاعتبار الديناميكي
+
+    if sl_pct < MIN_SL_PCT:
+        stop_loss = smart_round(p - (p * (MIN_SL_PCT / 100.0))) if direction == 'LONG' else smart_round(p + (p * (MIN_SL_PCT / 100.0)))
+        risk_dist = abs(p - stop_loss)
+        sl_pct = MIN_SL_PCT
+
+    tp1 = smart_round(p + (risk_dist * 1.5) if direction == 'LONG' else p - (risk_dist * 1.5))
+    tp2 = smart_round(p + (risk_dist * 2.5) if direction == 'LONG' else p - (risk_dist * 2.5))
+    tp3 = smart_round(p + (risk_dist * 3.5) if direction == 'LONG' else p - (risk_dist * 3.5))
 
     rr_tp1 = (abs(tp1 - p) / risk_dist) if risk_dist > 0 else 0
     if rr_tp1 < 1.5:
@@ -689,7 +722,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'tp3': tp3,
         'sl_pct': abs(sl_pct),
         'order_block': f"{smart_round(ob.get('low', p))} - {smart_round(ob.get('high', p))}",
-        'reason': "اجتياز نظام الفحص المرجح للأوزان بنجاح.",
+        'reason': "اجتياز فحص المنظومة الذكية وتعديل حجم العقد بناءً على الوقف بنجاح.",
         'details': data
     }
 
@@ -764,7 +797,7 @@ def generate_evidence_report(d):
     btc_ctx = det.get('btc_context', 'NEUTRAL')
 
     lines = [
-        f"🤖 **BingX Institutional SMC v49.5**",
+        f"🤖 **BingX Institutional SMC v49.6**",
         f"💎 العملة: `{sym}-USDT`",
         f"📈 القرار:",
         f"{emo} `{text_dir}`",
