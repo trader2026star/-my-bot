@@ -534,10 +534,6 @@ def dynamic_entry_and_rr_resolver(market_data):
     }
 
 def resolve_and_clean_v50_1(market_data):
-    """
-    النسخة v50.1 الحاسمة: إجبار بايثون على قص الخانات العشرية 
-    وتحويل الأهداف إلى نصوص منسقة فوراً قبل الطباعة والـ API.
-    """
     ob_high = market_data.get('ob_high')
     stop_loss_price = market_data.get('sl_absolute_low')
     entry_price = market_data.get('price', ob_high)
@@ -579,9 +575,6 @@ def resolve_and_clean_v50_1(market_data):
     return market_data
 
 def print_final_report_v50_1(market_data):
-    """
-    طباعة التقرير الذهبي الاحترافي الخالي تماماً من أي عيوب عشرية.
-    """
     data = resolve_and_clean_v50_1(market_data)
     
     decision_emoji = "🟢 `MARKET LONG`" if data.get('decision') == 'LONG' else "🔴 `MARKET SHORT`"
@@ -694,7 +687,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     symbol = normalize_symbol(symbol)
     data = analyze_multitimeframe_structure(symbol)
     
-    if not data or data.get('direction'] == 'NONE':
+    if not data or data.get('direction') == 'NONE':
         nt_reason = data.get('no_trade_reason', 'NO_VALID_OB') if data else 'DATA_INSUFFICIENT'
         return {
             'no_trade': True,
@@ -740,7 +733,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     }
     
     resolver_res = dynamic_entry_and_rr_resolver(resolver_input)
-    if resolver_res.get('status'] == 'NO_TRADE':
+    if resolver_res.get('status') == 'NO_TRADE':
         return {'no_trade': True, 'symbol': symbol, 'reason': resolver_res.get('reason', 'TRUE_POOR_RR_AVOIDED'), 'details': data}
 
     strategy_status = resolver_res.get('strategy_status', 'MARKET')
