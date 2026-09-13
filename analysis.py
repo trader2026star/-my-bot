@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v49.9
+# analysis.py - BingX Institutional SMC Execution Tool v50.0
 # =========================================================
 import time
 import logging
@@ -8,7 +8,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.9', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -516,62 +516,76 @@ def dynamic_entry_and_rr_resolver(market_data):
         "tp3": tp3
     }
 
-def resolve_limit_order_and_calculates(market_data):
+def resolve_and_format_final_v50(market_data):
     """
-    تحديث شامل: حساب الـ Risk الفعلي بناءً على سعر الدخول المعلق،
-    وتوليد الأهداف ديناميكياً لضمان معدل عائد ممتاز.
+    النسخة v50.0 المستقرة: حل مشكلة الأرقام العشرية الطويلة (Floating Bug)
+    وتقريب الأهداف ديناميكياً بحسب سعر العملة.
     """
-    ob_high = market_data.get('ob_high')    # حافة منطقة الدخول المعلقة
-    stop_loss_price = market_data.get('sl_absolute_low') # قاع الوقف المطلق
+    ob_high = market_data.get('ob_high')
+    stop_loss_price = market_data.get('sl_absolute_low')
+    entry_price = market_data.get('price', ob_high)
+    decision = market_data.get('decision')
     
-    correct_risk_pct = abs(ob_high - stop_loss_price) / ob_high
-    
+    correct_risk_pct = abs(entry_price - stop_loss_price) / entry_price if entry_price > 0 else 0
     account_balance = market_data.get('account_balance', 1000) 
     max_risk_usd = account_balance * 0.01 
     correct_position_size = max_risk_usd / correct_risk_pct if correct_risk_pct > 0 else 0
 
-    sl_distance = abs(ob_high - stop_loss_price)
+    sl_distance = abs(entry_price - stop_loss_price)
     
-    if market_data.get('decision') == 'LONG':
-        tp1 = ob_high + (sl_distance * 1.5)
-        tp2 = ob_high + (sl_distance * 2.5)
-        tp3 = ob_high + (sl_distance * 4.0)
+    if decision == 'LONG':
+        raw_tp1 = entry_price + (sl_distance * 1.5)
+        raw_tp2 = entry_price + (sl_distance * 2.5)
+        raw_tp3 = entry_price + (sl_distance * 4.0)
     else: 
-        tp1 = ob_high - (sl_distance * 1.5)
-        tp2 = ob_high - (sl_distance * 2.5)
-        tp3 = ob_high - (sl_distance * 4.0)
+        raw_tp1 = entry_price - (sl_distance * 1.5)
+        raw_tp2 = entry_price - (sl_distance * 2.5)
+        raw_tp3 = entry_price - (sl_distance * 4.0)
+
+    if entry_price > 100:
+        decimals = 2
+    elif entry_price > 1:
+        decimals = 4
+    else:
+        decimals = 5
 
     market_data['calculated_risk_pct'] = correct_risk_pct * 100
     market_data['calculated_position_size'] = correct_position_size
-    market_data['tp1'] = tp1
-    market_data['tp2'] = tp2
-    market_data['tp3'] = tp3
+    market_data['tp1'] = round(raw_tp1, decimals)
+    market_data['tp2'] = round(raw_tp2, decimals)
+    market_data['tp3'] = round(raw_tp3, decimals)
+    market_data['decimals_format'] = f"{{:.{decimals}f}}"
     
     return market_data
 
-def print_limit_order_report(market_data):
+def print_final_report_v50(market_data):
     """
-    دالة الطباعة المحدثة: إظهار الأهداف ديناميكياً وتعديل صياغة التقرير للتلغرام والكونسول.
+    طباعة التقرير النهائي الخالي من أي عيوب حسابية أو جمالية للتلغرام.
     """
-    data = resolve_limit_order_and_calculates(market_data)
+    data = resolve_and_format_final_v50(market_data)
+    fmt = data.get('decimals_format', '{:.4f}')
+    decision_text = f"{data.get('decision')} SHORT" if data.get('decision') == 'SHORT' else f"{data.get('decision')} LONG"
+    decision_emoji = '🔴' if data.get('decision') == 'SHORT' else '🟢'
     
     report_message = f"""
-⏳ **BingX Institutional SMC v49.9 (Limit Order Mode)**
+🤖 **BingX Institutional SMC v50.0 (Stable Golden Version)**
 💎 العملة: `{data.get('symbol')}-USDT`
-📈 القرار: `{data.get('decision')} LONG` (تحويل لأمر معلق)
+📈 القرار: {decision_emoji} `{decision_text}` (تحويل لأمر معلق)
 🏆 Grade: `{data.get('grade')}` | ⭐ Score: `{data.get('score')}/100`
 📊 Structure: `{data.get('structure')}`
-🎯 Entry Zone (Limit): `{data.get('ob_high'):.5f} - {data.get('ob_low'):.5f}`
-🛑 SL: `{data.get('sl_absolute_low'):.5f}` 📊 Risk: `{data.get('calculated_risk_pct'):.2f}%`
+📌 OB: `{data.get('ob_high')} - {data.get('ob_low')}`
+💧 Sweep: `{data.get('liquidity_sweep')}`
+💰 Price: `{data.get('price')}`
+🛑 SL: {fmt.format(data.get('sl_absolute_low'))} 📊 Risk: `{data.get('calculated_risk_pct'):.2f}%`
 💵 Position Size (1% Risk): `${data.get('calculated_position_size'):.2f}`
 
-🎯 الأهداف المحسوبة ديناميكياً (RR Balanced):
-🎯 TP1: `{data.get('tp1'):.5f}`
-🎯 TP2: `{data.get('tp2'):.5f}`
-🎯 TP3: `{data.get('tp3'):.5f}`
+🎯 الأهداف الذكية (منظفة ومقربة فنية):
+🎯 TP1 (1.5R): {fmt.format(data.get('tp1'))}
+🎯 TP2 (2.5R): {fmt.format(data.get('tp2'))}
+🎯 TP3 (4.0R): {fmt.format(data.get('tp3'))}
 
-📝 ملاحظة الحماية:
-`السعر ابتعد عن الـ OB. تم إلغاء الماركت وتحويلها إلى أمر معلق (Limit) عند حافة المنطقة لتحسين الـ RR وتقليل المخاطرة.`
+📝 Reason:
+`تفعيل النسخة المستقرة v50.0، تنظيف كامل للبيانات العشرية وضمان توافق الأسعار مع محرك المنصة.`
 """
     return report_message
 
@@ -722,9 +736,11 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             'ob_high': ob.get('high', p),
             'ob_low': ob.get('low', p),
             'sl_absolute_low': stop_loss,
+            'liquidity_sweep': data.get('sweep_15m', 'NONE'),
+            'price': smart_round(p),
             'account_balance': 1000
         }
-        formatted_report = print_limit_order_report(limit_payload)
+        formatted_report = print_final_report_v50(limit_payload)
         return {
             'no_trade': False,
             'is_pending_limit': True,
@@ -818,7 +834,7 @@ def generate_evidence_report(d):
     sweep_res = det.get('sweep_15m', 'NONE')
 
     lines = [
-        f"🤖 **BingX Institutional SMC v49.9 (Dynamic RR & Entry)**",
+        f"🤖 **BingX Institutional SMC v50.0 (Dynamic RR & Entry)**",
         f"💎 العملة: `{sym}-USDT`",
         f"📈 القرار:",
         f"{emo} `{text_dir}`",
