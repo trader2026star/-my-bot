@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v49.8
+# analysis.py - BingX Institutional SMC Execution Tool v49.9
 # =========================================================
 import time
 import logging
@@ -8,7 +8,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.8', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.9', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -464,11 +464,6 @@ def check_entry_gate_v2(market_data):
         return {"status": "NO_TRADE", "score": score, "reason": "LOW_SCORE_CONFIRMATION"}
 
 def dynamic_entry_and_rr_resolver(market_data):
-    """
-    تحديث النسخة v49.8: 
-    1. منع فخ الشراء الماركت عند ابتعاد السعر (حل مشكلة ARK).
-    2. إصلاح معادلة الأهداف لرفع قيمة الـ Risk to Reward والتخلص من POOR_RR.
-    """
     entry_price = market_data.get('price')
     ob_high = market_data.get('ob_high', entry_price)
     ob_low = market_data.get('ob_low', entry_price)
@@ -520,6 +515,65 @@ def dynamic_entry_and_rr_resolver(market_data):
         "tp2": tp2,
         "tp3": tp3
     }
+
+def resolve_limit_order_and_calculates(market_data):
+    """
+    تحديث شامل: حساب الـ Risk الفعلي بناءً على سعر الدخول المعلق،
+    وتوليد الأهداف ديناميكياً لضمان معدل عائد ممتاز.
+    """
+    ob_high = market_data.get('ob_high')    # حافة منطقة الدخول المعلقة
+    stop_loss_price = market_data.get('sl_absolute_low') # قاع الوقف المطلق
+    
+    correct_risk_pct = abs(ob_high - stop_loss_price) / ob_high
+    
+    account_balance = market_data.get('account_balance', 1000) 
+    max_risk_usd = account_balance * 0.01 
+    correct_position_size = max_risk_usd / correct_risk_pct if correct_risk_pct > 0 else 0
+
+    sl_distance = abs(ob_high - stop_loss_price)
+    
+    if market_data.get('decision') == 'LONG':
+        tp1 = ob_high + (sl_distance * 1.5)
+        tp2 = ob_high + (sl_distance * 2.5)
+        tp3 = ob_high + (sl_distance * 4.0)
+    else: 
+        tp1 = ob_high - (sl_distance * 1.5)
+        tp2 = ob_high - (sl_distance * 2.5)
+        tp3 = ob_high - (sl_distance * 4.0)
+
+    market_data['calculated_risk_pct'] = correct_risk_pct * 100
+    market_data['calculated_position_size'] = correct_position_size
+    market_data['tp1'] = tp1
+    market_data['tp2'] = tp2
+    market_data['tp3'] = tp3
+    
+    return market_data
+
+def print_limit_order_report(market_data):
+    """
+    دالة الطباعة المحدثة: إظهار الأهداف ديناميكياً وتعديل صياغة التقرير للتلغرام والكونسول.
+    """
+    data = resolve_limit_order_and_calculates(market_data)
+    
+    report_message = f"""
+⏳ **BingX Institutional SMC v49.9 (Limit Order Mode)**
+💎 العملة: `{data.get('symbol')}-USDT`
+📈 القرار: `{data.get('decision')} LONG` (تحويل لأمر معلق)
+🏆 Grade: `{data.get('grade')}` | ⭐ Score: `{data.get('score')}/100`
+📊 Structure: `{data.get('structure')}`
+🎯 Entry Zone (Limit): `{data.get('ob_high'):.5f} - {data.get('ob_low'):.5f}`
+🛑 SL: `{data.get('sl_absolute_low'):.5f}` 📊 Risk: `{data.get('calculated_risk_pct'):.2f}%`
+💵 Position Size (1% Risk): `${data.get('calculated_position_size'):.2f}`
+
+🎯 الأهداف المحسوبة ديناميكياً (RR Balanced):
+🎯 TP1: `{data.get('tp1'):.5f}`
+🎯 TP2: `{data.get('tp2'):.5f}`
+🎯 TP3: `{data.get('tp3'):.5f}`
+
+📝 ملاحظة الحماية:
+`السعر ابتعد عن الـ OB. تم إلغاء الماركت وتحويلها إلى أمر معلق (Limit) عند حافة المنطقة لتحسين الـ RR وتقليل المخاطرة.`
+"""
+    return report_message
 
 def analyze_multitimeframe_structure(symbol):
     klines_4h = get_bingx_klines(symbol, '4h', 50)
@@ -659,6 +713,18 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     strategy_status = resolver_res.get('strategy_status', 'MARKET')
     
     if strategy_status == 'PENDING_LIMIT':
+        limit_payload = {
+            'symbol': symbol.replace('-USDT', ''),
+            'decision': direction,
+            'grade': data.get('grade', 'إيجابي متوسط'),
+            'score': data['score'],
+            'structure': data.get('struct_15m', {}).get('trend', 'NEUTRAL'),
+            'ob_high': ob.get('high', p),
+            'ob_low': ob.get('low', p),
+            'sl_absolute_low': stop_loss,
+            'account_balance': 1000
+        }
+        formatted_report = print_limit_order_report(limit_payload)
         return {
             'no_trade': False,
             'is_pending_limit': True,
@@ -668,12 +734,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             'confirmation': data['confirmation'],
             'grade': data.get('grade', 'إيجابي متوسط'),
             'state': 'PENDING_LIMIT',
-            'price': smart_round(p),
-            'entry_zone': resolver_res.get('entry_zone'),
-            'stop_loss': stop_loss,
-            'sl_pct': abs(sl_pct),
-            'position_size_usd': pos_check.get('position_size', 0),
-            'reason': resolver_res.get('msg'),
+            'custom_report': formatted_report,
             'details': data
         }
 
@@ -741,6 +802,9 @@ def generate_evidence_report(d):
             f"❌ السبب الرئيسي:\n`{rsn}`"
         ]
         return '\n'.join(lines)
+
+    if d.get('is_pending_limit', False) and d.get('custom_report'):
+        return d.get('custom_report')
     
     dr = d.get('direction', 'LONG')
     emo, text_dir = ('🟢', 'MARKET LONG') if dr == 'LONG' else ('🔴', 'MARKET SHORT')
@@ -753,22 +817,8 @@ def generate_evidence_report(d):
     struct_trend = det.get('struct_15m', {}).get('trend', 'NEUTRAL')
     sweep_res = det.get('sweep_15m', 'NONE')
 
-    if d.get('is_pending_limit', False):
-        lines = [
-            f"⏳ **BingX Institutional SMC v49.8 (Limit Order Mode)**",
-            f"💎 العملة: `{sym}-USDT`",
-            f"📈 القرار: `{text_dir}` (تحويل لأمر معلق)",
-            f"🏆 Grade: `{grade}` | ⭐ Score: `{score}/100`",
-            f"📊 Structure: `{struct_trend}`",
-            f"🎯 Entry Zone (Limit): `{d.get('entry_zone')}`",
-            f"🛑 SL: `{d.get('stop_loss')}` 📊 Risk: `{d.get('sl_pct')}%`",
-            f"💵 Position Size: `${smart_round(d.get('position_size_usd', 0))}`",
-            f"📝 ملاحظة الحماية:\n`{d.get('reason')}`"
-        ]
-        return '\n'.join(lines)
-
     lines = [
-        f"🤖 **BingX Institutional SMC v49.8 (Dynamic RR & Entry)**",
+        f"🤖 **BingX Institutional SMC v49.9 (Dynamic RR & Entry)**",
         f"💎 العملة: `{sym}-USDT`",
         f"📈 القرار:",
         f"{emo} `{text_dir}`",
