@@ -1,14 +1,31 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v50.1
+# analysis.py - BingX Institutional SMC Execution Tool v50.2 (Flask Web Server Added)
 # =========================================================
 import time
 import logging
 import threading
 import requests
+from flask import Flask
+
+# إعداد سيرفر Flask مصغر لمنع منصة Render من إدخال البوت في وضع السبات (Sleep Mode)
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is Alive and Scanning 24/7!"
+
+def run_flask():
+    try:
+        app.run(host='0.0.0.0', port=8080)
+    except Exception as e:
+        logger.error(f"Flask server error: {e}")
+
+# تشغيل السيرفر في خلفية البوت (Thread منفصل) لكي لا يعطل حلقة العمليات
+threading.Thread(target=run_flask, daemon=True).start()
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.1', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.2', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -570,7 +587,7 @@ def print_final_report_v50_1(market_data):
     decision_emoji = "🟢 `MARKET LONG`" if data.get('decision') == 'LONG' else "🔴 `MARKET SHORT`"
     
     report_message = f"""
-🤖 **BingX Institutional SMC v50.1 (Golden Precision)**
+🤖 **BingX Institutional SMC v50.2 (Render 24/7 Precision)**
 💎 العملة: `{data.get('symbol')}-USDT`
 📈 القرار: {decision_emoji}
 🏆 Grade: `{data.get('grade')}` | ⭐ Score: `{data.get('score')}/100`
@@ -587,7 +604,7 @@ def print_final_report_v50_1(market_data):
 🎯 TP3 (4.0R): `{data.get('clean_tp3')}`
 
 📝 Reason:
-`تفعيل التنسيق النصي الصارم v50.1 وقص الأرقام العشرية الزائدة لضمان التوافق المطلق مع محرك المنصة.`
+`تفعيل التنسيق النصي الصارم v50.2 وتأمين البوت للعمل المتواصل 24/7 عبر الـ Webhook والسيرفر المصغر.`
 """
     return report_message
 
@@ -677,7 +694,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     symbol = normalize_symbol(symbol)
     data = analyze_multitimeframe_structure(symbol)
     
-    if not data or data.get('direction') == 'NONE':
+    if not data or data.get('direction'] == 'NONE':
         nt_reason = data.get('no_trade_reason', 'NO_VALID_OB') if data else 'DATA_INSUFFICIENT'
         return {
             'no_trade': True,
@@ -723,7 +740,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     }
     
     resolver_res = dynamic_entry_and_rr_resolver(resolver_input)
-    if resolver_res.get('status') == 'NO_TRADE':
+    if resolver_res.get('status'] == 'NO_TRADE':
         return {'no_trade': True, 'symbol': symbol, 'reason': resolver_res.get('reason', 'TRUE_POOR_RR_AVOIDED'), 'details': data}
 
     strategy_status = resolver_res.get('strategy_status', 'MARKET')
@@ -756,7 +773,6 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             'details': data
         }
 
-    # للوضع الطبيعي (Market أو داخل منطقة الـ OB) نقوم بتشغيل دالة v50.1 لتجهيز النواتج النظيفة أيضاً
     active_payload = {
         'symbol': symbol.replace('-USDT', ''),
         'decision': direction,
@@ -847,7 +863,6 @@ def generate_evidence_report(d):
     struct_trend = det.get('struct_15m', {}).get('trend', 'NEUTRAL')
     sweep_res = det.get('sweep_15m', 'NONE')
 
-    # حساب نسبة المخاطرة المئوية بدقة تقريبية إن لم تكن متوفرة
     p_val = d.get('price', 0)
     sl_val = d.get('stop_loss', 0)
     try:
@@ -856,7 +871,7 @@ def generate_evidence_report(d):
         risk_pct_calc = d.get('sl_pct', 0)
 
     lines = [
-        f"🤖 **BingX Institutional SMC v50.1 (Golden Precision)**",
+        f"🤖 **BingX Institutional SMC v50.2 (Render 24/7 Precision)**",
         f"💎 العملة: `{sym}-USDT`",
         f"📈 القرار:",
         f"{emo} `{text_dir}`",
