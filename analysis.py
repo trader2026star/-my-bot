@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v50.0
+# analysis.py - BingX Institutional SMC Execution Tool v50.1
 # =========================================================
 import time
 import logging
@@ -8,7 +8,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.1', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -516,10 +516,10 @@ def dynamic_entry_and_rr_resolver(market_data):
         "tp3": tp3
     }
 
-def resolve_and_format_final_v50(market_data):
+def resolve_and_clean_v50_1(market_data):
     """
-    النسخة v50.0 المستقرة: حل مشكلة الأرقام العشرية الطويلة (Floating Bug)
-    وتقريب الأهداف ديناميكياً بحسب سعر العملة.
+    النسخة v50.1 الحاسمة: إجبار بايثون على قص الخانات العشرية 
+    وتحويل الأهداف إلى نصوص منسقة فوراً قبل الطباعة والـ API.
     """
     ob_high = market_data.get('ob_high')
     stop_loss_price = market_data.get('sl_absolute_low')
@@ -547,45 +547,47 @@ def resolve_and_format_final_v50(market_data):
     elif entry_price > 1:
         decimals = 4
     else:
-        decimals = 5
+        decimals = 6
 
+    fmt = f"{{:.{decimals}f}}"
+    
     market_data['calculated_risk_pct'] = correct_risk_pct * 100
     market_data['calculated_position_size'] = correct_position_size
-    market_data['tp1'] = round(raw_tp1, decimals)
-    market_data['tp2'] = round(raw_tp2, decimals)
-    market_data['tp3'] = round(raw_tp3, decimals)
-    market_data['decimals_format'] = f"{{:.{decimals}f}}"
+    
+    market_data['clean_sl'] = fmt.format(stop_loss_price)
+    market_data['clean_tp1'] = fmt.format(raw_tp1)
+    market_data['clean_tp2'] = fmt.format(raw_tp2)
+    market_data['clean_tp3'] = fmt.format(raw_tp3)
     
     return market_data
 
-def print_final_report_v50(market_data):
+def print_final_report_v50_1(market_data):
     """
-    طباعة التقرير النهائي الخالي من أي عيوب حسابية أو جمالية للتلغرام.
+    طباعة التقرير الذهبي الاحترافي الخالي تماماً من أي عيوب عشرية.
     """
-    data = resolve_and_format_final_v50(market_data)
-    fmt = data.get('decimals_format', '{:.4f}')
-    decision_text = f"{data.get('decision')} SHORT" if data.get('decision') == 'SHORT' else f"{data.get('decision')} LONG"
-    decision_emoji = '🔴' if data.get('decision') == 'SHORT' else '🟢'
+    data = resolve_and_clean_v50_1(market_data)
+    
+    decision_emoji = "🟢 `MARKET LONG`" if data.get('decision') == 'LONG' else "🔴 `MARKET SHORT`"
     
     report_message = f"""
-🤖 **BingX Institutional SMC v50.0 (Stable Golden Version)**
+🤖 **BingX Institutional SMC v50.1 (Golden Precision)**
 💎 العملة: `{data.get('symbol')}-USDT`
-📈 القرار: {decision_emoji} `{decision_text}` (تحويل لأمر معلق)
+📈 القرار: {decision_emoji}
 🏆 Grade: `{data.get('grade')}` | ⭐ Score: `{data.get('score')}/100`
 📊 Structure: `{data.get('structure')}`
 📌 OB: `{data.get('ob_high')} - {data.get('ob_low')}`
 💧 Sweep: `{data.get('liquidity_sweep')}`
 💰 Price: `{data.get('price')}`
-🛑 SL: {fmt.format(data.get('sl_absolute_low'))} 📊 Risk: `{data.get('calculated_risk_pct'):.2f}%`
+🛑 SL: `{data.get('clean_sl')}` 📊 Risk: `{data.get('calculated_risk_pct'):.2f}%`
 💵 Position Size (1% Risk): `${data.get('calculated_position_size'):.2f}`
 
-🎯 الأهداف الذكية (منظفة ومقربة فنية):
-🎯 TP1 (1.5R): {fmt.format(data.get('tp1'))}
-🎯 TP2 (2.5R): {fmt.format(data.get('tp2'))}
-🎯 TP3 (4.0R): {fmt.format(data.get('tp3'))}
+🎯 الأهداف المحسوبة (منسقة ومقصوصة برمجياً):
+🎯 TP1 (1.5R): `{data.get('clean_tp1')}`
+🎯 TP2 (2.5R): `{data.get('clean_tp2')}`
+🎯 TP3 (4.0R): `{data.get('clean_tp3')}`
 
 📝 Reason:
-`تفعيل النسخة المستقرة v50.0، تنظيف كامل للبيانات العشرية وضمان توافق الأسعار مع محرك المنصة.`
+`تفعيل التنسيق النصي الصارم v50.1 وقص الأرقام العشرية الزائدة لضمان التوافق المطلق مع محرك المنصة.`
 """
     return report_message
 
@@ -737,10 +739,10 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             'ob_low': ob.get('low', p),
             'sl_absolute_low': stop_loss,
             'liquidity_sweep': data.get('sweep_15m', 'NONE'),
-            'price': smart_round(p),
+            'price': p,
             'account_balance': 1000
         }
-        formatted_report = print_final_report_v50(limit_payload)
+        formatted_report = print_final_report_v50_1(limit_payload)
         return {
             'no_trade': False,
             'is_pending_limit': True,
@@ -754,9 +756,21 @@ def _get_coin_analysis_core(symbol, interval='1h'):
             'details': data
         }
 
-    tp1 = resolver_res.get('tp1')
-    tp2 = resolver_res.get('tp2')
-    tp3 = resolver_res.get('tp3')
+    # للوضع الطبيعي (Market أو داخل منطقة الـ OB) نقوم بتشغيل دالة v50.1 لتجهيز النواتج النظيفة أيضاً
+    active_payload = {
+        'symbol': symbol.replace('-USDT', ''),
+        'decision': direction,
+        'grade': data.get('grade', 'إيجابي متوسط'),
+        'score': data['score'],
+        'structure': data.get('struct_15m', {}).get('trend', 'NEUTRAL'),
+        'ob_high': ob.get('high', p),
+        'ob_low': ob.get('low', p),
+        'sl_absolute_low': stop_loss,
+        'liquidity_sweep': data.get('sweep_15m', 'NONE'),
+        'price': p,
+        'account_balance': 1000
+    }
+    clean_res = resolve_and_clean_v50_1(active_payload)
 
     return {
         'no_trade': False,
@@ -770,10 +784,10 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'price': smart_round(p),
         'entry_min': smart_round(p * 0.998 if direction == 'LONG' else p * 1.002),
         'entry_max': smart_round(p * 1.002 if direction == 'LONG' else p * 0.998),
-        'stop_loss': stop_loss,
-        'tp1': tp1,
-        'tp2': tp2,
-        'tp3': tp3,
+        'stop_loss': clean_res.get('clean_sl'),
+        'tp1': clean_res.get('clean_tp1'),
+        'tp2': clean_res.get('clean_tp2'),
+        'tp3': clean_res.get('clean_tp3'),
         'sl_pct': abs(sl_pct),
         'position_size_usd': pos_check.get('position_size', 0),
         'order_block': f"{smart_round(ob.get('low', p))} - {smart_round(ob.get('high', p))}",
@@ -833,8 +847,16 @@ def generate_evidence_report(d):
     struct_trend = det.get('struct_15m', {}).get('trend', 'NEUTRAL')
     sweep_res = det.get('sweep_15m', 'NONE')
 
+    # حساب نسبة المخاطرة المئوية بدقة تقريبية إن لم تكن متوفرة
+    p_val = d.get('price', 0)
+    sl_val = d.get('stop_loss', 0)
+    try:
+        risk_pct_calc = abs(p_val - float(sl_val)) / p_val * 100 if p_val > 0 else d.get('sl_pct', 0)
+    except:
+        risk_pct_calc = d.get('sl_pct', 0)
+
     lines = [
-        f"🤖 **BingX Institutional SMC v50.0 (Dynamic RR & Entry)**",
+        f"🤖 **BingX Institutional SMC v50.1 (Golden Precision)**",
         f"💎 العملة: `{sym}-USDT`",
         f"📈 القرار:",
         f"{emo} `{text_dir}`",
@@ -846,7 +868,7 @@ def generate_evidence_report(d):
         f"💧 Sweep: `{sweep_res}`",
         f"💰 Price: `{d.get('price')}`",
         f"🎯 Entry: `{d.get('entry_min')} - {d.get('entry_max')}`",
-        f"🛑 SL: `{d.get('stop_loss')}` 📊 Risk: `{d.get('sl_pct')}%`",
+        f"🛑 SL: `{d.get('stop_loss')}` 📊 Risk: `{risk_pct_calc:.2f}%`",
         f"💵 Position Size (1% Risk): `${smart_round(d.get('position_size_usd', 0))}`",
         f"🎯 TP1 (1.5R): `{d.get('tp1')}`",
         f"🎯 TP2 (2.5R): `{d.get('tp2')}`",
