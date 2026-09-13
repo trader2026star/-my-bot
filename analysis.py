@@ -1,4 +1,6 @@
-# analysis.py - BingX Precision Execution Tool v47.0
+# =========================================================
+# analysis.py - BingX Precision Execution Tool v48.0 (SMC Institutional Grade)
+# =========================================================
 import time
 import logging
 import threading
@@ -6,7 +8,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/47.0', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/48.0', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -210,36 +212,76 @@ def smart_round(v):
         return round(v, 5)
     return round(v, 8)
 
-def find_pin_bar_target(direction, klines):
-    if not klines or len(klines) < 3:
-        return 0
-    best_pin_target = 0
-    for i in range(-1, -4, -1):
-        c = klines[i]
-        o, h, l, close_val = c[1], c[2], c[3], c[4]
-        body = abs(close_val - o)
-        total_range = h - l
-        if total_range == 0:
-            continue
-        if direction == 'SHORT':
-            upper_wick = h - max(o, close_val)
-            if upper_wick > (body * 1.5) and upper_wick >= (total_range * 0.4):
-                best_pin_target = h
-                break
-        else:
-            lower_wick = min(o, close_val) - l
-            if lower_wick > (body * 1.5) and lower_wick >= (total_range * 0.4):
-                best_pin_target = l
-                break
-    if best_pin_target == 0:
-        best_pin_target = klines[-1][3] if direction == 'SHORT' else klines[-1][2]
-    return smart_round(best_pin_target)
+def analyze_smc_structure(klines):
+    """
+    تحليل هيكل السوق الفعلي (Smart Money Structure & BOS/CHoCH)
+    لاستخراج الاتجاه الحقيقي بدلاً من التوقع العشوائي.
+    """
+    if not klines or len(klines) < 15:
+        return 'LONG', 80
+
+    highs = [x[2] for x in klines]
+    lows = [x[3] for x in klines]
+    closes = [x[4] for x in klines]
+
+    # حساب المتوسطات الهيكلية المتعددة للتحقق من الاتجاه العام
+    ema9 = sum(closes[-9:]) / 9
+    ema21 = sum(closes[-21:]) / min(21, len(closes))
+    
+    recent_high = max(highs[-10:])
+    recent_low = min(lows[-10:])
+    current_close = closes[-1]
+
+    # كشف كسر الهيكل (Break of Structure - BOS)
+    bullish_structure_breaks = 0
+    bearish_structure_breaks = 0
+
+    for i in range(len(klines) - 5, len(klines)):
+        if klines[i][4] > klines[i-1][2]:
+            bullish_structure_breaks += 1
+        elif klines[i][4] < klines[i-1][3]:
+            bearish_structure_breaks += 1
+
+    # منطق تحديد الاتجاه المؤسسي الحقيقي بناءً على هيكل الـ SMC
+    score = 85
+    if current_close > ema9 and ema9 > ema21 and bullish_structure_breaks >= bearish_structure_breaks:
+        direction = 'LONG'
+        score = min(95, 85 + (bullish_structure_breaks * 3))
+    elif current_close < ema9 and ema9 < ema21 and bearish_structure_breaks >= bullish_structure_breaks:
+        direction = 'SHORT'
+        score = min(95, 85 + (bearish_structure_breaks * 3))
+    else:
+        # إذا كان السوق متذبذباً، نعتمد على الاتجاه الأقرب للـ EMA الرئيسي لمنع الإشارات الخاطئة
+        direction = 'LONG' if current_close >= ema21 else 'SHORT'
+        score = 82
+
+    return direction, score
+
+def find_institutional_order_block(direction, klines):
+    """
+    البحث عن مناطق الـ Order Blocks ومناطق السيولة الحقيقية للـ SMC
+    """
+    if not klines or len(klines) < 5:
+        return klines[-1][3] if direction == 'SHORT' else klines[-1][2]
+    
+    if direction == 'LONG':
+        # البحث عن آخر شمعة هابطة قبل الانفجار الصعودي (Bullish Order Block)
+        for i in range(-2, -min(len(klines), 10), -1):
+            if klines[i][4] < klines[i][1]:  # شمعة حمراء
+                return klines[i][3]  # أدنى نقطة في الـ OB
+        return klines[-1][3]
+    else:
+        # البحث عن آخر شمعة صاعدة قبل الانفجار الهبوطي (Bearish Order Block)
+        for i in range(-2, -min(len(klines), 10), -1):
+            if klines[i][4] > klines[i][1]:  # شمعة خضراء
+                return klines[i][2]  # أعلى نقطة في الـ OB
+        return klines[-1][2]
 
 def calculate_precision_plan(direction, price, klines):
     """
-    حساب خطة التداول بدقة بناءً على طلب المستخدم المباشر (تجنب الوقف العشوائي)
+    حساب خطة التداول المؤسسية بدقة بناءً على هيكل الـ SMC وأوامر حماية الاستوب لوز
     """
-    if not klines or len(klines) < 2:
+    if not klines or len(klines) < 3:
         return {
             'entry_min': smart_round(price * 0.998),
             'entry_max': smart_round(price * 1.004),
@@ -253,6 +295,7 @@ def calculate_precision_plan(direction, price, klines):
             'sl_pct': 2.0
         }
 
+    ob_level = find_institutional_order_block(direction, klines)
     last_candle = klines[-1]
     prev_candle = klines[-2]
     
@@ -262,17 +305,18 @@ def calculate_precision_plan(direction, price, klines):
         if entry_min > entry_max:
             entry_min, entry_max = entry_max, entry_min
         
-        # حماية وقف الخسارة بوضع مسافة أمان أوسع قليلاً لتفادي التذبذب العشوائي
-        risk_range = (entry_max - entry_min) if (entry_max - entry_min) > 0 else (price * 0.012)
-        stop_loss = smart_round(entry_max + (risk_range * 1.8))
-        
+        # وقف خسارة محمي خلف الـ Order Block أو القمة الهيكلية
+        stop_loss = smart_round(max(ob_level, last_candle[2], price * 1.015))
+        if stop_loss <= price:
+            stop_loss = smart_round(price * 1.018)
+            
         risk_dist = stop_loss - price
         tp1 = smart_round(price - (risk_dist * 0.8))
         tp2 = smart_round(price - (risk_dist * 1.4))
         tp3 = smart_round(price - (risk_dist * 2.0))
         tp4 = smart_round(price - (risk_dist * 2.8))
         candle_target = smart_round(last_candle[3])
-        pin_bar_target = find_pin_bar_target('SHORT', klines)
+        pin_bar_target = smart_round(ob_level)
         sl_pct = round(((stop_loss - price) / price) * 100, 2)
     else:
         entry_min = smart_round(min(last_candle[1], last_candle[3], prev_candle[3]))
@@ -280,16 +324,18 @@ def calculate_precision_plan(direction, price, klines):
         if entry_min > entry_max:
             entry_min, entry_max = entry_max, entry_min
             
-        risk_range = (entry_max - entry_min) if (entry_max - entry_min) > 0 else (price * 0.012)
-        stop_loss = smart_round(entry_min - (risk_range * 1.8))
-        
+        # وقف خسارة محمي خلف الـ Order Block أو القاع الهيكلي
+        stop_loss = smart_round(min(ob_level, last_candle[3], price * 0.985))
+        if stop_loss >= price:
+            stop_loss = smart_round(price * 0.982)
+            
         risk_dist = price - stop_loss
         tp1 = smart_round(price + (risk_dist * 0.8))
         tp2 = smart_round(price + (risk_dist * 1.4))
         tp3 = smart_round(price + (risk_dist * 2.0))
         tp4 = smart_round(price + (risk_dist * 2.8))
         candle_target = smart_round(last_candle[2])
-        pin_bar_target = find_pin_bar_target('LONG', klines)
+        pin_bar_target = smart_round(ob_level)
         sl_pct = round(((price - stop_loss) / price) * 100, 2)
 
     return {
@@ -318,16 +364,14 @@ def _get_coin_analysis_core(symbol, interval='1h'):
     closes = [x[4] for x in k1]
     rsi = calculate_rsi(closes)
 
-    # تحديد اتجاه الصفقة بناءً على الزخم الفعلي للعملة المختارة بدقة
-    ma20 = sum(closes[-20:]) / min(20, len(closes))
-    direction = 'SHORT' if p <= ma20 or closes[-1] <= closes[-2] else 'LONG'
-
+    # تحليل الهيكل الحقيقي للـ SMC وتجنب الإشارات العشوائية
+    direction, score = analyze_smc_structure(k1)
     plan = calculate_precision_plan(direction, p, k1)
 
     return {
         'symbol': symbol,
         'direction': direction,
-        'score': 90,
+        'score': score,
         'state': 'ACTIVE',
         'price': smart_round(p),
         'rsi': rsi,
@@ -372,8 +416,8 @@ def generate_evidence_report(d):
     emo, text_dir = ('🟢', 'LONG') if dr == 'LONG' else ('🔴', 'SHORT')
 
     lines = [
-        f"🎯 **Precision Tool v47.0** | {text_dir}",
-        f"{text_dir} 10x ${d.get('symbol', '-').replace('-USDT','')} - تحليل يدوي دقيق.",
+        f"🎯 **SMC Institutional Tool v48.0** | {text_dir}",
+        f"{emo} {text_dir} 10x ${d.get('symbol', '-').replace('-USDT','')} - تحليل هيكلي دقيق.",
         f"خطة التداول:",
         f"الدخول: `{d.get('entry_min')} - {d.get('entry_max')}`",
         f"TP1: `{d.get('tp1')}` (R:R 1:0.8)",
@@ -381,8 +425,8 @@ def generate_evidence_report(d):
         f"TP3: `{d.get('tp3')}` (R:R 1:2.0)",
         f"TP4: `{d.get('tp4')}` (R:R 1:2.8)",
         f"🎯 هدف الشمعة: `{d.get('candle_target')}`",
-        f"📌 هدف الدبوس (Pin Bar): `{d.get('pin_bar_target')}`",
-        f"وقف الخسارة SL (محمي): `{d.get('stop_loss')}` (-{d.get('sl_pct', 2.0)}%)",
+        f"📌 منطقة الـ Order Block: `{d.get('pin_bar_target')}`",
+        f"وقف الخسارة SL (محمي هيكلياً): `{d.get('stop_loss')}` (-{d.get('sl_pct', 2.0)}%)",
         f"السعر الحالي: `{d.get('price')}`"
     ]
         
