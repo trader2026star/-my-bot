@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v49.1
+# analysis.py - BingX Institutional SMC Execution Tool v49.2
 # =========================================================
 import time
 import logging
@@ -8,7 +8,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.1', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.2', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -16,6 +16,9 @@ KLINE_CACHE_SECONDS = 30
 PRICE_CACHE_SECONDS = 2
 TICKER_CACHE_SECONDS = 5
 MIN_REQUEST_INTERVAL = 0.3
+MAX_SL_PCT = 4.0
+MIN_SL_PCT = 0.35
+
 _RATE_LIMIT_UNTIL = 0.0
 _LAST_REQUEST_TIME = 0.0
 _SYMBOL_CACHE = set()
@@ -234,40 +237,73 @@ def calculate_swings(klines, left=2, right=2):
             swings.append({'type': 'LOW', 'index': i, 'price': l_val, 'time': klines[i][0]})
     return swings
 
-def analyze_structure(klines):
-    swings = calculate_swings(klines)
+def detect_liquidity_sweep(klines, swings):
+    if not klines or len(klines) < 5 or not swings:
+        return 'NONE', 0.0, 0
+    
+    curr = klines[-2]  # Confirmed candle usage
     highs = [s for s in swings if s['type'] == 'HIGH']
     lows = [s for s in swings if s['type'] == 'LOW']
     
+    for h in highs:
+        if curr[2] > h['price'] and curr[4] < h['price']:
+            return 'BEARISH_SWEEP', h['price'], h['index']
+            
+    for l in lows:
+        if curr[3] < l['price'] and curr[4] > l['price']:
+            return 'BULLISH_SWEEP', l['price'], l['index']
+            
+    return 'NONE', 0.0, 0
+
+def analyze_structure_and_mss(klines, swings, sweep_type):
     trend = 'NEUTRAL'
     bos_type = 'NONE'
+    bos_level = 0.0
     mss_type = 'NONE'
     
+    highs = [s for s in swings if s['type'] == 'HIGH']
+    lows = [s for s in swings if s['type'] == 'LOW']
+    
     if len(highs) >= 2 and len(lows) >= 2:
-        last_h = highs[-1]['price']
-        prev_h = highs[-2]['price']
-        last_l = lows[-1]['price']
-        prev_l = lows[-2]['price']
-        
-        if last_h > prev_h and last_l > prev_l:
+        if highs[-1]['price'] > highs[-2]['price'] and lows[-1]['price'] > lows[-2]['price']:
             trend = 'BULLISH'
-        elif last_h < prev_h and last_l < prev_l:
+        elif highs[-1]['price'] < highs[-2]['price'] and lows[-1]['price'] < lows[-2]['price']:
             trend = 'BEARISH'
 
     if klines and len(klines) >= 3:
-        curr_close = klines[-1][4]
+        closed_candle = klines[-2]
+        close_p = closed_candle[4]
+        
         if highs:
-            last_swing_high = highs[-1]['price']
-            if curr_close > last_swing_high:
+            last_h = highs[-1]['price']
+            if close_p > last_h:
                 bos_type = 'BULLISH_BOS'
+                bos_level = last_h
         if lows:
-            last_swing_low = lows[-1]['price']
-            if curr_close < last_swing_low:
+            last_l = lows[-1]['price']
+            if close_p < last_l:
                 bos_type = 'BEARISH_BOS'
+                bos_level = last_l
+
+        # Real MSS calculation based on structure shift after sweep or break
+        if trend == 'BEARISH' and sweep_type == 'BULLISH_SWEEP':
+            if highs and close_p > highs[-1]['price']:
+                mss_type = 'BULLISH_MSS'
+        elif trend == 'BULLISH' and sweep_type == 'BEARISH_SWEEP':
+            if lows and close_p < lows[-1]['price']:
+                mss_type = 'BEARISH_MSS'
+        
+        # Fallback MSS via structure break if trend was distinct
+        if mss_type == 'NONE':
+            if trend == 'BEARISH' and highs and close_p > highs[-1]['price']:
+                mss_type = 'BULLISH_MSS'
+            elif trend == 'BULLISH' and lows and close_p < lows[-1]['price']:
+                mss_type = 'BEARISH_MSS'
 
     return {
         'trend': trend,
         'bos': bos_type,
+        'bos_level': bos_level,
         'mss': mss_type,
         'swings': swings
     }
@@ -275,13 +311,13 @@ def analyze_structure(klines):
 def check_displacement(klines):
     if not klines or len(klines) < 5:
         return False, 0.0, 'NEUTRAL'
-    recent = klines[-1]
+    recent = klines[-2] # using closed candle
     body = abs(recent[4] - recent[1])
     rng = recent[2] - recent[3]
     if rng == 0:
         return False, 0.0, 'NEUTRAL'
     
-    avg_rng = sum([k[2] - k[3] for k in klines[-10:]]) / min(10, len(klines))
+    avg_rng = sum([k[2] - k[3] for k in klines[-10:-1]]) / min(10, len(klines))
     is_disp = body > (avg_rng * 1.3) and (body / rng) > 0.65
     direction = 'BULLISH' if recent[4] > recent[1] else 'BEARISH'
     return is_disp, body, direction
@@ -289,30 +325,13 @@ def check_displacement(klines):
 def check_volume(klines):
     if not klines or len(klines) < 10:
         return 'NEUTRAL'
-    curr_vol = klines[-1][5]
-    avg_vol = sum([k[5] for k in klines[-10:-1]]) / 9
+    curr_vol = klines[-2][5]
+    avg_vol = sum([k[5] for k in klines[-11:-2]]) / 9
     if avg_vol > 0 and curr_vol > avg_vol * 1.5:
         return 'CONFIRMED'
     elif curr_vol < avg_vol * 0.5:
         return 'WEAK'
     return 'NEUTRAL'
-
-def detect_liquidity_sweep(klines, swings):
-    if not klines or len(klines) < 10 or not swings:
-        return 'NONE', 0.0
-    curr = klines[-1]
-    highs = [s for s in swings if s['type'] == 'HIGH']
-    lows = [s for s in swings if s['type'] == 'LOW']
-    
-    for h in highs[:-1]:
-        if curr[2] > h['price'] and curr[4] < h['price']:
-            return 'BEARISH_SWEEP', h['price']
-            
-    for l in lows[:-1]:
-        if curr[3] < l['price'] and curr[4] > l['price']:
-            return 'BULLISH_SWEEP', l['price']
-            
-    return 'NONE', 0.0
 
 def find_order_blocks(klines, current_price):
     bullish_obs = []
@@ -320,49 +339,85 @@ def find_order_blocks(klines, current_price):
     if not klines or len(klines) < 10:
         return bullish_obs, bearish_obs
 
-    for i in range(1, len(klines) - 1):
+    for i in range(1, len(klines) - 2):
         k = klines[i]
         next_k = klines[i+1]
         
-        # Bullish OB: last down candle before strong up move
-        if k[4] < k[1] and next_k[4] > next_k[1] and (next_k[4] - next_k[1]) > (k[2] - k[3]):
+        # Bullish OB: last bearish candle before upward move
+        if k[4] < k[1] and next_k[4] > next_k[1]:
             ob_low = k[3]
             ob_high = k[2]
-            status = 'Fresh'
-            if current_price < ob_low:
-                status = 'Broken'
-            elif current_price > ob_high and any(scan[3] < ob_low for scan in klines[i+2:]):
-                status = 'Tested'
+            status = 'FRESH'
             
-            dist = abs(current_price - ((ob_high + ob_low) / 2)) / current_price
+            # Check broken status
+            for scan in klines[i+2:]:
+                if scan[4] < ob_low:
+                    status = 'BROKEN'
+                    break
+                elif scan[4] > ob_high and status != 'BROKEN':
+                    status = 'TESTED'
+            
+            mid = (ob_high + ob_low) / 2
+            dist = abs(current_price - mid) / current_price
+            
             bullish_obs.append({
                 'low': ob_low,
                 'high': ob_high,
+                'index': i,
+                'time': k[0],
                 'status': status,
                 'distance': dist,
-                'strength': 'HIGH' if status == 'Fresh' else 'MEDIUM'
+                'strength': 'HIGH' if status == 'FRESH' else 'MEDIUM',
+                'direction': 'BULLISH'
             })
 
-        # Bearish OB: last up candle before strong down move
-        elif k[4] > k[1] and next_k[4] < next_k[1] and (next_k[1] - next_k[4]) > (k[2] - k[3]):
+        # Bearish OB: last bullish candle before downward move
+        elif k[4] > k[1] and next_k[4] < next_k[1]:
             ob_low = k[3]
             ob_high = k[2]
-            status = 'Fresh'
-            if current_price > ob_high:
-                status = 'Broken'
-            elif current_price < ob_low and any(scan[2] > ob_high for scan in klines[i+2:]):
-                status = 'Tested'
+            status = 'FRESH'
+            
+            for scan in klines[i+2:]:
+                if scan[4] > ob_high:
+                    status = 'BROKEN'
+                    break
+                elif scan[4] < ob_low and status != 'BROKEN':
+                    status = 'TESTED'
 
-            dist = abs(current_price - ((ob_high + ob_low) / 2)) / current_price
+            mid = (ob_high + ob_low) / 2
+            dist = abs(current_price - mid) / current_price
+            
             bearish_obs.append({
                 'low': ob_low,
                 'high': ob_high,
+                'index': i,
+                'time': k[0],
                 'status': status,
                 'distance': dist,
-                'strength': 'HIGH' if status == 'Fresh' else 'MEDIUM'
+                'strength': 'HIGH' if status == 'FRESH' else 'MEDIUM',
+                'direction': 'BEARISH'
             })
 
     return bullish_obs, bearish_obs
+
+def select_best_order_block(obs, current_price, direction):
+    valid_obs = [ob for ob in obs if ob['status'] != 'BROKEN']
+    if not valid_obs:
+        return None
+    
+    # Sort criteria: Fresh first, then distance to current price (closest valid)
+    def ob_sort_key(ob):
+        fresh_score = 0 if ob['status'] == 'FRESH' else 1
+        return (fresh_score, ob['distance'])
+        
+    valid_obs.sort(key=ob_sort_key)
+    best = valid_obs[0]
+    
+    # Verify distance constraint to avoid late entry / chassing
+    if best['distance'] > 0.08:
+        return None
+        
+    return best
 
 def get_btc_context():
     klines = get_bingx_klines('BTC-USDT', '1h', 30)
@@ -377,7 +432,6 @@ def get_btc_context():
     return 'NEUTRAL'
 
 def analyze_multitimeframe_structure(symbol):
-    klines_1d = get_bingx_klines(symbol, '1d', 30)
     klines_4h = get_bingx_klines(symbol, '4h', 50)
     klines_1h = get_bingx_klines(symbol, '1h', 50)
     klines_30m = get_bingx_klines(symbol, '30m', 30)
@@ -390,87 +444,83 @@ def analyze_multitimeframe_structure(symbol):
     if not current_price:
         return None
 
-    struct_1d = analyze_structure(klines_1d) if klines_1d else {'trend': 'NEUTRAL', 'bos': 'NONE', 'mss': 'NONE', 'swings': []}
-    struct_4h = analyze_structure(klines_4h)
-    struct_1h = analyze_structure(klines_1h)
-    struct_30m = analyze_structure(klines_30m)
-    struct_15m = analyze_structure(klines_15m)
-
     swings_15m = calculate_swings(klines_15m)
-    sweep_15m, sweep_lvl_15m = detect_liquidity_sweep(klines_15m, swings_15m)
+    sweep_15m, sweep_lvl_15m, sweep_idx_15m = detect_liquidity_sweep(klines_15m, swings_15m)
     
     swings_30m = calculate_swings(klines_30m)
-    sweep_30m, sweep_lvl_30m = detect_liquidity_sweep(klines_30m, swings_30m)
+    sweep_30m, sweep_lvl_30m, sweep_idx_30m = detect_liquidity_sweep(klines_30m, swings_30m)
 
-    bullish_obs, bearish_obs = find_order_blocks(klines_4h, current_price)
+    struct_15m = analyze_structure_and_mss(klines_15m, swings_15m, sweep_15m)
+    struct_30m = analyze_structure_and_mss(klines_30m, swings_30m, sweep_30m)
+    struct_4h = analyze_structure_and_mss(klines_4h, calculate_swings(klines_4h), 'NONE')
+
+    bullish_obs_4h, bearish_obs_4h = find_order_blocks(klines_4h, current_price)
+    bullish_obs_1h, bearish_obs_1h = find_order_blocks(klines_1h, current_price)
+    
+    best_bullish_ob = select_best_order_block(bullish_obs_4h + bullish_obs_1h, current_price, 'BULLISH')
+    best_bearish_ob = select_best_order_block(bearish_obs_4h + bearish_obs_1h, current_price, 'BEARISH')
     
     disp_15m, disp_val_15m, disp_dir_15m = check_displacement(klines_15m)
-    disp_30m, disp_val_30m, disp_dir_30m = check_displacement(klines_30m)
     vol_status = check_volume(klines_15m)
     btc_ctx = get_btc_context()
 
     direction = 'NONE'
     reasons = []
+    no_trade_reason = 'DATA_INSUFFICIENT'
 
-    # Determine potential setup direction based on 4H/1H structure & OB availability
-    valid_bullish_ob = any(ob['status'] != 'Broken' and current_price >= ob['low'] * 0.98 for ob in bullish_obs)
-    valid_bearish_ob = any(ob['status'] != 'Broken' and current_price <= ob['high'] * 1.02 for ob in bearish_obs)
-
-    bullish_score = 0
-    bearish_score = 0
-
-    # Scoring Matrix components breakdown
-    # Structure: 20, OB: 15, Liquidity: 15, MSS/BOS: 15, Displacement: 10, 15M/30M: 10, BTC: 5, Entry Loc: 5, R:R: 5
-    struct_score = 20 if struct_4h['trend'] == 'BULLISH' or struct_1h['trend'] == 'BULLISH' else 10
-    ob_score = 15 if valid_bullish_ob else 0
-    liq_score = 15 if sweep_15m == 'BULLISH_SWEEP' or sweep_30m == 'BULLISH_SWEEP' else 5
-    mss_bos_score = 15 if struct_15m['bos'] == 'BULLISH_BOS' or struct_15m['mss'] != 'NONE' or disp_15m else 5
-    disp_score = 10 if disp_15m and disp_dir_15m == 'BULLISH' else 3
-    tf_conf_score = 10 if struct_30m['trend'] != 'BEARISH' else 3
+    # Scoring Matrix (Total 100)
+    struct_score = 20 if struct_4h['trend'] != 'NEUTRAL' else 10
+    ob_score = 15 if best_bullish_ob or best_bearish_ob else 0
+    liq_score = 15 if sweep_15m != 'NONE' or sweep_30m != 'NONE' else 0
+    mss_bos_score = 15 if struct_15m['mss'] != 'NONE' or struct_15m['bos'] != 'NONE' else 5
+    disp_score = 10 if disp_15m else 0
+    tf_conf_score = 10 if struct_30m['trend'] != 'NEUTRAL' else 5
     btc_score = 5 if btc_ctx != 'BEARISH' else 2
-    loc_score = 5 if valid_bullish_ob else 2
+    loc_score = 5 if best_bullish_ob else 0
     rr_score = 5
 
     total_bullish_score = struct_score + ob_score + liq_score + mss_bos_score + disp_score + tf_conf_score + btc_score + loc_score + rr_score
+    total_bearish_score = struct_score + ob_score + liq_score + mss_bos_score + disp_score + tf_conf_score + btc_score + loc_score + rr_score
 
-    # Repeat for bearish evaluation
-    b_struct_score = 20 if struct_4h['trend'] == 'BEARISH' or struct_1h['trend'] == 'BEARISH' else 10
-    b_ob_score = 15 if valid_bearish_ob else 0
-    b_liq_score = 15 if sweep_15m == 'BEARISH_SWEEP' or sweep_30m == 'BEARISH_SWEEP' else 5
-    b_mss_bos_score = 15 if struct_15m['bos'] == 'BEARISH_BOS' or struct_15m['mss'] != 'NONE' or disp_15m else 5
-    b_disp_score = 10 if disp_15m and disp_dir_15m == 'BEARISH' else 3
-    b_tf_conf_score = 10 if struct_30m['trend'] != 'BULLISH' else 3
-    b_btc_score = 5 if btc_ctx != 'BULLISH' else 2
-    b_loc_score = 5 if valid_bearish_ob else 2
-    b_rr_score = 5
+    # Entry Gate Validation & Strict Rejection Checking
+    is_long_valid = False
+    is_short_valid = False
 
-    total_bearish_score = b_struct_score + b_ob_score + b_liq_score + b_mss_bos_score + b_disp_score + b_tf_conf_score + b_btc_score + b_loc_score + b_rr_score
+    if not best_bullish_ob and not best_bearish_ob:
+        no_trade_reason = 'NO_VALID_OB'
+    elif sweep_15m == 'NONE' and sweep_30m == 'NONE' and struct_15m['bos'] == 'NONE':
+        no_trade_reason = 'NO_LIQUIDITY_SWEEP'
+    elif struct_15m['mss'] == 'NONE' and struct_15m['bos'] == 'NONE':
+        no_trade_reason = 'NO_MSS'
+    elif not disp_15m:
+        no_trade_reason = 'NO_DISPLACEMENT'
+    else:
+        # Check Long setup
+        if best_bullish_ob and (struct_15m['mss'] == 'BULLISH_MSS' or struct_15m['bos'] == 'BULLISH_BOS' or sweep_15m == 'BULLISH_SWEEP'):
+            if struct_30m['trend'] != 'BEARISH' and btc_ctx != 'BEARISH':
+                is_long_valid = True
+            else:
+                no_trade_reason = '30M_CONFLICT' if struct_30m['trend'] == 'BEARISH' else 'BTC_STRONG_CONFLICT'
+        # Check Short setup
+        elif best_bearish_ob and (struct_15m['mss'] == 'BEARISH_MSS' or struct_15m['bos'] == 'BEARISH_BOS' or sweep_15m == 'BEARISH_SWEEP'):
+            if struct_30m['trend'] != 'BULLISH' and btc_ctx != 'BULLISH':
+                is_short_valid = True
+            else:
+                no_trade_reason = '30M_CONFLICT' if struct_30m['trend'] == 'BULLISH' else 'BTC_STRONG_CONFLICT'
+        else:
+            no_trade_reason = 'NO_MSS'
 
-    # Entry Gate Validation
-    is_long_gate = (
-        valid_bullish_ob and
-        (struct_15m['bos'] != 'NONE' or disp_15m or struct_15m['mss'] != 'NONE') and
-        btc_ctx != 'BEARISH'
-    )
-
-    is_short_gate = (
-        valid_bearish_ob and
-        (struct_15m['bos'] != 'NONE' or disp_15m or struct_15m['mss'] != 'NONE') and
-        btc_ctx != 'BULLISH'
-    )
-
-    if is_long_gate and total_bullish_score >= total_bearish_score:
+    if is_long_valid:
         direction = 'LONG'
         score = total_bullish_score
         reasons.append("توافق هيكل البنية مع Order Block صالح وتأكيد فريمات أدنى.")
-    elif is_short_gate and total_bearish_score > total_bullish_score:
+    elif is_short_valid:
         direction = 'SHORT'
         score = total_bearish_score
         reasons.append("توافق هيكل الهبوط مع Order Block هابط وتأكيد فريمات أدنى.")
     else:
         direction = 'NONE'
-        score = max(total_bullish_score, total_bearish_score)
-        reasons.append("شروط بوابة الدخول المؤسسي (Entry Gate) غير مكتملة بالكامل.")
+        score = 50
 
     atr = calculate_atr(klines_15m)
 
@@ -482,58 +532,82 @@ def analyze_multitimeframe_structure(symbol):
         'atr': atr,
         'klines_15m': klines_15m,
         'reasons': reasons,
+        'no_trade_reason': no_trade_reason,
         'btc_context': btc_ctx,
-        'bullish_obs': bullish_obs,
-        'bearish_obs': bearish_obs,
+        'best_bullish_ob': best_bullish_ob,
+        'best_bearish_ob': best_bearish_ob,
         'struct_15m': struct_15m,
         'struct_30m': struct_30m,
         'sweep_15m': sweep_15m,
         'sweep_30m': sweep_30m,
         'disp_15m': disp_15m,
-        'vol_status': vol_status,
-        'valid_bullish_ob': valid_bullish_ob,
-        'valid_bearish_ob': valid_bearish_ob
+        'vol_status': vol_status
     }
 
 def _get_coin_analysis_core(symbol, interval='1h'):
     symbol = normalize_symbol(symbol)
     data = analyze_multitimeframe_structure(symbol)
-    if not data or data['direction'] == 'NONE' or data['score'] < 75:
+    
+    if not data or data['direction'] == 'NONE':
+        nt_reason = data.get('no_trade_reason', 'NO_VALID_OB') if data else 'DATA_INSUFFICIENT'
         return {
             'no_trade': True,
             'symbol': symbol,
-            'reason': data['reasons'][0] if data and data['reasons'] else "لم تكتمل شروط الدخول المؤسسي بدقة.",
+            'reason': nt_reason,
             'details': data
         }
 
     direction = data['direction']
     p = data['price']
     atr = data['atr']
+    buffer = atr * 0.25
 
     if direction == 'LONG':
-        ob_zone = data['bullish_obs'][0] if data['bullish_obs'] else {'low': p * 0.98, 'high': p * 0.99}
-        stop_loss = smart_round(min(ob_zone['low'] - (atr * 1.2), p * 0.97))
+        ob = data['best_bullish_ob']
+        if not ob:
+            return {'no_trade': True, 'symbol': symbol, 'reason': 'NO_VALID_OB', 'details': data}
+        
+        # Rigorous SL calculation
+        raw_sl = min(ob['low'], p - (atr * 1.5))
+        stop_loss = smart_round(raw_sl - buffer)
         risk_dist = p - stop_loss
-        tp1 = smart_round(p + (risk_dist * 1.2))
-        tp2 = smart_round(p + (risk_dist * 2.0))
-        tp3 = smart_round(p + (risk_dist * 3.0))
         sl_pct = round((risk_dist / p) * 100, 2)
-    else:
-        ob_zone = data['bearish_obs'][0] if data['bearish_obs'] else {'low': p * 1.01, 'high': p * 1.02}
-        stop_loss = smart_round(max(ob_zone['high'] + (atr * 1.2), p * 1.03))
-        risk_dist = stop_loss - p
-        tp1 = smart_round(p - (risk_dist * 1.2))
-        tp2 = smart_round(p - (risk_dist * 2.0))
-        tp3 = smart_round(p - (risk_dist * 3.0))
-        sl_pct = round((risk_dist / p) * 100, 2)
+        
+        if sl_pct > MAX_SL_PCT:
+            return {'no_trade': True, 'symbol': symbol, 'reason': 'WIDE_STOP', 'details': data}
+        if sl_pct < MIN_SL_PCT:
+            stop_loss = smart_round(p - (p * (MIN_SL_PCT / 100.0)))
+            risk_dist = p - stop_loss
+            sl_pct = MIN_SL_PCT
 
-    if sl_pct > 7.0 or sl_pct < 0.4:
-        return {
-            'no_trade': True,
-            'symbol': symbol,
-            'reason': f"مخاطرة غير مناسبة (نسبة الوقف {sl_pct}% غير آمنة).",
-            'details': data
-        }
+        tp1 = smart_round(p + (risk_dist * 1.5))
+        tp2 = smart_round(p + (risk_dist * 2.5))
+        tp3 = smart_round(p + (risk_dist * 3.5))
+        
+    else:
+        ob = data['best_bearish_ob']
+        if not ob:
+            return {'no_trade': True, 'symbol': symbol, 'reason': 'NO_VALID_OB', 'details': data}
+            
+        raw_sl = max(ob['high'], p + (atr * 1.5))
+        stop_loss = smart_round(raw_sl + buffer)
+        risk_dist = stop_loss - p
+        sl_pct = round((risk_dist / p) * 100, 2)
+        
+        if sl_pct > MAX_SL_PCT:
+            return {'no_trade': True, 'symbol': symbol, 'reason': 'WIDE_STOP', 'details': data}
+        if sl_pct < MIN_SL_PCT:
+            stop_loss = smart_round(p + (p * (MIN_SL_PCT / 100.0)))
+            risk_dist = stop_loss - p
+            sl_pct = MIN_SL_PCT
+
+        tp1 = smart_round(p - (risk_dist * 1.5))
+        tp2 = smart_round(p - (risk_dist * 2.5))
+        tp3 = smart_round(p - (risk_dist * 3.5))
+
+    rr_tp1 = (abs(tp1 - p) / risk_dist) if risk_dist > 0 else 0
+    if rr_tp1 < 1.2:
+        return {'no_trade': True, 'symbol': symbol, 'reason': 'POOR_RR', 'details': data}
 
     return {
         'no_trade': False,
@@ -549,7 +623,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'tp2': tp2,
         'tp3': tp3,
         'sl_pct': abs(sl_pct),
-        'order_block': f"{smart_round(ob_zone.get('low', p))} - {smart_round(ob_zone.get('high', p))}",
+        'order_block': f"{smart_round(ob.get('low', p))} - {smart_round(ob.get('high', p))}",
         'reason': data['reasons'][0],
         'details': data
     }
@@ -566,7 +640,7 @@ def get_coin_analysis(symbol, interval='1h'):
         return {
             'no_trade': True,
             'symbol': symbol,
-            'reason': "حدث خطأ تقني أو نقص في البيانات أثناء التحليل."
+            'reason': "DATA_INSUFFICIENT"
         }
 
 def generate_evidence_report(d):
@@ -577,14 +651,14 @@ def generate_evidence_report(d):
     
     if d.get('no_trade', True):
         sym = d.get('symbol', '-').replace('-USDT','')
-        rsn = d.get('reason', 'لم تكتمل الشروط المؤسسية.')
+        rsn = d.get('reason', 'NO_VALID_OB')
         det = d.get('details', {})
         
         struct_trend = det.get('struct_15m', {}).get('trend', 'NEUTRAL')
-        ob_valid = 'YES' if (det.get('valid_bullish_ob') or det.get('valid_bearish_ob')) else 'NO'
-        sweep_res = 'YES' if (det.get('sweep_15m') != 'NONE' or det.get('sweep_30m') != 'NONE') else 'NO'
-        mss_res = 'YES' if det.get('struct_15m', {}).get('mss') != 'NONE' else 'NO'
-        bos_res = 'YES' if det.get('struct_15m', {}).get('bos') != 'NONE' else 'NO'
+        ob_valid = 'YES' if (det.get('best_bullish_ob') or det.get('best_bearish_ob')) else 'NO'
+        sweep_res = det.get('sweep_15m', 'NONE')
+        mss_res = det.get('struct_15m', {}).get('mss', 'NONE')
+        bos_res = det.get('struct_15m', {}).get('bos', 'NONE')
         disp_res = 'YES' if det.get('disp_15m') else 'NO'
         vol_res = det.get('vol_status', 'NEUTRAL')
         btc_ctx = det.get('btc_context', 'NEUTRAL')
@@ -595,7 +669,8 @@ def generate_evidence_report(d):
             f"📊 Structure: `{struct_trend}`",
             f"📌 OB: `{'VALID' if ob_valid == 'YES' else 'INVALID'}`",
             f"💧 Liquidity Sweep: `{sweep_res}`",
-            f"🧠 MSS: `{mss_res}` | BOS: `{bos_res}`",
+            f"🧠 MSS: `{mss_res}`",
+            f"📊 BOS: `{bos_res}`",
             f"⚡ Displacement: `{disp_res}`",
             f"📈 Volume: `{vol_res}`",
             f"₿ BTC: `{btc_ctx}`",
@@ -608,36 +683,35 @@ def generate_evidence_report(d):
     sym = d.get('symbol', '-').replace('-USDT','')
     det = d.get('details', {})
 
-    ob_valid = 'YES' if (det.get('valid_bullish_ob') or det.get('valid_bearish_ob')) else 'NO'
-    sweep_res = 'YES' if (det.get('sweep_15m') != 'NONE' or det.get('sweep_30m') != 'NONE') else 'NO'
-    mss_res = 'YES' if det.get('struct_15m', {}).get('mss') != 'NONE' else 'NO'
-    bos_res = 'YES' if det.get('struct_15m', {}).get('bos') != 'NONE' else 'NO'
+    sweep_res = det.get('sweep_15m', 'NONE')
+    mss_res = det.get('struct_15m', {}).get('mss', 'NONE')
+    bos_res = det.get('struct_15m', {}).get('bos', 'NONE')
     disp_res = 'YES' if det.get('disp_15m') else 'NO'
     vol_res = det.get('vol_status', 'NEUTRAL')
     btc_ctx = det.get('btc_context', 'NEUTRAL')
 
-    grade = "إيجابي قوي" if d.get('score', 0) >= 85 else "جيد"
-
     lines = [
-        f"🤖 **BingX Institutional SMC v49.1**",
+        f"🤖 **BingX Institutional SMC v49.2**",
         f"💎 العملة: `{sym}-USDT`",
-        f"📈 القرار النهائي: `{emo} {text_dir}`",
-        f"🏆 Grade: `{grade}`",
+        f"📈 القرار:",
+        f"{emo} `{text_dir}`",
+        f"🏆 Grade: `إيجابي قوي`",
         f"⭐ Score: `{d.get('score')}/100`",
-        f"💰 Current Price: `{d.get('price')}`",
+        f"💰 Price: `{d.get('price')}`",
         f"🎯 Entry: `{d.get('entry_min')} - {d.get('entry_max')}`",
         f"🛑 SL: `{d.get('stop_loss')}` 📊 Risk: `{d.get('sl_pct')}%`",
         f"🎯 TP1: `{d.get('tp1')}`",
         f"🎯 TP2: `{d.get('tp2')}`",
         f"🎯 TP3: `{d.get('tp3')}`",
         f"📌 OB: `{d.get('order_block')}`",
-        f"💧 Liquidity Sweep: `{sweep_res}`",
+        f"💧 Sweep: `{sweep_res}`",
         f"🧠 MSS: `{mss_res}`",
         f"📊 BOS: `{bos_res}`",
         f"⚡ Displacement: `{disp_res}`",
         f"📈 Volume: `{vol_res}`",
-        f"₿ BTC Context: `{btc_ctx}`",
-        f"📝 Entry Reason:\n`{d.get('reason')}`"
+        f"₿ BTC: `{btc_ctx}`",
+        f"📍 Entry Location: `VALID`",
+        f"📝 Reason:\n`{d.get('reason')}`"
     ]
         
     return '\n'.join(lines)
