@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v49.7
+# analysis.py - BingX Institutional SMC Execution Tool v49.8
 # =========================================================
 import time
 import logging
@@ -8,7 +8,7 @@ import requests
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.7', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/49.8', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -16,7 +16,7 @@ KLINE_CACHE_SECONDS = 30
 PRICE_CACHE_SECONDS = 2
 TICKER_CACHE_SECONDS = 5
 MIN_REQUEST_INTERVAL = 0.3
-MAX_SL_PCT = 15.0  # تم رفع الحد الأقصى للوقف إلى 15% بناءً على تحديث v2 للعملات البديلة
+MAX_SL_PCT = 15.0  # الحد الأقصى للوقف للعملات البديلة
 MIN_SL_PCT = 0.35
 
 _RATE_LIMIT_UNTIL = 0.0
@@ -409,7 +409,7 @@ def select_best_order_block(obs, current_price, atr):
 
 def calculate_position_size(account_balance, entry_price, stop_loss_price, max_risk_pct=0.01):
     stop_distance_pct = abs(entry_price - stop_loss_price) / entry_price
-    DYNAMIC_MAX_STOP = 0.15  # تم رفع الحد إلى 15% للعملات البديلة
+    DYNAMIC_MAX_STOP = 0.15  
     
     if stop_distance_pct > DYNAMIC_MAX_STOP:
         return {"action": "REJECT", "reason": "WIDE_STOP_ABSOLUTE_LIMIT"}
@@ -424,12 +424,7 @@ def calculate_position_size(account_balance, entry_price, stop_loss_price, max_r
     }
 
 def check_entry_gate_v2(market_data):
-    """
-    تحديث النسخة v2: حل تناقض الاتجاهات، ضبط حساب السكور بدقة،
-    ورفع مرونة الـ WIDE_STOP_ABSOLUTE_LIMIT للعملات البديلة.
-    """
     score = 0
-    
     structure = market_data.get('structure', 'NEUTRAL')
     decision_type = market_data.get('decision')
     
@@ -467,6 +462,64 @@ def check_entry_gate_v2(market_data):
         }
     else:
         return {"status": "NO_TRADE", "score": score, "reason": "LOW_SCORE_CONFIRMATION"}
+
+def dynamic_entry_and_rr_resolver(market_data):
+    """
+    تحديث النسخة v49.8: 
+    1. منع فخ الشراء الماركت عند ابتعاد السعر (حل مشكلة ARK).
+    2. إصلاح معادلة الأهداف لرفع قيمة الـ Risk to Reward والتخلص من POOR_RR.
+    """
+    entry_price = market_data.get('price')
+    ob_high = market_data.get('ob_high', entry_price)
+    ob_low = market_data.get('ob_low', entry_price)
+    decision = market_data.get('decision')
+    
+    price_distance_pct = 0.0
+    if decision == 'LONG' and ob_high > 0:
+        price_distance_pct = (entry_price - ob_high) / ob_high
+        if price_distance_pct > 0.02:
+            return {
+                "status": "TRADE",
+                "strategy_status": "PENDING_LIMIT",
+                "entry_zone": f"{ob_high} - {smart_round(ob_high * 0.99)}",
+                "stop_loss": market_data.get('sl_absolute_low', ob_low),
+                "msg": "السعر ابتعد عن الـ OB. تم إلغاء الماركت وتحويلها إلى أمر معلق (Limit) عند حافة المنطقة لتحسين الـ RR وتقليل المخاطرة."
+            }
+    elif decision == 'SHORT' and ob_low > 0:
+        price_distance_pct = (ob_low - entry_price) / ob_low
+        if price_distance_pct > 0.02:
+            return {
+                "status": "TRADE",
+                "strategy_status": "PENDING_LIMIT",
+                "entry_zone": f"{ob_low} - {smart_round(ob_low * 1.01)}",
+                "stop_loss": market_data.get('sl_absolute_high', ob_high),
+                "msg": "السعر ابتعد عن الـ OB. تم إلغاء الماركت وتحويلها إلى أمر معلق (Limit) عند حافة المنطقة لتحسين الـ RR وتقليل المخاطرة."
+            }
+            
+    sl_distance = abs(entry_price - market_data.get('sl_price', entry_price))
+    if sl_distance == 0:
+        sl_distance = entry_price * 0.01
+
+    if decision == 'LONG':
+        tp1 = entry_price + (sl_distance * 1.5)
+        tp2 = entry_price + (sl_distance * 2.5)
+        tp3 = entry_price + (sl_distance * 4.0)
+    else:
+        tp1 = entry_price - (sl_distance * 1.5)
+        tp2 = entry_price - (sl_distance * 2.5)
+        tp3 = entry_price - (sl_distance * 4.0)
+        
+    rr_ratio = (abs(entry_price - tp1)) / sl_distance
+    if rr_ratio < 1.2:
+        return {"status": "NO_TRADE", "reason": "TRUE_POOR_RR_AVOIDED"}
+
+    return {
+        "status": "TRADE",
+        "strategy_status": "MARKET" if price_distance_pct <= 0.02 else "LIMIT",
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3
+    }
 
 def analyze_multitimeframe_structure(symbol):
     klines_4h = get_bingx_klines(symbol, '4h', 50)
@@ -589,16 +642,48 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         risk_dist = abs(p - stop_loss)
         sl_pct = MIN_SL_PCT
 
-    tp1 = smart_round(p + (risk_dist * 1.5) if direction == 'LONG' else p - (risk_dist * 1.5))
-    tp2 = smart_round(p + (risk_dist * 2.5) if direction == 'LONG' else p - (risk_dist * 2.5))
-    tp3 = smart_round(p + (risk_dist * 3.5) if direction == 'LONG' else p - (risk_dist * 3.5))
+    resolver_input = {
+        'price': p,
+        'ob_high': ob.get('high', p),
+        'ob_low': ob.get('low', p),
+        'decision': direction,
+        'sl_price': stop_loss,
+        'sl_absolute_low': stop_loss,
+        'sl_absolute_high': stop_loss
+    }
+    
+    resolver_res = dynamic_entry_and_rr_resolver(resolver_input)
+    if resolver_res.get('status') == 'NO_TRADE':
+        return {'no_trade': True, 'symbol': symbol, 'reason': resolver_res.get('reason', 'TRUE_POOR_RR_AVOIDED'), 'details': data}
 
-    rr_tp1 = (abs(tp1 - p) / risk_dist) if risk_dist > 0 else 0
-    if rr_tp1 < 1.5:
-        return {'no_trade': True, 'symbol': symbol, 'reason': 'POOR_RR', 'details': data}
+    strategy_status = resolver_res.get('strategy_status', 'MARKET')
+    
+    if strategy_status == 'PENDING_LIMIT':
+        return {
+            'no_trade': False,
+            'is_pending_limit': True,
+            'symbol': symbol,
+            'direction': direction,
+            'score': data['score'],
+            'confirmation': data['confirmation'],
+            'grade': data.get('grade', 'إيجابي متوسط'),
+            'state': 'PENDING_LIMIT',
+            'price': smart_round(p),
+            'entry_zone': resolver_res.get('entry_zone'),
+            'stop_loss': stop_loss,
+            'sl_pct': abs(sl_pct),
+            'position_size_usd': pos_check.get('position_size', 0),
+            'reason': resolver_res.get('msg'),
+            'details': data
+        }
+
+    tp1 = resolver_res.get('tp1')
+    tp2 = resolver_res.get('tp2')
+    tp3 = resolver_res.get('tp3')
 
     return {
         'no_trade': False,
+        'is_pending_limit': False,
         'symbol': symbol,
         'direction': direction,
         'score': data['score'],
@@ -615,7 +700,7 @@ def _get_coin_analysis_core(symbol, interval='1h'):
         'sl_pct': abs(sl_pct),
         'position_size_usd': pos_check.get('position_size', 0),
         'order_block': f"{smart_round(ob.get('low', p))} - {smart_round(ob.get('high', p))}",
-        'reason': "اجتياز فحص المنظومة الذكية وتعديل حجم العقد بناءً على الوقف بنجاح.",
+        'reason': "اجتياز فحص المنظومة الذكية وتعديل الـ RR وإلغاء فخ المطاردة بنجاح.",
         'details': data
     }
 
@@ -650,7 +735,7 @@ def generate_evidence_report(d):
 
         lines = [
             f"🟡 **NO TRADE** | ${sym}",
-            f"❌ Entry Gate v2 Failed",
+            f"❌ Entry Gate & RR Resolver Failed",
             f"📊 Structure: `{struct_trend}`",
             f"💧 Liquidity Sweep: `{sweep_res}`",
             f"❌ السبب الرئيسي:\n`{rsn}`"
@@ -668,8 +753,22 @@ def generate_evidence_report(d):
     struct_trend = det.get('struct_15m', {}).get('trend', 'NEUTRAL')
     sweep_res = det.get('sweep_15m', 'NONE')
 
+    if d.get('is_pending_limit', False):
+        lines = [
+            f"⏳ **BingX Institutional SMC v49.8 (Limit Order Mode)**",
+            f"💎 العملة: `{sym}-USDT`",
+            f"📈 القرار: `{text_dir}` (تحويل لأمر معلق)",
+            f"🏆 Grade: `{grade}` | ⭐ Score: `{score}/100`",
+            f"📊 Structure: `{struct_trend}`",
+            f"🎯 Entry Zone (Limit): `{d.get('entry_zone')}`",
+            f"🛑 SL: `{d.get('stop_loss')}` 📊 Risk: `{d.get('sl_pct')}%`",
+            f"💵 Position Size: `${smart_round(d.get('position_size_usd', 0))}`",
+            f"📝 ملاحظة الحماية:\n`{d.get('reason')}`"
+        ]
+        return '\n'.join(lines)
+
     lines = [
-        f"🤖 **BingX Institutional SMC v49.7 (v2 Gate)**",
+        f"🤖 **BingX Institutional SMC v49.8 (Dynamic RR & Entry)**",
         f"💎 العملة: `{sym}-USDT`",
         f"📈 القرار:",
         f"{emo} `{text_dir}`",
@@ -683,9 +782,9 @@ def generate_evidence_report(d):
         f"🎯 Entry: `{d.get('entry_min')} - {d.get('entry_max')}`",
         f"🛑 SL: `{d.get('stop_loss')}` 📊 Risk: `{d.get('sl_pct')}%`",
         f"💵 Position Size (1% Risk): `${smart_round(d.get('position_size_usd', 0))}`",
-        f"🎯 TP1: `{d.get('tp1')}`",
-        f"🎯 TP2: `{d.get('tp2')}`",
-        f"🎯 TP3: `{d.get('tp3')}`",
+        f"🎯 TP1 (1.5R): `{d.get('tp1')}`",
+        f"🎯 TP2 (2.5R): `{d.get('tp2')}`",
+        f"🎯 TP3 (4.0R): `{d.get('tp3')}`",
         f"📝 Reason:\n`{d.get('reason')}`"
     ]
         
