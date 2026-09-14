@@ -83,7 +83,7 @@ def home():
 
 
 @app.route("/health")
-def health]:
+def health():
     return "OK"
 
 
@@ -135,12 +135,11 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for sym in symbols:
             report = await asyncio.to_thread(get_coin_analysis, sym, '1h')
-            # إذا لم يتم إلغاء الصفقة (أي تحتوي على تقرير صالح وليست ملغاة)
             if report and isinstance(report, str) and "TRADE CANCELLED" not in report and "EXCEPTION" not in report:
                 await update.message.reply_text(report)
                 sent_count += 1
                 await asyncio.sleep(1.5)
-                if sent_count >= 3:  # إرسال أفضل 3 فرص كحد أقصى في اليدوي لعدم الإزعاج
+                if sent_count >= 3:
                     break
         
         if sent_count == 0:
@@ -191,7 +190,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def start_auto_scan():
     logger.info("BACKGROUND THREAD: Auto Scanner started.")
-    time.sleep(20)  # انتظار بدء تشغيل البوت بالكامل
+    time.sleep(20)
 
     if not TOKEN:
         logger.error("Cannot start Auto Scanner: BOT_TOKEN is missing.")
@@ -219,11 +218,9 @@ def start_auto_scan():
                     if not report or not isinstance(report, str):
                         continue
 
-                    # شروط الإرسال الآلي: يجب ألا تكون الصفقة ملغية وأن تحتوي على إشارة مقبولة
                     if "TRADE CANCELLED" in report or "EXCEPTION" in report or "DATA ERROR" in report:
                         continue
 
-                    # استخراج اتجاه الصفقة من التقرير لمنع تكرار الإرسال لنفس العملة بنفس الاتجاه
                     current_direction = "LONG" if "MARKET LONG" in report else ("SHORT" if "MARKET SHORT" in report else "UNKNOWN")
                     if current_direction == "UNKNOWN":
                         continue
@@ -288,11 +285,9 @@ async def main_bot():
 if __name__ == "__main__":
     logger.info("Starting BingX AI Scanner v50.3...")
 
-    # تشغيل السيرفر المصغر والمسح الآلي في الخلفية عبر Threads مستقلة
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=start_auto_scan, daemon=True).start()
 
-    # تشغيل بوت التليجرام الرئيسي
     try:
         asyncio.run(main_bot())
     except (KeyboardInterrupt, SystemExit):
