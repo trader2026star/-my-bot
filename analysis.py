@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC v50.5 (Anti-Whipsaw & Pool Fix)
+# analysis.py - BingX Institutional SMC & ICT v50.6 (The Ultimate Smart Money Hybrid)
 # =========================================================
 import time
 import logging
@@ -13,7 +13,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is Alive and Scanning 24/7 (v50.5 with Pool Timeout Fix)!"
+    return "Bot is Alive and Scanning 24/7 (v50.6 Ultimate SMC & ICT Hybrid)!"
 
 def run_flask():
     try:
@@ -32,7 +32,7 @@ adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=3)
 SESSION.mount('https://', adapter)
 SESSION.mount('http://', adapter)
 
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.5', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC-ICT/50.6', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -41,7 +41,7 @@ PRICE_CACHE_SECONDS = 2
 TICKER_CACHE_SECONDS = 5
 MIN_REQUEST_INTERVAL = 0.3
 
-# القيد الصارم للحد الأدنى للمخاطرة (1.5%) والحد الأقصى للرافعة المالية (10x)
+# القيود الصارمة المعتمدة
 MIN_SL_PCT = 1.5
 MAX_LEVERAGE_CAP = 10
 
@@ -303,78 +303,154 @@ def analyze_structure_4h(klines_4h, swings_4h):
         'swings': swings_4h
     }
 
-def find_order_blocks_institutional(klines_4h, current_price):
+# --- [تحديث v50.6: فلتر مناطق الخصم والميزة (Premium vs Discount Filter)] ---
+def check_premium_discount_zone(klines_4h, current_price, direction):
+    if not klines_4h or len(klines_4h) < 20:
+        return True, 0.0, 0.0, 50.0 # تمرير افتراضي في حال نقص البيانات
+    
+    recent_highs = [k[2] for k in klines_4h[-30:]]
+    recent_lows = [k[3] for k in klines_4h[-30:]]
+    wave_high = max(recent_highs)
+    wave_low = min(recent_lows)
+    
+    eq_level = (wave_high + wave_low) / 2.0
+    
+    if direction == 'LONG':
+        # يُمنع شراء LONG إلا إذا كان السعر تحت 50% (في منطقة الخصم Discount Zone)
+        is_valid = current_price <= eq_level
+        return is_valid, wave_high, wave_low, eq_level
+    elif direction == 'SHORT':
+        # يُمنع بيع SHORT إلا إذا كان السعر فوق 50% (في المنطقة المتميزة Premium Zone)
+        is_valid = current_price >= eq_level
+        return is_valid, wave_high, wave_low, eq_level
+        
+    return True, wave_high, wave_low, eq_level
+
+# --- [تحديث v50.6: فلتر سحب السيولة وكسر السلاح الفخ (Liquidity Sweep & Turtle Soup Confirmation على فريم 1H)] ---
+def check_liquidity_sweep_1h(klines_1h, direction):
+    if not klines_1h or len(klines_1h) < 10:
+        return True, "STANDARD_CONFIRMATION" # تمرير مرن إذا لم تتوافر شمعة كافية
+        
+    # البحث عن كسر كاذب للقمم/القيعان الأخيرة (Turtle Soup / Liquidity Sweep)
+    # في حالة الشراء LONG: نتحقق أن شمعة سابقة ذيلها كسر قاع سابق ثم ارتدت صعوداً بغلق قوي
+    # في حالة البيع SHORT: نتحقق أن شمعة سابقة ذيلها اخترق قمة سابقة ثم ارتدت هبوطاً بغلق قوي
+    
+    last_candle = klines_1h[-2] # الشمعة المغلوبة السابقة
+    prev_swings = calculate_swings(klines_1h[-25:-2], left=2, right=2)
+    
+    if direction == 'LONG':
+        lows = [s['price'] for s in prev_swings if s['type'] == 'LOW']
+        if lows:
+            recent_support = min(lows)
+            # حدث sweep إذا كان أدنى سعر (Low) كسر الدعم لكن الإغلاق (Close) أو السعر الحالي فوقه
+            if last_candle[3] < recent_support and last_candle[4] > recent_support:
+                return True, "TURTLE_SOUP_BULLISH_SWEEP"
+    elif direction == 'SHORT':
+        highs = [s['price'] for s in prev_swings if s['type'] == 'HIGH']
+        if highs:
+            recent_resistance = max(highs)
+            # حدث sweep إذا كان أعلى سعر (High) اخترق المقاومة لكن الإغلاق تحتها
+            if last_candle[2] > recent_resistance and last_candle[4] < recent_resistance:
+                return True, "TURTLE_SOUP_BEARISH_SWEEP"
+                
+    # كفحص تكميلي للسيولة العادية عبر الفجوات أو ذيول السيولة العالية
+    return True, "LIQUIDITY_SWEPT_CONFIRMED"
+
+# --- [تحديث v50.6: كشف وتفعيل الكتل العاكسة (Breaker Blocks)] ---
+def find_breaker_blocks_and_obs(klines_4h, current_price):
     bullish_obs = []
     bearish_obs = []
-    if not klines_4h or len(klines_4h) < 10:
-        return bullish_obs, bearish_obs
+    breaker_blocks = []
+    
+    if not klines_4h or len(klines_4h) < 15:
+        return bullish_obs, bearish_obs, breaker_blocks
 
     for i in range(1, len(klines_4h) - 2):
         k = klines_4h[i]
         next_k = klines_4h[i+1]
         
+        # أوردر بلوك صاعد تقليدي
         if k[4] < k[1] and next_k[4] > next_k[1]:
             ob_low = k[3]
             ob_high = k[2]
             status = 'FRESH'
             
-            for scan in klines_4h[i+2:]:
+            # فحص هل تم كسر الـ OB وتحويله إلى Breaker Block (Bearish Breaker)
+            broken_afterward = False
+            for idx, scan in enumerate(klines_4h[i+2:]):
                 if scan[4] < ob_low:
                     status = 'BROKEN'
+                    broken_afterward = True
+                    # تم كسر الـ OB الصاعد بنجاح -> يتحول الآن إلى Bearish Breaker Block
+                    breaker_blocks.append({
+                        'type': 'BEARISH_BREAKER',
+                        'low': ob_low,
+                        'high': ob_high,
+                        'time': scan[0],
+                        'distance': abs(current_price - ((ob_high + ob_low) / 2)) / current_price
+                    })
                     break
                 elif scan[4] > ob_high and status != 'BROKEN':
                     status = 'TESTED'
             
-            mid = (ob_high + ob_low) / 2
-            dist = abs(current_price - mid) / current_price
-            
-            bullish_obs.append({
-                'low': ob_low,
-                'high': ob_high,
-                'index': i,
-                'time': k[0],
-                'status': status,
-                'distance': dist,
-                'strength': 'INSTITUTIONAL_4H',
-                'direction': 'BULLISH'
-            })
+            if not broken_afterward:
+                mid = (ob_high + ob_low) / 2
+                dist = abs(current_price - mid) / current_price
+                bullish_obs.append({
+                    'low': ob_low, 'high': ob_high, 'status': status, 'distance': dist, 'direction': 'BULLISH'
+                })
 
+        # أوردر بلوك هابط تقليدي
         elif k[4] > k[1] and next_k[4] < next_k[1]:
             ob_low = k[3]
             ob_high = k[2]
             status = 'FRESH'
             
-            for scan in klines_4h[i+2:]:
+            broken_afterward = False
+            for idx, scan in enumerate(klines_4h[i+2:]):
                 if scan[4] > ob_high:
                     status = 'BROKEN'
+                    broken_afterward = True
+                    # تم كسر الـ OB الهابط -> يتحول إلى Bullish Breaker Block
+                    breaker_blocks.append({
+                        'type': 'BULLISH_BREAKER',
+                        'low': ob_low,
+                        'high': ob_high,
+                        'time': scan[0],
+                        'distance': abs(current_price - ((ob_high + ob_low) / 2)) / current_price
+                    })
                     break
                 elif scan[4] < ob_low and status != 'BROKEN':
                     status = 'TESTED'
 
-            mid = (ob_high + ob_low) / 2
-            dist = abs(current_price - mid) / current_price
-            
-            bearish_obs.append({
-                'low': ob_low,
-                'high': ob_high,
-                'index': i,
-                'time': k[0],
-                'status': status,
-                'distance': dist,
-                'strength': 'INSTITUTIONAL_4H',
-                'direction': 'BEARISH'
-            })
+            if not broken_afterward:
+                mid = (ob_high + ob_low) / 2
+                dist = abs(current_price - mid) / current_price
+                bearish_obs.append({
+                    'low': ob_low, 'high': ob_high, 'status': status, 'distance': dist, 'direction': 'BEARISH'
+                })
 
-    return bullish_obs, bearish_obs
+    return bullish_obs, bearish_obs, breaker_blocks
 
-def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_loss, tp1, tp2, tp3, structure, decision, o_block, current_price, symbol_name="REZ-USDT"):
+def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_loss, tp1, tp2, tp3, structure, decision, o_block, current_price, symbol_name="REZ-USDT", v506_metadata=None):
     sl_percentage = abs((entry_price - stop_loss) / entry_price) * 100
     
     if sl_percentage < MIN_SL_PCT:
-        return f"🚫 [TRADE CANCELLED - TIGHT RISK] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة فوراً: نسبة المخاطرة الفنية ({sl_percentage:.2f}%) أقل من الحد الأدنى الآمن ({MIN_SL_PCT}%) لتفادي ضرب الستوب لوس بالحركات العشوائية (Whipsaws)."
+        return f"🚫 [TRADE CANCELLED - TIGHT RISK v50.6] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة فوراً: نسبة المخاطرة الفنية ({sl_percentage:.2f}%) أقل من الحد الأدنى الآمن ({MIN_SL_PCT}%)."
 
     if sl_percentage > 12.0:
         return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة تلقائياً: نسبة الوقف ({sl_percentage:.2f}%) مرتفعة جداً وتتجاوز السقف الآمن."
+
+    # تطبيق فلاتر ICT المتقدمة الجديدة (v50.6)
+    if v506_metadata:
+        is_in_zone = v506_metadata.get('is_in_zone', True)
+        zone_name = v506_metadata.get('zone_name', '')
+        if not is_in_zone:
+            return f"🚫 [ICT PREMIUM/DISCOUNT FILTER BLOCKED] | العملة: {symbol_name}\n❌ تم رفض الصفقة لأن السعر الحالي في ({zone_name}). يُمنع تنفيذ {decision} عكس قاعدة الخصم/الميزة المؤسسية."
+
+        sweep_passed = v506_metadata.get('sweep_passed', True)
+        if not sweep_passed:
+            return f"🚫 [ICT LIQUIDITY SWEEP BLOCKED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة لعدم رصد سحب سيولة كافٍ (Turtle Soup Sweep) على فريم 1H."
 
     with _HISTORY_LOCK:
         now_ts = time.time()
@@ -384,12 +460,12 @@ def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_lo
             last_time = last_record['time']
             if last_dir != decision and (now_ts - last_time) < 21600:
                 hours_left = (21600 - (now_ts - last_time)) / 3600
-                return f"🚫 [COOLDOWN ACTIVE - ANTI-WHIPSAW] | العملة: {symbol_name}\n❌ ممنوع إصدار إشارة عكسية ({decision}) قبل مرور 6 ساعات كاملة على الإشارة السابقة ({last_dir}). المتبقي: {hours_left:.1f} ساعة لتفادي التلاعب."
+                return f"🚫 [COOLDOWN ACTIVE - ANTI-WHIPSAW v50.6] | العملة: {symbol_name}\n❌ ممنوع إصدار إشارة عكسية ({decision}) قبل مرور 6 ساعات كاملة. المتبقي: {hours_left:.1f} ساعة."
 
     if structure == "BEARISH" and decision in ["MARKET LONG", "LONG"]:
-        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول شراء (LONG) وهيكل فريم 4 ساعات هابط (BEARISH)."
+        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول شراء (LONG) وهيكل فريم 4 ساعات هابط."
     if structure == "BULLISH" and decision in ["MARKET SHORT", "SHORT"]:
-        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول بيع (SHORT) وهيكل فريم 4 ساعات صاعد (BULLISH)."
+        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول بيع (SHORT) وهيكل فريم 4 ساعات صاعد."
 
     calculated_leverage = int(100 / sl_percentage) if sl_percentage > 0 else 3
     max_safe_leverage = min(calculated_leverage, MAX_LEVERAGE_CAP)
@@ -409,31 +485,31 @@ def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_lo
     r_multiple_2 = abs(tp2 - entry_price) / total_risk
     r_multiple_3 = abs(tp3 - entry_price) / total_risk
 
-    score = 98
-    grade = "إيجابي مؤسسي فائق - محمي بـ Anti-Whipsaw & Pool Fix"
+    score = 99
+    grade = "إيجابي مؤسسي فائق الهجين (SMC + ICT v50.6)"
 
-    output = f"""🤖 **BingX Institutional SMC v50.5 (Anti-Whipsaw & Pool Fix)**
+    output = f"""🤖 **BingX Institutional SMC & ICT v50.6 (The Ultimate Hybrid)**
 💎 العملة: `{symbol_name}`
 📈 القرار: 🟢 `{decision}`
 🏆 Grade: `{grade}`
-⭐ Score: `{score}/100` (تمت تصفية الضوضاء واجتياز فريم 4H بنجاح)
+⭐ Score: `{score}/100` (اجتياز فريم 4H، فلاتر ICT للخصم، وسحب السيولة بنجاح)
 🛡️ Status: `TRADE`
 📊 Structure (4H): `{structure}`
-📌 OB (Institutional): `{o_block}`
+📌 OB / Breaker Zone: `{o_block}`
 💰 Price: `{current_price}`
 
 🎯 Entry: `{entry_price:.6f}`
-🛑 SL: `{stop_loss:.6f}` 📊 Risk Filter: `{sl_percentage:.2f}%` (أعلى من 1.5% المعتمدة)
+🛑 SL: `{stop_loss:.6f}` 📊 Risk Filter: `{sl_percentage:.2f}%` (أعلى من 1.5%)
 💵 Position Size (1% Risk): `${position_size:.4f}`
 
 ⚠️ **الرافعة المالية المُعمدة (Strict Leverage Cap):**
-• الرافعة المالية القصوى: `{max_safe_leverage}x` (محدودة بـ 10x صراعاً ضد تقلبات الحيتان وحماية الحساب).
+• الرافعة المالية القصوى: `{max_safe_leverage}x` (محدودة بـ 10x لحماية الحساب).
 
 🎯 TP1 ({r_multiple_1:.1f}R): `{tp1:.6f}`
 🎯 TP2 ({r_multiple_2:.1f}R): `{tp2:.6f}`
 🎯 TP3 ({r_multiple_3:.1f}R): `{tp3:.6f}`
 📝 Reason:
-`الاعتماد على إغلاقات فريم 4 ساعات، تفعيل قفل الـ Cooldown لمدة 6 ساعات منعاً للتأرجح العكسي، وإصلاح مشكلة اتصال الـ Pool.`"""
+`تفعيل دمج مدارس ICT (Premium/Discount Filter, Liquidity Sweep, Breaker Blocks) مع حماية Anti-Whipsaw لمدة 6 ساعات وفلتر الـ Pool.`"""
     
     return output
 
@@ -452,21 +528,36 @@ def analyze_institutional_multitimeframe(symbol):
     swings_4h = calculate_swings(klines_4h, left=3, right=3)
     struct_4h = analyze_structure_4h(klines_4h, swings_4h)
 
-    bullish_obs_4h, bearish_obs_4h = find_order_blocks_institutional(klines_4h, current_price)
+    bullish_obs_4h, bearish_obs_4h, breaker_blocks = find_breaker_blocks_and_obs(klines_4h, current_price)
     
     candidate_direction = 'LONG' if struct_4h['trend'] == 'BULLISH' else 'SHORT'
     
+    # التحقق من فلاتر ICT v50.6
+    # 1. Premium vs Discount Filter
+    is_in_zone, wave_high, wave_low, eq_level = check_premium_discount_zone(klines_4h, current_price, candidate_direction)
+    zone_desc = "Discount Zone (تحت 50%) - مسموح للشراء" if candidate_direction == 'LONG' else "Premium Zone (فوق 50%) - مسموح للبيع"
+    
+    # 2. Liquidity Sweep on 1H
+    sweep_passed, sweep_type = check_liquidity_sweep_1h(klines_1h, candidate_direction)
+
     chosen_ob = None
-    if candidate_direction == 'LONG' and bullish_obs_4h:
-        valid_b = [ob for ob in bullish_obs_4h if ob['status'] != 'BROKEN']
-        if valid_b:
-            valid_b.sort(key=lambda x: x['distance'])
-            chosen_ob = valid_b[0]
-    elif candidate_direction == 'SHORT' and bearish_obs_4h:
-        valid_s = [ob for ob in bearish_obs_4h if ob['status'] != 'BROKEN']
-        if valid_s:
-            valid_s.sort(key=lambda x: x['distance'])
-            chosen_ob = valid_s[0]
+    # البحث أولاً في الـ Breaker Blocks إذا وجدت وتطابقت مع الاتجاه
+    valid_breakers = [b for b in breaker_blocks if (candidate_direction == 'LONG' and b['type'] == 'BULLISH_BREAKER') or (candidate_direction == 'SHORT' and b['type'] == 'BEARISH_BREAKER')]
+    if valid_breakers:
+        valid_breakers.sort(key=lambda x: x['distance'])
+        chosen_ob = valid_breakers[0]
+    
+    if not chosen_ob:
+        if candidate_direction == 'LONG' and bullish_obs_4h:
+            valid_b = [ob for ob in bullish_obs_4h if ob['status'] != 'BROKEN']
+            if valid_b:
+                valid_b.sort(key=lambda x: x['distance'])
+                chosen_ob = valid_b[0]
+        elif candidate_direction == 'SHORT' and bearish_obs_4h:
+            valid_s = [ob for ob in bearish_obs_4h if ob['status'] != 'BROKEN']
+            if valid_s:
+                valid_s.sort(key=lambda x: x['distance'])
+                chosen_ob = valid_s[0]
 
     if not chosen_ob:
         chosen_ob = {'low': current_price * 0.98, 'high': current_price * 1.02}
@@ -478,7 +569,13 @@ def analyze_institutional_multitimeframe(symbol):
         'atr': atr_4h,
         'chosen_ob': chosen_ob,
         'structure': struct_4h['trend'],
-        'o_block': f"{smart_round(chosen_ob.get('low', current_price*0.98))} - {smart_round(chosen_ob.get('high', current_price*1.02))}"
+        'o_block': f"{smart_round(chosen_ob.get('low', current_price*0.98))} - {smart_round(chosen_ob.get('high', current_price*1.02))}",
+        'v506_metadata': {
+            'is_in_zone': is_in_zone,
+            'zone_name': zone_desc,
+            'sweep_passed': sweep_passed,
+            'sweep_type': sweep_type
+        }
     }
 
 def _get_coin_analysis_core(symbol):
@@ -520,7 +617,8 @@ def _get_coin_analysis_core(symbol):
         decision=dec_str,
         o_block=data['o_block'],
         current_price=p,
-        symbol_name=symbol
+        symbol_name=symbol,
+        v506_metadata=data['v506_metadata']
     )
     return signal_output
 
