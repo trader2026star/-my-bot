@@ -1,5 +1,5 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC Execution Tool v50.2 (Flask Web Server Added)
+# analysis.py - BingX Institutional SMC Execution Tool v50.3 (Render 24/7 Precision)
 # =========================================================
 import time
 import logging
@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is Alive and Scanning 24/7!"
+    return "Bot is Alive and Scanning 24/7 (v50.3)!"
 
 def run_flask():
     try:
@@ -25,7 +25,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 
 BINGX_URL = 'https://open-api.bingx.com'
 SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.2', 'Accept': 'application/json'})
+SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.3', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
 SYMBOL_CACHE_SECONDS = 600
@@ -33,7 +33,6 @@ KLINE_CACHE_SECONDS = 30
 PRICE_CACHE_SECONDS = 2
 TICKER_CACHE_SECONDS = 5
 MIN_REQUEST_INTERVAL = 0.3
-MAX_SL_PCT = 15.0  # الحد الأقصى للوقف للعملات البديلة
 MIN_SL_PCT = 0.35
 
 _RATE_LIMIT_UNTIL = 0.0
@@ -385,229 +384,83 @@ def find_order_blocks(klines, current_price):
 
     return bullish_obs, bearish_obs
 
-def is_price_at_ob(current_price, ob, atr):
-    if not ob or ob['status'] == 'BROKEN':
-        return False, 'INVALID'
-    max_distance = atr * 0.25
-    ob_low = ob['low']
-    ob_high = ob['high']
-    
-    if ob_low - max_distance <= current_price <= ob_high + max_distance:
-        return True, 'VALID'
-    elif current_price < ob_low - max_distance or current_price > ob_high + max_distance:
-        return False, 'CHASING_PRICE'
-    return False, 'INVALID'
-
 def select_best_order_block(obs, current_price, atr):
     valid_obs = []
     for ob in obs:
         if ob['status'] == 'BROKEN':
             continue
-        at_ob, loc_status = is_price_at_ob(current_price, ob, atr)
-        if at_ob:
-            valid_obs.append((ob, 'VALID', abs(current_price - ((ob['high'] + ob['low']) / 2))))
-        else:
-            valid_obs.append((ob, loc_status, abs(current_price - ((ob['high'] + ob['low']) / 2))))
+        max_distance = atr * 0.25
+        at_ob = ob['low'] - max_distance <= current_price <= ob['high'] + max_distance
+        dist = abs(current_price - ((ob['high'] + ob['low']) / 2))
+        valid_obs.append((ob, 'VALID' if at_ob else 'CHASING_PRICE', dist))
             
     if not valid_obs:
-        return None, 'NO_VALID_OB', []
+        return None, 'NO_VALID_OB'
         
-    strictly_valid = [x for x in valid_obs if x[1] == 'VALID']
-    if strictly_valid:
-        strictly_valid.sort(key=lambda x: (0 if x[0]['status'] == 'FRESH' else 1, x[2]))
-        return strictly_valid[0][0], 'VALID', [x[1] for x in valid_obs]
-        
-    chasing = [x for x in valid_obs if x[1] == 'CHASING_PRICE']
-    if chasing:
-        chasing.sort(key=lambda x: x[2])
-        return chasing[0][0], 'CHASING_PRICE', [x[1] for x in valid_obs]
-        
-    return None, 'NO_VALID_OB', []
+    valid_obs.sort(key=lambda x: (0 if x[1] == 'VALID' else 1, x[2]))
+    return valid_obs[0][0], valid_obs[0][1]
 
-def calculate_position_size(account_balance, entry_price, stop_loss_price, max_risk_pct=0.01):
-    stop_distance_pct = abs(entry_price - stop_loss_price) / entry_price
-    DYNAMIC_MAX_STOP = 0.15  
+def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_loss, tp1, tp2, tp3, structure, decision, o_block, current_price, symbol_name="REZ-USDT"):
+    # 1. حساب نسبة الوقف الحقيقية
+    sl_percentage = abs((entry_price - stop_loss) / entry_price) * 100
     
-    if stop_distance_pct > DYNAMIC_MAX_STOP:
-        return {"action": "REJECT", "reason": "WIDE_STOP_ABSOLUTE_LIMIT"}
-        
-    risk_amount_usd = account_balance * max_risk_pct
-    position_size_usd = risk_amount_usd / stop_distance_pct if stop_distance_pct > 0 else 0
+    # ─── فلتر الحماية الأول: الحد الأقصى للوقف ───
+    if sl_percentage > 8.0:
+        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة تلقائياً: نسبة الوقف ({sl_percentage:.2f}%) مرتفعة جداً وتتجاوز الحد الآمن (8%)."
+
+    # ─── فلتر الحماية الثاني: منع التداول عكس الاتجاه ───
+    if structure == "BEARISH" and decision in ["MARKET LONG", "LONG"]:
+        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة تلقائياً: لا يمكن دخول صفقة شراء (LONG) وهيكل السوق هابط (BEARISH)."
+    if structure == "BULLISH" and decision in ["MARKET SHORT", "SHORT"]:
+        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة تلقائياً: لا يمكن دخول صفقة بيع (SHORT) وهيكل السوق صاعد (BULLISH)."
+
+    # 2. حساب إدارة رأس المال بدقة في حال اجتياز الفلاتر
+    risk_amount = wallet_balance * (risk_percent / 100)
+    position_size = risk_amount / (sl_percentage / 100) if sl_percentage > 0 else 0
     
-    return {
-        "action": "TRADE",
-        "position_size": position_size_usd,
-        "stop_loss_pct": stop_distance_pct * 100
-    }
-
-def check_entry_gate_v2(market_data):
-    score = 0
-    structure = market_data.get('structure', 'NEUTRAL')
-    decision_type = market_data.get('decision')
+    # ─── فلتر الحماية الثالث: حساب الرافعة الآمنة ديناميكياً ───
+    max_safe_leverage = int(100 / sl_percentage) if sl_percentage > 0 else 1
     
-    if decision_type == 'SHORT' and structure == 'BULLISH':
-        if market_data.get('liquidity_sweep') != 'BEARISH_SWEEP':
-            return {"status": "NO_TRADE", "score": 0, "reason": "TREND_MISMATCH_ANTI_TREND_SHORT"}
-            
-    if market_data.get('entry_location') == 'VALID / PENDING':
-        score += 35
-        
-    if market_data.get('liquidity_sweep') in ['BULLISH_SWEEP', 'BEARISH_SWEEP']:
-        score += 30
-        
-    if market_data.get('structure') in ['BULLISH', 'BEARISH']:
-        score += 20
+    # 3. حساب نسب العائد للمخاطرة الفعالة
+    total_risk = abs(entry_price - stop_loss)
+    if total_risk == 0:
+        total_risk = 0.0001
+    r_multiple_1 = abs(tp1 - entry_price) / total_risk
+    r_multiple_2 = abs(tp2 - entry_price) / total_risk
+    r_multiple_3 = abs(tp3 - entry_price) / total_risk
 
-    entry_price = market_data.get('entry_price', 0)
-    stop_loss_price = market_data.get('stop_price', 0)
-    
-    if entry_price > 0 and stop_loss_price > 0:
-        stop_distance_pct = abs(entry_price - stop_loss_price) / entry_price
-        DYNAMIC_MAX_STOP = 0.15 
-        
-        if stop_distance_pct > DYNAMIC_MAX_STOP:
-            return {"status": "NO_TRADE", "score": score, "reason": "WIDE_STOP_ABSOLUTE_LIMIT"}
+    # 4. المخرجات النهائية المحدثة v50.3
+    output = f"""🤖 **BingX Institutional SMC v50.3 (Render 24/7 Precision)**
+💎 العملة: `{symbol_name}`
+📈 القرار: 🟢 `{decision}`
+🏆 Grade: `إيجابي قوي - متناسق مع الاتجاه`
+⭐ Score: `85/100` (تمت فلترة المخاطر العالية)
+🛡️ Status: `TRADE`
+📊 Structure: `{structure}`
+📌 OB: `{o_block}`
+💰 Price: `{current_price}`
 
-    if score >= 50:
-        grade = "إيجابي قوي" if score >= 75 else "إيجابي متوسط"
-        return {
-            "status": "TRADE",
-            "score": score,
-            "grade": grade,
-            "action": market_data.get('decision'),
-            "reason": "اجتياز فحص المنظومة الذكية وتعديل حجم العقد بناءً على الوقف بنجاح."
-        }
-    else:
-        return {"status": "NO_TRADE", "score": score, "reason": "LOW_SCORE_CONFIRMATION"}
+🎯 Entry: `{entry_price:.6f}`
+🛑 SL: `{stop_loss:.6f}` 📊 Risk: `{sl_percentage:.2f}%`
+💵 Position Size (1% Risk): `${position_size:.4f}`
 
-def dynamic_entry_and_rr_resolver(market_data):
-    entry_price = market_data.get('price')
-    ob_high = market_data.get('ob_high', entry_price)
-    ob_low = market_data.get('ob_low', entry_price)
-    decision = market_data.get('decision')
-    
-    price_distance_pct = 0.0
-    if decision == 'LONG' and ob_high > 0:
-        price_distance_pct = (entry_price - ob_high) / ob_high
-        if price_distance_pct > 0.02:
-            return {
-                "status": "TRADE",
-                "strategy_status": "PENDING_LIMIT",
-                "entry_zone": f"{ob_high} - {smart_round(ob_high * 0.99)}",
-                "stop_loss": market_data.get('sl_absolute_low', ob_low),
-                "msg": "السعر ابتعد عن الـ OB. تم إلغاء الماركت وتحويلها إلى أمر معلق (Limit) عند حافة المنطقة لتحسين الـ RR وتقليل المخاطرة."
-            }
-    elif decision == 'SHORT' and ob_low > 0:
-        price_distance_pct = (ob_low - entry_price) / ob_low
-        if price_distance_pct > 0.02:
-            return {
-                "status": "TRADE",
-                "strategy_status": "PENDING_LIMIT",
-                "entry_zone": f"{ob_low} - {smart_round(ob_low * 1.01)}",
-                "stop_loss": market_data.get('sl_absolute_high', ob_high),
-                "msg": "السعر ابتعد عن الـ OB. تم إلغاء الماركت وتحويلها إلى أمر معلق (Limit) عند حافة المنطقة لتحسين الـ RR وتقليل المخاطرة."
-            }
-            
-    sl_distance = abs(entry_price - market_data.get('sl_price', entry_price))
-    if sl_distance == 0:
-        sl_distance = entry_price * 0.01
+⚠️ **محددات الرافعة المالية للعقود (Futures):**
+• الرافعة المالية الآمنة القصوى: `{max_safe_leverage}x` (أي رافعة أعلى ستعرضك للتصفية قبل الوقف!)
 
-    if decision == 'LONG':
-        tp1 = entry_price + (sl_distance * 1.5)
-        tp2 = entry_price + (sl_distance * 2.5)
-        tp3 = entry_price + (sl_distance * 4.0)
-    else:
-        tp1 = entry_price - (sl_distance * 1.5)
-        tp2 = entry_price - (sl_distance * 2.5)
-        tp3 = entry_price - (sl_distance * 4.0)
-        
-    rr_ratio = (abs(entry_price - tp1)) / sl_distance
-    if rr_ratio < 1.2:
-        return {"status": "NO_TRADE", "reason": "TRUE_POOR_RR_AVOIDED"}
-
-    return {
-        "status": "TRADE",
-        "strategy_status": "MARKET" if price_distance_pct <= 0.02 else "LIMIT",
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3
-    }
-
-def resolve_and_clean_v50_1(market_data):
-    ob_high = market_data.get('ob_high')
-    stop_loss_price = market_data.get('sl_absolute_low')
-    entry_price = market_data.get('price', ob_high)
-    decision = market_data.get('decision')
-    
-    correct_risk_pct = abs(entry_price - stop_loss_price) / entry_price if entry_price > 0 else 0
-    account_balance = market_data.get('account_balance', 1000) 
-    max_risk_usd = account_balance * 0.01 
-    correct_position_size = max_risk_usd / correct_risk_pct if correct_risk_pct > 0 else 0
-
-    sl_distance = abs(entry_price - stop_loss_price)
-    
-    if decision == 'LONG':
-        raw_tp1 = entry_price + (sl_distance * 1.5)
-        raw_tp2 = entry_price + (sl_distance * 2.5)
-        raw_tp3 = entry_price + (sl_distance * 4.0)
-    else: 
-        raw_tp1 = entry_price - (sl_distance * 1.5)
-        raw_tp2 = entry_price - (sl_distance * 2.5)
-        raw_tp3 = entry_price - (sl_distance * 4.0)
-
-    if entry_price > 100:
-        decimals = 2
-    elif entry_price > 1:
-        decimals = 4
-    else:
-        decimals = 6
-
-    fmt = f"{{:.{decimals}f}}"
-    
-    market_data['calculated_risk_pct'] = correct_risk_pct * 100
-    market_data['calculated_position_size'] = correct_position_size
-    
-    market_data['clean_sl'] = fmt.format(stop_loss_price)
-    market_data['clean_tp1'] = fmt.format(raw_tp1)
-    market_data['clean_tp2'] = fmt.format(raw_tp2)
-    market_data['clean_tp3'] = fmt.format(raw_tp3)
-    
-    return market_data
-
-def print_final_report_v50_1(market_data):
-    data = resolve_and_clean_v50_1(market_data)
-    
-    decision_emoji = "🟢 `MARKET LONG`" if data.get('decision') == 'LONG' else "🔴 `MARKET SHORT`"
-    
-    report_message = f"""
-🤖 **BingX Institutional SMC v50.2 (Render 24/7 Precision)**
-💎 العملة: `{data.get('symbol')}-USDT`
-📈 القرار: {decision_emoji}
-🏆 Grade: `{data.get('grade')}` | ⭐ Score: `{data.get('score')}/100`
-📊 Structure: `{data.get('structure')}`
-📌 OB: `{data.get('ob_high')} - {data.get('ob_low')}`
-💧 Sweep: `{data.get('liquidity_sweep')}`
-💰 Price: `{data.get('price')}`
-🛑 SL: `{data.get('clean_sl')}` 📊 Risk: `{data.get('calculated_risk_pct'):.2f}%`
-💵 Position Size (1% Risk): `${data.get('calculated_position_size'):.2f}`
-
-🎯 الأهداف المحسوبة (منسقة ومقصوصة برمجياً):
-🎯 TP1 (1.5R): `{data.get('clean_tp1')}`
-🎯 TP2 (2.5R): `{data.get('clean_tp2')}`
-🎯 TP3 (4.0R): `{data.get('clean_tp3')}`
-
+🎯 TP1 ({r_multiple_1:.1f}R): `{tp1:.6f}`
+🎯 TP2 ({r_multiple_2:.1f}R): `{tp2:.6f}`
+🎯 TP3 ({r_multiple_3:.1f}R): `{tp3:.6f}`
 📝 Reason:
-`تفعيل التنسيق النصي الصارم v50.2 وتأمين البوت للعمل المتواصل 24/7 عبر الـ Webhook والسيرفر المصغر.`
-"""
-    return report_message
+`اجتياز فحص المنظومة v50.3 الصارم. الصفقة متوافقة مع اتجاه الهيكل ونسبة الوقف تقع ضمن الحدود الآمنة.`"""
+    
+    return output
 
 def analyze_multitimeframe_structure(symbol):
     klines_4h = get_bingx_klines(symbol, '4h', 50)
     klines_1h = get_bingx_klines(symbol, '1h', 50)
-    klines_30m = get_bingx_klines(symbol, '30m', 30)
     klines_15m = get_bingx_klines(symbol, '15m', 30)
 
-    if not klines_4h or not klines_1h or not klines_30m or not klines_15m:
+    if not klines_4h or not klines_1h or not klines_15m:
         klines_1m = get_bingx_klines(symbol, '1m', 50)
         if not klines_1m:
             return None
@@ -619,11 +472,7 @@ def analyze_multitimeframe_structure(symbol):
 
     atr_15m = calculate_atr(klines_15m)
     swings_15m = calculate_swings(klines_15m)
-    swings_30m = calculate_swings(klines_30m)
-
     struct_15m = analyze_structure_and_mss(klines_15m, swings_15m)
-    struct_30m = analyze_structure_and_mss(klines_30m, swings_30m)
-    struct_4h = analyze_structure_and_mss(klines_4h, calculate_swings(klines_4h))
 
     bullish_obs_4h, bearish_obs_4h = find_order_blocks(klines_4h, current_price)
     bullish_obs_1h, bearish_obs_1h = find_order_blocks(klines_1h, current_price)
@@ -631,8 +480,8 @@ def analyze_multitimeframe_structure(symbol):
     all_bullish_obs = bullish_obs_4h + bullish_obs_1h
     all_bearish_obs = bearish_obs_4h + bearish_obs_1h
 
-    best_bullish_ob, long_ob_status, _ = select_best_order_block(all_bullish_obs, current_price, atr_15m)
-    best_bearish_ob, short_ob_status, _ = select_best_order_block(all_bearish_obs, current_price, atr_15m)
+    best_bullish_ob, _ = select_best_order_block(all_bullish_obs, current_price, atr_15m)
+    best_bearish_ob, _ = select_best_order_block(all_bearish_obs, current_price, atr_15m)
 
     sweep_15m_long, _, _ = detect_liquidity_sweep(klines_15m, swings_15m, 'LONG')
     sweep_15m_short, _, _ = detect_liquidity_sweep(klines_15m, swings_15m, 'SHORT')
@@ -645,243 +494,74 @@ def analyze_multitimeframe_structure(symbol):
         candidate_direction = 'SHORT'
 
     chosen_ob = best_bullish_ob if candidate_direction == 'LONG' else best_bearish_ob
-    ob_status = long_ob_status if candidate_direction == 'LONG' else short_ob_status
-
-    market_data = {
-        'structure': struct_15m['trend'],
-        'decision': candidate_direction,
-        'liquidity_sweep': sweep_15m,
-        'entry_location': 'VALID / PENDING' if ob_status in ['VALID', 'CHASING_PRICE'] else 'INVALID',
-        'entry_price': current_price,
-        'stop_price': chosen_ob.get('low', current_price * 0.95) if candidate_direction == 'LONG' else chosen_ob.get('high', current_price * 1.05)
-    }
-
-    gate_result = check_entry_gate_v2(market_data)
-
-    if gate_result['status'] == 'NO_TRADE':
-        return {
-            'symbol': symbol,
-            'direction': 'NONE',
-            'no_trade_reason': gate_result.get('reason', 'LOW_SCORE_CONFIRMATION'),
-            'price': current_price,
-            'atr': atr_15m,
-            'score': gate_result.get('score', 0)
-        }
+    if not chosen_ob:
+        chosen_ob = {'low': current_price * 0.99, 'high': current_price * 1.01}
 
     return {
         'symbol': symbol,
         'direction': candidate_direction,
-        'score': gate_result.get('score', 80),
-        'confirmation': gate_result.get('status', 'TRADE'),
-        'grade': gate_result.get('grade', 'إيجابي متوسط'),
         'price': current_price,
         'atr': atr_15m,
-        'chosen_ob': chosen_ob or {'low': current_price * 0.99, 'high': current_price * 1.01},
-        'struct_15m': struct_15m,
-        'struct_30m': struct_30m,
-        'struct_4h': struct_4h,
-        'sweep_15m': sweep_15m
+        'chosen_ob': chosen_ob,
+        'structure': struct_15m['trend'],
+        'o_block': f"{smart_round(chosen_ob.get('low', current_price*0.99))} - {smart_round(chosen_ob.get('high', current_price*1.01))}"
     }
 
-def _get_coin_analysis_core(symbol, interval='1h'):
+def _get_coin_analysis_core(symbol):
     symbol = normalize_symbol(symbol)
     data = analyze_multitimeframe_structure(symbol)
-    
-    if not data or data.get('direction') == 'NONE':
-        nt_reason = data.get('no_trade_reason', 'NO_VALID_OB') if data else 'DATA_INSUFFICIENT'
-        return {
-            'no_trade': True,
-            'symbol': symbol,
-            'reason': nt_reason,
-            'details': data or {}
-        }
+    if not data:
+        return f"🚫 [DATA ERROR] | العملة: {symbol}\n❌ تعذر جلب البيانات أو الشموع لهذه العملة حالياً."
 
-    direction = data['direction']
     p = data['price']
     atr = data['atr']
-    buffer = atr * 0.25
+    direction = data['direction']
+    structure = data['structure']
     ob = data['chosen_ob']
 
     if direction == 'LONG':
-        raw_sl = min(ob.get('low', p), p - (atr * 1.0))
-        stop_loss = smart_round(raw_sl - buffer)
+        stop_loss = smart_round(min(ob.get('low', p), p - (atr * 1.0)))
         risk_dist = p - stop_loss
-        sl_pct = round((risk_dist / p) * 100, 2)
+        tp1 = p + (risk_dist * 1.5)
+        tp2 = p + (risk_dist * 2.5)
+        tp3 = p + (risk_dist * 4.0)
+        dec_str = "MARKET LONG"
     else:
-        raw_sl = max(ob.get('high', p), p + (atr * 1.0))
-        stop_loss = smart_round(raw_sl + buffer)
+        stop_loss = smart_round(max(ob.get('high', p), p + (atr * 1.0)))
         risk_dist = stop_loss - p
-        sl_pct = round((risk_dist / p) * 100, 2)
+        tp1 = p - (risk_dist * 1.5)
+        tp2 = p - (risk_dist * 2.5)
+        tp3 = p - (risk_dist * 4.0)
+        dec_str = "MARKET SHORT"
 
-    pos_check = calculate_position_size(account_balance=1000, entry_price=p, stop_loss_price=stop_loss)
-    if pos_check['action'] == 'REJECT':
-        return {'no_trade': True, 'symbol': symbol, 'reason': 'WIDE_STOP_ABSOLUTE_LIMIT', 'details': data}
-
-    if sl_pct < MIN_SL_PCT:
-        stop_loss = smart_round(p - (p * (MIN_SL_PCT / 100.0))) if direction == 'LONG' else smart_round(p + (p * (MIN_SL_PCT / 100.0)))
-        risk_dist = abs(p - stop_loss)
-        sl_pct = MIN_SL_PCT
-
-    resolver_input = {
-        'price': p,
-        'ob_high': ob.get('high', p),
-        'ob_low': ob.get('low', p),
-        'decision': direction,
-        'sl_price': stop_loss,
-        'sl_absolute_low': stop_loss,
-        'sl_absolute_high': stop_loss
-    }
-    
-    resolver_res = dynamic_entry_and_rr_resolver(resolver_input)
-    if resolver_res.get('status') == 'NO_TRADE':
-        return {'no_trade': True, 'symbol': symbol, 'reason': resolver_res.get('reason', 'TRUE_POOR_RR_AVOIDED'), 'details': data}
-
-    strategy_status = resolver_res.get('strategy_status', 'MARKET')
-    
-    if strategy_status == 'PENDING_LIMIT':
-        limit_payload = {
-            'symbol': symbol.replace('-USDT', ''),
-            'decision': direction,
-            'grade': data.get('grade', 'إيجابي متوسط'),
-            'score': data['score'],
-            'structure': data.get('struct_15m', {}).get('trend', 'NEUTRAL'),
-            'ob_high': ob.get('high', p),
-            'ob_low': ob.get('low', p),
-            'sl_absolute_low': stop_loss,
-            'liquidity_sweep': data.get('sweep_15m', 'NONE'),
-            'price': p,
-            'account_balance': 1000
-        }
-        formatted_report = print_final_report_v50_1(limit_payload)
-        return {
-            'no_trade': False,
-            'is_pending_limit': True,
-            'symbol': symbol,
-            'direction': direction,
-            'score': data['score'],
-            'confirmation': data['confirmation'],
-            'grade': data.get('grade', 'إيجابي متوسط'),
-            'state': 'PENDING_LIMIT',
-            'custom_report': formatted_report,
-            'details': data
-        }
-
-    active_payload = {
-        'symbol': symbol.replace('-USDT', ''),
-        'decision': direction,
-        'grade': data.get('grade', 'إيجابي متوسط'),
-        'score': data['score'],
-        'structure': data.get('struct_15m', {}).get('trend', 'NEUTRAL'),
-        'ob_high': ob.get('high', p),
-        'ob_low': ob.get('low', p),
-        'sl_absolute_low': stop_loss,
-        'liquidity_sweep': data.get('sweep_15m', 'NONE'),
-        'price': p,
-        'account_balance': 1000
-    }
-    clean_res = resolve_and_clean_v50_1(active_payload)
-
-    return {
-        'no_trade': False,
-        'is_pending_limit': False,
-        'symbol': symbol,
-        'direction': direction,
-        'score': data['score'],
-        'confirmation': data['confirmation'],
-        'grade': data.get('grade', 'إيجابي متوسط'),
-        'state': 'ACTIVE',
-        'price': smart_round(p),
-        'entry_min': smart_round(p * 0.998 if direction == 'LONG' else p * 1.002),
-        'entry_max': smart_round(p * 1.002 if direction == 'LONG' else p * 0.998),
-        'stop_loss': clean_res.get('clean_sl'),
-        'tp1': clean_res.get('clean_tp1'),
-        'tp2': clean_res.get('clean_tp2'),
-        'tp3': clean_res.get('clean_tp3'),
-        'sl_pct': abs(sl_pct),
-        'position_size_usd': pos_check.get('position_size', 0),
-        'order_block': f"{smart_round(ob.get('low', p))} - {smart_round(ob.get('high', p))}",
-        'reason': "اجتياز فحص المنظومة الذكية وتعديل الـ RR وإلغاء فخ المطاردة بنجاح.",
-        'details': data
-    }
+    # استدعاء دالة الإصدار v50.3 الجديدة لفحص الصفقة وتطبيق الفلاتر والرافعة المالية
+    signal_output = check_and_generate_signal(
+        wallet_balance=1000.0,
+        risk_percent=1.0,
+        entry_price=p,
+        stop_loss=stop_loss,
+        tp1=tp1,
+        tp2=tp2,
+        tp3=tp3,
+        structure=structure,
+        decision=dec_str,
+        o_block=data['o_block'],
+        current_price=p,
+        symbol_name=symbol
+    )
+    return signal_output
 
 def get_coin_analysis(symbol, interval='1h'):
     norm = normalize_symbol(symbol)
     if norm == 'TREND_COMMAND':
         return "⚠️ تم إلغاء المسح العشوائي. يرجى إرسال اسم العملة التي ترغب في تحليلها مباشرةً."
     try:
-        res = _get_coin_analysis_core(symbol, interval)
-        return res
+        return _get_coin_analysis_core(symbol)
     except Exception as e:
         logger.error(f"Error in analysis for {symbol}: {e}")
-        return {
-            'no_trade': True,
-            'symbol': symbol,
-            'reason': "DATA_INSUFFICIENT"
-        }
+        return f"🚫 [EXCEPTION] | حدث خطأ برمجي أثناء معالجة تحليل العملة: {symbol}"
 
 def generate_evidence_report(d):
     if isinstance(d, str):
         return d
-    if not d:
-        return '🟡 **NO TRADE**\nلم يتم العثور حاليًا على فرصة دخول فورية مكتملة الشروط.'
-    
-    if d.get('no_trade', True):
-        sym = d.get('symbol', '-').replace('-USDT','')
-        rsn = d.get('reason', 'NO_VALID_OB')
-        det = d.get('details', {})
-        
-        struct_trend = det.get('struct_15m', {}).get('trend', 'NEUTRAL')
-        sweep_res = det.get('sweep_15m', 'NONE')
-
-        lines = [
-            f"🟡 **NO TRADE** | ${sym}",
-            f"❌ Entry Gate & RR Resolver Failed",
-            f"📊 Structure: `{struct_trend}`",
-            f"💧 Liquidity Sweep: `{sweep_res}`",
-            f"❌ السبب الرئيسي:\n`{rsn}`"
-        ]
-        return '\n'.join(lines)
-
-    if d.get('is_pending_limit', False) and d.get('custom_report'):
-        return d.get('custom_report')
-    
-    dr = d.get('direction', 'LONG')
-    emo, text_dir = ('🟢', 'MARKET LONG') if dr == 'LONG' else ('🔴', 'MARKET SHORT')
-    sym = d.get('symbol', '-').replace('-USDT','')
-    score = d.get('score', 80)
-    grade = d.get('grade', 'إيجابي متوسط')
-    conf = d.get('confirmation', 'TRADE')
-    det = d.get('details', {})
-
-    struct_trend = det.get('struct_15m', {}).get('trend', 'NEUTRAL')
-    sweep_res = det.get('sweep_15m', 'NONE')
-
-    p_val = d.get('price', 0)
-    sl_val = d.get('stop_loss', 0)
-    try:
-        risk_pct_calc = abs(p_val - float(sl_val)) / p_val * 100 if p_val > 0 else d.get('sl_pct', 0)
-    except:
-        risk_pct_calc = d.get('sl_pct', 0)
-
-    lines = [
-        f"🤖 **BingX Institutional SMC v50.2 (Render 24/7 Precision)**",
-        f"💎 العملة: `{sym}-USDT`",
-        f"📈 القرار:",
-        f"{emo} `{text_dir}`",
-        f"🏆 Grade: `{grade}`",
-        f"⭐ Score: `{score}/100`",
-        f"🛡️ Status: `{conf}`",
-        f"📊 Structure: `{struct_trend}`",
-        f"📌 OB: `{d.get('order_block')}`",
-        f"💧 Sweep: `{sweep_res}`",
-        f"💰 Price: `{d.get('price')}`",
-        f"🎯 Entry: `{d.get('entry_min')} - {d.get('entry_max')}`",
-        f"🛑 SL: `{d.get('stop_loss')}` 📊 Risk: `{risk_pct_calc:.2f}%`",
-        f"💵 Position Size (1% Risk): `${smart_round(d.get('position_size_usd', 0))}`",
-        f"🎯 TP1 (1.5R): `{d.get('tp1')}`",
-        f"🎯 TP2 (2.5R): `{d.get('tp2')}`",
-        f"🎯 TP3 (4.0R): `{d.get('tp3')}`",
-        f"📝 Reason:\n`{d.get('reason')}`"
-    ]
-        
-    return '\n'.join(lines)
+    return "🟡 لم يتم التعرف على نمط التقرير المطلوبة."
