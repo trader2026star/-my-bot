@@ -1,10 +1,11 @@
 # =========================================================
-# analysis.py - BingX Institutional SMC v50.5 (Anti-Whipsaw & Institutional Timeframe)
+# analysis.py - BingX Institutional SMC v50.5 (Anti-Whipsaw & Pool Fix)
 # =========================================================
 import time
 import logging
 import threading
 import requests
+from requests.adapters import HTTPAdapter
 from flask import Flask
 
 # إعداد سيرفر Flask مصغر لمنع منصة Render من إدخال البوت في وضع السبات (Sleep Mode)
@@ -12,7 +13,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is Alive and Scanning 24/7 (v50.5 with Anti-Whipsaw & Institutional Timeframe)!"
+    return "Bot is Alive and Scanning 24/7 (v50.5 with Pool Timeout Fix)!"
 
 def run_flask():
     try:
@@ -20,11 +21,17 @@ def run_flask():
     except Exception as e:
         logger.error(f"Flask server error: {e}")
 
-# تشغيل السيرفر في خلفية البوت (Thread منفصل) لكي لا يعطل حلقة العمليات
+# تشغيل السيرفر في خلفية البوت (Thread منفصل)
 threading.Thread(target=run_flask, daemon=True).start()
 
 BINGX_URL = 'https://open-api.bingx.com'
+
+# تحسين إدارة اتصالات الـ HTTP لمنع تكدس الـ Pool Timeout وتوسيع الحد الأقصى للاتصالات
 SESSION = requests.Session()
+adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=3)
+SESSION.mount('https://', adapter)
+SESSION.mount('http://', adapter)
+
 SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC/50.5', 'Accept': 'application/json'})
 logger = logging.getLogger(__name__)
 
@@ -261,10 +268,6 @@ def calculate_swings(klines, left=2, right=2):
     return swings
 
 def analyze_structure_4h(klines_4h, swings_4h):
-    """
-    1. فلتر الفريم الزمني المؤسسي (Institutional Timeframe Filter):
-    الاعتماد حصرياً على إغلاقات وتأكيدات إطار الـ 4 ساعات والـ 1 ساعة لتجاهل ضوضاء الفريمات الصغيرة.
-    """
     trend = 'NEUTRAL'
     bos_type = 'NONE'
     bos_level = 0.0
@@ -364,43 +367,30 @@ def find_order_blocks_institutional(klines_4h, current_price):
 
     return bullish_obs, bearish_obs
 
-
-# =========================================================
-# دالة التحقق وإصدار القرار الشامل (v50.5 مع قوانين الحماية الصارمة)
-# =========================================================
-
 def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_loss, tp1, tp2, tp3, structure, decision, o_block, current_price, symbol_name="REZ-USDT"):
-    
-    # 1. حساب نسبة الوقف الفنية الحقيقية
     sl_percentage = abs((entry_price - stop_loss) / entry_price) * 100
     
-    # ─── قانون الحماية رقم 3: الحد الأدنى للمخاطرة الفنية (1.5%) ───
     if sl_percentage < MIN_SL_PCT:
         return f"🚫 [TRADE CANCELLED - TIGHT RISK] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة فوراً: نسبة المخاطرة الفنية ({sl_percentage:.2f}%) أقل من الحد الأدنى الآمن ({MIN_SL_PCT}%) لتفادي ضرب الستوب لوس بالحركات العشوائية (Whipsaws)."
 
     if sl_percentage > 12.0:
         return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة تلقائياً: نسبة الوقف ({sl_percentage:.2f}%) مرتفعة جداً وتتجاوز السقف الآمن."
 
-    # ─── قانون الحماية رقم 2: آلية قفل الإشارة ومنع التأرجح العكسي (Anti-Whipsaw & Cooldown Logic) ───
     with _HISTORY_LOCK:
         now_ts = time.time()
         last_record = _SIGNAL_HISTORY.get(symbol_name)
         if last_record:
             last_dir = last_record['direction']
             last_time = last_record['time']
-            # إذا مر أقل من 6 ساعات وإحداثيات الاتجاه متعاكسة، نمنع الانقلاب العكسي تماماً
             if last_dir != decision and (now_ts - last_time) < 21600:
                 hours_left = (21600 - (now_ts - last_time)) / 3600
                 return f"🚫 [COOLDOWN ACTIVE - ANTI-WHIPSAW] | العملة: {symbol_name}\n❌ ممنوع إصدار إشارة عكسية ({decision}) قبل مرور 6 ساعات كاملة على الإشارة السابقة ({last_dir}). المتبقي: {hours_left:.1f} ساعة لتفادي التلاعب."
 
-    # ─── هيكل السوق الأساسي ───
     if structure == "BEARISH" and decision in ["MARKET LONG", "LONG"]:
         return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول شراء (LONG) وهيكل فريم 4 ساعات هابط (BEARISH)."
     if structure == "BULLISH" and decision in ["MARKET SHORT", "SHORT"]:
         return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول بيع (SHORT) وهيكل فريم 4 ساعات صاعد (BULLISH)."
 
-    # ─── قانون الحماية رقم 4: السقف الصارم للرافعة المالية (Leverage Cap Max 10x) وحجم الصفقة ───
-    # حساب الرافعة الآمنة بناءً على نسبة المخاطرة مع فرض سقف أقصى 10x
     calculated_leverage = int(100 / sl_percentage) if sl_percentage > 0 else 3
     max_safe_leverage = min(calculated_leverage, MAX_LEVERAGE_CAP)
     if max_safe_leverage < 3:
@@ -409,11 +399,9 @@ def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_lo
     risk_amount = wallet_balance * (risk_percent / 100)
     position_size = risk_amount / (sl_percentage / 100) if sl_percentage > 0 else 0
 
-    # تسجيل الإشارة الحالية في سجل الـ Cooldown لتثبيتها لمدة 6 ساعات
     with _HISTORY_LOCK:
         _SIGNAL_HISTORY[symbol_name] = {'direction': decision, 'time': time.time()}
 
-    # نسب العائد للمخاطرة الفعالة
     total_risk = abs(entry_price - stop_loss)
     if total_risk == 0:
         total_risk = 0.0001
@@ -422,10 +410,9 @@ def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_lo
     r_multiple_3 = abs(tp3 - entry_price) / total_risk
 
     score = 98
-    grade = "إيجابي مؤسسي فائق - محمي بـ Anti-Whipsaw & 4H Timeframe"
+    grade = "إيجابي مؤسسي فائق - محمي بـ Anti-Whipsaw & Pool Fix"
 
-    # المخرجات النهائية المحدثة v50.5
-    output = f"""🤖 **BingX Institutional SMC v50.5 (Anti-Whipsaw & Institutional Timeframe)**
+    output = f"""🤖 **BingX Institutional SMC v50.5 (Anti-Whipsaw & Pool Fix)**
 💎 العملة: `{symbol_name}`
 📈 القرار: 🟢 `{decision}`
 🏆 Grade: `{grade}`
@@ -446,12 +433,11 @@ def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_lo
 🎯 TP2 ({r_multiple_2:.1f}R): `{tp2:.6f}`
 🎯 TP3 ({r_multiple_3:.1f}R): `{tp3:.6f}`
 📝 Reason:
-`الاعتماد على إغلاقات فريم 4 ساعات، تفعيل قفل الـ Cooldown لمدة 6 ساعات منعاً للتأرجح العكسي، والتزام تام بفلتر المخاطر وسقف الرافعة.`"""
+`الاعتماد على إغلاقات فريم 4 ساعات، تفعيل قفل الـ Cooldown لمدة 6 ساعات منعاً للتأرجح العكسي، وإصلاح مشكلة اتصال الـ Pool.`"""
     
     return output
 
 def analyze_institutional_multitimeframe(symbol):
-    # قانون 1: قراءة الهيكل الفني حصرياً من فريم الـ 4 ساعات وتأكيدات الساعة 1H لتجاهل ضوضاء الفريمات الصغيرة
     klines_4h = get_bingx_klines(symbol, '4h', 60)
     klines_1h = get_bingx_klines(symbol, '1h', 50)
 
@@ -470,7 +456,6 @@ def analyze_institutional_multitimeframe(symbol):
     
     candidate_direction = 'LONG' if struct_4h['trend'] == 'BULLISH' else 'SHORT'
     
-    # اختيار الأوردر بلوك المؤسسي الأقوى على فريم 4 ساعات
     chosen_ob = None
     if candidate_direction == 'LONG' and bullish_obs_4h:
         valid_b = [ob for ob in bullish_obs_4h if ob['status'] != 'BROKEN']
@@ -508,7 +493,6 @@ def _get_coin_analysis_core(symbol):
     structure = data['structure']
     ob = data['chosen_ob']
 
-    # هندسة مستويات الوقف والأهداف بناءً على اتساع فريم الـ 4 ساعات (ضمان مخاطر > 1.5%)
     if direction == 'LONG':
         stop_loss = smart_round(min(ob.get('low', p), p - (atr * 1.5)))
         risk_dist = p - stop_loss
