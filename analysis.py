@@ -1,638 +1,183 @@
-# =========================================================
-# analysis.py - BingX Institutional SMC & ICT v50.6 (The Ultimate Smart Money Hybrid)
-# =========================================================
-import time
+import ccxt
+import pandas as pd
+import numpy as np
 import logging
-import threading
-import requests
-from requests.adapters import HTTPAdapter
-from flask import Flask
 
-# إعداد سيرفر Flask مصغر لمنع منصة Render من إدخال البوت في وضع السبات (Sleep Mode)
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is Alive and Scanning 24/7 (v50.6 Ultimate SMC & ICT Hybrid)!"
-
-def run_flask():
-    try:
-        app.run(host='0.0.0.0', port=8080)
-    except Exception as e:
-        logger.error(f"Flask server error: {e}")
-
-# تشغيل السيرفر في خلفية البوت (Thread منفصل)
-threading.Thread(target=run_flask, daemon=True).start()
-
-BINGX_URL = 'https://open-api.bingx.com'
-
-# تحسين إدارة اتصالات الـ HTTP لمنع تكدس الـ Pool Timeout وتوسيع الحد الأقصى للاتصالات
-SESSION = requests.Session()
-adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=3)
-SESSION.mount('https://', adapter)
-SESSION.mount('http://', adapter)
-
-SESSION.headers.update({'User-Agent': 'BingX-InstitutionalSMC-ICT/50.6', 'Accept': 'application/json'})
+# إعداد السجلات (Logging) لمتابعة حالة البوت وعمليات الجلب والتحليل بدقة
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-SYMBOL_CACHE_SECONDS = 600
-KLINE_CACHE_SECONDS = 30
-PRICE_CACHE_SECONDS = 2
-TICKER_CACHE_SECONDS = 5
-MIN_REQUEST_INTERVAL = 0.3
-
-# القيود الصارمة المعتمدة
-MIN_SL_PCT = 1.5
-MAX_LEVERAGE_CAP = 10
-
-# جدول تتبع إشارات الـ Cooldown لمنع التأرجح العكسي (Anti-Whipsaw Cache)
-_SIGNAL_HISTORY = {}
-_HISTORY_LOCK = threading.Lock()
-
-_RATE_LIMIT_UNTIL = 0.0
-_LAST_REQUEST_TIME = 0.0
-_SYMBOL_CACHE = set()
-_SYMBOL_CACHE_TIME = 0.0
-_KLINE_CACHE = {}
-_PRICE_CACHE = {}
-_TICKER_CACHE = None
-_TICKER_CACHE_TIME = 0.0
-_RATE_LOCK = threading.Lock()
-_REQUEST_LOCK = threading.Lock()
-
-def normalize_symbol(s):
-    s_clean = str(s).strip().lower()
-    if s_clean in ['ترند', 'trend', 'scan_trend', 'trend_command']:
-        return 'TREND_COMMAND'
-    if s_clean in ['debugscan', 'debug']:
-        return 'DEBUG_SCAN_COMMAND'
-
-    s = str(s).strip().upper().replace(' ', '').replace('-', '').replace('_', '').replace('/', '')
-    if not s.endswith('USDT'):
-        s = s + '-USDT' if '-' not in s else s
-    elif s.endswith('USDT') and '-' not in s:
-        s = s[:-4] + '-USDT'
-    return s
-
-def bingx_get(path, params=None, timeout=12):
-    global _RATE_LIMIT_UNTIL, _LAST_REQUEST_TIME
-    with _RATE_LOCK:
-        if time.time() < _RATE_LIMIT_UNTIL:
-            return None
-    with _REQUEST_LOCK:
-        wait = MIN_REQUEST_INTERVAL - (time.time() - _LAST_REQUEST_TIME)
-        if wait > 0:
-            time.sleep(wait)
-        _LAST_REQUEST_TIME = time.time()
+class CryptoTradingBot:
+    def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
+        """
+        تهيئة اتصال المنصة باستخدام مكتبة CCXT
+        :param exchange_id: اسم المنصة (مثل 'bingx' أو 'binance')
+        :param api_key: مفتاح الـ API الخاص بك
+        :param secret_key: المفتاح السري الخاص بك (Secret Key)
+        """
+        exchange_class = getattr(ccxt, exchange_id)
+        
+        # إعداد الاتصال وتفعيل وضع الـ Testnet إذا لزم الأمر، أو العمل على الحساب الحقيقي
+        self.exchange = exchange_class({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap', # التداول العقود الآجلة (Futures / Swap)
+            }
+        })
+        
+        # تحميل الأسواق للتأكد من صحة الأزواج
         try:
-            r = SESSION.get(BINGX_URL + path, params=params or {}, timeout=timeout)
-            if r.status_code != 200:
-                if r.status_code == 429:
-                    with _RATE_LOCK:
-                        _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, time.time() + 60)
-                return None
-            d = r.json()
-            if isinstance(d, dict) and d.get('code', 0) == 0:
-                return d.get('data')
-            return d.get('data') if isinstance(d, dict) and 'data' in d else d
-        except Exception:
+            self.exchange.load_markets()
+            logger.info(f"تم الاتصال بنجاح بمنصة {exchange_id.upper()} وتحميل الأسواق.")
+        except Exception as e:
+            logger.error(f"فشل الاتصال بالمنصة: {e}")
+
+    def fetch_ohlcv_data(self, symbol='BTC/USDT:USDT', timeframe='4h', limit=100):
+        """
+        1. سحب بيانات الشموع الحية الحقيقية (OHLCV) من المنصة
+        """
+        try:
+            logger.info(f"جاري سحب بيانات الشموع للزوج {symbol} على الفريم {timeframe}...")
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            
+            # تحويل البيانات إلى Pandas DataFrame لسهولة الحسابات الرياضية
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            return df
+        except Exception as e:
+            logger.error(f"خطأ أثناء جلب بيانات الشموع لـ {symbol}: {e}")
             return None
 
-def get_futures_symbols(force_refresh=False):
-    global _SYMBOL_CACHE, _SYMBOL_CACHE_TIME
-    if not force_refresh and _SYMBOL_CACHE and time.time() - _SYMBOL_CACHE_TIME < SYMBOL_CACHE_SECONDS:
-        return set(_SYMBOL_CACHE)
-    d = bingx_get('/openApi/swap/v2/quote/contracts')
-    out = set()
-    rows = d.get('contracts', []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
-    for x in rows:
-        if isinstance(x, dict):
-            s = str(x.get('symbol', '')).upper()
-            if s:
-                out.add(s)
-                out.add(normalize_symbol(s))
-    if out:
-        _SYMBOL_CACHE, _SYMBOL_CACHE_TIME = out, time.time()
-        return set(_SYMBOL_CACHE)
-    return set(_SYMBOL_CACHE)
+    def calculate_indicators(self, df):
+        """
+        2. حساب المؤشرات الرياضية الحتمية (EMA 20, EMA 50, RSI 14, ATR 14)
+        """
+        # حساب المتوسطات المتحركة الأسية (EMA)
+        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
 
-def symbol_exists(s):
-    norm = normalize_symbol(s)
-    if norm in ['TREND_COMMAND', 'DEBUG_SCAN_COMMAND']:
-        return True
-    sy = get_futures_symbols()
-    return not sy or norm in sy or s in sy
+        # حساب مؤشر القوة النسبية (RSI 14) بدقة رياضية
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / (loss + 1e-10)
+        df['rsi'] = 100 - (100 / (1 + rs))
 
-def _ticker_rows(force=False):
-    global _TICKER_CACHE, _TICKER_CACHE_TIME
-    if not force and _TICKER_CACHE is not None and time.time() - _TICKER_CACHE_TIME < TICKER_CACHE_SECONDS:
-        return _TICKER_CACHE
-    x = bingx_get('/openApi/swap/v2/quote/ticker')
-    if isinstance(x, list):
-        _TICKER_CACHE, _TICKER_CACHE_TIME = x, time.time()
-        return x
-    elif isinstance(x, dict) and 'tickers' in x:
-        _TICKER_CACHE, _TICKER_CACHE_TIME = x['tickers'], time.time()
-        return x['tickers']
-    return []
+        # حساب مؤشر متوسط المدى الحقيقي (ATR 14) لحستان التذبذب
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        df['atr'] = true_range.rolling(window=14).mean()
 
-def _parse(rows):
-    out = []
-    if not isinstance(rows, list):
-        return out
-    for x in rows:
-        try:
-            if isinstance(x, dict):
-                t = int(x.get('time', x.get('openTime', 0)))
-                o = float(x.get('open', 0))
-                h = float(x.get('high', 0))
-                l = float(x.get('low', 0))
-                c = float(x.get('close', 0))
-                v = float(x.get('volume', 0))
-                if t > 0 and c > 0:
-                    out.append([t, o, h, l, c, v])
-            elif isinstance(x, list) and len(x) >= 6:
-                t, o, h, l, c, v = x[:6]
-                out.append([int(t), float(o), float(h), float(l), float(c), float(v or 0)])
-        except Exception:
-            pass
-    try:
-        out.sort(key=lambda z: z[0])
-    except Exception:
-        pass
-    seen = set()
-    clean = []
-    for x in out:
-        if x[0] in seen:
-            continue
-        seen.add(x[0])
-        clean.append(x)
-    return clean
+        return df
 
-def get_bingx_klines(s, interval='4h', limit=100):
-    s = normalize_symbol(s)
-    key = (s, str(interval).lower(), int(limit))
-    now = time.time()
-    c = _KLINE_CACHE.get(key)
-    if c and now - c[0] < KLINE_CACHE_SECONDS:
-        return c[1]
-    mp = {'1h': '1h', '4h': '4h', '1d': '1d'}
-    bi = mp.get(str(interval).lower(), '4h')
-    d = bingx_get('/openApi/swap/v2/quote/klines', {'symbol': s, 'interval': bi, 'limit': int(limit)})
-    r = _parse(d)
-    if r and len(r) > 0:
-        _KLINE_CACHE[key] = (now, r)
-        return r
-    return None
+    def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):
+        """
+        3 & 4. تنفيذ استراتيجية الدخول الصارمة وحساب إدارة المخاطر والرافعة المالية
+        """
+        # سحب بيانات فريم الـ 4 ساعات
+        df = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=100)
+        if df is None or len(df) < 60:
+            logger.warning("البيانات المسترجعة غير كافية لإجراء التحليل الرياضي.")
+            return {"Decision": "WAIT", "Reason": "بيانات غير كافية"}
 
-def get_current_price(s, force=False):
-    s = normalize_symbol(s)
-    now = time.time()
-    c = _PRICE_CACHE.get(s)
-    if not force and c and now - c[0] < PRICE_CACHE_SECONDS:
-        return c[1]
-    d = bingx_get('/openApi/swap/v2/quote/price', {'symbol': s})
-    if isinstance(d, dict) and 'price' in d:
-        try:
-            p = float(d.get('price', 0))
-            if p > 0:
-                _PRICE_CACHE[s] = (now, p)
-                return p
-        except Exception:
-            pass
-    rows = _ticker_rows()
-    for x in rows:
-        if isinstance(x, dict) and str(x.get('symbol', '')).upper() in [s, s.replace('-', '')]:
-            try:
-                p = float(x.get('lastPrice', x.get('price', 0)))
-                if p > 0:
-                    _PRICE_CACHE[s] = (now, p)
-                    return p
-            except Exception:
-                pass
-    k = get_bingx_klines(s, '1h', 5)
-    if k and len(k) > 0 and k[-1][4] > 0:
-        _PRICE_CACHE[s] = (now, k[-1][4])
-        return k[-1][4]
-    return None
+        # تطبيق الحسابات الرياضية
+        df = self.calculate_indicators(df)
 
-def smart_round(v):
-    if v is None:
-        return 0
-    try:
-        v = float(v)
-    except Exception:
-        return 0
-    if v >= 1000:
-        return round(v, 2)
-    if v >= 100:
-        return round(v, 3)
-    if v >= 1:
-        return round(v, 4)
-    if v >= 0.1:
-        return round(v, 5)
-    return round(v, 8)
+        # أخذ قيم الشمعة المغلقة بالكامل (قبل الأخيرة) لتجنب إعادة رسم الشمعة الحية
+        last_row = df.iloc[-2]
+        current_price = df.iloc[-1]['close'] # السعر الحالي للتنفيذ الفوري
 
-def calculate_atr(klines, period=14):
-    if not klines or len(klines) < period + 1:
-        return 0.01
-    trs = []
-    for i in range(1, len(klines)):
-        h = klines[i][2]
-        l = klines[i][3]
-        pc = klines[i-1][4]
-        tr = max(h - l, abs(h - pc), abs(l - pc))
-        trs.append(tr)
-    return sum(trs[-period:]) / min(period, len(trs))
+        logger.info(f"تحليل {symbol} -> السعر الحالي: {current_price} | EMA20: {last_row['ema_20']:.4f} | EMA50: {last_row['ema_50']:.4f} | RSI: {last_row['rsi']:.2f} | ATR: {last_row['atr']:.4f}")
 
-def calculate_swings(klines, left=2, right=2):
-    swings = []
-    if not klines or len(klines) < (left + right + 1):
-        return swings
-    for i in range(left, len(klines) - right):
-        is_high = True
-        is_low = True
-        h_val = klines[i][2]
-        l_val = klines[i][3]
-        for j in range(i - left, i + right + 1):
-            if j == i:
-                continue
-            if klines[j][2] > h_val:
-                is_high = False
-            if klines[j][3] < l_val:
-                is_low = False
-        if is_high:
-            swings.append({'type': 'HIGH', 'index': i, 'price': h_val, 'time': klines[i][0]})
-        if is_low:
-            swings.append({'type': 'LOW', 'index': i, 'price': l_val, 'time': klines[i][0]})
-    return swings
+        # شروط الدخول الصارمة
+        long_condition = (last_row['ema_20'] > last_row['ema_50']) and (last_row['rsi'] < 40)
+        short_condition = (last_row['ema_20'] < last_row['ema_50']) and (last_row['rsi'] > 60)
 
-def analyze_structure_4h(klines_4h, swings_4h):
-    trend = 'NEUTRAL'
-    bos_type = 'NONE'
-    bos_level = 0.0
-    
-    highs = [s for s in swings_4h if s['type'] == 'HIGH']
-    lows = [s for s in swings_4h if s['type'] == 'LOW']
-    
-    if len(highs) >= 2 and len(lows) >= 2:
-        if highs[-1]['price'] > highs[-2]['price'] and lows[-1]['price'] > lows[-2]['price']:
-            trend = 'BULLISH'
-        elif highs[-1]['price'] < highs[-2]['price'] and lows[-1]['price'] < lows[-2]['price']:
-            trend = 'BEARISH'
-
-    if klines_4h and len(klines_4h) >= 3:
-        closed_candle = klines_4h[-2]
-        close_p = closed_candle[4]
-        
-        if highs:
-            last_h = highs[-1]['price']
-            if close_p > last_h:
-                bos_type = 'BULLISH_BOS'
-                bos_level = last_h
-        if lows:
-            last_l = lows[-1]['price']
-            if close_p < last_l:
-                bos_type = 'BEARISH_BOS'
-                bos_level = last_l
-
-    return {
-        'trend': trend,
-        'bos': bos_type,
-        'bos_level': bos_level,
-        'swings': swings_4h
-    }
-
-# --- [تحديث v50.6: فلتر مناطق الخصم والميزة (Premium vs Discount Filter)] ---
-def check_premium_discount_zone(klines_4h, current_price, direction):
-    if not klines_4h or len(klines_4h) < 20:
-        return True, 0.0, 0.0, 50.0 # تمرير افتراضي في حال نقص البيانات
-    
-    recent_highs = [k[2] for k in klines_4h[-30:]]
-    recent_lows = [k[3] for k in klines_4h[-30:]]
-    wave_high = max(recent_highs)
-    wave_low = min(recent_lows)
-    
-    eq_level = (wave_high + wave_low) / 2.0
-    
-    if direction == 'LONG':
-        # يُمنع شراء LONG إلا إذا كان السعر تحت 50% (في منطقة الخصم Discount Zone)
-        is_valid = current_price <= eq_level
-        return is_valid, wave_high, wave_low, eq_level
-    elif direction == 'SHORT':
-        # يُمنع بيع SHORT إلا إذا كان السعر فوق 50% (في المنطقة المتميزة Premium Zone)
-        is_valid = current_price >= eq_level
-        return is_valid, wave_high, wave_low, eq_level
-        
-    return True, wave_high, wave_low, eq_level
-
-# --- [تحديث v50.6: فلتر سحب السيولة وكسر السلاح الفخ (Liquidity Sweep & Turtle Soup Confirmation على فريم 1H)] ---
-def check_liquidity_sweep_1h(klines_1h, direction):
-    if not klines_1h or len(klines_1h) < 10:
-        return True, "STANDARD_CONFIRMATION" # تمرير مرن إذا لم تتوافر شمعة كافية
-        
-    # البحث عن كسر كاذب للقمم/القيعان الأخيرة (Turtle Soup / Liquidity Sweep)
-    # في حالة الشراء LONG: نتحقق أن شمعة سابقة ذيلها كسر قاع سابق ثم ارتدت صعوداً بغلق قوي
-    # في حالة البيع SHORT: نتحقق أن شمعة سابقة ذيلها اخترق قمة سابقة ثم ارتدت هبوطاً بغلق قوي
-    
-    last_candle = klines_1h[-2] # الشمعة المغلوبة السابقة
-    prev_swings = calculate_swings(klines_1h[-25:-2], left=2, right=2)
-    
-    if direction == 'LONG':
-        lows = [s['price'] for s in prev_swings if s['type'] == 'LOW']
-        if lows:
-            recent_support = min(lows)
-            # حدث sweep إذا كان أدنى سعر (Low) كسر الدعم لكن الإغلاق (Close) أو السعر الحالي فوقه
-            if last_candle[3] < recent_support and last_candle[4] > recent_support:
-                return True, "TURTLE_SOUP_BULLISH_SWEEP"
-    elif direction == 'SHORT':
-        highs = [s['price'] for s in prev_swings if s['type'] == 'HIGH']
-        if highs:
-            recent_resistance = max(highs)
-            # حدث sweep إذا كان أعلى سعر (High) اخترق المقاومة لكن الإغلاق تحتها
-            if last_candle[2] > recent_resistance and last_candle[4] < recent_resistance:
-                return True, "TURTLE_SOUP_BEARISH_SWEEP"
-                
-    # كفحص تكميلي للسيولة العادية عبر الفجوات أو ذيول السيولة العالية
-    return True, "LIQUIDITY_SWEPT_CONFIRMED"
-
-# --- [تحديث v50.6: كشف وتفعيل الكتل العاكسة (Breaker Blocks)] ---
-def find_breaker_blocks_and_obs(klines_4h, current_price):
-    bullish_obs = []
-    bearish_obs = []
-    breaker_blocks = []
-    
-    if not klines_4h or len(klines_4h) < 15:
-        return bullish_obs, bearish_obs, breaker_blocks
-
-    for i in range(1, len(klines_4h) - 2):
-        k = klines_4h[i]
-        next_k = klines_4h[i+1]
-        
-        # أوردر بلوك صاعد تقليدي
-        if k[4] < k[1] and next_k[4] > next_k[1]:
-            ob_low = k[3]
-            ob_high = k[2]
-            status = 'FRESH'
+        if long_condition:
+            # حساب الستوب لوس والأهداف (Risk:Reward = 1:2) بناءً على ATR
+            stop_loss = current_price - (2 * last_row['atr'])
+            take_profit = current_price + (4 * last_row['atr'])
+            risk_per_token = current_price - stop_loss
             
-            # فحص هل تم كسر الـ OB وتحويله إلى Breaker Block (Bearish Breaker)
-            broken_afterward = False
-            for idx, scan in enumerate(klines_4h[i+2:]):
-                if scan[4] < ob_low:
-                    status = 'BROKEN'
-                    broken_afterward = True
-                    # تم كسر الـ OB الصاعد بنجاح -> يتحول الآن إلى Bearish Breaker Block
-                    breaker_blocks.append({
-                        'type': 'BEARISH_BREAKER',
-                        'low': ob_low,
-                        'high': ob_high,
-                        'time': scan[0],
-                        'distance': abs(current_price - ((ob_high + ob_low) / 2)) / current_price
-                    })
-                    break
-                elif scan[4] > ob_high and status != 'BROKEN':
-                    status = 'TESTED'
+            # حساب حجم الصفقة بحيث لا تتجاوز الخسارة 1% من المحفظة عند ضرب الستوب
+            allowed_risk_amount = account_balance * risk_percentage
+            position_size_tokens = allowed_risk_amount / risk_per_token if risk_per_token > 0 else 0
+            position_size_usdt = position_size_tokens * current_price
+
+            # سقف الرافعة المالية الصارم (بحيث لا تتجاوز 10x تحت أي ظرف)
+            calculated_leverage = int(current_price / (risk_per_token * 2)) if risk_per_token > 0 else 1
+            safe_leverage = max(1, min(10, calculated_leverage))
+
+            return {
+                "Decision": "MARKET LONG",
+                "Symbol": symbol,
+                "Entry Price": current_price,
+                "Stop Loss": round(stop_loss, 4),
+                "Take Profit": round(take_profit, 4),
+                "Position Size (Tokens)": round(position_size_tokens, 4),
+                "Position Size (USDT)": round(position_size_usdt, 2),
+                "Safe Leverage": safe_leverage
+            }
+
+        elif short_condition:
+            # حساب الستوب لوس والأهداف لصفقات البيع
+            stop_loss = current_price + (2 * last_row['atr'])
+            take_profit = current_price - (4 * last_row['atr'])
+            risk_per_token = stop_loss - current_price
             
-            if not broken_afterward:
-                mid = (ob_high + ob_low) / 2
-                dist = abs(current_price - mid) / current_price
-                bullish_obs.append({
-                    'low': ob_low, 'high': ob_high, 'status': status, 'distance': dist, 'direction': 'BULLISH'
-                })
+            # حساب حجم الصفقة بناءً على مخاطرة 1%
+            allowed_risk_amount = account_balance * risk_percentage
+            position_size_tokens = allowed_risk_amount / risk_per_token if risk_per_token > 0 else 0
+            position_size_usdt = position_size_tokens * current_price
 
-        # أوردر بلوك هابط تقليدي
-        elif k[4] > k[1] and next_k[4] < next_k[1]:
-            ob_low = k[3]
-            ob_high = k[2]
-            status = 'FRESH'
-            
-            broken_afterward = False
-            for idx, scan in enumerate(klines_4h[i+2:]):
-                if scan[4] > ob_high:
-                    status = 'BROKEN'
-                    broken_afterward = True
-                    # تم كسر الـ OB الهابط -> يتحول إلى Bullish Breaker Block
-                    breaker_blocks.append({
-                        'type': 'BULLISH_BREAKER',
-                        'low': ob_low,
-                        'high': ob_high,
-                        'time': scan[0],
-                        'distance': abs(current_price - ((ob_high + ob_low) / 2)) / current_price
-                    })
-                    break
-                elif scan[4] < ob_low and status != 'BROKEN':
-                    status = 'TESTED'
+            # سقف الرافعة المالية الصارم (الحد الأقصى 10x)
+            calculated_leverage = int(current_price / (risk_per_token * 2)) if risk_per_token > 0 else 1
+            safe_leverage = max(1, min(10, calculated_leverage))
 
-            if not broken_afterward:
-                mid = (ob_high + ob_low) / 2
-                dist = abs(current_price - mid) / current_price
-                bearish_obs.append({
-                    'low': ob_low, 'high': ob_high, 'status': status, 'distance': dist, 'direction': 'BEARISH'
-                })
+            return {
+                "Decision": "MARKET SHORT",
+                "Symbol": symbol,
+                "Entry Price": current_price,
+                "Stop Loss": round(stop_loss, 4),
+                "Take Profit": round(take_profit, 4),
+                "Position Size (Tokens)": round(position_size_tokens, 4),
+                "Position Size (USDT)": round(position_size_usdt, 2),
+                "Safe Leverage": safe_leverage
+            }
 
-    return bullish_obs, bearish_obs, breaker_blocks
-
-def check_and_generate_signal(wallet_balance, risk_percent, entry_price, stop_loss, tp1, tp2, tp3, structure, decision, o_block, current_price, symbol_name="REZ-USDT", v506_metadata=None):
-    sl_percentage = abs((entry_price - stop_loss) / entry_price) * 100
-    
-    if sl_percentage < MIN_SL_PCT:
-        return f"🚫 [TRADE CANCELLED - TIGHT RISK v50.6] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة فوراً: نسبة المخاطرة الفنية ({sl_percentage:.2f}%) أقل من الحد الأدنى الآمن ({MIN_SL_PCT}%)."
-
-    if sl_percentage > 12.0:
-        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة تلقائياً: نسبة الوقف ({sl_percentage:.2f}%) مرتفعة جداً وتتجاوز السقف الآمن."
-
-    # تطبيق فلاتر ICT المتقدمة الجديدة (v50.6)
-    if v506_metadata:
-        is_in_zone = v506_metadata.get('is_in_zone', True)
-        zone_name = v506_metadata.get('zone_name', '')
-        if not is_in_zone:
-            return f"🚫 [ICT PREMIUM/DISCOUNT FILTER BLOCKED] | العملة: {symbol_name}\n❌ تم رفض الصفقة لأن السعر الحالي في ({zone_name}). يُمنع تنفيذ {decision} عكس قاعدة الخصم/الميزة المؤسسية."
-
-        sweep_passed = v506_metadata.get('sweep_passed', True)
-        if not sweep_passed:
-            return f"🚫 [ICT LIQUIDITY SWEEP BLOCKED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة لعدم رصد سحب سيولة كافٍ (Turtle Soup Sweep) على فريم 1H."
-
-    with _HISTORY_LOCK:
-        now_ts = time.time()
-        last_record = _SIGNAL_HISTORY.get(symbol_name)
-        if last_record:
-            last_dir = last_record['direction']
-            last_time = last_record['time']
-            if last_dir != decision and (now_ts - last_time) < 21600:
-                hours_left = (21600 - (now_ts - last_time)) / 3600
-                return f"🚫 [COOLDOWN ACTIVE - ANTI-WHIPSAW v50.6] | العملة: {symbol_name}\n❌ ممنوع إصدار إشارة عكسية ({decision}) قبل مرور 6 ساعات كاملة. المتبقي: {hours_left:.1f} ساعة."
-
-    if structure == "BEARISH" and decision in ["MARKET LONG", "LONG"]:
-        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول شراء (LONG) وهيكل فريم 4 ساعات هابط."
-    if structure == "BULLISH" and decision in ["MARKET SHORT", "SHORT"]:
-        return f"🚫 [TRADE CANCELLED] | العملة: {symbol_name}\n❌ تم إلغاء الصفقة: لا يمكن دخول بيع (SHORT) وهيكل فريم 4 ساعات صاعد."
-
-    calculated_leverage = int(100 / sl_percentage) if sl_percentage > 0 else 3
-    max_safe_leverage = min(calculated_leverage, MAX_LEVERAGE_CAP)
-    if max_safe_leverage < 3:
-        max_safe_leverage = 3
-
-    risk_amount = wallet_balance * (risk_percent / 100)
-    position_size = risk_amount / (sl_percentage / 100) if sl_percentage > 0 else 0
-
-    with _HISTORY_LOCK:
-        _SIGNAL_HISTORY[symbol_name] = {'direction': decision, 'time': time.time()}
-
-    total_risk = abs(entry_price - stop_loss)
-    if total_risk == 0:
-        total_risk = 0.0001
-    r_multiple_1 = abs(tp1 - entry_price) / total_risk
-    r_multiple_2 = abs(tp2 - entry_price) / total_risk
-    r_multiple_3 = abs(tp3 - entry_price) / total_risk
-
-    score = 99
-    grade = "إيجابي مؤسسي فائق الهجين (SMC + ICT v50.6)"
-
-    output = f"""🤖 **BingX Institutional SMC & ICT v50.6 (The Ultimate Hybrid)**
-💎 العملة: `{symbol_name}`
-📈 القرار: 🟢 `{decision}`
-🏆 Grade: `{grade}`
-⭐ Score: `{score}/100` (اجتياز فريم 4H، فلاتر ICT للخصم، وسحب السيولة بنجاح)
-🛡️ Status: `TRADE`
-📊 Structure (4H): `{structure}`
-📌 OB / Breaker Zone: `{o_block}`
-💰 Price: `{current_price}`
-
-🎯 Entry: `{entry_price:.6f}`
-🛑 SL: `{stop_loss:.6f}` 📊 Risk Filter: `{sl_percentage:.2f}%` (أعلى من 1.5%)
-💵 Position Size (1% Risk): `${position_size:.4f}`
-
-⚠️ **الرافعة المالية المُعمدة (Strict Leverage Cap):**
-• الرافعة المالية القصوى: `{max_safe_leverage}x` (محدودة بـ 10x لحماية الحساب).
-
-🎯 TP1 ({r_multiple_1:.1f}R): `{tp1:.6f}`
-🎯 TP2 ({r_multiple_2:.1f}R): `{tp2:.6f}`
-🎯 TP3 ({r_multiple_3:.1f}R): `{tp3:.6f}`
-📝 Reason:
-`تفعيل دمج مدارس ICT (Premium/Discount Filter, Liquidity Sweep, Breaker Blocks) مع حماية Anti-Whipsaw لمدة 6 ساعات وفلتر الـ Pool.`"""
-    
-    return output
-
-def analyze_institutional_multitimeframe(symbol):
-    klines_4h = get_bingx_klines(symbol, '4h', 60)
-    klines_1h = get_bingx_klines(symbol, '1h', 50)
-
-    if not klines_4h or len(klines_4h) < 15:
-        return None
-
-    current_price = get_current_price(symbol, True)
-    if not current_price:
-        return None
-
-    atr_4h = calculate_atr(klines_4h)
-    swings_4h = calculate_swings(klines_4h, left=3, right=3)
-    struct_4h = analyze_structure_4h(klines_4h, swings_4h)
-
-    bullish_obs_4h, bearish_obs_4h, breaker_blocks = find_breaker_blocks_and_obs(klines_4h, current_price)
-    
-    candidate_direction = 'LONG' if struct_4h['trend'] == 'BULLISH' else 'SHORT'
-    
-    # التحقق من فلاتر ICT v50.6
-    # 1. Premium vs Discount Filter
-    is_in_zone, wave_high, wave_low, eq_level = check_premium_discount_zone(klines_4h, current_price, candidate_direction)
-    zone_desc = "Discount Zone (تحت 50%) - مسموح للشراء" if candidate_direction == 'LONG' else "Premium Zone (فوق 50%) - مسموح للبيع"
-    
-    # 2. Liquidity Sweep on 1H
-    sweep_passed, sweep_type = check_liquidity_sweep_1h(klines_1h, candidate_direction)
-
-    chosen_ob = None
-    # البحث أولاً في الـ Breaker Blocks إذا وجدت وتطابقت مع الاتجاه
-    valid_breakers = [b for b in breaker_blocks if (candidate_direction == 'LONG' and b['type'] == 'BULLISH_BREAKER') or (candidate_direction == 'SHORT' and b['type'] == 'BEARISH_BREAKER')]
-    if valid_breakers:
-        valid_breakers.sort(key=lambda x: x['distance'])
-        chosen_ob = valid_breakers[0]
-    
-    if not chosen_ob:
-        if candidate_direction == 'LONG' and bullish_obs_4h:
-            valid_b = [ob for ob in bullish_obs_4h if ob['status'] != 'BROKEN']
-            if valid_b:
-                valid_b.sort(key=lambda x: x['distance'])
-                chosen_ob = valid_b[0]
-        elif candidate_direction == 'SHORT' and bearish_obs_4h:
-            valid_s = [ob for ob in bearish_obs_4h if ob['status'] != 'BROKEN']
-            if valid_s:
-                valid_s.sort(key=lambda x: x['distance'])
-                chosen_ob = valid_s[0]
-
-    if not chosen_ob:
-        chosen_ob = {'low': current_price * 0.98, 'high': current_price * 1.02}
-
-    return {
-        'symbol': symbol,
-        'direction': candidate_direction,
-        'price': current_price,
-        'atr': atr_4h,
-        'chosen_ob': chosen_ob,
-        'structure': struct_4h['trend'],
-        'o_block': f"{smart_round(chosen_ob.get('low', current_price*0.98))} - {smart_round(chosen_ob.get('high', current_price*1.02))}",
-        'v506_metadata': {
-            'is_in_zone': is_in_zone,
-            'zone_name': zone_desc,
-            'sweep_passed': sweep_passed,
-            'sweep_type': sweep_type
+        return {
+            "Decision": "WAIT",
+            "Symbol": symbol,
+            "Reason": "الشروط الرياضية الحتمية لم تتحقق بالكامل (لا توجد فرصة آمنة حالياً)"
         }
-    }
 
-def _get_coin_analysis_core(symbol):
-    symbol = normalize_symbol(symbol)
-    data = analyze_institutional_multitimeframe(symbol)
-    if not data:
-        return f"🚫 [DATA ERROR] | العملة: {symbol}\n❌ تعذر جلب إغلاقات فريم 4 ساعات المؤسسي لهذه العملة حالياً."
+# ==========================================
+# تشغيل البوت وإدخال مفاتيح الـ API
+# ==========================================
+if __name__ == "__main__":
+    # 🔑 ضع مفاتيح الـ API الخاصة بك هنا مباشرة أو عبر متغيرات البيئة (Environment Variables)
+    # ملاحظة: إذا كنت تود فقط تجربة جلب السعر وتحليل المؤشرات دون فتح صفقات حقيقية، يمكنك تركها فارغة ""
+    API_KEY = "ضع_مفتاح_الـ_API_هنا"
+    SECRET_KEY = "ضع_المفتاح_السري_هنا"
 
-    p = data['price']
-    atr = data['atr']
-    direction = data['direction']
-    structure = data['structure']
-    ob = data['chosen_ob']
+    # تهيئة البوت لمنصة BingX (أو يمكنك تغييرها إلى 'binance')
+    bot = CryptoTradingBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
-    if direction == 'LONG':
-        stop_loss = smart_round(min(ob.get('low', p), p - (atr * 1.5)))
-        risk_dist = p - stop_loss
-        tp1 = p + (risk_dist * 1.6)
-        tp2 = p + (risk_dist * 2.6)
-        tp3 = p + (risk_dist * 4.2)
-        dec_str = "MARKET LONG"
-    else:
-        stop_loss = smart_round(max(ob.get('high', p), p + (atr * 1.5)))
-        risk_dist = stop_loss - p
-        tp1 = p - (risk_dist * 1.6)
-        tp2 = p - (risk_dist * 2.6)
-        tp3 = p - (risk_dist * 4.2)
-        dec_str = "MARKET SHORT"
+    # تنفيذ الفحص على زوج معين (مثلاً BTC أو ETH عقود آجلة Swap)
+    target_symbol = 'BTC/USDT:USDT'
+    virtual_account_balance = 1000.0 # إجمالي رأس مال المحفظة بالدولار للاختبار
 
-    signal_output = check_and_generate_signal(
-        wallet_balance=1000.0,
-        risk_percent=1.0,
-        entry_price=p,
-        stop_loss=stop_loss,
-        tp1=tp1,
-        tp2=tp2,
-        tp3=tp3,
-        structure=structure,
-        decision=dec_str,
-        o_block=data['o_block'],
-        current_price=p,
-        symbol_name=symbol,
-        v506_metadata=data['v506_metadata']
-    )
-    return signal_output
+    # جلب القرار النهائي بناءً على التحليل الحتمي الصارم
+    signal_result = bot.evaluate_strategy(symbol=target_symbol, account_balance=virtual_account_balance, risk_percentage=0.01)
 
-def get_coin_analysis(symbol, interval='4h'):
-    norm = normalize_symbol(symbol)
-    if norm == 'TREND_COMMAND':
-        return "⚠️ تم إلغاء المسح العشوائي. يرجى إرسال اسم العملة التي ترغب في تحليلها بناءً على الفريمات المؤسسية مباشرةً."
-    try:
-        return _get_coin_analysis_core(symbol)
-    except Exception as e:
-        logger.error(f"Error in institutional analysis for {symbol}: {e}")
-        return f"🚫 [EXCEPTION] | حدث خطأ برمجي أثناء معالجة التحليل المؤسسي للعملة: {symbol}"
-
-def generate_evidence_report(d):
-    if isinstance(d, str):
-        return d
-    return "🟡 لم يتم التعرف على نمط التقرير المطلوب."
+    print("\n==========================================")
+    print("       تقرير التحليل الرياضي الحتمي للبوت     ")
+    print("==========================================")
+    for key, value in signal_result.items():
+        print(f"• {key}: {value}")
+    print("==========================================")
