@@ -2,7 +2,8 @@ import os
 import logging
 import requests
 from flask import Flask
-from analysis import DeterministicTradingAnalyst
+# تم تعديل الاستيراد هنا ليتطابق مع اسم الكلاس الجديد في ملف analysis.py
+from analysis import SmartMoneyTradingAnalyst
 
 # إعداد السجلات (Logging)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -34,8 +35,8 @@ def send_telegram_message(message):
 API_KEY = os.getenv("API_KEY", "")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
-# تهيئة محرك التحليل الحتمي
-analyst_engine = DeterministicTradingAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
+# تهيئة محرك التحليل المتقدم (SMC / Market Structure)
+analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
 @app.route('/')
 def home():
@@ -48,8 +49,8 @@ def home():
         all_symbols = [symbol for symbol in exchange.symbols if 'USDT:USDT' in symbol]
         symbols_to_scan = all_symbols[:15] 
         
-        telegram_msg = "🚨 *Full Market Crypto Report (BingX)* 🚀\n\n"
-        html_output = f"<h2>Full Market Scanner Active 🚀 (Scanned {len(symbols_to_scan)} Coins)</h2>"
+        telegram_msg = "🚨 *Smart Money Market Report (BingX)* 🚀\n\n"
+        html_output = f"<h2>Smart Money Scanner Active 🚀 (Scanned {len(symbols_to_scan)} Coins)</h2>"
         
         for symbol in symbols_to_scan:
             html_output += f"<h3>Analysis for {symbol}:</h3><ul>"
