@@ -1,294 +1,172 @@
-# =========================================================
-# main.py - BingX AI Scanner v50.3 (Auto-Scanner & High-Accuracy Pro)
-# Flask + Standalone Background Thread Auto Scanner
-# =========================================================
-
-import os
-import time
+import ccxt
+import pandas as pd
+import numpy as np
 import logging
-import threading
-import asyncio
-
+import os
 from flask import Flask
-from telegram import Update, Bot
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    MessageHandler,
-    filters,
-)
 
-from analysis import (
-    get_futures_symbols,
-    get_coin_analysis,
-    normalize_symbol,
-)
-
-
-# =========================================================
-# LOGGING
-# =========================================================
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
+# 1. إعداد نظام السجلات (Logging) للمتابعة الدقيقة
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-
-# =========================================================
-# ENVIRONMENT & TARGETS
-# =========================================================
-
-TOKEN = os.getenv("BOT_TOKEN")
-
-if not TOKEN:
-    logger.error("BOT_TOKEN غير موجود في Environment Variables")
-
-CHAT_ID_RAW = os.getenv("CHAT_ID")
-CHAT_ID = None
-
-if CHAT_ID_RAW:
-    try:
-        CHAT_ID = int(CHAT_ID_RAW)
-    except ValueError:
-        logger.warning("CHAT_ID يجب أن يكون رقمًا صحيحًا، تم تجاهله.")
-
-if not CHAT_ID:
-    logger.warning("تحذير: CHAT_ID غير معرف. التنبيهات التلقائية لن تُرسل حتى يتفاعل مستخدم مع البوت.")
-
-# الفحص التلقائي كل 30 دقيقة (1800 ثانية)
-AUTO_SCAN_INTERVAL = int(os.getenv("AUTO_SCAN_INTERVAL", "1800"))
-
-# عدد العملات التي سيتم فحصها
-AUTO_SCAN_LIMIT = int(os.getenv("AUTO_SCAN_LIMIT", "20"))
-
-# ذاكرة لتتبع العملات التي تم إرسال تنبيه لها لمنع التكرار المزعج
-LAST_SENT_SIGNALS = {}
-LAST_ACTIVE_CHAT_ID = CHAT_ID
-
-
-# =========================================================
-# FLASK SERVER (لحماية Render من السبات)
-# =========================================================
-
+# 🌐 2. إنشاء تطبيق الويب (Flask) لإرضاء منصة Render وفتح المنفذ المطلوب
 app = Flask(__name__)
 
-
-@app.route("/")
+@app.route('/')
 def home():
-    return "Bot is Alive and Scanning 24/7 (v50.3)!"
+    """صفحة رئيسية للتأكد أن السيرفر يعمل على Render"""
+    # تنفيذ تحليل فوري عند زيارة الرابط للاختبار
+    analysis = bot_engine.evaluate_strategy(symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01)
+    return f"Deterministic Crypto Trading Bot is Active! <br><br> Latest Analysis Status: {analysis}"
 
 
-@app.route("/health")
-def health():
-    return "OK"
+class DeterministicTradingBot:
+    def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
+        """
+        تهيئة الاتصال بمنصة التداول (BingX أو Binance) عبر مكتبة CCXT
+        """
+        exchange_class = getattr(ccxt, exchange_id)
+        self.exchange = exchange_class({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'}  # التعامل مع عقود الهامش والـ Futures
+        })
+        try:
+            self.exchange.load_markets()
+            logger.info(f"تم الاتصال بنجاح بمنصة {exchange_id.upper()} وتحميل أسواق الـ Swap.")
+        except Exception as e:
+            logger.error(f"فشل الاتصال بالمنصة: {e}")
 
+    # ==========================================
+    # الخطوة 1: جلب بيانات الشموع الحية (OHLCV)
+    # ==========================================
+    def fetch_ohlcv_data(self, symbol='BTC/USDT:USDT', timeframe='4h', limit=100):
+        try:
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            return df
+        except Exception as e:
+            logger.error(f"خطأ أثناء جلب بيانات الشموع لـ {symbol} على فريم {timeframe}: {e}")
+            return None
 
-def run_flask():
-    port = int(os.environ.get("PORT", "10000"))
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False,
-    )
+    # ==========================================
+    # الخطوة 2: حساب المؤشرات الرياضية الحتمية
+    # ==========================================
+    def calculate_indicators(self, df):
+        # المتوسطات المتحركة الأسية (EMA 20 & EMA 50)
+        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
 
+        # مؤشر القوة النسبية (RSI 14)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / (loss + 1e-10)
+        df['rsi'] = 100 - (100 / (1 + rs))
 
-# =========================================================
-# TELEGRAM HANDLERS
-# =========================================================
+        # متوسط المدى الحقيقي (ATR 14) لقياس التذبذب
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        df['atr'] = np.max(ranges, axis=1).rolling(window=14).mean()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global LAST_ACTIVE_CHAT_ID
-    if not update.message:
-        return
+        return df
 
-    LAST_ACTIVE_CHAT_ID = update.effective_chat.id
+    # ==========================================
+    # الخطوة 3 & 4: اتخاذ القرار وإدارة المخاطر الصارمة
+    # ==========================================
+    def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):
+        df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=100)
+        if df_4h is None or len(df_4h) < 60:
+            return {"Decision": "WAIT", "Reason": "البيانات المسترجعة غير كافية للتحليل."}
 
-    await update.message.reply_text(
-        "🤖 أهلاً بك في BingX Institutional SMC v50.3\n\n"
-        "🚀 Auto Market Scanner يعمل تلقائياً في الخلفية على مدار الساعة.\n\n"
-        f"📡 البوت يفحص أعلى العملات سيولة كل {AUTO_SCAN_INTERVAL // 60} دقيقة.\n\n"
-        "📌 أرسل اسم أي عملة للتحليل الفوري (مثال: BTC أو ETH).\n"
-        "/scan = فحص يدوي لأفضل الفرص المتاحة حالياً"
-    )
-
-
-async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global LAST_ACTIVE_CHAT_ID
-    if not update.message:
-        return
-
-    LAST_ACTIVE_CHAT_ID = update.effective_chat.id
-
-    await update.message.reply_text(
-        "🔍 جاري فحص سيولة BingX Futures وتطبيق فلاتر الـ SMC الصارمة... ⏳ انتظر قليلاً..."
-    )
-
-    try:
-        symbols_set = await asyncio.to_thread(get_futures_symbols, False)
-        symbols = list(symbols_set)[:AUTO_SCAN_LIMIT]
-        sent_count = 0
-
-        for sym in symbols:
-            report = await asyncio.to_thread(get_coin_analysis, sym, '1h')
-            if report and isinstance(report, str) and "TRADE CANCELLED" not in report and "EXCEPTION" not in report:
-                await update.message.reply_text(report)
-                sent_count += 1
-                await asyncio.sleep(1.5)
-                if sent_count >= 3:
-                    break
+        df_4h = self.calculate_indicators(df_4h)
         
-        if sent_count == 0:
-            await update.message.reply_text(
-                "🟡 لم يتم العثور حالياً على فرص مطابقة للشروط الصارمة (البوت يحمي المحفظة ضد التذبذب)."
-            )
+        last_closed = df_4h.iloc[-2]
+        current_price = df_4h.iloc[-1]['close']
+        current_atr = last_closed['atr']
 
-    except Exception as exc:
-        logger.exception("Manual scanner error: %s", exc)
-        await update.message.reply_text("❌ حدث خطأ أثناء فحص السوق.")
+        ema_20 = last_closed['ema_20']
+        ema_50 = last_closed['ema_50']
+        rsi_val = last_closed['rsi']
 
+        # الشروط الرياضية الحتمية للاتجاه
+        long_condition = (ema_20 > ema_50) and (rsi_val < 40)
+        short_condition = (ema_20 < ema_50) and (rsi_val > 60)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global LAST_ACTIVE_CHAT_ID
-    if not update.message or not update.message.text:
-        return
+        # إدارة المخاطر: 1% من إجمالي المحفظة
+        allowed_risk_usd = account_balance * risk_percentage
 
-    text = update.message.text.strip()
-    if not text:
-        return
+        if long_condition:
+            stop_loss = current_price - (2 * current_atr)
+            risk_per_token = current_price - stop_loss
+            
+            if risk_per_token <= 0:
+                return {"Decision": "WAIT", "Reason": "خطأ في حساب مسافة وقف الخسارة."}
 
-    LAST_ACTIVE_CHAT_ID = update.effective_chat.id
-    symbol = normalize_symbol(text)
+            position_tokens = allowed_risk_usd / risk_per_token
+            position_value_usdt = position_tokens * current_price
+            take_profit = current_price + (4 * current_atr)  # نسبة Risk:Reward = 1:2
+            
+            # سقف الرافعة المالية بحيث لا تتجاوز 10x تحت أي ظرف
+            leverage = max(1, min(10, int(current_price / (risk_per_token * 2))))
 
-    await update.message.reply_text(f"🔍 جاري تحليل العملة `{symbol}` وفق أحدث معايير الـ SMC والمستويات المؤسسية...")
+            return {
+                "Decision": "MARKET LONG 🟢",
+                "Symbol": symbol,
+                "Entry": round(current_price, 4),
+                "Stop Loss": round(stop_loss, 4),
+                "Take Profit": round(take_profit, 4),
+                "Position Size (USDT)": round(position_value_usdt, 2),
+                "Leverage": leverage,
+                "Reason": f"EMA20 ({ema_20:.2f}) > EMA50 ({ema_50:.2f}) و RSI ({rsi_val:.2f}) < 40"
+            }
 
-    try:
-        report = await asyncio.to_thread(get_coin_analysis, symbol, '1h')
-    except Exception as exc:
-        logger.exception("Coin analysis error for %s", symbol)
-        await update.message.reply_text(f"❌ حدث خطأ أثناء تحليل {symbol}.")
-        return
+        elif short_condition:
+            stop_loss = current_price + (2 * current_atr)
+            risk_per_token = stop_loss - current_price
+            
+            if risk_per_token <= 0:
+                return {"Decision": "WAIT", "Reason": "خطأ في حساب مسافة وقف الخسارة."}
 
-    if not report:
-        await update.message.reply_text(f"❌ لم أستطع تحليل {symbol} حالياً.")
-        return
+            position_tokens = allowed_risk_usd / risk_per_token
+            position_value_usdt = position_tokens * current_price
+            take_profit = current_price - (4 * current_atr)  # نسبة Risk:Reward = 1:2
+            
+            # سقف الرافعة المالية بحيث لا تتجاوز 10x
+            leverage = max(1, min(10, int(current_price / (risk_per_token * 2))))
 
-    try:
-        await update.message.reply_text(report)
-    except Exception as exc:
-        logger.exception("Report error for %s", symbol)
-        await update.message.reply_text("❌ حدث خطأ أثناء إرسال التقرير.")
+            return {
+                "Decision": "MARKET SHORT 🔴",
+                "Symbol": symbol,
+                "Entry": round(current_price, 4),
+                "Stop Loss": round(stop_loss, 4),
+                "Take Profit": round(take_profit, 4),
+                "Position Size (USDT)": round(position_value_usdt, 2),
+                "Leverage": leverage,
+                "Reason": f"EMA20 ({ema_20:.2f}) < EMA50 ({ema_50:.2f}) و RSI ({rsi_val:.2f}) > 60"
+            }
 
+        return {
+            "Decision": "WAIT ⏳",
+            "Symbol": symbol,
+            "Reason": "الشروط الحتمية لم تتحقق بالكامل (السوق في حالة حيادية)."
+        }
 
-# =========================================================
-# BACKGROUND THREAD AUTO SCANNER (v50.3)
-# =========================================================
+# ==========================================
+# تهيئة محرك البوت وسحب المفاتيح بأمان
+# ==========================================
+API_KEY = os.getenv("API_KEY", "")
+SECRET_KEY = os.getenv("SECRET_KEY", "")
 
-def start_auto_scan():
-    logger.info("BACKGROUND THREAD: Auto Scanner started.")
-    time.sleep(20)
+bot_engine = DeterministicTradingBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
-    if not TOKEN:
-        logger.error("Cannot start Auto Scanner: BOT_TOKEN is missing.")
-        return
-
-    bot = Bot(token=TOKEN)
-
-    while True:
-        try:
-            target_chat_id = CHAT_ID or LAST_ACTIVE_CHAT_ID
-
-            if not target_chat_id:
-                logger.info("AUTO SCANNER: Waiting for a chat_id (Send /start to bot)...")
-                time.sleep(AUTO_SCAN_INTERVAL)
-                continue
-
-            symbols_set = get_futures_symbols(False)
-            symbols = list(symbols_set)[:AUTO_SCAN_LIMIT]
-
-            for symbol in symbols:
-                try:
-                    report = get_coin_analysis(symbol, '1h')
-                    time.sleep(1.5)
-
-                    if not report or not isinstance(report, str):
-                        continue
-
-                    if "TRADE CANCELLED" in report or "EXCEPTION" in report or "DATA ERROR" in report:
-                        continue
-
-                    current_direction = "LONG" if "MARKET LONG" in report else ("SHORT" if "MARKET SHORT" in report else "UNKNOWN")
-                    if current_direction == "UNKNOWN":
-                        continue
-
-                    previous_sent = LAST_SENT_SIGNALS.get(symbol)
-                    if current_direction == previous_sent:
-                        continue
-
-                    header = "🚨🚨 فرصة تداول مؤسسية مؤكدة (Auto-Scanner) 🚨🚨\n\n"
-                    message = header + report
-
-                    asyncio.run(bot.send_message(chat_id=target_chat_id, text=message))
-                    LAST_SENT_SIGNALS[symbol] = current_direction
-                    logger.info("AUTO ALERT SENT: %s -> %s", symbol, current_direction)
-                    time.sleep(3)
-
-                except Exception as coin_exc:
-                    logger.exception("AUTO SCANNER error for %s: %s", symbol, coin_exc)
-
-        except Exception as loop_exc:
-            logger.exception("AUTO SCANNER CRITICAL ERROR: %s", loop_exc)
-
-        time.sleep(AUTO_SCAN_INTERVAL)
-
-
-# =========================================================
-# BOT MAIN (TELEGRAM POLLING)
-# =========================================================
-
-async def main_bot():
-    application = ApplicationBuilder().token(TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("scan", scan_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    await application.initialize()
-    await application.bot.delete_webhook(drop_pending_updates=True)
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
-    logger.info("Telegram bot started successfully with standard polling.")
-
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    except asyncio.CancelledError:
-        pass
-    finally:
-        try:
-            await application.updater.stop()
-            await application.stop()
-            await application.shutdown()
-        except Exception:
-            pass
-
-
-# =========================================================
-# ENTRY POINT
-# =========================================================
-
+# ==========================================
+# تشغيل السيرفر الرئيسي وخادم الويب لـ Render
+# ==========================================
 if __name__ == "__main__":
-    logger.info("Starting BingX AI Scanner v50.3...")
-
-    threading.Thread(target=run_flask, daemon=True).start()
-    threading.Thread(target=start_auto_scan, daemon=True).start()
-
-    try:
-        asyncio.run(main_bot())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped.")
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
