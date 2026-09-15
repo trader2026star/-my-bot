@@ -2,23 +2,22 @@ import ccxt
 import pandas as pd
 import numpy as np
 import logging
-import os
 
 # إعداد السجلات (Logging) للمتابعة الدقيقة
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class DeterministicTradingAnalyst:
+class SmartMoneyTradingAnalyst:
     def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
         """
-        تهيئة الاتصال بمنصة التداول عبر مكتبة CCXT
+        تهيئة الاتصال بمنصة التداول عبر مكتبة CCXT لدعم العقود الآجلة (Swap)
         """
         exchange_class = getattr(ccxt, exchange_id)
         self.exchange = exchange_class({
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'}  # التعامل مع عقود الهامش (Futures / Swap)
+            'options': {'defaultType': 'swap'}
         })
         try:
             self.exchange.load_markets()
@@ -27,9 +26,9 @@ class DeterministicTradingAnalyst:
             logger.error(f"فشل الاتصال بالمنصة: {e}")
 
     # ==========================================
-    # الخطوة 1: جلب بيانات الشموع الحية (OHLCV)
+    # جلب بيانات الشموع الحية (OHLCV)
     # ==========================================
-    def fetch_ohlcv_data(self, symbol='BTC/USDT:USDT', timeframe='4h', limit=100):
+    def fetch_ohlcv_data(self, symbol='BTC/USDT:USDT', timeframe='1h', limit=150):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -40,21 +39,18 @@ class DeterministicTradingAnalyst:
             return None
 
     # ==========================================
-    # الخطوة 2: حساب المؤشرات الرياضية الحتمية
+    # تحليل بنية السوق والاتجاه (SMC / Market Structure)
     # ==========================================
-    def calculate_indicators(self, df):
-        # المتوسطات المتحركة الأسية (EMA 20 & EMA 50)
-        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    def analyze_market_structure(self, df):
+        # 1. الاتجاه العام عبر المتوسطات الكبيرة (Trend Filter)
+        df['trend_ema_fast'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['trend_ema_slow'] = df['close'].ewm(span=200, adjust=False).mean()
+        
+        # 2. تحديد قمم وقيعان هيكلية حديثة (Swing Highs / Lows - آخر 5 شمعات)
+        df['swing_high'] = df['high'].rolling(window=5).max()
+        df['swing_low'] = df['low'].rolling(window=5).min()
 
-        # مؤشر القوة النسبية (RSI 14)
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / (loss + 1e-10)
-        df['rsi'] = 100 - (100 / (1 + rs))
-
-        # متوسط المدى الحقيقي (ATR 14) لقياس التذبذب
+        # 3. متوسط المدى الحقيقي (ATR 14) لإدارة المخاطر الحية
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
@@ -64,32 +60,37 @@ class DeterministicTradingAnalyst:
         return df
 
     # ==========================================
-    # الخطوة 3 & 4: اتخاذ القرار وإدارة المخاطر الصارمة
+    # اتخاذ القرار الذكي وإدارة المخاطر الصارمة
     # ==========================================
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):
-        df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=100)
-        if df_4h is None or len(df_4h) < 60:
-            return {"Decision": "WAIT", "Reason": "البيانات المسترجعة غير كافية للتحليل."}
+        # جلب الفريم المتوسط (مثل 1h أو 4h) لتحديد الاتجاه والهيكل بدقة حية
+        df = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=150)
+        if df is None or len(df) < 100:
+            return {"Decision": "WAIT", "Reason": "البيانات المسترجعة غير كافية للتحليل الحي."}
 
-        df_4h = self.calculate_indicators(df_4h)
+        df = self.analyze_market_structure(df)
         
-        last_closed = df_4h.iloc[-2]
-        current_price = df_4h.iloc[-1]['close']
+        last_closed = df.iloc[-2]
+        current_price = df.iloc[-1]['close']
         current_atr = last_closed['atr']
 
-        ema_20 = last_closed['ema_20']
-        ema_50 = last_closed['ema_50']
-        rsi_val = last_closed['rsi']
+        # الشروط الهيكلية (Market Structure & Trend Alignment)
+        is_uptrend = last_closed['trend_ema_fast'] > last_closed['trend_ema_slow']
+        is_downtrend = last_closed['trend_ema_fast'] < last_closed['trend_ema_slow']
 
-        # الشروط الرياضية الحتمية للاتجاه
-        long_condition = (ema_20 > ema_50) and (rsi_val < 40)
-        short_condition = (ema_20 < ema_50) and (rsi_val > 60)
+        # تأكيد ارتداد السعر من آخر قاع هيكلي أو منطقة سيولة (SMC Logic)
+        recent_swing_low = df['low'].iloc[-15:-2].min()
+        recent_swing_high = df['high'].iloc[-15:-2].max()
 
-        # إدارة المخاطر: 1% من إجمالي المحفظة
+        # شروط الدخول الحتمية المحسنة
+        long_condition = is_uptrend and (current_price <= last_closed['trend_ema_fast'] * 1.015)
+        short_condition = is_downtrend and (current_price >= last_closed['trend_ema_fast'] * 0.985)
+
         allowed_risk_usd = account_balance * risk_percentage
 
         if long_condition:
-            stop_loss = current_price - (2 * current_atr)
+            # وقف الخسارة تحت آخر قاع هيكلي أو بمسافة ATR آمنة (أيهما أبعد لحماية الصفقة)
+            stop_loss = min(recent_swing_low - (0.5 * current_atr), current_price - (2.5 * current_atr))
             risk_per_token = current_price - stop_loss
             
             if risk_per_token <= 0:
@@ -97,9 +98,8 @@ class DeterministicTradingAnalyst:
 
             position_tokens = allowed_risk_usd / risk_per_token
             position_value_usdt = position_tokens * current_price
-            take_profit = current_price + (4 * current_atr)  # نسبة Risk:Reward = 1:2
+            take_profit = current_price + (3 * risk_per_token)  # نسبة العائد للمخاطرة 1:3
             
-            # سقف الرافعة المالية بحيث لا تتجاوز 10x تحت أي ظرف
             leverage = max(1, min(10, int(current_price / (risk_per_token * 2))))
 
             return {
@@ -110,11 +110,12 @@ class DeterministicTradingAnalyst:
                 "Take Profit": round(take_profit, 4),
                 "Position Size (USDT)": round(position_value_usdt, 2),
                 "Leverage": leverage,
-                "Reason": f"EMA20 ({ema_20:.2f}) > EMA50 ({ema_50:.2f}) و RSI ({rsi_val:.2f}) < 40"
+                "Reason": f"اتجاه صاعد مؤكد (EMA50 > EMA200) مع ارتداد هيكلي من منطقة السيولة."
             }
 
         elif short_condition:
-            stop_loss = current_price + (2 * current_atr)
+            # وقف الخسارة فوق آخر قمة هيكلية حقيقية
+            stop_loss = max(recent_swing_high + (0.5 * current_atr), current_price + (2.5 * current_atr))
             risk_per_token = stop_loss - current_price
             
             if risk_per_token <= 0:
@@ -122,9 +123,8 @@ class DeterministicTradingAnalyst:
 
             position_tokens = allowed_risk_usd / risk_per_token
             position_value_usdt = position_tokens * current_price
-            take_profit = current_price - (4 * current_atr)  # نسبة Risk:Reward = 1:2
+            take_profit = current_price - (3 * risk_per_token)  # نسبة العائد للمخاطرة 1:3
             
-            # سقف الرافعة المالية بحيث لا تتجاوز 10x
             leverage = max(1, min(10, int(current_price / (risk_per_token * 2))))
 
             return {
@@ -135,11 +135,11 @@ class DeterministicTradingAnalyst:
                 "Take Profit": round(take_profit, 4),
                 "Position Size (USDT)": round(position_value_usdt, 2),
                 "Leverage": leverage,
-                "Reason": f"EMA20 ({ema_20:.2f}) < EMA50 ({ema_50:.2f}) و RSI ({rsi_val:.2f}) > 60"
+                "Reason": f"اتجاه هابط مؤكد (EMA50 < EMA200) مع رفض سعري عند القمة."
             }
 
         return {
             "Decision": "WAIT ⏳",
             "Symbol": symbol,
-            "Reason": "الشروط الحتمية لم تتحقق بالكامل (السوق في حالة حيادية)."
+            "Reason": "السوق في منطقة عرضية أو لم يلامس مناطق الهيكل المطلوبة."
         }
