@@ -2,3 +2,5 @@ ccxt
 pandas
 numpy
 flask
+requests
+apscheduler
