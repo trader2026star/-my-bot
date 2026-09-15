@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import logging
 import os
+import asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
@@ -168,11 +169,15 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(report, parse_mode='Markdown')
 
 def run_telegram_bot():
-    """تشغيل مستمع تيليجرام"""
+    """تشغيل مستمع تيليجرام مع ضبط حلقة الأحداث"""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     if not token:
         logger.warning("مفتاح تيليجرام (TELEGRAM_BOT_TOKEN) غير متوفر في متغيرات البيئة.")
         return
+    
+    # تهيئة حلقة الأحداث لتجنب أخطاء الـ Threads
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
     app_tg = ApplicationBuilder().token(token).build()
     
