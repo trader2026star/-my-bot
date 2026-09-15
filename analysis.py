@@ -1,39 +1,3 @@
-import ccxt
-import pandas as pd
-import numpy as np
-import logging
-import os
-
-# إعداد السجلات (Logging) لمتابعة حالة البوت وعمليات الجلب والتحليل بدقة
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-class CryptoTradingBot:
-    def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
-        """
-        تهيئة اتصال المنصة باستخدام مكتبة CCXT مع فحص أمان للمفاتيح لمنع أخطاء الترميز
-        """
-        # تنظيف تلقائي لأي أحرف غير إنجليزية (مثل الكلمات العربية) لمنع خطأ latin-1
-        if api_key and any(ord(c) > 127 for c in api_key):
-            logger.warning("تم اكتشاف أحرف غير إنجليزية في مفتاح الـ API، سيتم تجاهله بأمان.")
-            api_key = ""
-        if secret_key and any(ord(c) > 127 for c in secret_key):
-            logger.warning("تم اكتشاف أحرف غير إنجليزية في المفتاح السري، سيتم تجاهله بأمان.")
-            secret_key = ""
-
-        exchange_class = getattr(ccxt, exchange_id)
-        
-        # إعداد الاتصال
-        self.exchange = exchange_class({
-            'apiKey': api_key,
-            'secret': secret_key,
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'swap', # التداول العقود الآجلة (Futures / Swap)
-            }
-        })
-        
-        # تحميل الأسواق للتأكد من صحة الأزواج
         try:
             self.exchange.load_markets()
             logger.info(f"تم الاتصال بنجاح بمنصة {exchange_id.upper()} وتحميل الأسواق.")
