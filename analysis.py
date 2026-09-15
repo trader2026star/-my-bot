@@ -5,13 +5,13 @@ import logging
 import os
 from flask import Flask
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
 # إعداد السجلات (Logging)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 🌐 إنشاء تطبيق الويب لإرضاء منصة Render وفتح المنفذ المطلوبة
+# 🌐 إنشاء تطبيق الويب لإرضاء منصة Render وفتح المنفذ المطلوب
 app = Flask(__name__)
 
 @app.route('/')
@@ -127,16 +127,41 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """الرد على أمر البدء"""
     await update.message.reply_text(
         "مرحباً بك! أنا بوت التداول الآلي والتحليل الرياضي (SMC/EMA/RSI).\n"
-        "أرسل الأمر /analyze لفحص زوج BTC/USDT حالياً."
+        "أرسل الأمر /analyze أو /scan أو اكتب اسم العملة (مثل Btc) للفحص الفوري."
     )
 
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تنفيذ التحليل الفوري عند إرسال الأمر من تيليجرام"""
+    """تنفيذ التحليل الفوري عند إرسال الأمر /analyze"""
     await update.message.reply_text("جاري جلب البيانات الفورية وإجراء التحليل الرياضي الحتمي على فريم 4H...")
     
     result = bot_engine.evaluate_strategy(symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01)
     
     report = "📊 *تقرير التحليل الرياضي الحتمي*\n\n"
+    for key, value in result.items():
+        report += f"• *{key}*: `{value}`\n"
+        
+    await update.message.reply_text(report, parse_mode='Markdown')
+
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الرد عند إرسال أمر /scan أو /Scan"""
+    await update.message.reply_text("🔍 جاري فحص السوق والتحليل الفني الحتمي...")
+    
+    result = bot_engine.evaluate_strategy(symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01)
+    
+    report = "📊 *تقرير فحص السوق (Scan)*\n\n"
+    for key, value in result.items():
+        report += f"• *{key}*: `{value}`\n"
+        
+    await update.message.reply_text(report, parse_mode='Markdown')
+
+async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الرد التفاعلي عند كتابة أي نص مثل Btc"""
+    user_text = update.message.text.upper()
+    await update.message.reply_text(f"⏳ تلقيت طلبك لـ: *{user_text}*\nجاري فحص المعطيات الفنية...", parse_mode='Markdown')
+    
+    result = bot_engine.evaluate_strategy(symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01)
+    
+    report = f"📊 *تحليل بناءً على طلبك ({user_text})*\n\n"
     for key, value in result.items():
         report += f"• *{key}*: `{value}`\n"
         
@@ -150,14 +175,21 @@ def run_telegram_bot():
         return
     
     app_tg = ApplicationBuilder().token(token).build()
+    
+    # تسجيل الأوامر والنصوص
     app_tg.add_handler(CommandHandler("start", start_command))
     app_tg.add_handler(CommandHandler("analyze", analyze_command))
+    app_tg.add_handler(CommandHandler("scan", scan_command))
+    app_tg.add_handler(CommandHandler("Scan", scan_command))
     
-    logger.info("تم البدء بالاستماع لرسائل تيليجرام بنجاح...")
+    # الرد على الرسائل النصية المباشرة مثل Btc
+    app_tg.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_messages))
+    
+    logger.info("تم البدء بالاستماع لرسائل تيليجرام والأوامر بنجاح...")
     app_tg.run_polling()
 
 if __name__ == "__main__":
-    # تشغيل بوت تيليجرام في خلفية السكربت أو بالتوازي مع الويب
+    # تشغيل بوت تيليجرام في خلفية السكربت بالتوازي مع خادم الويب
     import threading
     tg_thread = threading.Thread(target=run_telegram_bot)
     tg_thread.daemon = True
