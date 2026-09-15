@@ -2,6 +2,7 @@ import ccxt
 import pandas as pd
 import numpy as np
 import logging
+import os
 
 # إعداد السجلات (Logging) لمتابعة حالة البوت وعمليات الجلب والتحليل بدقة
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -10,14 +11,19 @@ logger = logging.getLogger(__name__)
 class CryptoTradingBot:
     def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
         """
-        تهيئة اتصال المنصة باستخدام مكتبة CCXT
-        :param exchange_id: اسم المنصة (مثل 'bingx' أو 'binance')
-        :param api_key: مفتاح الـ API الخاص بك
-        :param secret_key: المفتاح السري الخاص بك (Secret Key)
+        تهيئة اتصال المنصة باستخدام مكتبة CCXT مع فحص أمان للمفاتيح لمنع أخطاء الترميز
         """
+        # تنظيف تلقائي لأي أحرف غير إنجليزية (مثل الكلمات العربية) لمنع خطأ latin-1
+        if api_key and any(ord(c) > 127 for c in api_key):
+            logger.warning("تم اكتشاف أحرف غير إنجليزية في مفتاح الـ API، سيتم تجاهله بأمان.")
+            api_key = ""
+        if secret_key and any(ord(c) > 127 for c in secret_key):
+            logger.warning("تم اكتشاف أحرف غير إنجليزية في المفتاح السري، سيتم تجاهله بأمان.")
+            secret_key = ""
+
         exchange_class = getattr(ccxt, exchange_id)
         
-        # إعداد الاتصال وتفعيل وضع الـ Testnet إذا لزم الأمر، أو العمل على الحساب الحقيقي
+        # إعداد الاتصال
         self.exchange = exchange_class({
             'apiKey': api_key,
             'secret': secret_key,
@@ -65,7 +71,7 @@ class CryptoTradingBot:
         rs = gain / (loss + 1e-10)
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # حساب مؤشر متوسط المدى الحقيقي (ATR 14) لحستان التذبذب
+        # حساب مؤشر متوسط المدى الحقيقي (ATR 14) لحساب التذبذب
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
@@ -160,15 +166,14 @@ class CryptoTradingBot:
 # تشغيل البوت وإدخال مفاتيح الـ API
 # ==========================================
 if __name__ == "__main__":
-    # 🔑 ضع مفاتيح الـ API الخاصة بك هنا مباشرة أو عبر متغيرات البيئة (Environment Variables)
-    # ملاحظة: إذا كنت تود فقط تجربة جلب السعر وتحليل المؤشرات دون فتح صفقات حقيقية، يمكنك تركها فارغة ""
-    API_KEY = "ضع_مفتاح_الـ_API_هنا"
-    SECRET_KEY = "ضع_المفتاح_السري_هنا"
+    # سحب المفاتيح من متغيرات البيئة بأمان تام، أو تركها فارغة بدون تسبب بأخطاء
+    API_KEY = os.getenv("API_KEY", "")
+    SECRET_KEY = os.getenv("SECRET_KEY", "")
 
-    # تهيئة البوت لمنصة BingX (أو يمكنك تغييرها إلى 'binance')
+    # تهيئة البوت لمنصة BingX
     bot = CryptoTradingBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
-    # تنفيذ الفحص على زوج معين (مثلاً BTC أو ETH عقود آجلة Swap)
+    # تنفيذ الفحص على زوج معيّن
     target_symbol = 'BTC/USDT:USDT'
     virtual_account_balance = 1000.0 # إجمالي رأس مال المحفظة بالدولار للاختبار
 
