@@ -1,15 +1,14 @@
 import os
+import random
 import logging
 import requests
 from flask import Flask
-# تم تعديل الاستيراد هنا ليتطابق مع اسم الكلاس الجديد في ملف analysis.py
 from analysis import SmartMoneyTradingAnalyst
 
 # إعداد السجلات (Logging)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 🌐 إنشاء تطبيق الويب (Flask) لإرضاء منصة Render وفتح المنفذ المطلوب
 app = Flask(__name__)
 
 # إعدادات بوت تيليجرام
@@ -17,7 +16,6 @@ TELEGRAM_BOT_TOKEN = "8523562412:AAHlYdYB19cbZsVSDdVwzEePJEsdBoGRLxI"
 TELEGRAM_CHAT_ID = "7695985627"
 
 def send_telegram_message(message):
-    """دالة مخصصة لإرسال رسائل أو تقارير التحليل إلى تليجرام فوراً"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
@@ -25,32 +23,31 @@ def send_telegram_message(message):
             "text": message,
             "parse_mode": "Markdown"
         }
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code != 200:
-            logger.error(f"فشل إرسال رسالة تليجرام: {response.text}")
+        requests.post(url, json=payload, timeout=30)
     except Exception as e:
         logger.error(f"خطأ في الاتصال بخدمة تليجرام: {e}")
 
-# جلب مفاتيح الـ API من متغيرات البيئة في Render بأمان
 API_KEY = os.getenv("API_KEY", "")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
-# تهيئة محرك التحليل المتقدم (SMC / Market Structure)
 analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
 @app.route('/')
 def home():
-    """الصفحة الرئيسية لفحص سوق العقود الآجلة بالكامل وإرسال التقارير لتيليجرام"""
+    """فحص مجموعة عشوائية جديدة ومتجددة من عملات السوق في كل زيارة"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
         
-        # اختيار العقود التي تنتهي بـ USDT:USDT
+        # جلب كل العملات التي تنتهي بـ USDT:USDT
         all_symbols = [symbol for symbol in exchange.symbols if 'USDT:USDT' in symbol]
-        symbols_to_scan = all_symbols[:15] 
         
-        telegram_msg = "🚨 *Smart Money Market Report (BingX)* 🚀\n\n"
-        html_output = f"<h2>Smart Money Scanner Active 🚀 (Scanned {len(symbols_to_scan)} Coins)</h2>"
+        # اختيار 15 عملة عشوائية مختلفة تماماً في كل مرة يتم فيها فتح الرابط
+        sample_size = min(15, len(all_symbols))
+        symbols_to_scan = random.sample(all_symbols, sample_size)
+        
+        telegram_msg = f"🚨 *Smart Money Rotating Report (BingX)* 🚀\n\n"
+        html_output = f"<h2>Smart Money Scanner Active 🚀 (Random Batch of {len(symbols_to_scan)} Coins)</h2>"
         
         for symbol in symbols_to_scan:
             html_output += f"<h3>Analysis for {symbol}:</h3><ul>"
