@@ -37,20 +37,20 @@ analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, 
 
 @app.route('/')
 def home():
-    """فحص مجموعة عشوائية جديدة ومتجددة من عملات السوق في كل زيارة"""
+    """فحص العملات الحقيقية الأساسية فقط بطريقة عشوائية ومتجددة في كل زيارة"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
         
-        # جلب كل العملات التي تنتهي بـ USDT:USDT
-        all_symbols = [symbol for symbol in exchange.symbols if 'USDT:USDT' in symbol]
+        # استبعاد العملات الوهمية والعقود التجريبية والتركيز على العملات الحقيقية التي تنتهي بـ USDT فقط
+        all_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]
         
-        # اختيار 15 عملة عشوائية مختلفة تماماً في كل مرة يتم فيها فتح الرابط
-        sample_size = min(15, len(all_symbols))
+        # اختيار عينة آمنة وسريعة (مثلاً 10 عملات حقيقية)
+        sample_size = min(10, len(all_symbols))
         symbols_to_scan = random.sample(all_symbols, sample_size)
         
         telegram_msg = f"🚨 *Smart Money Rotating Report (BingX)* 🚀\n\n"
-        html_output = f"<h2>Smart Money Scanner Active 🚀 (Random Batch of {len(symbols_to_scan)} Coins)</h2>"
+        html_output = f"<h2>Smart Money Scanner Active 🚀 (Clean Real Coins Batch)</h2>"
         
         for symbol in symbols_to_scan:
             html_output += f"<h3>Analysis for {symbol}:</h3><ul>"
