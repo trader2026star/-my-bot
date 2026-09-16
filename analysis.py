@@ -31,6 +31,8 @@ class SmartMoneyTradingAnalyst:
     def fetch_ohlcv_data(self, symbol='BTC/USDT:USDT', timeframe='1h', limit=150):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if not ohlcv or len(ohlcv) < 50:
+                return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
