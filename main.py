@@ -11,11 +11,14 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# إعدادات بوت تيليجرام
-TELEGRAM_BOT_TOKEN = "8523562412:AAHlYdYB19cbZsVSDdVwzEePJEsdBoGRLxI"
-TELEGRAM_CHAT_ID = "7695985627"
+# قراءة مفاتيح تيليجرام بأمان تام من متغيرات البيئة (Render Environment Variables)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.error("خطأ: مفاتيح تيليجرام غير مُعرفة في متغيرات البيئة.")
+        return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
