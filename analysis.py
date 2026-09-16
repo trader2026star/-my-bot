@@ -39,18 +39,15 @@ class SmartMoneyTradingAnalyst:
             return None
 
     # ==========================================
-    # تحليل بنية السوق والاتجاه (SMC / Market Structure)
+    # تحليل بنية السوق والاتجاه
     # ==========================================
     def analyze_market_structure(self, df):
-        # 1. الاتجاه العام عبر المتوسطات الكبيرة للتصفية (Trend Filter)
         df['trend_ema_fast'] = df['close'].ewm(span=50, adjust=False).mean()
         df['trend_ema_slow'] = df['close'].ewm(span=200, adjust=False).mean()
         
-        # 2. تحديد قمم وقيعان هيكلية حديثة (Swing Highs / Lows)
         df['swing_high'] = df['high'].rolling(window=5).max()
         df['swing_low'] = df['low'].rolling(window=5).min()
 
-        # 3. متوسط المدى الحقيقي (ATR 14) لإدارة المخاطر الحية
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
@@ -60,7 +57,7 @@ class SmartMoneyTradingAnalyst:
         return df
 
     # ==========================================
-    # اتخاذ القرار الذكي وإدارة المخاطر الصارمة
+    # اتخاذ القرار الذكي وإدارة المخاطر (هدف واحد)
     # ==========================================
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):
         df = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=150)
@@ -73,14 +70,12 @@ class SmartMoneyTradingAnalyst:
         current_price = df.iloc[-1]['close']
         current_atr = last_closed['atr']
 
-        # الشروط الهيكلية (Market Structure & Trend Alignment)
         is_uptrend = last_closed['trend_ema_fast'] > last_closed['trend_ema_slow']
         is_downtrend = last_closed['trend_ema_fast'] < last_closed['trend_ema_slow']
 
         recent_swing_low = df['low'].iloc[-15:-2].min()
         recent_swing_high = df['high'].iloc[-15:-2].max()
 
-        # شروط الدخول الحتمية المحسنة بناءً على بنية السوق
         long_condition = is_uptrend and (current_price <= last_closed['trend_ema_fast'] * 1.015)
         short_condition = is_downtrend and (current_price >= last_closed['trend_ema_fast'] * 0.985)
 
@@ -95,7 +90,7 @@ class SmartMoneyTradingAnalyst:
 
             position_tokens = allowed_risk_usd / risk_per_token
             position_value_usdt = position_tokens * current_price
-            take_profit = current_price + (3 * risk_per_token)  # نسبة العائد للمخاطرة 1:3
+            take_profit = current_price + (3 * risk_per_token)  # هدف واحد (1:3)
             
             leverage = max(1, min(10, int(current_price / (risk_per_token * 2))))
 
@@ -119,7 +114,7 @@ class SmartMoneyTradingAnalyst:
 
             position_tokens = allowed_risk_usd / risk_per_token
             position_value_usdt = position_tokens * current_price
-            take_profit = current_price - (3 * risk_per_token)  # نسبة العائد للمخاطرة 1:3
+            take_profit = current_price - (3 * risk_per_token)  # هدف واحد (1:3)
             
             leverage = max(1, min(10, int(current_price / (risk_per_token * 2))))
 
