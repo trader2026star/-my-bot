@@ -189,50 +189,31 @@ class SmartMoneyTradingAnalyst:
             reasons_long = []
             reasons_short = []
 
-            if trend_1h in ["BULLISH", "NEUTRAL"]: 
-                long_score += 10
-            if trend_4h != "BEARISH": 
-                long_score += 10
-            if zone_status != "PREMIUM": 
-                long_score += 10
-            if btc_trend != "BEARISH": 
-                long_score += 10
+            if trend_1h in ["BULLISH", "NEUTRAL"]: long_score += 10
+            if trend_4h != "BEARISH": long_score += 10
+            if zone_status != "PREMIUM": long_score += 10
+            if btc_trend != "BEARISH": long_score += 10
 
-            if trend_1h in ["BEARISH", "NEUTRAL"]: 
-                short_score += 10
-            if trend_4h != "BULLISH": 
-                short_score += 10
-            if zone_status != "DISCOUNT": 
-                short_score += 10
-            if btc_trend != "BULLISH": 
-                short_score += 10
+            if trend_1h in ["BEARISH", "NEUTRAL"]: short_score += 10
+            if trend_4h != "BULLISH": short_score += 10
+            if zone_status != "DISCOUNT": short_score += 10
+            if btc_trend != "BULLISH": short_score += 10
 
-            # إضافة نقاط تفصيلية لتوافق الأدوات (Confluence)
-            if bos_bull: 
-                long_score += 15; reasons_long.append("BOS")
-            if mss_bull: 
-                long_score += 15; reasons_long.append("MSS")
-            if bull_ob: 
-                long_score += 15; reasons_long.append("OrderBlock")
-            if bull_fvg: 
-                long_score += 10; reasons_long.append("FVG")
-            if sweep_low: 
-                long_score += 10; reasons_long.append("Sweep")
+            if bos_bull: long_score += 15; reasons_long.append("BOS")
+            if mss_bull: long_score += 15; reasons_long.append("MSS")
+            if bull_ob: long_score += 15; reasons_long.append("OrderBlock")
+            if bull_fvg: long_score += 10; reasons_long.append("FVG")
+            if sweep_low: long_score += 10; reasons_long.append("Sweep")
 
-            if bos_bear: 
-                short_score += 15; reasons_short.append("BOS")
-            if mss_bear: 
-                short_score += 15; reasons_short.append("MSS")
-            if bear_ob: 
-                short_score += 15; reasons_short.append("OrderBlock")
-            if bear_fvg: 
-                short_score += 10; reasons_short.append("FVG")
-            if sweep_high: 
-                short_score += 10; reasons_short.append("Sweep")
+            if bos_bear: short_score += 15; reasons_short.append("BOS")
+            if mss_bear: short_score += 15; reasons_short.append("MSS")
+            if bear_ob: short_score += 15; reasons_short.append("OrderBlock")
+            if bear_fvg: short_score += 10; reasons_short.append("FVG")
+            if sweep_high: short_score += 10; reasons_short.append("Sweep")
 
-            # شروط القرار بناء على السكور الديناميكي (أعلى من 75)
-            is_long = long_score >= 75 and (bos_bull or mss_bull or bull_ob or bull_fvg or sweep_low)
-            is_short = short_score >= 75 and (bos_bear or mss_bear or bear_ob or bear_fvg or sweep_high)
+            # التصحيح هنا: اعتماد الصفقة فوراً إذا تجاوز السكور 75 أياً كانت الاتجاهات الأقوى
+            is_long = long_score >= 75
+            is_short = short_score >= 75
 
             if is_long and not is_short:
                 direction = "LONG"
@@ -244,10 +225,22 @@ class SmartMoneyTradingAnalyst:
                 decision = "MARKET SHORT 🔴"
                 score = short_score
                 reason = " + ".join(reasons_short) if reasons_short else "Bearish Setup"
+            elif is_long and is_short:
+                # إذا تقاطع السكوران، نختار الأعلى نقاطاً
+                if long_score >= short_score:
+                    direction = "LONG"
+                    decision = "MARKET LONG 🟢"
+                    score = long_score
+                    reason = " + ".join(reasons_long) if reasons_long else "Bullish Setup"
+                else:
+                    direction = "SHORT"
+                    decision = "MARKET SHORT 🔴"
+                    score = short_score
+                    reason = " + ".join(reasons_short) if reasons_short else "Bearish Setup"
             else:
                 return {
                     "Decision": "NO TRADE ⏳",
-                    "Reason": "SCORE BELOW THRESHOLD / NO SETUP",
+                    "Reason": "SCORE BELOW THRESHOLD",
                     "Score": max(long_score, short_score),
                     "Quality": "WEAK"
                 }
