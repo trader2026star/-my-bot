@@ -26,7 +26,7 @@ class SmartMoneyTradingAnalyst:
         for attempt in range(retries + 1):    
             try:    
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)    
-                if not ohlcv or len(ohlcv) < 20:    
+                if not ohlcv or len(ohlcv) < 30:    
                     return None    
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])    
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')    
@@ -40,7 +40,7 @@ class SmartMoneyTradingAnalyst:
         return None    
 
     def calculate_indicators(self, df):    
-        if df is None or len(df) < 15:    
+        if df is None or len(df) < 20:    
             return df    
         try:    
             high_low = df['high'] - df['low']    
@@ -50,20 +50,21 @@ class SmartMoneyTradingAnalyst:
             df['atr'] = np.max(ranges, axis=1).rolling(window=14).mean()    
 
             df['vol_ma'] = df['volume'].rolling(window=20).mean()    
-            df['high_volume'] = df['volume'] > (df['vol_ma'] * 1.2)    
 
+            # مناطق السوينغ الأدق (5 شمعات يمين ويسار)
             df['is_swing_high'] = (df['high'] == df['high'].rolling(window=5, center=True).max())    
             df['is_swing_low'] = (df['low'] == df['low'].rolling(window=5, center=True).min())    
 
-            # FVG Conditions
-            df['bullish_fvg'] = (df['low'] > df['high'].shift(2)) & (df['close'].shift(1) > df['open'].shift(1))    
-            df['bearish_fvg'] = (df['high'] < df['low'].shift(2)) & (df['close'].shift(1) < df['open'].shift(1))    
+            # FVG المؤسسية الحقيقية (وجود فراغ سعري حقيقي مع حجم تداول مدعوم)
+            df['bullish_fvg'] = (df['low'] > df['high'].shift(2)) & (df['close'].shift(1) > df['open'].shift(1)) & (df['volume'].shift(1) > df['vol_ma'].shift(1))
+            df['bearish_fvg'] = (df['high'] < df['low'].shift(2)) & (df['close'].shift(1) < df['open'].shift(1)) & (df['volume'].shift(1) > df['vol_ma'].shift(1))
         except Exception as e:    
             logger.error(f"خطأ في حساب المؤشرات: {e}")    
         return df    
 
     def get_market_structure(self, df):    
-        if df is None or len(df) < 15:    
+        """قراءة هيكل السوق بدقة وتحديد اتجاه الترند الحقيقي"""
+        if df is None or len(df) < 20:    
             return "NEUTRAL", False, False, False, False    
         try:    
             swing_highs = df[df['is_swing_high'] == True]    
@@ -79,12 +80,13 @@ class SmartMoneyTradingAnalyst:
 
             current_close = df.iloc[-2]['close']    
 
+            # كسر الهيكل يجب أن يتم بإغلاق واضح فوق القمة أو تحت القاع
             bullish_bos = current_close > last_sh    
             bearish_bos = current_close < last_sl    
 
-            if last_sh > prev_sh and last_sl > prev_sl:    
+            if last_sh >= prev_sh and last_sl >= prev_sl:    
                 trend = "BULLISH"    
-            elif last_sh < prev_sh and last_sl < prev_sl:    
+            elif last_sh <= prev_sh and last_sl <= prev_sl:    
                 trend = "BEARISH"    
             else:    
                 trend = "NEUTRAL"    
@@ -97,38 +99,42 @@ class SmartMoneyTradingAnalyst:
             return "NEUTRAL", False, False, False, False    
 
     def detect_order_block(self, df):    
-        if df is None or len(df) < 10:    
+        """البحث عن أوردر بلوك حقيقي مدعوم بسيولة وحركة دافعة"""
+        if df is None or len(df) < 15:    
             return False, False, 0.0    
         try:    
-            for i in range(len(df) - 3, max(3, len(df) - 10), -1):    
+            for i in range(len(df) - 3, max(5, len(df) - 15), -1):    
                 row = df.iloc[i]    
                 next_row = df.iloc[i+1]    
-                    
-                if row['close'] < row['open'] and next_row['close'] > next_row['open']:    
+                
+                # شروط الأوردر بلوك الصاعد: شمعة هابطة تليها شمعة صاعدة قوية بحجم تداول عالي
+                if row['close'] < row['open'] and next_row['close'] > next_row['open'] and next_row['volume'] > df['vol_ma'].iloc[i+1]:    
                     ob_zone = row['low']    
                     current_price = df.iloc[-1]['close']    
-                    if abs(current_price - ob_zone) <= (df.iloc[-1]['atr'] * 2.5):    
+                    if abs(current_price - ob_zone) <= (df.iloc[-1]['atr'] * 3.0):    
                         return True, False, ob_zone    
 
-                elif row['close'] > row['open'] and next_row['close'] < next_row['open']:    
+                # شروط الأوردر بلوك الهابط: شمعة صاعدة تليها شمعة هابطة قوية بحجم تداول عالي
+                elif row['close'] > row['open'] and next_row['close'] < next_row['open'] and next_row['volume'] > df['vol_ma'].iloc[i+1]:    
                     ob_zone = row['high']    
                     current_price = df.iloc[-1]['close']    
-                    if abs(current_price - ob_zone) <= (df.iloc[-1]['atr'] * 2.5):    
+                    if abs(current_price - ob_zone) <= (df.iloc[-1]['atr'] * 3.0):    
                         return False, True, ob_zone    
         except Exception:    
             pass    
         return False, False, 0.0    
 
     def check_liquidity_sweep(self, df):    
-        if df is None or len(df) < 10:    
+        if df is None or len(df) < 15:    
             return False, False    
         try:    
-            recent_high = df['high'].iloc[-10:-2].max()    
-            recent_low = df['low'].iloc[-10:-2].min()    
+            recent_high = df['high'].iloc[-15:-2].max()    
+            recent_low = df['low'].iloc[-15:-2].min()    
             last_high = df.iloc[-2]['high']    
             last_low = df.iloc[-2]['low']    
             last_close = df.iloc[-2]['close']    
 
+            # سحب السيولة (تجاوز القمة/القاع ثم الإغلاق عكسها)
             sweep_high = last_high > recent_high and last_close < recent_high    
             sweep_low = last_low < recent_low and last_close > recent_low    
             return sweep_high, sweep_low    
@@ -136,31 +142,31 @@ class SmartMoneyTradingAnalyst:
             return False, False    
 
     def get_premium_discount(self, df):    
-        if df is None or len(df) < 15:    
+        if df is None or len(df) < 20:    
             return "EQUILIBRIUM"    
         try:    
-            high_range = df['high'].iloc[-15:-2].max()    
-            low_range = df['low'].iloc[-15:-2].min()    
+            high_range = df['high'].iloc[-20:-2].max()    
+            low_range = df['low'].iloc[-20:-2].min()    
             mid_point = (high_range + low_range) / 2    
             current_price = df.iloc[-1]['close']    
 
             if current_price < mid_point:    
-                return "DISCOUNT"    
+                return "DISCOUNT" # منطقة شراء مؤسسية
             elif current_price > mid_point:    
-                return "PREMIUM"    
+                return "PREMIUM"  # منطقة بيع مؤسسية
         except Exception:    
             pass    
         return "EQUILIBRIUM"    
 
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):    
         try:    
-            df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=60)    
-            if df_1h is None or len(df_1h) < 25:    
+            df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=80)    
+            if df_1h is None or len(df_1h) < 30:    
                 return {"Decision": "NO TRADE ⏳", "Reason": "DATA FETCH FAILED", "Score": 0, "Quality": "WEAK"}    
 
-            df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=30)    
+            df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=40)    
             df_1d = self.fetch_ohlcv_data(symbol, timeframe='1d', limit=20)    
-            df_btc = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe='1h', limit=30)    
+            df_btc = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe='1h', limit=40)    
 
             df_1h = self.calculate_indicators(df_1h)    
             if df_4h is not None: df_4h = self.calculate_indicators(df_4h)    
@@ -183,72 +189,79 @@ class SmartMoneyTradingAnalyst:
             bull_fvg = last_closed.get('bullish_fvg', False)
             bear_fvg = last_closed.get('bearish_fvg', False)
 
-            long_score = 50
-            short_score = 50
+            # تقييم منطقي صارم يعتمد على الاتجاه الأكبر
+            long_score = 0
+            short_score = 0
             reasons_long = []
             reasons_short = []
 
-            if trend_1h in ["BULLISH", "NEUTRAL"]: long_score += 10
-            if trend_4h != "BEARISH": long_score += 10
-            if zone_status != "PREMIUM": long_score += 10
-            if btc_trend != "BEARISH": long_score += 10
+            # 1. فلتر الفريمات الكبرى (أهم قاعدة لعدم عكس الصفقة عشوائياً)
+            if trend_4h == "BULLISH": 
+                long_score += 25
+            elif trend_4h == "BEARISH": 
+                short_score += 25
 
-            if trend_1h in ["BEARISH", "NEUTRAL"]: short_score += 10
-            if trend_4h != "BULLISH": short_score += 10
-            if zone_status != "DISCOUNT": short_score += 10
-            if btc_trend != "BULLISH": short_score += 10
+            if trend_1d == "BULLISH": long_score += 15
+            elif trend_1d == "BEARISH": short_score += 15
 
-            if bos_bull: long_score += 15; reasons_long.append("BOS")
-            if mss_bull: long_score += 15; reasons_long.append("MSS")
-            if bull_ob: long_score += 15; reasons_long.append("OrderBlock")
-            if bull_fvg: long_score += 10; reasons_long.append("FVG")
-            if sweep_low: long_score += 10; reasons_long.append("Sweep")
+            # 2. مناطق السعر المثالية (Discount للشراء / Premium للبيع)
+            if zone_status == "DISCOUNT": 
+                long_score += 15
+                reasons_long.append("Discount Zone")
+            elif zone_status == "PREMIUM": 
+                short_score += 15
+                reasons_short.append("Premium Zone")
 
-            if bos_bear: short_score += 15; reasons_short.append("BOS")
-            if mss_bear: short_score += 15; reasons_short.append("MSS")
-            if bear_ob: short_score += 15; reasons_short.append("OrderBlock")
-            if bear_fvg: short_score += 10; reasons_short.append("FVG")
-            if sweep_high: short_score += 10; reasons_short.append("Sweep")
+            # 3. الأدوات الهيكلية (BOS, MSS, OB, FVG)
+            if bos_bull: long_score += 20; reasons_long.append("BOS")
+            if mss_bull: long_score += 25; reasons_long.append("MSS")
+            if bull_ob: long_score += 20; reasons_long.append("OrderBlock")
+            if bull_fvg: long_score += 15; reasons_long.append("FVG")
+            if sweep_low: long_score += 15; reasons_long.append("Sweep")
 
-            is_long = long_score >= 75
-            is_short = short_score >= 75
+            if bos_bear: short_score += 20; reasons_short.append("BOS")
+            if mss_bear: short_score += 25; reasons_short.append("MSS")
+            if bear_ob: short_score += 20; reasons_short.append("OrderBlock")
+            if bear_fvg: short_score += 15; reasons_short.append("FVG")
+            if sweep_high: short_score += 15; reasons_short.append("Sweep")
+
+            # شطت إضافي صارم: ممنوع منعاً باتاً إعطاء LONG إذا كان الاتجاه العام 4h هابطاً بقوة والعكس
+            if trend_4h == "BEARISH" and long_score > 0:
+                long_score = min(long_score, 60) # تقليم النقاط لمنع الدخول الخاطئ
+            if trend_4h == "BULLISH" and short_score > 0:
+                short_score = min(short_score, 60)
+
+            # حد عالي للقبول (يجب أن تتخطى العملة 80 نقطة حقيقية لتدخل في التقرير)
+            THRESHOLD = 80
+            is_long = long_score >= THRESHOLD
+            is_short = short_score >= THRESHOLD
 
             if is_long and not is_short:
                 direction = "LONG"
                 decision = "MARKET LONG 🟢"
                 score = long_score
-                reason = " + ".join(reasons_long) if reasons_long else "Bullish Setup"
+                reason = " + ".join(reasons_long) if reasons_long else "Institutional Bullish Setup"
             elif is_short and not is_long:
                 direction = "SHORT"
                 decision = "MARKET SHORT 🔴"
                 score = short_score
-                reason = " + ".join(reasons_short) if reasons_short else "Bearish Setup"
-            elif is_long and is_short:
-                if long_score >= short_score:
-                    direction = "LONG"
-                    decision = "MARKET LONG 🟢"
-                    score = long_score
-                    reason = " + ".join(reasons_long) if reasons_long else "Bullish Setup"
-                else:
-                    direction = "SHORT"
-                    decision = "MARKET SHORT 🔴"
-                    score = short_score
-                    reason = " + ".join(reasons_short) if reasons_short else "Bearish Setup"
+                reason = " + ".join(reasons_short) if reasons_short else "Institutional Bearish Setup"
             else:
                 return {
                     "Decision": "NO TRADE ⏳",
-                    "Reason": "SCORE BELOW THRESHOLD",
+                    "Reason": "MARKET IN CONSOLIDATION / NO CLEAR BIAS",
                     "Score": max(long_score, short_score),
                     "Quality": "WEAK"
                 }
 
-            recent_low = df_1h['low'].iloc[-12:-2].min()    
-            recent_high = df_1h['high'].iloc[-12:-2].max()    
+            # إدارة المخاطر والأهداف بدقة مؤسسية
+            recent_low = df_1h['low'].iloc[-15:-2].min()    
+            recent_high = df_1h['high'].iloc[-15:-2].max()    
             allowed_risk = account_balance * risk_percentage    
-            min_risk_distance = current_atr * 0.8
+            min_risk_distance = current_atr * 1.0 # حماية إضافية لمسافة الوقف
 
             if direction == "LONG":    
-                calculated_sl = max(recent_low - (0.5 * current_atr), current_price - (4.0 * current_atr))
+                calculated_sl = max(recent_low - (0.5 * current_atr), current_price - (4.5 * current_atr))
                 risk_per_token = current_price - calculated_sl
                 if risk_per_token < min_risk_distance:
                     risk_per_token = min_risk_distance
@@ -258,7 +271,7 @@ class SmartMoneyTradingAnalyst:
                 tp1 = current_price + (2.0 * risk_per_token)    
                 tp2 = current_price + (3.5 * risk_per_token)    
             else:    
-                calculated_sl = min(recent_high + (0.5 * current_atr), current_price + (4.0 * current_atr))
+                calculated_sl = min(recent_high + (0.5 * current_atr), current_price + (4.5 * current_atr))
                 risk_per_token = calculated_sl - current_price
                 if risk_per_token < min_risk_distance:
                     risk_per_token = min_risk_distance
@@ -275,7 +288,7 @@ class SmartMoneyTradingAnalyst:
                 pos_val = max_allowed_pos_val
 
             leverage = max(1, min(10, int(pos_val / account_balance) + 1))    
-            quality_str = "🔥 EXCELLENT" if score >= 90 else ("🟢 STRONG" if score >= 80 else "🟡 MEDIUM")
+            quality_str = "🔥 EXCELLENT" if score >= 90 else "🟢 STRONG"
 
             return {    
                 "Decision": decision,    
