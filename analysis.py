@@ -183,7 +183,6 @@ class SmartMoneyTradingAnalyst:
             bull_fvg = last_closed.get('bullish_fvg', False)
             bear_fvg = last_closed.get('bearish_fvg', False)
 
-            # نظام النقاط الديناميكي (Dynamic Scoring)
             long_score = 50
             short_score = 50
             reasons_long = []
@@ -211,7 +210,6 @@ class SmartMoneyTradingAnalyst:
             if bear_fvg: short_score += 10; reasons_short.append("FVG")
             if sweep_high: short_score += 10; reasons_short.append("Sweep")
 
-            # التصحيح هنا: اعتماد الصفقة فوراً إذا تجاوز السكور 75 أياً كانت الاتجاهات الأقوى
             is_long = long_score >= 75
             is_short = short_score >= 75
 
@@ -226,7 +224,6 @@ class SmartMoneyTradingAnalyst:
                 score = short_score
                 reason = " + ".join(reasons_short) if reasons_short else "Bearish Setup"
             elif is_long and is_short:
-                # إذا تقاطع السكوران، نختار الأعلى نقاطاً
                 if long_score >= short_score:
                     direction = "LONG"
                     decision = "MARKET LONG 🟢"
@@ -245,28 +242,39 @@ class SmartMoneyTradingAnalyst:
                     "Quality": "WEAK"
                 }
 
-            # إدارة المخاطر والأهداف
             recent_low = df_1h['low'].iloc[-12:-2].min()    
             recent_high = df_1h['high'].iloc[-12:-2].max()    
             allowed_risk = account_balance * risk_percentage    
+            min_risk_distance = current_atr * 0.8
 
             if direction == "LONG":    
-                stop_loss = max(recent_low - (0.5 * current_atr), current_price - (4.0 * current_atr))    
-                risk_per_token = current_price - stop_loss    
-                if risk_per_token <= 0: risk_per_token = current_atr * 1.5    
+                calculated_sl = max(recent_low - (0.5 * current_atr), current_price - (4.0 * current_atr))
+                risk_per_token = current_price - calculated_sl
+                if risk_per_token < min_risk_distance:
+                    risk_per_token = min_risk_distance
+                    stop_loss = current_price - risk_per_token
+                else:
+                    stop_loss = calculated_sl
                 tp1 = current_price + (2.0 * risk_per_token)    
                 tp2 = current_price + (3.5 * risk_per_token)    
             else:    
-                stop_loss = min(recent_high + (0.5 * current_atr), current_price + (4.0 * current_atr))    
-                risk_per_token = stop_loss - current_price    
-                if risk_per_token <= 0: risk_per_token = current_atr * 1.5    
+                calculated_sl = min(recent_high + (0.5 * current_atr), current_price + (4.0 * current_atr))
+                risk_per_token = calculated_sl - current_price
+                if risk_per_token < min_risk_distance:
+                    risk_per_token = min_risk_distance
+                    stop_loss = current_price + risk_per_token
+                else:
+                    stop_loss = calculated_sl
                 tp1 = current_price - (2.0 * risk_per_token)    
                 tp2 = current_price - (3.5 * risk_per_token)    
 
             pos_tokens = allowed_risk / risk_per_token    
             pos_val = pos_tokens * current_price    
-            leverage = max(1, min(10, int(pos_val / account_balance) + 1))    
+            max_allowed_pos_val = account_balance * 5.0
+            if pos_val > max_allowed_pos_val:
+                pos_val = max_allowed_pos_val
 
+            leverage = max(1, min(10, int(pos_val / account_balance) + 1))    
             quality_str = "🔥 EXCELLENT" if score >= 90 else ("🟢 STRONG" if score >= 80 else "🟡 MEDIUM")
 
             return {    
