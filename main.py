@@ -1,5 +1,4 @@
 import os
-import random
 import logging
 import requests
 from flask import Flask
@@ -37,20 +36,29 @@ analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, 
 
 @app.route('/')
 def home():
-    """فحص العملات الحقيقية الأساسية فقط بطريقة عشوائية ومتجددة في كل زيارة"""
+    """فحص أقوى العملات الحقيقية بناءً على حجم التداول (Volume) بدلاً من العشوائية"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
 
+        # جلب بيانات الـ Tickers لمعرفة أحجام التداول الحية
+        tickers = exchange.fetch_tickers()
+
         # استبعاد العملات الوهمية والعقود التجريبية والتركيز على العملات الحقيقية التي تنتهي بـ USDT فقط  
-        all_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]  
+        valid_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]  
           
-        # اختيار عينة آمنة وسريعة (مثلاً 10 عملات حقيقية)  
-        sample_size = min(10, len(all_symbols))  
-        symbols_to_scan = random.sample(all_symbols, sample_size)  
+        # ترتيب العملات تنازلياً حسب حجم التداول (Volume) لضمان فحص العملات الأكثر نشاطاً في السوق
+        sorted_symbols = sorted(
+            valid_symbols,
+            key=lambda s: tickers.get(s, {}).get('quoteVolume', 0),
+            reverse=True
+        )
+
+        # اختيار أقوى 10 عملات من حيث السيولة وحجم التداول
+        symbols_to_scan = sorted_symbols[:10]
           
-        telegram_msg = f"🚨 *Smart Money Rotating Report (BingX)* 🚀\n\n"  
-        html_output = f"<h2>Smart Money Scanner Active 🚀 (Clean Real Coins Batch)</h2>"  
+        telegram_msg = f"🚨 *Smart Money Volume-Scan Report (BingX)* 🚀\n\n"  
+        html_output = f"<h2>Smart Money Scanner Active 🚀 (Top Volume Coins Batch)</h2>"  
           
         for symbol in symbols_to_scan:  
             html_output += f"<h3>Analysis for {symbol}:</h3><ul>"  
