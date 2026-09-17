@@ -34,7 +34,7 @@ analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, 
 
 @app.route('/')
 def home():
-    """فحص أقوى العملات الحقيقية بناءً على حجم التداول (Volume)"""
+    """فحص أقوى 30 عملة بناءً على حجم التداول (Volume) واستخراج الفرص المؤسسية"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
@@ -48,10 +48,11 @@ def home():
             reverse=True
         )
 
-        symbols_to_scan = sorted_symbols[:10]
+        # تم زيادة العدد إلى 30 عملة للبحث في نطاق أوسع من السوق
+        symbols_to_scan = sorted_symbols[:30]
           
-        telegram_msg = f"🚨 *Smart Money Volume-Scan Report (BingX)* 🚀\n\n"  
-        html_output = f"<h2>Smart Money Scanner Active 🚀 (Top Volume Coins Batch)</h2>"  
+        telegram_msg = f"🚨 *Smart Money Volume-Scan Report (BingX - Top 30)* 🚀\n\n"  
+        html_output = f"<h2>Smart Money Scanner Active 🚀 (Top 30 Volume Coins Batch)</h2>"  
           
         for symbol in symbols_to_scan:  
             html_output += f"<h3>Analysis for {symbol}:</h3><ul>"  
