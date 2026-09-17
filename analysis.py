@@ -23,7 +23,6 @@ class SmartMoneyTradingAnalyst:
             logger.error(f"فشل الاتصال بالمنصة عند التهيئة: {e}")
 
     def fetch_ohlcv_data(self, symbol, timeframe='1h', limit=150, retries=2, delay=1):    
-        """جلب بيانات الشموع مع آلية إعادة المحاولة (Retry) وحماية كاملة ضد الأخطاء"""    
         for attempt in range(retries + 1):    
             try:    
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)    
@@ -41,7 +40,6 @@ class SmartMoneyTradingAnalyst:
         return None    
 
     def calculate_indicators(self, df):    
-        """حساب المؤشرات بأمان تام مع التحقق من صحة البيانات"""    
         if df is None or len(df) < 15:    
             return df    
         try:    
@@ -57,6 +55,7 @@ class SmartMoneyTradingAnalyst:
             df['is_swing_high'] = (df['high'] == df['high'].rolling(window=5, center=True).max())    
             df['is_swing_low'] = (df['low'] == df['low'].rolling(window=5, center=True).min())    
 
+            # FVG Conditions
             df['bullish_fvg'] = (df['low'] > df['high'].shift(2)) & (df['close'].shift(1) > df['open'].shift(1))    
             df['bearish_fvg'] = (df['high'] < df['low'].shift(2)) & (df['close'].shift(1) < df['open'].shift(1))    
         except Exception as e:    
@@ -64,7 +63,6 @@ class SmartMoneyTradingAnalyst:
         return df    
 
     def get_market_structure(self, df):    
-        """تحليل الهيكل السعري بأمان"""    
         if df is None or len(df) < 15:    
             return "NEUTRAL", False, False, False, False    
         try:    
@@ -99,7 +97,6 @@ class SmartMoneyTradingAnalyst:
             return "NEUTRAL", False, False, False, False    
 
     def detect_order_block(self, df):    
-        """كشف مناطق الـ Order Block بأمان"""    
         if df is None or len(df) < 10:    
             return False, False, 0.0    
         try:    
@@ -123,7 +120,6 @@ class SmartMoneyTradingAnalyst:
         return False, False, 0.0    
 
     def check_liquidity_sweep(self, df):    
-        """فحص أخذ السيولة بأمان"""    
         if df is None or len(df) < 10:    
             return False, False    
         try:    
@@ -140,7 +136,6 @@ class SmartMoneyTradingAnalyst:
             return False, False    
 
     def get_premium_discount(self, df):    
-        """تحديد مناطق الديسكونت والبريميوم بأمان"""    
         if df is None or len(df) < 15:    
             return "EQUILIBRIUM"    
         try:    
@@ -158,16 +153,10 @@ class SmartMoneyTradingAnalyst:
         return "EQUILIBRIUM"    
 
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):    
-        """الدالة الرئيسية مغلفة بالكامل بـ Try-Except لمنع أي انهيار وإرجاع نتيجة آمنة دائماً"""    
         try:    
             df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=60)    
             if df_1h is None or len(df_1h) < 25:    
-                return {    
-                    "Decision": "NO TRADE ⏳",    
-                    "Reason": "DATA FETCH FAILED",    
-                    "Score": 0,    
-                    "Quality": "WEAK"    
-                }    
+                return {"Decision": "NO TRADE ⏳", "Reason": "DATA FETCH FAILED", "Score": 0, "Quality": "WEAK"}    
 
             df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=30)    
             df_1d = self.fetch_ohlcv_data(symbol, timeframe='1d', limit=20)    
@@ -190,49 +179,80 @@ class SmartMoneyTradingAnalyst:
             last_closed = df_1h.iloc[-2]    
             current_price = df_1h.iloc[-1]['close']    
             current_atr = last_closed.get('atr', current_price * 0.01)    
-            high_vol = last_closed.get('high_volume', False)    
+            
+            bull_fvg = last_closed.get('bullish_fvg', False)
+            bear_fvg = last_closed.get('bearish_fvg', False)
 
-            # شروط مرنة وغير متعجزة لإنتاج صفقات حقيقية    
-            is_long = (    
-                trend_1h in ["BULLISH", "NEUTRAL"] and    
-                trend_4h != "BEARISH" and    
-                zone_status != "PREMIUM" and    
-                (bos_bull or mss_bull or bull_ob or sweep_low) and    
-                btc_trend != "BEARISH"    
-            )    
+            # نظام النقاط الديناميكي (Dynamic Scoring)
+            long_score = 50
+            short_score = 50
+            reasons_long = []
+            reasons_short = []
 
-            is_short = (    
-                trend_1h in ["BEARISH", "NEUTRAL"] and    
-                trend_4h != "BULLISH" and    
-                zone_status != "DISCOUNT" and    
-                (bos_bear or mss_bear or bear_ob or sweep_high) and    
-                btc_trend != "BULLISH"    
-            )    
+            if trend_1h in ["BULLISH", "NEUTRAL"]: 
+                long_score += 10
+            if trend_4h != "BEARISH": 
+                long_score += 10
+            if zone_status != "PREMIUM": 
+                long_score += 10
+            if btc_trend != "BEARISH": 
+                long_score += 10
 
-            direction = "NEUTRAL"    
-            decision = "NO TRADE ⏳"    
-            score = 0    
-            reason = "NO CLEAR SETUP"    
+            if trend_1h in ["BEARISH", "NEUTRAL"]: 
+                short_score += 10
+            if trend_4h != "BULLISH": 
+                short_score += 10
+            if zone_status != "DISCOUNT": 
+                short_score += 10
+            if btc_trend != "BULLISH": 
+                short_score += 10
 
-            if is_long and not is_short:    
-                direction = "LONG"    
-                decision = "MARKET LONG 🟢"    
-                score = 75    
-                reason = "Balanced Bullish Setup"    
-            elif is_short and not is_long:    
-                direction = "SHORT"    
-                decision = "MARKET SHORT 🔴"    
-                score = 75    
-                reason = "Balanced Bearish Setup"    
-            else:    
-                return {    
-                    "Decision": "NO TRADE ⏳",    
-                    "Reason": "SCORE BELOW THRESHOLD / NO SETUP",    
-                    "Score": 50,    
-                    "Quality": "WEAK"    
-                }    
+            # إضافة نقاط تفصيلية لتوافق الأدوات (Confluence)
+            if bos_bull: 
+                long_score += 15; reasons_long.append("BOS")
+            if mss_bull: 
+                long_score += 15; reasons_long.append("MSS")
+            if bull_ob: 
+                long_score += 15; reasons_long.append("OrderBlock")
+            if bull_fvg: 
+                long_score += 10; reasons_long.append("FVG")
+            if sweep_low: 
+                long_score += 10; reasons_long.append("Sweep")
 
-            # إدارة المخاطر والأهداف    
+            if bos_bear: 
+                short_score += 15; reasons_short.append("BOS")
+            if mss_bear: 
+                short_score += 15; reasons_short.append("MSS")
+            if bear_ob: 
+                short_score += 15; reasons_short.append("OrderBlock")
+            if bear_fvg: 
+                short_score += 10; reasons_short.append("FVG")
+            if sweep_high: 
+                short_score += 10; reasons_short.append("Sweep")
+
+            # شروط القرار بناء على السكور الديناميكي (أعلى من 75)
+            is_long = long_score >= 75 and (bos_bull or mss_bull or bull_ob or bull_fvg or sweep_low)
+            is_short = short_score >= 75 and (bos_bear or mss_bear or bear_ob or bear_fvg or sweep_high)
+
+            if is_long and not is_short:
+                direction = "LONG"
+                decision = "MARKET LONG 🟢"
+                score = long_score
+                reason = " + ".join(reasons_long) if reasons_long else "Bullish Setup"
+            elif is_short and not is_long:
+                direction = "SHORT"
+                decision = "MARKET SHORT 🔴"
+                score = short_score
+                reason = " + ".join(reasons_short) if reasons_short else "Bearish Setup"
+            else:
+                return {
+                    "Decision": "NO TRADE ⏳",
+                    "Reason": "SCORE BELOW THRESHOLD / NO SETUP",
+                    "Score": max(long_score, short_score),
+                    "Quality": "WEAK"
+                }
+
+            # إدارة المخاطر والأهداف
             recent_low = df_1h['low'].iloc[-12:-2].min()    
             recent_high = df_1h['high'].iloc[-12:-2].max()    
             allowed_risk = account_balance * risk_percentage    
@@ -254,6 +274,8 @@ class SmartMoneyTradingAnalyst:
             pos_val = pos_tokens * current_price    
             leverage = max(1, min(10, int(pos_val / account_balance) + 1))    
 
+            quality_str = "🔥 EXCELLENT" if score >= 90 else ("🟢 STRONG" if score >= 80 else "🟡 MEDIUM")
+
             return {    
                 "Decision": decision,    
                 "Entry": round(current_price, 4),    
@@ -261,7 +283,7 @@ class SmartMoneyTradingAnalyst:
                 "TP1": round(tp1, 4),    
                 "TP2": round(tp2, 4),    
                 "Score": score,    
-                "Quality": "🟢 STRONG" if score >= 75 else "🟡 MEDIUM",    
+                "Quality": quality_str,    
                 "Position Size (USDT)": round(pos_val, 2),    
                 "Leverage": leverage,    
                 "Reason": reason    
