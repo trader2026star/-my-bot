@@ -14,8 +14,7 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 STATE_FILE = "scan_state.txt"
-WATCHLIST_FILE = "watchlist.txt"
-BATCH_SIZE = 5  # فحص 5 عملات في كل مرة لضمان عدم استهلاك الـ RAM
+BATCH_SIZE = 5  # فحص 5 عملات في كل دورة لتوفير الذاكرة
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -66,33 +65,9 @@ def get_next_batch(sorted_symbols):
         
     return batch, index + 1, total_symbols
 
-def load_watchlist():
-    """تحميل قائمة العملات قيد المتابعة للتأكيد"""
-    if not os.path.exists(WATCHLIST_FILE):
-        return {}
-    try:
-        with open(WATCHLIST_FILE, "r") as f:
-            watchlist = {}
-            for line in f.readlines():
-                parts = line.strip().split(":")
-                if len(parts) == 2:
-                    watchlist[parts[0]] = int(parts[1])
-            return watchlist
-    except:
-        return {}
-
-def save_watchlist(watchlist):
-    """حفظ قائمة المتابعة"""
-    try:
-        with open(WATCHLIST_FILE, "w") as f:
-            for symbol, score in watchlist.items():
-                f.write(f"{symbol}:{score}\n")
-    except Exception as e:
-        logger.error(f"Watchlist Save Error: {e}")
-
 @app.route('/')
 def home():
-    """فحص صامت للدفعة ومراقبة الفرص الذكية مع إرسال الصفقات الحقيقية فقط"""
+    """فحص دفعة السوق بصمت، وعرض النتائج على الويب، وإرسال الصفقات الحقيقية فقط لتيليجرام"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
@@ -107,58 +82,44 @@ def home():
         )
 
         symbols_to_scan, start_pos, total_market = get_next_batch(sorted_symbols)
-        watchlist = load_watchlist()
           
-        html_output = f"<h2>Institutional Smart Scanner 🚀 (Batch Range: {start_pos} - {start_pos + len(symbols_to_scan) - 1})</h2><ul>"  
+        html_output = f"<h2>Smart Money Scanner Active 🚀 (Clean Real Coins Batch: {start_pos} - {start_pos + len(symbols_to_scan) - 1})</h2>"  
           
         for symbol in symbols_to_scan:  
+            html_output += f"<h3>Analysis for {symbol}:</h3><ul>"  
+              
             try:  
                 result = analyst_engine.evaluate_strategy(symbol=symbol, account_balance=1000.0, risk_percentage=0.01)  
                 
-                # استخراج السكور وقرار الصفقة من النتيجة المرتجعة
                 decision = str(result.get("Decision", "NO TRADE"))
-                score = int(result.get("Score", 50))
-                
-                html_output += f"<li><b>{symbol}:</b> Decision: {decision} | Score: {score}</li>"
+                score = int(result.get("Score", 0))
 
-                # 1. إذا كانت الصفقة جاهزة ومؤكدة (تجاوزت السكور المطلوب أو قرار طويل/قصير حقيقي)
-                if score >= 80 or "SHORT" in decision or "LONG" in decision:
+                for key, value in result.items():  
+                    html_output += f"<li><b>{key}:</b> {value}</li>"  
+
+                # شرط الإرسال لتيليجرام: ألا يتم الإرسال إلا إذا كانت صفقة حقيقية (LONG أو SHORT) أو السكور >= 80
+                if "SHORT" in decision or "LONG" in decision or score >= 80:
                     telegram_msg = f"🚨 *Institutional SMC Signal Ready* 🚀\n\n"
                     telegram_msg += f"📊 *Symbol: {symbol}*\n"
                     for key, value in result.items():  
                         telegram_msg += f"• *{key}*: {value}\n"
                     telegram_msg += "-------------------\n"
                     
-                    # إرسال التنبيه الفوري للفرصة الحقيقية فقط
+                    # إرسال الصفقة الحقيقية فقط لتيليجرام
                     send_telegram_message(telegram_msg)
-                    
-                    # إزالة العملة من المتابعة إذا تم إرسالها
-                    if symbol in watchlist:
-                        del watchlist[symbol]
-
-                # 2. إذا كانت العملة قريبة من الجهوزية وتحتاج تأكيد (توضع في قائمة المتابعة الذكية)
-                elif 70 <= score < 80:
-                    watchlist[symbol] = score
-                
-                # 3. إذا انتهت الفرصة تخرج من المتابعة
-                else:
-                    if symbol in watchlist:
-                        del watchlist[symbol]
 
             except Exception as ex:  
-                logger.error(f"Error analyzing {symbol}: {ex}")
+                html_output += f"<li><b>Error:</b> {ex}</li>"  
                   
+            html_output += "</ul><hr>"  
             time.sleep(1)
             gc.collect()
               
-        save_watchlist(watchlist)
-        html_output += "</ul><p>Scanner ran silently. Only active institutional signals were dispatched to Telegram.</p>"
         return html_output  
         
     except Exception as e:  
         error_msg = f"خطأ عام أثناء فحص السوق: {e}"  
         logger.error(error_msg)  
-        send_telegram_message(f"⚠️ *Market Scanner Error:* {e}")  
         return f"Bot is running, but encountered an error: {e}"
 
 if __name__ == "__main__":
