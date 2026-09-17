@@ -14,7 +14,7 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 STATE_FILE = "scan_state.txt"
-BATCH_SIZE = 15
+BATCH_SIZE = 5  # فحص 5 عملات في كل مرة لضمان عدم استهلاك الـ RAM
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -37,7 +37,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "")
 analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
 def get_next_batch(sorted_symbols):
-    """إدارة الدورات لمنع التكرار ومسح السوق بالكامل دفعة بعد دفعة"""
+    """إدارة دفعات السوق (5 عملات في كل دورة دون تكرار)"""
     total_symbols = len(sorted_symbols)
     if total_symbols == 0:
         return [], 0, 0
@@ -67,7 +67,7 @@ def get_next_batch(sorted_symbols):
 
 @app.route('/')
 def home():
-    """مسح السوق مؤسسياً بنظام الدفعات الدورية (بدون تكرار)"""
+    """فحص دفعة مكونة من 5 عملات بأمان تام وتحليل مؤسسي متقدم"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
@@ -83,7 +83,7 @@ def home():
 
         symbols_to_scan, start_pos, total_market = get_next_batch(sorted_symbols)
           
-        telegram_msg = f"🚨 *Institutional SMC Scan (Batch: {start_pos} to {start_pos + len(symbols_to_scan) - 1} of {total_market})* 🚀\n\n"  
+        telegram_msg = f"🚨 *Institutional SMC Batch Scan ({start_pos} to {start_pos + len(symbols_to_scan) - 1} of {total_market})* 🚀\n\n"  
         html_output = f"<h2>Institutional Scanner 🚀 (Batch Range: {start_pos} - {start_pos + len(symbols_to_scan) - 1})</h2>"  
           
         for symbol in symbols_to_scan:  
@@ -102,11 +102,14 @@ def home():
             html_output += "</ul><hr>"  
             telegram_msg += "-------------------\n"  
             
-            gc.collect()
+            # مهلة صغيرة بين كل عملة والأخرى وتفريغ الذاكرة
             time.sleep(1)
+            gc.collect()
               
+        # إرسال التقرير لتليجرام للدفعة الحالية
         send_telegram_message(telegram_msg)  
         return html_output  
+        
     except Exception as e:  
         error_msg = f"خطأ عام أثناء فحص السوق: {e}"  
         logger.error(error_msg)  
