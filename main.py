@@ -4,13 +4,11 @@ import requests
 from flask import Flask
 from analysis import SmartMoneyTradingAnalyst
 
-# إعداد السجلات (Logging)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# قراءة مفاتيح تيليجرام بأمان تام من متغيرات البيئة (Render Environment Variables)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -36,25 +34,20 @@ analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, 
 
 @app.route('/')
 def home():
-    """فحص أقوى العملات الحقيقية بناءً على حجم التداول (Volume) بدلاً من العشوائية"""
+    """فحص أقوى العملات الحقيقية بناءً على حجم التداول (Volume)"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
 
-        # جلب بيانات الـ Tickers لمعرفة أحجام التداول الحية
         tickers = exchange.fetch_tickers()
-
-        # استبعاد العملات الوهمية والعقود التجريبية والتركيز على العملات الحقيقية التي تنتهي بـ USDT فقط  
         valid_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]  
           
-        # ترتيب العملات تنازلياً حسب حجم التداول (Volume) لضمان فحص العملات الأكثر نشاطاً في السوق
         sorted_symbols = sorted(
             valid_symbols,
             key=lambda s: tickers.get(s, {}).get('quoteVolume', 0),
             reverse=True
         )
 
-        # اختيار أقوى 10 عملات من حيث السيولة وحجم التداول
         symbols_to_scan = sorted_symbols[:10]
           
         telegram_msg = f"🚨 *Smart Money Volume-Scan Report (BingX)* 🚀\n\n"  
