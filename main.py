@@ -1,121 +1,134 @@
 import os
-import logging
-import requests
 import time
-import gc
-from flask import Flask
-from analysis import SmartMoneyTradingAnalyst
+import requests
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# --- إعدادات التيليجرام وبايبيت ---
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 STATE_FILE = "scan_state.txt"
-BATCH_SIZE = 5  # فحص 5 عملات في كل مرة لضمان عدم استهلاك الـ RAM
+WATCHLIST_FILE = "watchlist.txt"  # ملف لمتابعة العملات التي تحتاج لتأكيد
+BATCH_SIZE = 5
 
-def send_telegram_message(message):
+def send_telegram_message(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("خطأ: مفاتيح تيليجرام غير مُعرفة في متغيرات البيئة.")
         return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
-        requests.post(url, json=payload, timeout=30)
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        logger.error(f"خطأ في الاتصال بخدمة تليجرام: {e}")
+        print(f"Telegram Error: {e}")
 
-API_KEY = os.getenv("API_KEY", "")
-SECRET_KEY = os.getenv("SECRET_KEY", "")
+def get_bybit_symbols():
+    """جلب قائمة عملات العقود الآجلة من بايبيت"""
+    url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
+    try:
+        response = requests.get(url, timeout=10).json()
+        if response.get("retCode") == 0:
+            list_data = response["result"]["list"]
+            symbols = [item["symbol"] for item in list_data if item["symbol"].endswith("USDT")]
+            return symbols
+    except Exception as e:
+        print(f"Bybit API Error: {e}")
+    # قائمة احتياطية في حال تعذر الاتصال
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "PEPEUSDT"]
 
-analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
+def load_scan_state():
+    """قراءة مؤشر الدفعة الحالية"""
+    if not os.path.exists(STATE_FILE):
+        return 0
+    try:
+        with open(STATE_FILE, "r") as f:
+            return int(f.read().strip())
+    except:
+        return 0
 
-def get_next_batch(sorted_symbols):
-    """إدارة دفعات السوق (5 عملات في كل دورة دون تكرار)"""
-    total_symbols = len(sorted_symbols)
-    if total_symbols == 0:
-        return [], 0, 0
-    
-    index = 0
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                index = int(f.read().strip())
-        except:
-            index = 0
-            
-    if index >= total_symbols:
-        index = 0
-        
-    end_index = min(index + BATCH_SIZE, total_symbols)
-    batch = sorted_symbols[index:end_index]
-    
-    next_index = end_index if end_index < total_symbols else 0
+def save_scan_state(index):
+    """حفظ مؤشر الدفعة التالية"""
     try:
         with open(STATE_FILE, "w") as f:
-            f.write(str(next_index))
-    except:
-        pass
-        
-    return batch, index + 1, total_symbols
+            f.write(str(index))
+    except Exception as e:
+        print(f"State Save Error: {e}")
 
-@app.route('/')
-def home():
-    """فحص دفعة مكونة من 5 عملات بأمان تام وتحليل مؤسسي متقدم"""
+def load_watchlist():
+    """تحميل قائمة العملات قيد المتابعة للتأكيد"""
+    if not os.path.exists(WATCHLIST_FILE):
+        return {}
     try:
-        exchange = analyst_engine.exchange
-        exchange.load_markets()
+        with open(WATCHLIST_FILE, "r") as f:
+            lines = f.readlines()
+            watchlist = {}
+            for line in lines:
+                parts = line.strip().split(":")
+                if len(parts) == 2:
+                    watchlist[parts[0]] = int(parts[1])
+            return watchlist
+    except:
+        return {}
 
-        tickers = exchange.fetch_tickers()
-        valid_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]  
-          
-        sorted_symbols = sorted(
-            valid_symbols,
-            key=lambda s: tickers.get(s, {}).get('quoteVolume', 0),
-            reverse=True
-        )
+def save_watchlist(watchlist):
+    """حفظ قائمة المتابعة"""
+    try:
+        with open(WATCHLIST_FILE, "w") as f:
+            for symbol, score in watchlist.items():
+                f.write(f"{symbol}:{score}\n")
+    except Exception as e:
+        print(f"Watchlist Save Error: {e}")
 
-        symbols_to_scan, start_pos, total_market = get_next_batch(sorted_symbols)
-          
-        telegram_msg = f"🚨 *Institutional SMC Batch Scan ({start_pos} to {start_pos + len(symbols_to_scan) - 1} of {total_market})* 🚀\n\n"  
-        html_output = f"<h2>Institutional Scanner 🚀 (Batch Range: {start_pos} - {start_pos + len(symbols_to_scan) - 1})</h2>"  
-          
-        for symbol in symbols_to_scan:  
-            html_output += f"<h3>Analysis for {symbol}:</h3><ul>"  
-            telegram_msg += f"📊 *Symbol: {symbol}*\n"  
-              
-            try:  
-                result = analyst_engine.evaluate_strategy(symbol=symbol, account_balance=1000.0, risk_percentage=0.01)  
-                for key, value in result.items():  
-                    html_output += f"<li><b>{key}:</b> {value}</li>"  
-                    telegram_msg += f"• *{key}*: {value}\n"  
-            except Exception as ex:  
-                html_output += f"<li><b>Error:</b> {ex}</li>"  
-                telegram_msg += f"• Error analyzing this coin.\n"  
-                  
-            html_output += "</ul><hr>"  
-            telegram_msg += "-------------------\n"  
-            
-            # مهلة صغيرة بين كل عملة والأخرى وتفريغ الذاكرة
-            time.sleep(1)
-            gc.collect()
-              
-        # إرسال التقرير لتليجرام للدفعة الحالية
-        send_telegram_message(telegram_msg)  
-        return html_output  
+def analyze_market_batch():
+    symbols = get_bybit_symbols()
+    total_symbols = len(symbols)
+    
+    current_index = load_scan_state()
+    if current_index >= total_symbols:
+        current_index = 0  # إعادة الدورة من البداية
+
+    batch = symbols[current_index:current_index + BATCH_SIZE]
+    next_index = current_index + BATCH_SIZE
+    save_scan_state(next_index if next_index < total_symbols else 0)
+
+    watchlist = load_watchlist()
+    print(f"Scanning batch from {current_index} to {current_index + len(batch)} of {total_symbols}")
+
+    # محاكاة الفحص التحليلي للدفعة الحالية
+    for symbol in batch:
+        # (هنا يتم تطبيق تحليل الـ SMC الحقيقي واستخراج السكور لكل عملة)
+        # كمثال توضيحي: لنفترض أننا نقيم السكور للعملة بناءً على الشروط الحالية
         
-    except Exception as e:  
-        error_msg = f"خطأ عام أثناء فحص السوق: {e}"  
-        logger.error(error_msg)  
-        send_telegram_message(f"⚠️ *Market Scanner Error:* {e}")  
-        return f"Bot is running, but encountered an error: {e}"
+        # محاكاة لنتيجة التحليل (يمكنك ربطها بدالتك الفعلية)
+        score = 50  # افتراضي للتجربة، يتم استبداله بالنتيجة الحقيقية للفحص
+        
+        # لو العملة جاهزة تماماً (Score >= 80)
+        if score >= 80:
+            message = (
+                f"🚨 *Institutional SMC Signal* 🚀\n\n"
+                f"📊 Symbol: `{symbol}`\n"
+                f"• Decision: *MARKET SETUP READY* 🟢\n"
+                f"• Score: `{score}`\n"
+                f"• Quality: 🟢 *STRONG*\n"
+                f"• Reason: Premium/Discount Zone + MSS + OrderBlock"
+            )
+            send_telegram_message(message)
+            # إزالة العملة من قائمة المتابعة لو كانت موجودة
+            if symbol in watchlist:
+                del watchlist[symbol]
+                
+        # لو العملة قريبة من الجهوزية وتحتاج تأكيد (Score بين 70 و 79)
+        elif 70 <= score < 80:
+            watchlist[symbol] = score
+            print(f"Symbol {symbol} added to watchlist with score {score}")
+            
+        # لو انخفضت السكورات وخرجت من نطاق المتابعة
+        else:
+            if symbol in watchlist:
+                del watchlist[symbol]
+
+    save_watchlist(watchlist)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    analyze_market_batch()
