@@ -2,6 +2,8 @@ import os
 import random
 import logging
 import requests
+import time
+import threading
 from flask import Flask
 from analysis import SmartMoneyTradingAnalyst
 
@@ -26,26 +28,33 @@ def send_telegram_message(message):
             "text": message,
             "parse_mode": "Markdown"
         }
-        requests.post(url, json=payload, timeout=30)
+        response = requests.post(url, json=payload, timeout=30)
+        if response.status_code != 200:
+            logger.error(f"فشل إرسال رسالة تليجرام. رمز الحالة: {response.status_code}")
     except Exception as e:
         logger.error(f"خطأ في الاتصال بخدمة تليجرام: {e}")
 
 API_KEY = os.getenv("API_KEY", "")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
+# تهيئة محرك التحليل والماتش المالي
 analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
-@app.route('/')
-def home():
-    """فحص العملات الحقيقية الأساسية فقط بطريقة عشوائية ومتجددة في كل زيارة"""
+def run_market_scan():
+    """الدالة المسؤولة عن معالجة البيانات وفحص السوق وإرسال التقارير"""
     try:
+        logger.info("بدء جولة فحص السوق الذكية الحالية...")
         exchange = analyst_engine.exchange
         exchange.load_markets()
         
-        # استبعاد العملات الوهمية والعقود التجريبية والتركيز على العملات الحقيقية التي تنتهي بـ USDT فقط
+        # تصفية أزواج العملات الحقيقية فقط المتاحة للتداول بنظام الـ Swap
         all_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]
         
-        # اختيار عينة آمنة وسريعة (مثلاً 10 عملات حقيقية)
+        if not all_symbols:
+            logger.warning("لم يتم العثور على أزواج تداول صالحة تنتهي بـ /USDT:USDT")
+            return "No valid symbols found.", "No symbols to scan."
+
+        # اختيار عينة عشوائية مكونة من 10 عملات
         sample_size = min(10, len(all_symbols))
         symbols_to_scan = random.sample(all_symbols, sample_size)
         
@@ -69,13 +78,46 @@ def home():
             telegram_msg += "-------------------\n"
             
         send_telegram_message(telegram_msg)
+        logger.info("تم الانتهاء من الفحص بنجاح وإرسال التقرير المالي للتليجرام.")
         return html_output
     except Exception as e:
         error_msg = f"خطأ عام أثناء فحص السوق: {e}"
         logger.error(error_msg)
         send_telegram_message(f"⚠️ *Market Scanner Error:* {e}")
-        return f"Bot is running, but encountered an error: {e}"
+        return f"Bot encountered an error during scan: {e}"
+
+def autonomous_worker():
+    """حلقة مفرغة تعمل في الخلفية لضمان استمرارية عمل البوت تلقائياً كل ساعة دون توقف"""
+    logger.info("بدء تشغيل عامل الخلفية الآلي المستقل...")
+    # انتظر قليلاً حتى يستقر خادم الويب الأساسي عند بدء التشغيل لأول مرة
+    time.sleep(10) 
+    while True:
+        try:
+            run_market_scan()
+        except Exception as e:
+            logger.error(f"خطأ غير متوقع في خادم الخلفية: {e}")
+        
+        # الفحص التلقائي المتكرر كل ساعة واحدة (3600 ثانية)
+        logger.info("في انتظار دورة الفحص القادمة بعد ساعة...")
+        time.sleep(3600)
+
+@app.route('/')
+def home():
+    """رابط الـ Health Check الأساسي لمنصة Render لرد فوري ومنع حدوث خطأ 502"""
+    return "Bot Core Service is Online & Running Perfectly! 🟢"
+
+@app.route('/scan')
+def manual_scan():
+    """رابط إضافي في حال أردت تفعيل الفحص اليدوي فوراً عبر المتصفح"""
+    html_result = run_market_scan()
+    return html_result
 
 if __name__ == "__main__":
+    # تشغيل نظام الفحص التلقائي في الخلفية في مسار منفصل (Thread) لعدم تعطيل خادم Flask
+    worker_thread = threading.Thread(target=autonomous_worker)
+    worker_thread.daemon = True
+    worker_thread.start()
+
+    # تشغيل خادم الويب بالمنفذ الذي يحدده Render
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
