@@ -64,7 +64,7 @@ class SmartMoneyTradingAnalyst:
         return df    
 
     def get_market_structure(self, df):    
-        """تحليل الهيكل السعري مع فصل دقيق بين Bullish BOS و Bearish BOS"""    
+        """تحليل الهيكل السعري مع فصل دقيق وبإغلاق الشموع المؤكد"""    
         if df is None or len(df) < 15:    
             return "NEUTRAL", False, False, False, False    
         try:    
@@ -91,18 +91,18 @@ class SmartMoneyTradingAnalyst:
             else:    
                 trend = "NEUTRAL"    
 
-            # تحسين منطق الـ MSS ليكون انعكاساً حقيقياً مدعوماً بكسر قاع/قمة سابقة
-            mss_bullish = bearish_bos and (trend == "BEARISH" or last_sh > prev_sh or closed_close > prev_sh)    
-            mss_bearish = bullish_bos and (trend == "BULLISH" or last_sl < prev_sl or closed_close < prev_sl)    
+            # تحسين منطق الـ MSS ليمثل انعكاساً حقيقياً مؤكداً بإغلاق شمعة
+            mss_bullish = bearish_bos and (closed_close > prev_sh or trend == "BULLISH")    
+            mss_bearish = bullish_bos and (closed_close < prev_sl or trend == "BEARISH")    
 
             return trend, bullish_bos, bearish_bos, mss_bullish, mss_bearish    
         except Exception:    
             return "NEUTRAL", False, False, False, False    
 
     def detect_order_block(self, df):    
-        """كشف مناطق الـ Order Block القريبة والدقيقة"""    
+        """كشف مناطق الـ Order Block بدقة مع تقييم القرب والحداثة"""    
         if df is None or len(df) < 10:    
-            return False, False, 0.0, 0.0    
+            return False, False, 0.0, 0.0, "None"    
         try:    
             current_price = df.iloc[-1]['close']
             atr = df.iloc[-1].get('atr', current_price * 0.01)
@@ -111,6 +111,7 @@ class SmartMoneyTradingAnalyst:
             bearish_ob_found = False
             bull_ob_level = 0.0
             bear_ob_level = 0.0
+            ob_status = "None"
 
             for i in range(len(df) - 3, max(2, len(df) - 10), -1):    
                 row = df.iloc[i]    
@@ -118,9 +119,10 @@ class SmartMoneyTradingAnalyst:
                     
                 if row['close'] < row['open'] and next_row['close'] > next_row['open']:    
                     ob_zone = row['low']    
-                    if abs(current_price - ob_zone) <= (atr * 4.0):    
+                    if abs(current_price - ob_zone) <= (atr * 5.0):    
                         bullish_ob_found = True
                         bull_ob_level = ob_zone
+                        ob_status = "Fresh Bullish OB Nearby"
                         break
 
             for i in range(len(df) - 3, max(2, len(df) - 10), -1):    
@@ -129,18 +131,19 @@ class SmartMoneyTradingAnalyst:
                     
                 if row['close'] > row['open'] and next_row['close'] < next_row['open']:    
                     ob_zone = row['high']    
-                    if abs(current_price - ob_zone) <= (atr * 4.0):    
+                    if abs(current_price - ob_zone) <= (atr * 5.0):    
                         bearish_ob_found = True
                         bear_ob_level = ob_zone
+                        ob_status = "Fresh Bearish OB Nearby"
                         break
 
-            return bullish_ob_found, bearish_ob_found, bull_ob_level, bear_ob_level
+            return bullish_ob_found, bearish_ob_found, bull_ob_level, bear_ob_level, ob_status
         except Exception:    
             pass    
-        return False, False, 0.0, 0.0    
+        return False, False, 0.0, 0.0, "None"    
 
     def check_liquidity_sweep(self, df):    
-        """فحص أخذ السيولة (Sweep High / Sweep Low) بدقة"""    
+        """فحص أخذ السيولة (Sweep) بدقة"""    
         if df is None or len(df) < 10:    
             return False, False    
         try:    
@@ -159,7 +162,7 @@ class SmartMoneyTradingAnalyst:
             return False, False    
 
     def get_premium_discount(self, df):    
-        """تحديد مناطق الديسكونت والبريميوم"""    
+        """تحديد موقع السعر (Premium / Discount / Equilibrium)"""    
         if df is None or len(df) < 15:    
             return "EQUILIBRIUM"    
         try:    
@@ -177,7 +180,7 @@ class SmartMoneyTradingAnalyst:
         return "EQUILIBRIUM"    
 
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):    
-        """تقييم الاستراتيجية مع تطبيق الـ Hard Entry Gates وحماية كاملة ضد الصفقات المتناقضة"""    
+        """تقييم الاستراتيجية بتوازن احترافي بين Continuation و Reversal ومنع التناقضات"""    
         try:    
             df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=40)    
             if df_1h is None or len(df_1h) < 20:    
@@ -200,7 +203,7 @@ class SmartMoneyTradingAnalyst:
             btc_trend, _, _, _, _ = self.get_market_structure(df_btc)    
 
             sweep_high, sweep_low = self.check_liquidity_sweep(df_1h)    
-            bull_ob, bear_ob, bull_ob_lvl, bear_ob_lvl = self.detect_order_block(df_1h)    
+            bull_ob, bear_ob, bull_ob_lvl, bear_ob_lvl, ob_status = self.detect_order_block(df_1h)    
             zone_status = self.get_premium_discount(df_1h)    
 
             last_closed = df_1h.iloc[-2]    
@@ -212,82 +215,97 @@ class SmartMoneyTradingAnalyst:
             has_bear_fvg = last_closed.get('bearish_fvg', False)
 
             body_size = abs(last_closed['close'] - last_closed['open'])
-            strong_displacement = body_size > (current_atr * 0.8) and high_vol
+            strong_displacement = body_size > (current_atr * 0.7)
+            
+            vol_status = "High Volume" if high_vol else "Normal Volume"
+            disp_status = "Strong Displacement" if strong_displacement else "Weak/Normal Displacement"
+            fvg_status = "Bullish FVG" if has_bull_fvg else ("Bearish FVG" if has_bear_fvg else "None")
 
-            # حساب السكور الديناميكي بناءً على الأدلة (مجموع 100)
+            # حساب النقاط الديناميكية (من 100)
             long_score = 0
-            if trend_4h in ["BULLISH", "NEUTRAL"]: long_score += 15
+            if trend_4h == "BULLISH": long_score += 15
+            elif trend_4h == "NEUTRAL": long_score += 8
+            
             if trend_1h == "BULLISH": long_score += 20
+            elif trend_1h == "NEUTRAL": long_score += 10
+            
             if bos_bull: long_score += 15
             if mss_bull: long_score += 10
             if sweep_low: long_score += 10
             if bull_ob: long_score += 10
             if has_bull_fvg: long_score += 5
             if strong_displacement: long_score += 5
+            
             if zone_status == "DISCOUNT": long_score += 10
-            if btc_trend != "BEARISH": long_score += 10
+            elif zone_status == "EQUILIBRIUM": long_score += 5
+            
+            if btc_trend == "BULLISH": long_score += 10
+            elif btc_trend == "NEUTRAL": long_score += 5
+            else: long_score -= 5
 
             short_score = 0
-            if trend_4h in ["BEARISH", "NEUTRAL"]: short_score += 15
+            if trend_4h == "BEARISH": short_score += 15
+            elif trend_4h == "NEUTRAL": short_score += 8
+            
             if trend_1h == "BEARISH": short_score += 20
+            elif trend_1h == "NEUTRAL": short_score += 10
+            
             if bos_bear: short_score += 15
             if mss_bear: short_score += 10
             if sweep_high: short_score += 10
             if bear_ob: short_score += 10
             if has_bear_fvg: short_score += 5
             if strong_displacement: short_score += 5
+            
             if zone_status == "PREMIUM": short_score += 10
-            if btc_trend != "BULLISH": short_score += 10
+            elif zone_status == "EQUILIBRIUM": short_score += 5
+            
+            if btc_trend == "BEARISH": short_score += 10
+            elif btc_trend == "NEUTRAL": short_score += 5
+            else: short_score -= 5
 
-            # تطبيق شروط الحماية الصارمة (Hard Entry Gates) لمنع التناقضات المطلقة
-            # منع الشورت الخاطئ
-            short_blocked_reasons = []
-            if trend_1h == "BULLISH" and not (sweep_high and mss_bear and strong_displacement):
-                short_blocked_reasons.append("1H BULLISH WITHOUT VALID SWEEP/MSS")
-            if bos_bull and not (sweep_high and mss_bear):
-                short_blocked_reasons.append("BOS BULLISH CONFLICT")
-            if trend_4h == "BULLISH" and trend_1h == "BULLISH":
-                short_blocked_reasons.append("4H & 1H BOTH BULLISH")
+            # تصنيف النمط (Continuation أو Reversal)
+            is_long_continuation = (trend_4h in ["BULLISH", "NEUTRAL"]) and (trend_1h in ["BULLISH", "NEUTRAL"]) and (bos_bull or zone_status in ["DISCOUNT", "EQUILIBRIUM"] or bull_ob)
+            is_long_reversal = sweep_low and mss_bull and (strong_displacement or high_vol)
 
-            # منع اللونج الخاطئ
-            long_blocked_reasons = []
-            if trend_1h == "BEARISH" and not (sweep_low and mss_bull and strong_displacement):
-                long_blocked_reasons.append("1H BEARISH WITHOUT VALID SWEEP/MSS")
-            if bos_bear and not (sweep_low and mss_bull):
-                long_blocked_reasons.append("BOS BEARISH CONFLICT")
-            if trend_4h == "BEARISH" and trend_1h == "BEARISH":
-                long_blocked_reasons.append("4H & 1H BOTH BEARISH")
+            is_short_continuation = (trend_4h in ["BEARISH", "NEUTRAL"]) and (trend_1h in ["BEARISH", "NEUTRAL"]) and (bos_bear or zone_status in ["PREMIUM", "EQUILIBRIUM"] or bear_ob)
+            is_short_reversal = sweep_high and mss_bear and (strong_displacement or high_vol)
 
-            # التحقق النهائي للقرار
-            THRESHOLD = 75
+            # شروط الحماية (Conflict Protection & Hard Entry Gates)
+            short_blocked = (trend_1h == "BULLISH" and trend_4h == "BULLISH" and not is_short_reversal) or (bos_bull and not is_short_reversal)
+            long_blocked = (trend_1h == "BEARISH" and trend_4h == "BEARISH" and not is_long_reversal) or (bos_bear and not is_long_reversal)
+
+            THRESHOLD = 72
             direction = "NEUTRAL"
             final_score = 0
+            setup_type = "None"
             reason = "NO CLEAR SETUP"
 
-            # تقييم إمكانية الشورت
-            can_short = (len(short_blocked_reasons) == 0) and (short_score >= THRESHOLD) and (short_score > long_score)
-            # تقييم إمكانية اللونج
-            can_long = (len(long_blocked_reasons) == 0) and (long_score >= THRESHOLD) and (long_score > short_score)
+            can_short = (not short_blocked) and (short_score >= THRESHOLD) and (short_score > long_score) and (is_short_continuation or is_short_reversal)
+            can_long = (not long_blocked) and (long_score >= THRESHOLD) and (long_score > short_score) and (is_long_continuation or is_long_reversal)
 
             if can_short:
                 direction = "SHORT"
                 final_score = int(short_score)
-                reason = "Dynamic Bearish SMC Setup Confirmed"
+                setup_type = "REVERSAL" if is_short_reversal else "CONTINUATION"
+                reason = f"Valid Bearish {setup_type} Setup Confirmed"
             elif can_long:
                 direction = "LONG"
                 final_score = int(long_score)
-                reason = "Dynamic Bullish SMC Setup Confirmed"
+                setup_type = "REVERSAL" if is_long_reversal else "CONTINUATION"
+                reason = f"Valid Bullish {setup_type} Setup Confirmed"
             else:
-                # تحديد سبب الرفض بوضوح
-                block_msg = "INSUFFICIENT CONFIRMATION"
-                if len(short_blocked_reasons) > 0 and short_score >= long_score:
-                    block_msg = f"SHORT BLOCKED: {short_blocked_reasons[0]}"
-                elif len(long_blocked_reasons) > 0 and long_score > short_score:
-                    block_msg = f"LONG BLOCKED: {long_blocked_reasons[0]}"
+                block_reason = "INSUFFICIENT CONFIRMATION OR SETUP"
+                if short_blocked and short_score >= long_score:
+                    block_reason = "1H/4H BULLISH STRUCTURE - SHORT BLOCKED"
+                elif long_blocked and long_score > short_score:
+                    block_reason = "1H/4H BEARISH STRUCTURE - LONG BLOCKED"
+                elif max(long_score, short_score) < THRESHOLD:
+                    block_reason = "SCORE BELOW EXECUTION THRESHOLD"
 
                 return {    
                     "Decision": "NO TRADE ⏳",    
-                    "Reason": block_msg,    
+                    "Reason": block_reason,    
                     "Score": max(int(long_score), int(short_score)),    
                     "Quality": "WEAK"    
                 }    
@@ -333,6 +351,14 @@ class SmartMoneyTradingAnalyst:
             pos_val = pos_tokens * current_price    
             leverage = max(1, min(10, int(pos_val / account_balance) + 1))    
 
+            # تحديد جودة الصفقة بناءً على السكور
+            if final_score >= 90:
+                quality_str = "🔥 VERY STRONG"
+            elif final_score >= 80:
+                quality_str = "🟢 STRONG"
+            else:
+                quality_str = "🟡 MEDIUM"
+
             return {    
                 "Decision": decision,    
                 "Entry": round(current_price, 4),    
@@ -341,18 +367,24 @@ class SmartMoneyTradingAnalyst:
                 "TP2": round(tp2, 4),    
                 "TP3": round(tp3, 4),
                 "Score": final_score,    
-                "Quality": "🟢 STRONG" if final_score >= 85 else "🟡 MEDIUM",    
+                "Quality": quality_str,    
                 "Position Size (USDT)": round(pos_val, 2),    
                 "Leverage": leverage,    
                 "Reason": reason,
                 "Direction": direction,
-                "Trend 1D": trend_4h,
+                "Trend 1D": "NEUTRAL",
                 "Trend 4H": trend_4h,
                 "Trend 1H": trend_1h,
                 "BTC Trend": btc_trend,
                 "Liquidity Sweep": "High Sweep" if sweep_high else ("Low Sweep" if sweep_low else "None"),
                 "BOS": "Bullish" if bos_bull else ("Bearish" if bos_bear else "None"),
-                "MSS": "Bullish" if mss_bull else ("Bearish" if mss_bear else "None")
+                "MSS": "Bullish" if mss_bull else ("Bearish" if mss_bear else "None"),
+                "Setup Type": setup_type,
+                "Confirmation": "Confirmed via Structure & Volume/Displacement",
+                "OB Status": ob_status,
+                "FVG Status": fvg_status,
+                "Volume Status": vol_status,
+                "Displacement": disp_status
             }    
 
         except Exception as e:    
