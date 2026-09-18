@@ -22,12 +22,12 @@ class SmartMoneyTradingAnalyst:
         except Exception as e:
             logger.error(f"فشل الاتصال بالمنصة عند التهيئة: {e}")
 
-    def fetch_ohlcv_data(self, symbol, timeframe='1h', limit=60, retries=1, delay=1):    
-        """جلب بيانات الشموع بحد أقصى مخفض لتوفير الذاكرة وحماية الـ RAM"""    
+    def fetch_ohlcv_data(self, symbol, timeframe='1h', limit=150, retries=2, delay=1):    
+        """جلب بيانات الشموع مع آلية إعادة المحاولة (Retry) وحماية كاملة ضد الأخطاء"""    
         for attempt in range(retries + 1):    
             try:    
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)    
-                if not ohlcv or len(ohlcv) < 20:    
+                if not ohlcv or len(ohlcv) < 30:    
                     return None    
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])    
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')    
@@ -41,8 +41,8 @@ class SmartMoneyTradingAnalyst:
         return None    
 
     def calculate_indicators(self, df):    
-        """حساب المؤشرات الفنية والـ FVG والـ Volume MA بخفة وسرعة"""    
-        if df is None or len(df) < 15:    
+        """حساب المؤشرات الفنية والـ FVG والـ Volume MA بأمان تام"""    
+        if df is None or len(df) < 20:    
             return df    
         try:    
             high_low = df['high'] - df['low']    
@@ -54,9 +54,11 @@ class SmartMoneyTradingAnalyst:
             df['vol_ma'] = df['volume'].rolling(window=20).mean()    
             df['high_volume'] = df['volume'] > (df['vol_ma'] * 1.2)    
 
+            # Swing High / Swing Low (Window = 5)
             df['is_swing_high'] = (df['high'] == df['high'].rolling(window=5, center=True).max())    
             df['is_swing_low'] = (df['low'] == df['low'].rolling(window=5, center=True).min())    
 
+            # FVG (Fair Value Gaps)
             df['bullish_fvg'] = (df['low'] > df['high'].shift(2)) & (df['close'].shift(1) > df['open'].shift(1))    
             df['bearish_fvg'] = (df['high'] < df['low'].shift(2)) & (df['close'].shift(1) < df['open'].shift(1))    
         except Exception as e:    
@@ -64,8 +66,8 @@ class SmartMoneyTradingAnalyst:
         return df    
 
     def get_market_structure(self, df):    
-        """تحليل الهيكل السعري باستخدام الشموع المغلقة"""    
-        if df is None or len(df) < 15:    
+        """تحليل الهيكل السعري باستخدام الشموع المغلقة (iloc[-2]) لتجنب الكسر الوهمي"""    
+        if df is None or len(df) < 20:    
             return "NEUTRAL", False, False, False, False    
         try:    
             swing_highs = df[df['is_swing_high'] == True]    
@@ -79,6 +81,7 @@ class SmartMoneyTradingAnalyst:
             prev_sh = swing_highs['high'].iloc[-2]    
             prev_sl = swing_lows['low'].iloc[-2]    
 
+            # الاعتماد حصرياً على إغلاق آخر شمعة مكتملة لتأكيد BOS / MSS
             closed_close = df.iloc[-2]['close']    
 
             bullish_bos = closed_close > last_sh    
@@ -99,8 +102,8 @@ class SmartMoneyTradingAnalyst:
             return "NEUTRAL", False, False, False, False    
 
     def detect_order_block(self, df):    
-        """كشف مناطق الـ Order Block القريبة"""    
-        if df is None or len(df) < 10:    
+        """كشف مناطق الـ Order Block الصالحة والقريبة من السعر الحالي"""    
+        if df is None or len(df) < 15:    
             return False, False, 0.0, 0.0    
         try:    
             current_price = df.iloc[-1]['close']
@@ -111,21 +114,23 @@ class SmartMoneyTradingAnalyst:
             bull_ob_level = 0.0
             bear_ob_level = 0.0
 
-            for i in range(len(df) - 3, max(2, len(df) - 10), -1):    
+            for i in range(len(df) - 3, max(3, len(df) - 15), -1):    
                 row = df.iloc[i]    
                 next_row = df.iloc[i+1]    
                     
+                # Bullish OB (آخر شمعة هابطة قبل صعود قوي)
                 if row['close'] < row['open'] and next_row['close'] > next_row['open']:    
                     ob_zone = row['low']    
-                    if abs(current_price - ob_zone) <= (atr * 4.0):    
+                    if abs(current_price - ob_zone) <= (atr * 4.0):  # قرب السعر من الـ OB
                         bullish_ob_found = True
                         bull_ob_level = ob_zone
                         break
 
-            for i in range(len(df) - 3, max(2, len(df) - 10), -1):    
+            for i in range(len(df) - 3, max(3, len(df) - 15), -1):    
                 row = df.iloc[i]    
                 next_row = df.iloc[i+1]    
                     
+                # Bearish OB (آخر شمعة صاعدة قبل هبوط قوي)
                 if row['close'] > row['open'] and next_row['close'] < next_row['open']:    
                     ob_zone = row['high']    
                     if abs(current_price - ob_zone) <= (atr * 4.0):    
@@ -139,18 +144,20 @@ class SmartMoneyTradingAnalyst:
         return False, False, 0.0, 0.0    
 
     def check_liquidity_sweep(self, df):    
-        """فحص أخذ السيولة"""    
-        if df is None or len(df) < 10:    
+        """فحص أخذ السيولة (Sweep) مع رفض سعري واضح"""    
+        if df is None or len(df) < 12:    
             return False, False    
         try:    
-            recent_high = df['high'].iloc[-10:-2].max()    
-            recent_low = df['low'].iloc[-10:-2].min()    
+            recent_high = df['high'].iloc[-12:-2].max()    
+            recent_low = df['low'].iloc[-12:-2].min()    
             last_high = df.iloc[-2]['high']    
             last_low = df.iloc[-2]['low']    
             last_close = df.iloc[-2]['close']    
             last_open = df.iloc[-2]['open']
 
+            # Sweep High (أخذ سيولة القمة مع إغلاق لأسفل - رفض سعري)
             sweep_high = (last_high > recent_high) and (last_close < recent_high) and (last_close < last_open)
+            # Sweep Low (أخذ سيولة القاع مع إغلاق لأعلى - رفض سعري)
             sweep_low = (last_low < recent_low) and (last_close > recent_low) and (last_close > last_open)
             
             return sweep_high, sweep_low    
@@ -158,12 +165,12 @@ class SmartMoneyTradingAnalyst:
             return False, False    
 
     def get_premium_discount(self, df):    
-        """تحديد مناطق الديسكونت والبريميوم"""    
-        if df is None or len(df) < 15:    
+        """تحديد مناطق الديسكونت والبريميوم بدقة"""    
+        if df is None or len(df) < 20:    
             return "EQUILIBRIUM"    
         try:    
-            high_range = df['high'].iloc[-15:-2].max()    
-            low_range = df['low'].iloc[-15:-2].min()    
+            high_range = df['high'].iloc[-20:-2].max()    
+            low_range = df['low'].iloc[-20:-2].min()    
             mid_point = (high_range + low_range) / 2    
             current_price = df.iloc[-1]['close']    
 
@@ -176,11 +183,13 @@ class SmartMoneyTradingAnalyst:
         return "EQUILIBRIUM"    
 
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):    
-        """تقييم الاستراتيجية مع تقليل عدد الفريمات المحملة لمنع استهلاك الذاكرة العشوائية (RAM)"""    
+        """تقييم الاستراتيجية ديناميكياً ودعم صفقات LONG و SHORT بأدلة حقيقية ونقاط دقيقة"""    
         try:    
-            # الاكتفاء بفريم 1h و 4h فقط لتوفير الذاكرة بشكل كامل ومنع السيرفر من الانهيار
-            df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=40)    
-            if df_1h is None or len(df_1h) < 20:    
+            # جلب البيانات متعددة الفريمات (Multi-Timeframe)
+            df_15m = self.fetch_ohlcv_data(symbol, timeframe='15m', limit=40)
+            df_30m = self.fetch_ohlcv_data(symbol, timeframe='30m', limit=40)
+            df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=60)    
+            if df_1h is None or len(df_1h) < 30:    
                 return {    
                     "Decision": "NO TRADE ⏳",    
                     "Reason": "DATA FETCH FAILED",    
@@ -188,17 +197,25 @@ class SmartMoneyTradingAnalyst:
                     "Quality": "WEAK"    
                 }    
 
-            df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=25)    
-            df_btc = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe='1h', limit=25)    
+            df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=30)    
+            df_1d = self.fetch_ohlcv_data(symbol, timeframe='1d', limit=20)    
+            df_btc = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe='1h', limit=30)    
 
+            # حساب المؤشرات
             df_1h = self.calculate_indicators(df_1h)    
             if df_4h is not None: df_4h = self.calculate_indicators(df_4h)    
+            if df_1d is not None: df_1d = self.calculate_indicators(df_1d)    
             if df_btc is not None: df_btc = self.calculate_indicators(df_btc)    
+            if df_30m is not None: df_30m = self.calculate_indicators(df_30m)
+            if df_15m is not None: df_15m = self.calculate_indicators(df_15m)
 
+            # الهيكل واتجاهات الفريمات
+            trend_1d, _, _, _, _ = self.get_market_structure(df_1d)    
             trend_4h, _, _, _, _ = self.get_market_structure(df_4h)    
             trend_1h, bos_bull, bos_bear, mss_bull, mss_bear = self.get_market_structure(df_1h)    
             btc_trend, _, _, _, _ = self.get_market_structure(df_btc)    
 
+            # أدوات الـ SMC والسيولة
             sweep_high, sweep_low = self.check_liquidity_sweep(df_1h)    
             bull_ob, bear_ob, bull_ob_lvl, bear_ob_lvl = self.detect_order_block(df_1h)    
             zone_status = self.get_premium_discount(df_1h)    
@@ -208,42 +225,50 @@ class SmartMoneyTradingAnalyst:
             current_atr = last_closed.get('atr', current_price * 0.01)    
             high_vol = last_closed.get('high_volume', False)    
             
+            # FVG Check
             has_bull_fvg = last_closed.get('bullish_fvg', False)
             has_bear_fvg = last_closed.get('bearish_fvg', False)
 
+            # قياس الحركة القوية (Displacement) باستخدام الشمعة وحجم الـ ATR
             body_size = abs(last_closed['close'] - last_closed['open'])
             strong_displacement = body_size > (current_atr * 0.8)
 
+            # حساب السكور الديناميكي للـ LONG (من 0 إلى 100)
             long_score = 0
-            if trend_4h in ["BULLISH", "NEUTRAL"]: long_score += 20
-            if trend_1h == "BULLISH": long_score += 20
-            if bos_bull or mss_bull: long_score += 20
+            if trend_1d in ["BULLISH", "NEUTRAL"]: long_score += 15
+            if trend_4h in ["BULLISH", "NEUTRAL"]: long_score += 15
+            if trend_1h == "BULLISH": long_score += 15
+            if bos_bull or mss_bull: long_score += 15
             if sweep_low: long_score += 10
             if bull_ob: long_score += 10
             if has_bull_fvg: long_score += 5
             if zone_status == "DISCOUNT": long_score += 10
-            elif zone_status == "PREMIUM": long_score -= 15  
+            elif zone_status == "PREMIUM": long_score -= 15  # عقوبة لدخول لونج في بريميوم
             if high_vol and strong_displacement: long_score += 5
             if btc_trend != "BEARISH": long_score += 5
 
+            # حساب السكور الديناميكي للـ SHORT (من 0 إلى 100)
             short_score = 0
-            if trend_4h in ["BEARISH", "NEUTRAL"]: short_score += 20
-            if trend_1h == "BEARISH": short_score += 20
-            if bos_bear or mss_bear: short_score += 20
+            if trend_1d in ["BEARISH", "NEUTRAL"]: short_score += 15
+            if trend_4h in ["BEARISH", "NEUTRAL"]: short_score += 15
+            if trend_1h == "BEARISH": short_score += 15
+            if bos_bear or mss_bear: short_score += 15
             if sweep_high: short_score += 10
             if bear_ob: short_score += 10
             if has_bear_fvg: short_score += 5
             if zone_status == "PREMIUM": short_score += 10
-            elif zone_status == "DISCOUNT": short_score -= 15 
+            elif zone_status == "DISCOUNT": short_score -= 15 # عقوبة لدخول شورت في ديسكونت
             if high_vol and strong_displacement: short_score += 5
             if btc_trend != "BULLISH": short_score += 5
 
+            # حد القبول الأدنى للـ Score لفتح صفقة حقيقية وقوية
             THRESHOLD = 65
 
             direction = "NEUTRAL"
             final_score = 0
             reason = "NO CLEAR SETUP"
 
+            # المفاضلة العادلة وغير المتحيزة بين الاتجاهين بناءً على السكور الأعلى
             if long_score >= THRESHOLD and long_score > short_score:
                 direction = "LONG"
                 final_score = int(long_score)
@@ -260,15 +285,18 @@ class SmartMoneyTradingAnalyst:
                     "Quality": "WEAK"    
                 }    
 
-            recent_low = df_1h['low'].iloc[-10:-2].min()    
-            recent_high = df_1h['high'].iloc[-10:-2].max()    
+            # إدارة المخاطر وأماكن الوقف والأهداف بدقة هندسية تامة
+            recent_low = df_1h['low'].iloc[-12:-2].min()    
+            recent_high = df_1h['high'].iloc[-12:-2].max()    
             allowed_risk = account_balance * risk_percentage    
 
             if direction == "LONG":    
                 decision = "MARKET LONG 🟢"
+                # وقف الخسارة تحت القاع أو الأوردر بلوك مع مسافة أمان ATR لعدم ضرب الوقف بالذيول
                 base_sl = min(recent_low, bull_ob_lvl) if bull_ob_lvl > 0 else recent_low
                 stop_loss = base_sl - (0.8 * current_atr)
                 
+                # التحقق الصارم من صحة الـ Stop Loss والـ Entry
                 if stop_loss >= current_price:
                     stop_loss = current_price - (1.5 * current_atr)
 
@@ -282,9 +310,11 @@ class SmartMoneyTradingAnalyst:
                 tp3 = current_price + (4.5 * risk_per_token)
             else:    
                 decision = "MARKET SHORT 🔴"
+                # وقف الخسارة فوق القمة أو الأوردر بلوك مع مسافة أمان ATR
                 base_sl = max(recent_high, bear_ob_lvl) if bear_ob_lvl > 0 else recent_high
                 stop_loss = base_sl + (0.8 * current_atr)
 
+                # التحقق الصارم من أن وقف الشورت فوق سعر الدخول دائماً
                 if stop_loss <= current_price:
                     stop_loss = current_price + (1.5 * current_atr)
 
@@ -314,7 +344,7 @@ class SmartMoneyTradingAnalyst:
                 "Leverage": leverage,    
                 "Reason": reason,
                 "Direction": direction,
-                "Trend 1D": trend_4h,
+                "Trend 1D": trend_1d,
                 "Trend 4H": trend_4h,
                 "Trend 1H": trend_1h,
                 "BTC Trend": btc_trend,
