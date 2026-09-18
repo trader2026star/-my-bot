@@ -79,7 +79,6 @@ class SmartMoneyTradingAnalyst:
             prev_sh = swing_highs['high'].iloc[-2]    
             prev_sl = swing_lows['low'].iloc[-2]    
 
-            # التعديل هنا: استخدام الشمعة المغلقة فعلياً (iloc[-2]) لتأكيد الكسر وليس الشمعة الحالية الجارية
             closed_close = df.iloc[-2]['close']    
 
             bullish_bos = closed_close > last_sh    
@@ -193,7 +192,6 @@ class SmartMoneyTradingAnalyst:
             current_atr = last_closed.get('atr', current_price * 0.01)    
             high_vol = last_closed.get('high_volume', False)    
 
-            # شروط مرنة وغير متعجزة لإنتاج صفقات حقيقية    
             is_long = (    
                 trend_1h in ["BULLISH", "NEUTRAL"] and    
                 trend_4h != "BEARISH" and    
@@ -245,7 +243,8 @@ class SmartMoneyTradingAnalyst:
                 tp1 = current_price + (2.0 * risk_per_token)    
                 tp2 = current_price + (3.5 * risk_per_token)    
             else:    
-                stop_loss = min(recent_high + (0.5 * current_atr), current_price + (4.0 * current_atr))    
+                # التعديل الصحيح هنا للـ SHORT لضمان أن الوقف دائماً أعلى من سعر الدخول
+                stop_loss = max(recent_high + (0.5 * current_atr), current_price + (1.5 * current_atr))    
                 risk_per_token = stop_loss - current_price    
                 if risk_per_token <= 0: risk_per_token = current_atr * 1.5    
                 tp1 = current_price - (2.0 * risk_per_token)    
