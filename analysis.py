@@ -64,7 +64,7 @@ class SmartMoneyTradingAnalyst:
         return df    
 
     def get_market_structure(self, df):    
-        """تحليل الهيكل السعري بأمان"""    
+        """تحليل الهيكل السعري بأمان مع اعتماد إغلاق الشمعة المؤكد لتجنب الكسر الوهمي"""    
         if df is None or len(df) < 15:    
             return "NEUTRAL", False, False, False, False    
         try:    
@@ -79,10 +79,11 @@ class SmartMoneyTradingAnalyst:
             prev_sh = swing_highs['high'].iloc[-2]    
             prev_sl = swing_lows['low'].iloc[-2]    
 
-            current_close = df.iloc[-2]['close']    
+            # التعديل هنا: استخدام الشمعة المغلقة فعلياً (iloc[-2]) لتأكيد الكسر وليس الشمعة الحالية الجارية
+            closed_close = df.iloc[-2]['close']    
 
-            bullish_bos = current_close > last_sh    
-            bearish_bos = current_close < last_sl    
+            bullish_bos = closed_close > last_sh    
+            bearish_bos = closed_close < last_sl    
 
             if last_sh > prev_sh and last_sl > prev_sl:    
                 trend = "BULLISH"    
