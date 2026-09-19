@@ -157,13 +157,10 @@ class SmartMoneyTradingAnalyst:
             return False, False    
 
     def get_volume_profile_poc(self, df):    
-        """التحليل الحجمي: حساب نقطة التحكم في الحجم (Point of Control)"""
         try:
-            # تقسيم النطاق السعري إلى مستويات وحساب تركز الحجم
             prices = df['close'].values
             volumes = df['volume'].values
             
-            # تقريب الأسعار للعثور على السعر الأكثر تداولا من حيث الحجم
             bins = np.linspace(prices.min(), prices.max(), 10)
             bin_indices = np.digitize(prices, bins)
             bin_volumes = [volumes[bin_indices == i].sum() for i in range(1, len(bins))]
@@ -221,12 +218,12 @@ class SmartMoneyTradingAnalyst:
             if trend_1h == "BULLISH": long_score += 20
             if bos_bull: long_score += 15
             if mss_bull: long_score += 12
-            if sweep_low: long_score += 18 # تعزيز الاحتمالية الإحصائية عند اصطياد السيولة
+            if sweep_low: long_score += 18 
             if bull_ob: long_score += 12
             if has_bull_fvg: long_score += 8
-            if inst_vol: long_score += 10 # تدفق الحجم الحقيقي
+            if inst_vol: long_score += 10 
             if strong_displacement: long_score += 10
-            if poc_status == "ABOVE_POC": long_score += 10 # السعر مدعوم فوق نقطة التحكم بالحجم
+            if poc_status == "ABOVE_POC": long_score += 10 
             
             if btc_trend == "BULLISH": long_score += 10
             elif btc_trend == "BEARISH": long_score -= 15
@@ -237,7 +234,7 @@ class SmartMoneyTradingAnalyst:
             if bos_bear: short_score += 15
             if mss_bear: short_score += 12
             if sweep_high: short_score += 18
-            if bear_ob: long_score += 12
+            if bear_ob: short_score += 12
             if has_bear_fvg: short_score += 8
             if inst_vol: short_score += 10
             if strong_displacement: short_score += 10
@@ -246,29 +243,30 @@ class SmartMoneyTradingAnalyst:
             if btc_trend == "BEARISH": short_score += 10
             elif btc_trend == "BULLISH": short_score -= 15
 
-            # الشروط الكمية الصارمة للقبول الإحصائي (>80% توقعات جودة)
+            # الشروط الكمية الصارمة المُحسّنة (منع التناقض مع الـ OB والـ FVG الهابط للـ Long)
             THRESHOLD = 78 
             direction = "NEUTRAL"
             final_score = 0
             setup_type = "None"
 
-            is_long_valid = (long_score >= THRESHOLD) and (long_score > short_score) and (trend_4h != "BEARISH")
-            is_short_valid = (short_score >= THRESHOLD) and (short_score > long_score) and (trend_4h != "BULLISH")
+            # منع الدخول LONG إذا كان هناك تعارض صريح مع كتل الأوامر أو الفراغات الهابطة القوية
+            is_long_valid = (long_score >= THRESHOLD) and (long_score > short_score) and (trend_4h != "BEARISH") and not (bear_ob and not bull_ob)
+            is_short_valid = (short_score >= THRESHOLD) and (short_score > long_score) and (trend_4h != "BULLISH") and not (bull_ob and not bear_ob)
 
             if is_short_valid:
                 direction = "SHORT"
                 final_score = int(short_score)
                 setup_type = "QUANTITATIVE REVERSAL" if sweep_high else "QUANTITATIVE CONTINUATION"
-                reason = f"High Probability Statistical Bearish Setup"
+                reason = f"High Probability Statistical Bearish Setup (SMC Aligned)"
             elif is_long_valid:
                 direction = "LONG"
                 final_score = int(long_score)
                 setup_type = "QUANTITATIVE REVERSAL" if sweep_low else "QUANTITATIVE CONTINUATION"
-                reason = f"High Probability Statistical Bullish Setup"
+                reason = f"High Probability Statistical Bullish Setup (SMC Aligned)"
             else:
                 return {    
                     "Decision": "NO TRADE ⏳",    
-                    "Reason": "STATISTICAL THRESHOLD NOT MET (QUANTITATIVE FILTER)",    
+                    "Reason": "STATISTICAL THRESHOLD NOT MET OR SMC CONFLICT",    
                     "Score": max(int(long_score), int(short_score)),    
                     "Quality": "WEAK"    
                 }    
@@ -277,7 +275,6 @@ class SmartMoneyTradingAnalyst:
             recent_high = df_1h['high'].iloc[-12:-2].max()    
             allowed_risk = account_balance * risk_percentage    
 
-            # إدارة المخاطر بدقة مع تحقيق معادلة Risk-to-Reward تفوق 1:3
             if direction == "LONG":    
                 decision = "MARKET LONG 🟢"
                 base_sl = min(recent_low, bull_ob_lvl) if bull_ob_lvl > 0 else recent_low
@@ -328,7 +325,7 @@ class SmartMoneyTradingAnalyst:
                 "BOS": "Bullish" if bos_bull else ("Bearish" if bos_bear else "None"),
                 "MSS": "Bullish" if mss_bull else ("Bearish" if mss_bear else "None"),
                 "Setup Type": setup_type,
-                "Confirmation": "Volume Profile POC & Statistical Confluence",
+                "Confirmation": "Volume Profile POC & Strict SMC Confluence",
                 "OB Status": ob_status,
                 "FVG Status": fvg_status,
                 "Volume Status": vol_status,
