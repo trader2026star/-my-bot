@@ -243,15 +243,16 @@ class SmartMoneyTradingAnalyst:
             if btc_trend == "BEARISH": short_score += 10
             elif btc_trend == "BULLISH": short_score -= 15
 
-            # الشروط الكمية الصارمة المُحسّنة (منع التناقض مع الـ OB والـ FVG الهابط للـ Long)
+            # الشروط الكمية الصارمة المُحسّنة (تعديل فريم الساعة والحد الأقصى للوقف)
             THRESHOLD = 78 
+            STOP_LOSS_MAX_PCT = 0.08  # الحد الأقصى لمسافة وقف الخسارة (8%)
             direction = "NEUTRAL"
             final_score = 0
             setup_type = "None"
 
-            # منع الدخول LONG إذا كان هناك تعارض صريح مع كتل الأوامر أو الفراغات الهابطة القوية
-            is_long_valid = (long_score >= THRESHOLD) and (long_score > short_score) and (trend_4h != "BEARISH") and not (bear_ob and not bull_ob)
-            is_short_valid = (short_score >= THRESHOLD) and (short_score > long_score) and (trend_4h != "BULLISH") and not (bull_ob and not bear_ob)
+            # تشديد الشروط: إلزامية أن يكون فريم الساعة صاعداً/هابطاً حصرياً للقبول
+            is_long_valid = (long_score >= THRESHOLD) and (long_score > short_score) and (trend_4h != "BEARISH") and (trend_1h == "BULLISH") and not (bear_ob and not bull_ob)
+            is_short_valid = (short_score >= THRESHOLD) and (short_score > long_score) and (trend_4h != "BULLISH") and (trend_1h == "BEARISH") and not (bull_ob and not bear_ob)
 
             if is_short_valid:
                 direction = "SHORT"
@@ -280,6 +281,11 @@ class SmartMoneyTradingAnalyst:
                 base_sl = min(recent_low, bull_ob_lvl) if bull_ob_lvl > 0 else recent_low
                 stop_loss = base_sl - (1.0 * current_atr)
                 if stop_loss >= current_price: stop_loss = current_price - (1.5 * current_atr)
+                
+                # التحقق من ألا يتجاوز وقف الخسارة النسبة المسموح بها (8%)
+                if (current_price - stop_loss) / current_price > STOP_LOSS_MAX_PCT:
+                    stop_loss = current_price * (1.0 - STOP_LOSS_MAX_PCT)
+
                 risk_per_token = current_price - stop_loss    
                 if risk_per_token <= 0: risk_per_token = current_atr * 1.5
 
@@ -291,6 +297,11 @@ class SmartMoneyTradingAnalyst:
                 base_sl = max(recent_high, bear_ob_lvl) if bear_ob_lvl > 0 else recent_high
                 stop_loss = base_sl + (1.0 * current_atr)
                 if stop_loss <= current_price: stop_loss = current_price + (1.5 * current_atr)
+                
+                # التحقق من ألا يتجاوز وقف الخسارة النسبة المسموح بها (8%)
+                if (stop_loss - current_price) / current_price > STOP_LOSS_MAX_PCT:
+                    stop_loss = current_price * (1.0 + STOP_LOSS_MAX_PCT)
+
                 risk_per_token = stop_loss - current_price    
                 if risk_per_token <= 0: risk_per_token = current_atr * 1.5
 
