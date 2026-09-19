@@ -179,7 +179,7 @@ class SmartMoneyTradingAnalyst:
         return "EQUILIBRIUM"    
 
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):    
-        """تقييم الاستراتيجية بتوازن احترافي بين Continuation و Reversal ومعالجة شح الفرص"""    
+        """تقييم الاستراتيجية مع إضافة فلتر نسبة العائد إلى المخاطرة (R:R Filter)"""    
         try:    
             df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=40)    
             if df_1h is None or len(df_1h) < 20:    
@@ -271,12 +271,10 @@ class SmartMoneyTradingAnalyst:
             short_blocked = (trend_1h == "BULLISH" and trend_4h == "BULLISH" and not is_short_reversal)
             long_blocked = (trend_1h == "BEARISH" and trend_4h == "BEARISH" and not is_long_reversal)
 
-            # [تعديل هنا]: خفض عتبة القبول من 72 إلى 66 لزيادة مرونة التقاط الفرص
             THRESHOLD = 66
             direction = "NEUTRAL"
             final_score = 0
             setup_type = "None"
-            reason = "NO CLEAR SETUP"
 
             can_short = (not short_blocked) and (short_score >= THRESHOLD) and (short_score > long_score) and (is_short_continuation or is_short_reversal)
             can_long = (not long_blocked) and (long_score >= THRESHOLD) and (long_score > short_score) and (is_long_continuation or is_long_reversal)
@@ -285,12 +283,10 @@ class SmartMoneyTradingAnalyst:
                 direction = "SHORT"
                 final_score = int(short_score)
                 setup_type = "REVERSAL" if is_short_reversal else "CONTINUATION"
-                reason = f"Valid Bearish {setup_type} Setup Confirmed"
             elif can_long:
                 direction = "LONG"
                 final_score = int(long_score)
                 setup_type = "REVERSAL" if is_long_reversal else "CONTINUATION"
-                reason = f"Valid Bullish {setup_type} Setup Confirmed"
             else:
                 block_reason = "INSUFFICIENT CONFIRMATION OR SETUP"
                 if short_blocked and short_score >= long_score:
@@ -312,7 +308,6 @@ class SmartMoneyTradingAnalyst:
             allowed_risk = account_balance * risk_percentage    
 
             if direction == "LONG":    
-                decision = "MARKET LONG"
                 base_sl = min(recent_low, bull_ob_lvl) if bull_ob_lvl > 0 else recent_low
                 stop_loss = base_sl - (1.0 * current_atr)
                 
@@ -328,7 +323,6 @@ class SmartMoneyTradingAnalyst:
                 tp2 = current_price + (3.5 * risk_per_token)    
                 tp3 = current_price + (4.5 * risk_per_token)
             else:    
-                decision = "MARKET SHORT"
                 base_sl = max(recent_high, bear_ob_lvl) if bear_ob_lvl > 0 else recent_high
                 stop_loss = base_sl + (1.0 * current_atr)
 
@@ -344,6 +338,16 @@ class SmartMoneyTradingAnalyst:
                 tp2 = current_price - (3.5 * risk_per_token)    
                 tp3 = current_price - (4.5 * risk_per_token)
 
+            # [تحسين جديد]: فحص نسبة العائد للمخاطرة للهدف الأول (يجب ألا تقل عن 1:1.5)
+            calculated_rr = abs(tp1 - current_price) / risk_per_token
+            if calculated_rr < 1.5:
+                return {
+                    "Decision": "NO TRADE",
+                    "Reason": f"POOR RISK-TO-REWARD RATIO ({round(calculated_rr, 2)})",
+                    "Score": final_score,
+                    "Quality": "WEAK"
+                }
+
             pos_tokens = allowed_risk / risk_per_token    
             pos_val = pos_tokens * current_price    
             leverage = max(2, min(15, int(pos_val / account_balance) + 2))    
@@ -356,7 +360,7 @@ class SmartMoneyTradingAnalyst:
                 quality_str = "MEDIUM"
 
             return {    
-                "Decision": decision,    
+                "Decision": f"MARKET {direction}",    
                 "Entry": round(current_price, 4),    
                 "Stop Loss": round(stop_loss, 4),    
                 "TP1": round(tp1, 4),    
@@ -366,7 +370,7 @@ class SmartMoneyTradingAnalyst:
                 "Quality": quality_str,    
                 "Position Size (USDT)": round(pos_val, 2),    
                 "Leverage": leverage,    
-                "Reason": reason,
+                "Reason": f"Valid {direction.capitalize()} {setup_type} Setup Confirmed (R:R: {round(calculated_rr, 2)})",
                 "Direction": direction,
                 "Trend 1D": "NEUTRAL",
                 "Trend 4H": trend_4h,
