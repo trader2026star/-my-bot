@@ -179,7 +179,7 @@ class SmartMoneyTradingAnalyst:
         return "EQUILIBRIUM"    
 
     def evaluate_strategy(self, symbol='BTC/USDT:USDT', account_balance=1000.0, risk_percentage=0.01):    
-        """تقييم الاستراتيجية بتوازن احترافي بين Continuation و Reversal ومنع التناقضات"""    
+        """تقييم الاستراتيجية بتوازن احترافي بين Continuation و Reversal ومعالجة شح الفرص"""    
         try:    
             df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=40)    
             if df_1h is None or len(df_1h) < 20:    
@@ -262,16 +262,17 @@ class SmartMoneyTradingAnalyst:
             elif btc_trend == "NEUTRAL": short_score += 5
             else: short_score -= 5
 
-            is_long_continuation = (trend_4h in ["BULLISH", "NEUTRAL"]) and (trend_1h in ["BULLISH", "NEUTRAL"]) and (bos_bull or zone_status in ["DISCOUNT", "EQUILIBRIUM"] or bull_ob)
-            is_long_reversal = sweep_low and mss_bull and (strong_displacement or high_vol)
+            is_long_continuation = (trend_4h in ["BULLISH", "NEUTRAL"]) and (trend_1h in ["BULLISH", "NEUTRAL"]) and (bos_bull or zone_status in ["DISCOUNT", "EQUILIBRIUM"] or bull_ob or has_bull_fvg)
+            is_long_reversal = (sweep_low and mss_bull) or (sweep_low and bull_ob)
 
-            is_short_continuation = (trend_4h in ["BEARISH", "NEUTRAL"]) and (trend_1h in ["BEARISH", "NEUTRAL"]) and (bos_bear or zone_status in ["PREMIUM", "EQUILIBRIUM"] or bear_ob)
-            is_short_reversal = sweep_high and mss_bear and (strong_displacement or high_vol)
+            is_short_continuation = (trend_4h in ["BEARISH", "NEUTRAL"]) and (trend_1h in ["BEARISH", "NEUTRAL"]) and (bos_bear or zone_status in ["PREMIUM", "EQUILIBRIUM"] or bear_ob or has_bear_fvg)
+            is_short_reversal = (sweep_high and mss_bear) or (sweep_high and bear_ob)
 
-            short_blocked = (trend_1h == "BULLISH" and trend_4h == "BULLISH" and not is_short_reversal) or (bos_bull and not is_short_reversal)
-            long_blocked = (trend_1h == "BEARISH" and trend_4h == "BEARISH" and not is_long_reversal) or (bos_bear and not is_long_reversal)
+            short_blocked = (trend_1h == "BULLISH" and trend_4h == "BULLISH" and not is_short_reversal)
+            long_blocked = (trend_1h == "BEARISH" and trend_4h == "BEARISH" and not is_long_reversal)
 
-            THRESHOLD = 72
+            # [تعديل هنا]: خفض عتبة القبول من 72 إلى 66 لزيادة مرونة التقاط الفرص
+            THRESHOLD = 66
             direction = "NEUTRAL"
             final_score = 0
             setup_type = "None"
@@ -345,11 +346,11 @@ class SmartMoneyTradingAnalyst:
 
             pos_tokens = allowed_risk / risk_per_token    
             pos_val = pos_tokens * current_price    
-            leverage = max(1, min(10, int(pos_val / account_balance) + 1))    
+            leverage = max(2, min(15, int(pos_val / account_balance) + 2))    
 
-            if final_score >= 90:
+            if final_score >= 85:
                 quality_str = "VERY STRONG"
-            elif final_score >= 80:
+            elif final_score >= 75:
                 quality_str = "STRONG"
             else:
                 quality_str = "MEDIUM"
