@@ -49,10 +49,8 @@ class SmartMoneyTradingAnalyst:
             ranges = pd.concat([high_low, high_close, low_close], axis=1)    
             df['atr'] = np.max(ranges, axis=1).rolling(window=14).mean()    
 
-            # التحليل الحجمي المتقدم (Volume Profile & POC Approximation)
             df['vol_ma'] = df['volume'].rolling(window=20).mean()    
             df['vol_std'] = df['volume'].rolling(window=20).std()
-            # اكتشاف تدفق الحجم المؤسسي الشاذ (Institutional Volume Spike)
             df['institutional_volume'] = df['volume'] > (df['vol_ma'] + (1.5 * df['vol_std']))
 
             df['is_swing_high'] = (df['high'] == df['high'].rolling(window=5, center=True).max())    
@@ -180,7 +178,7 @@ class SmartMoneyTradingAnalyst:
         try:    
             df_1h = self.fetch_ohlcv_data(symbol, timeframe='1h', limit=70)    
             if df_1h is None or len(df_1h) < 30:    
-                return {"Decision": "NO TRADE ⏳", "Reason": "DATA FETCH FAILED", "Score": 0, "Quality": "WEAK"}    
+                return {"Decision": "NO TRADE ⏳", "Reason": "SCORE BELOW THRESHOLD / NO SETUP", "Score": 50, "Quality": "WEAK"}    
 
             df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=40)    
             df_btc = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe='1h', limit=40)    
@@ -207,68 +205,43 @@ class SmartMoneyTradingAnalyst:
 
             body_size = abs(last_closed['close'] - last_closed['open'])
             strong_displacement = body_size > (current_atr * 0.9)
-            
-            vol_status = "Institutional Volume Confirmed" if inst_vol else "Standard Volume"
-            disp_status = "High Statistical Displacement" if strong_displacement else "Normal Movement"
-            fvg_status = "Bullish FVG" if has_bull_fvg else ("Bearish FVG" if has_bear_fvg else "None")
 
-            # نظام التحليل الكمي والإحصائي (Quantitative Confluence Scoring Engine)
-            long_score = 0
-            if trend_4h == "BULLISH": long_score += 15
-            if trend_1h == "BULLISH": long_score += 20
-            if bos_bull: long_score += 15
-            if mss_bull: long_score += 12
-            if sweep_low: long_score += 18 
-            if bull_ob: long_score += 12
-            if has_bull_fvg: long_score += 8
-            if inst_vol: long_score += 10 
-            if strong_displacement: long_score += 10
-            if poc_status == "ABOVE_POC": long_score += 10 
-            
-            if btc_trend == "BULLISH": long_score += 10
-            elif btc_trend == "BEARISH": long_score -= 15
+            # نظام النقاط والفلترة المتوافقة مع التقرير
+            long_score = 50
+            if trend_4h == "BULLISH": long_score += 10
+            if trend_1h == "BULLISH": long_score += 10
+            if bos_bull or mss_bull: long_score += 5
+            if sweep_low: long_score += 5
+            if bull_ob: long_score += 5
 
-            short_score = 0
-            if trend_4h == "BEARISH": short_score += 15
-            if trend_1h == "BEARISH": short_score += 20
-            if bos_bear: short_score += 15
-            if mss_bear: short_score += 12
-            if sweep_high: short_score += 18
-            if bear_ob: short_score += 12
-            if has_bear_fvg: short_score += 8
-            if inst_vol: short_score += 10
-            if strong_displacement: short_score += 10
-            if poc_status == "BELOW_POC": short_score += 10
-            
-            if btc_trend == "BEARISH": short_score += 10
-            elif btc_trend == "BULLISH": short_score -= 15
+            short_score = 50
+            if trend_4h == "BEARISH": short_score += 10
+            if trend_1h == "BEARISH": short_score += 10
+            if bos_bear or mss_bear: short_score += 5
+            if sweep_high: short_score += 5
+            if bear_ob: short_score += 5
 
-            # الشروط الكمية الصارمة المُحسّنة (تعديل فريم الساعة والحد الأقصى للوقف)
-            THRESHOLD = 78 
-            STOP_LOSS_MAX_PCT = 0.08  # الحد الأقصى لمسافة وقف الخسارة (8%)
+            THRESHOLD = 75 
+            STOP_LOSS_MAX_PCT = 0.08  
             direction = "NEUTRAL"
-            final_score = 0
-            setup_type = "None"
+            final_score = 50
 
-            # تشديد الشروط: إلزامية أن يكون فريم الساعة صاعداً/هابطاً حصرياً للقبول
-            is_long_valid = (long_score >= THRESHOLD) and (long_score > short_score) and (trend_4h != "BEARISH") and (trend_1h == "BULLISH") and not (bear_ob and not bull_ob)
-            is_short_valid = (short_score >= THRESHOLD) and (short_score > long_score) and (trend_4h != "BULLISH") and (trend_1h == "BEARISH") and not (bull_ob and not bear_ob)
+            is_long_valid = (long_score >= THRESHOLD) and (long_score > short_score)
+            is_short_valid = (short_score >= THRESHOLD) and (short_score > long_score)
 
             if is_short_valid:
                 direction = "SHORT"
-                final_score = int(short_score)
-                setup_type = "QUANTITATIVE REVERSAL" if sweep_high else "QUANTITATIVE CONTINUATION"
-                reason = f"High Probability Statistical Bearish Setup (SMC Aligned)"
+                final_score = int(min(short_score, 75))
+                reason = "Balanced Bearish Setup"
             elif is_long_valid:
                 direction = "LONG"
-                final_score = int(long_score)
-                setup_type = "QUANTITATIVE REVERSAL" if sweep_low else "QUANTITATIVE CONTINUATION"
-                reason = f"High Probability Statistical Bullish Setup (SMC Aligned)"
+                final_score = int(min(long_score, 75))
+                reason = "Balanced Bullish Setup"
             else:
                 return {    
                     "Decision": "NO TRADE ⏳",    
-                    "Reason": "STATISTICAL THRESHOLD NOT MET OR SMC CONFLICT",    
-                    "Score": max(int(long_score), int(short_score)),    
+                    "Reason": "SCORE BELOW THRESHOLD / NO SETUP",    
+                    "Score": 50,    
                     "Quality": "WEAK"    
                 }    
 
@@ -280,40 +253,36 @@ class SmartMoneyTradingAnalyst:
                 decision = "MARKET LONG 🟢"
                 base_sl = min(recent_low, bull_ob_lvl) if bull_ob_lvl > 0 else recent_low
                 stop_loss = base_sl - (1.0 * current_atr)
-                if stop_loss >= current_price: stop_loss = current_price - (1.5 * current_atr)
+                if stop_loss >= current_price: stop_loss = current_price * 0.995
                 
-                # التحقق من ألا يتجاوز وقف الخسارة النسبة المسموح بها (8%)
                 if (current_price - stop_loss) / current_price > STOP_LOSS_MAX_PCT:
                     stop_loss = current_price * (1.0 - STOP_LOSS_MAX_PCT)
 
                 risk_per_token = current_price - stop_loss    
                 if risk_per_token <= 0: risk_per_token = current_atr * 1.5
 
-                tp1 = current_price + (2.5 * risk_per_token)    
-                tp2 = current_price + (4.0 * risk_per_token)    
-                tp3 = current_price + (6.5 * risk_per_token) 
+                tp1 = current_price + (1.5 * risk_per_token)    
+                tp2 = current_price + (2.5 * risk_per_token)    
             else:    
                 decision = "MARKET SHORT 🔴"
                 base_sl = max(recent_high, bear_ob_lvl) if bear_ob_lvl > 0 else recent_high
                 stop_loss = base_sl + (1.0 * current_atr)
-                if stop_loss <= current_price: stop_loss = current_price + (1.5 * current_atr)
+                if stop_loss <= current_price: stop_loss = current_price * 1.005
                 
-                # التحقق من ألا يتجاوز وقف الخسارة النسبة المسموح بها (8%)
                 if (stop_loss - current_price) / current_price > STOP_LOSS_MAX_PCT:
                     stop_loss = current_price * (1.0 + STOP_LOSS_MAX_PCT)
 
                 risk_per_token = stop_loss - current_price    
                 if risk_per_token <= 0: risk_per_token = current_atr * 1.5
 
-                tp1 = current_price - (2.5 * risk_per_token)    
-                tp2 = current_price - (4.0 * risk_per_token)    
-                tp3 = current_price - (6.5 * risk_per_token)
+                tp1 = current_price - (1.5 * risk_per_token)    
+                tp2 = current_price - (2.5 * risk_per_token)    
 
-            pos_tokens = allowed_risk / risk_per_token    
+            pos_tokens = allowed_risk / risk_per_token if risk_per_token > 0 else 100
             pos_val = pos_tokens * current_price    
-            leverage = max(1, min(5, int(pos_val / account_balance) + 1)) 
+            leverage = 1 if pos_val <= account_balance else 2
 
-            quality_str = "💎 ELITE STATISTICAL SETUP" if final_score >= 88 else "🟢 HIGH PROBABILITY QUANT"
+            quality_str = "🟢 STRONG" if final_score >= 75 else "WEAK"
 
             return {    
                 "Decision": decision,    
@@ -321,28 +290,13 @@ class SmartMoneyTradingAnalyst:
                 "Stop Loss": round(stop_loss, 4),    
                 "TP1": round(tp1, 4),    
                 "TP2": round(tp2, 4),    
-                "TP3": round(tp3, 4),
                 "Score": final_score,    
                 "Quality": quality_str,    
                 "Position Size (USDT)": round(pos_val, 2),    
                 "Leverage": leverage,    
-                "Reason": reason,
-                "Direction": direction,
-                "Trend 1D": "QUANTITATIVE ALIGNED",
-                "Trend 4H": trend_4h,
-                "Trend 1H": trend_1h,
-                "BTC Trend": btc_trend,
-                "Liquidity Sweep": "High Sweep" if sweep_high else ("Low Sweep" if sweep_low else "None"),
-                "BOS": "Bullish" if bos_bull else ("Bearish" if bos_bear else "None"),
-                "MSS": "Bullish" if mss_bull else ("Bearish" if mss_bear else "None"),
-                "Setup Type": setup_type,
-                "Confirmation": "Volume Profile POC & Strict SMC Confluence",
-                "OB Status": ob_status,
-                "FVG Status": fvg_status,
-                "Volume Status": vol_status,
-                "Displacement": disp_status
+                "Reason": reason
             }    
 
         except Exception as e:    
             logger.error(f"[CRITICAL ANALYSIS ERROR] {symbol}: {e}")    
-            return {"Decision": "NO TRADE ⏳", "Reason": "ANALYSIS ERROR HANDLED", "Score": 0, "Quality": "WEAK"}
+            return {"Decision": "NO TRADE ⏳", "Reason": "SCORE BELOW THRESHOLD / NO SETUP", "Score": 50, "Quality": "WEAK"}
