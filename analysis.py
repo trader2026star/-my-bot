@@ -12,7 +12,7 @@ class SmartMoneyTradingAnalyst:
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'} # تخصيص للعقود الآجلة (Futures/Swap)
+            'options': {'defaultType': 'swap'}
         })
 
     def fetch_ohlcv_data(self, symbol, timeframe='4h', limit=100):
@@ -25,18 +25,23 @@ class SmartMoneyTradingAnalyst:
             logger.error(f"خطأ في جلب بيانات {symbol}: {e}")
             return None
 
-    def calculate_atr(self, df, period=14):
+    def calculate_indicators(self, df):
+        # حساب المتوسطات المتحركة والتقلب (ATR)
+        df['sma_fast'] = df['close'].rolling(window=9).mean()
+        df['sma_slow'] = df['close'].rolling(window=21).mean()
+        
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
-        return true_range.rolling(period).mean()
+        df['atr'] = true_range.rolling(14).mean()
+        
+        # حساب متوسط الحجم للتأكد من السيولة
+        df['volume_mean'] = df['volume'].rolling(20).mean()
+        return df
 
     def evaluate_strategy(self, symbol, account_balance=1000.0, risk_percentage=0.01):
-        """
-        خوارزمية تحليل الـ Smart Money (SMC) وحساب الـ Score والـ TPs والـ Leverage
-        """
         df = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=100)
         
         if df is None or len(df) < 30:
@@ -47,24 +52,26 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
-        # حساب مؤشرات بسيطة للاتجاه والتقلب (SMC / Price Action Logic)
-        close = df['close'].iloc[-1]
-        sma_fast = df['close'].rolling(window=9).mean().iloc[-1]
-        sma_slow = df['close'].rolling(window=21).mean().iloc[-1]
-        atr = self.calculate_atr(df).iloc[-1]
-
+        df = self.calculate_indicators(df)
+        last_row = df.iloc[-1]
+        close = last_row['close']
+        atr = last_row['atr']
+        
         if pd.isna(atr) or atr == 0:
             atr = close * 0.01
 
-        # محاكاة منطق فحص الهيكل (Market Structure & Trend)
-        is_bullish = sma_fast > sma_slow
-        
-        # توليد Score عشوائي مدروس أو بناءً على قوة الانفجار السعري (Order Block / FVG Simulation)
-        # لضمان تطابق النواتج الاحترافية المعتادة (بعضها قوي بـ Score 75 وبعضها ضعيف بـ 50)
-        np.random.seed(abs(hash(symbol)) % 10000)
-        has_setup = np.random.choice([True, False], p=[0.4, 0.6]) # 40% فرصة وجود سيتُم قوي
+        sma_fast = last_row['sma_fast']
+        sma_slow = last_row['sma_slow']
+        volume = last_row['volume']
+        volume_mean = last_row['volume_mean']
 
-        if not has_setup:
+        # منطق فحص السوق الحقيقي (بدون عشوائية)
+        # شرط وجود سيولة وفوليوم جيد + تقاطع اتجاهي واضح
+        has_volume_support = volume > (volume_mean * 0.75)
+        is_bullish = sma_fast > sma_slow
+
+        # إذا الشروط غير متوفرة، يتم استبعاد الصفقة بـ NO TRADE بدقة
+        if not has_volume_support or pd.isna(sma_fast) or pd.isna(sma_slow):
             return {
                 "Decision": "NO TRADE ⏳",
                 "Reason": "SCORE BELOW THRESHOLD / NO SETUP",
@@ -72,7 +79,6 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
-        # إذا وُجد سيتُم قوي (Balanced Setup)
         score = 75
         quality = "🟢 STRONG"
         
@@ -93,7 +99,7 @@ class SmartMoneyTradingAnalyst:
             tp2 = round(entry - (3.5 * atr), 5 if close < 1 else 2)
             leverage = 2
 
-        # حساب حجم العقد (Position Size) بناءً على إدارة المخاطر
+        # حساب حجم العقد (Position Size) بناءً على إدارة المخاطر بدقة
         risk_amount = account_balance * risk_percentage
         risk_per_unit = abs(entry - stop_loss)
         
@@ -102,7 +108,6 @@ class SmartMoneyTradingAnalyst:
         else:
             position_size = round(account_balance * 0.2, 2)
 
-        # ضمان حدود معقولة لحجم العقد
         position_size = max(10.0, min(position_size, account_balance * leverage * 2))
 
         return {
