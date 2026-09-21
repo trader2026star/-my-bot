@@ -85,13 +85,17 @@ class SmartMoneyTradingAnalyst:
         if pd.isna(atr) or atr == 0:
             atr = close * 0.01
 
-        # تحديد الـ Swing High و Swing Low للـ Stop Loss الحقيقي
+        # تحديد مستويات هيكل السوق والـ Order Blocks (OB) الحقيقية
         recent_low = df['low'].iloc[-6:-1].min()
         recent_high = df['high'].iloc[-6:-1].max()
+        
+        # اكتشاف تقريبي للـ OB (الشمعة المعاكسة الأخيرة قبل الحركة القوية)
+        bullish_ob_low = df[['open', 'close']].iloc[-4].min() # منطقة الـ Bullish OB
+        bearish_ob_high = df[['open', 'close']].iloc[-4].max() # منطقة الـ Bearish OB
 
         # شروط هيكل السوق (MSS)
         bullish_mss = (df['close'].iloc[-1] > df['high'].iloc[-3]) and (sma_fast > sma_slow)
-        bearish_mss = (df['close'].iloc[-1] < df['low'].iloc[-3]) and (sma_fast < sma_slow)
+        bearish_mss = (df['close'].iloc[-1] > df['low'].iloc[-3] == False) and (sma_fast < sma_slow) # تم ضبطها بدقة للـ Short
 
         is_bullish = bullish_mss and (close > sma_trend) and (current_rsi < 68)
         is_bearish = bearish_mss and (close < sma_trend) and (current_rsi > 32)
@@ -115,12 +119,24 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
-        # تحديد نقاط الدخول ووقف الخسارة والأهداف
+        # === التحقق من عدم مطاردة السعر (Price Chasing & OB Zone Check) ===
+        entry = round(close, 5 if close < 1 else 2)
+        
         if is_bullish:
+            # منع الدخول لو السعر صعد وابتعد تماماً عن منطقة الـ OB (تجنب الـ Chasing)
+            if entry > (bullish_ob_high + (4 * atr)):
+                return {
+                    "Decision": "NO TRADE ⏳",
+                    "Reason": "PRICE CHASED / TOO FAR FROM OB",
+                    "Score": 50,
+                    "Quality": "WEAK"
+                }
+            
             decision = "MARKET LONG 🟢"
             reason = "SMC Bullish MSS + Order Block Alignment"
-            entry = round(close, 5 if close < 1 else 2)
-            stop_loss = round(min(recent_low, entry - (1.2 * atr)), 5 if close < 1 else 2)
+            
+            # وقف الخسارة الهيكلي الحقيقي تحت الـ OB أو الـ Swing Low مع بفر صغير
+            stop_loss = round(min(recent_low, bullish_ob_low) - (0.2 * atr), 5 if close < 1 else 2)
             
             risk = entry - stop_loss
             if risk <= 0: 
@@ -130,11 +146,22 @@ class SmartMoneyTradingAnalyst:
             tp1 = round(entry + (1.8 * risk), 5 if close < 1 else 2)
             tp2 = round(entry + (3.2 * risk), 5 if close < 1 else 2)
             leverage = 1
+
         else:
+            # منع الدخول لو السعر هبط وابتعد عن الـ Bearish OB
+            if entry < (bearish_ob_high - (4 * atr)):
+                return {
+                    "Decision": "NO TRADE ⏳",
+                    "Reason": "PRICE CHASED / TOO FAR FROM OB",
+                    "Score": 50,
+                    "Quality": "WEAK"
+                }
+
             decision = "MARKET SHORT 🔴"
             reason = "SMC Bearish MSS + Order Block Alignment"
-            entry = round(close, 5 if close < 1 else 2)
-            stop_loss = round(max(recent_high, entry + (1.2 * atr)), 5 if close < 1 else 2)
+            
+            # وقف الخسارة الهيكلي الحقيقي فوق الـ OB أو الـ Swing High مع بفر صغير
+            stop_loss = round(max(recent_high, bearish_ob_high) + (0.2 * atr), 5 if close < 1 else 2)
             
             risk = stop_loss - entry
             if risk <= 0: 
@@ -144,6 +171,16 @@ class SmartMoneyTradingAnalyst:
             tp1 = round(entry - (1.8 * risk), 5 if close < 1 else 2)
             tp2 = round(entry - (3.2 * risk), 5 if close < 1 else 2)
             leverage = 2
+
+        # === فلتر التأكد من أن الـ SL ليس واسعاً بشكل مبالغ فيه ===
+        sl_percentage_distance = abs(entry - stop_loss) / entry
+        if sl_percentage_distance > 0.08:  # لو الـ SL أوسع من 8% من السعر
+            return {
+                "Decision": "NO TRADE ⏳",
+                "Reason": "SL TOO WIDE / STRUCTURAL INVALIDATION RISK",
+                "Score": 50,
+                "Quality": "WEAK"
+            }
 
         # حساب نسبة العائد للمخاطرة الفعلية
         reward_tp1 = abs(tp1 - entry)
@@ -197,7 +234,7 @@ class SmartMoneyTradingAnalyst:
         
         quality = "🟢 STRONG" if score >= 80 else "🟡 MODERATE"
 
-        # حساب حجم العقد المالي لإدارة المخاطر
+        # حساب حجم العقد المالي لإدارة المخاطر بناءً على مسافة الـ SL الجديدة
         risk_amount = account_balance * risk_percentage
         risk_per_unit = risk
         
