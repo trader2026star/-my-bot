@@ -33,10 +33,29 @@ class SmartMoneyTradingAnalyst:
         true_range = np.max(ranges, axis=1)
         return true_range.rolling(period).mean()
 
+    def calculate_rsi(self, df, period=14):
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def get_market_trend(self, timeframe='4h'):
+        # فلتر اتجاه البيتكوين العام
+        try:
+            btc_df = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe=timeframe, limit=60)
+            if btc_df is not None and len(btc_df) >= 50:
+                btc_close = btc_df['close'].iloc[-1]
+                btc_sma50 = btc_df['close'].rolling(window=50).mean().iloc[-1]
+                return "BULLISH" if btc_close > btc_sma50 else "BEARISH"
+        except Exception:
+            pass
+        return "NEUTRAL"
+
     def evaluate_strategy(self, symbol, account_balance=1000.0, risk_percentage=0.01):
         df = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=100)
         
-        if df is None or len(df) < 30:
+        if df is None or len(df) < 50:
             return {
                 "Decision": "NO TRADE ⏳",
                 "Reason": "INSUFFICIENT DATA / ERROR",
@@ -47,8 +66,8 @@ class SmartMoneyTradingAnalyst:
         close = df['close'].iloc[-1]
         volume_recent = df['volume'].iloc[-5:].mean()
         
-        # فلتر السيولة: استبعاد العملات ذات التداول الضعيف جداً لتجنب التلاعب
-        if volume_recent * close < 50000:  # الحد الأدنى لحجم التداول (50 ألف دولار مثلاً)
+        # فلتر السيولة
+        if volume_recent * close < 50000:
             return {
                 "Decision": "NO TRADE ⏳",
                 "Reason": "LOW LIQUIDITY / VOLUME",
@@ -58,28 +77,41 @@ class SmartMoneyTradingAnalyst:
 
         sma_fast = df['close'].rolling(window=9).mean().iloc[-1]
         sma_slow = df['close'].rolling(window=21).mean().iloc[-1]
-        sma_trend = df['close'].rolling(window=50).mean().iloc[-1] # فلتر اتجاه إضافي
+        sma_trend = df['close'].rolling(window=50).mean().iloc[-1]
         atr = self.calculate_atr(df).iloc[-1]
+        rsi_series = self.calculate_rsi(df)
+        current_rsi = rsi_series.iloc[-1] if not rsi_series.empty else 50
 
         if pd.isna(atr) or atr == 0:
             atr = close * 0.01
 
-        # شروط فنية حقيقية بدلاً من الاعتماد العشوائي
-        is_bullish = (sma_fast > sma_slow) and (close > sma_trend)
-        is_bearish = (sma_fast < sma_slow) and (close < sma_trend)
+        # فحص اتجاه البيتكوين العام
+        btc_trend = self.get_market_trend(timeframe='4h')
 
-        if not is_bullish and not is_bearish:
+        is_bullish = (sma_fast > sma_slow) and (close > sma_trend) and (current_rsi < 70)
+        is_bearish = (sma_fast < sma_slow) and (close < sma_trend) and (current_rsi > 30)
+
+        # تطبيق فلتر البيتكوين (لو البيتكوين هابط، نمنع الـ Long والعكس)
+        if is_bullish and btc_trend == "BEARISH":
             return {
                 "Decision": "NO TRADE ⏳",
-                "Reason": "NO CLEAR TREND / CONSOLIDATION",
+                "Reason": "BLOCKED BY BTC BEARISH TREND",
+                "Score": 50,
+                "Quality": "WEAK"
+            }
+
+        if not is_bullish and not is_bearish:
+            reason_text = "OVERBOUGHT / OVERSOLD RSI" if (current_rsi >= 70 or current_rsi <= 30) else "NO CLEAR TREND / CONSOLIDATION"
+            return {
+                "Decision": "NO TRADE ⏳",
+                "Reason": reason_text,
                 "Score": 55,
                 "Quality": "WEAK"
             }
 
-        # تحديد نقاط الدخول والأهداف بناءً على الـ ATR
         if is_bullish:
             decision = "MARKET LONG 🟢"
-            reason = "Confirmed Bullish Trend (SMA & Price Action)"
+            reason = "Confirmed Bullish Trend & Healthy RSI"
             entry = round(close, 5 if close < 1 else 2)
             stop_loss = round(entry - (1.5 * atr), 5 if close < 1 else 2)
             tp1 = round(entry + (2.0 * atr), 5 if close < 1 else 2)
@@ -87,7 +119,7 @@ class SmartMoneyTradingAnalyst:
             leverage = 1
         else:
             decision = "MARKET SHORT 🔴"
-            reason = "Confirmed Bearish Trend (SMA & Price Action)"
+            reason = "Confirmed Bearish Trend & Healthy RSI"
             entry = round(close, 5 if close < 1 else 2)
             stop_loss = round(entry + (1.5 * atr), 5 if close < 1 else 2)
             tp1 = round(entry - (2.0 * atr), 5 if close < 1 else 2)
@@ -99,7 +131,7 @@ class SmartMoneyTradingAnalyst:
         reward = abs(tp1 - entry)
         rr_ratio = reward / risk if risk > 0 else 0
 
-        if rr_ratio < 1.2:  # لو العائد أقل من المخاطرة بنسبة مقبولة، نرفض الصفقة
+        if rr_ratio < 1.2:
             return {
                 "Decision": "NO TRADE ⏳",
                 "Reason": "LOW RISK-TO-REWARD RATIO",
@@ -107,8 +139,7 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
-        # تقييم السكور بناءً على قوة الـ R:R وقوة الاتجاه
-        score = 80 if rr_ratio >= 1.5 else 75
+        score = 85 if rr_ratio >= 1.5 else 75
         quality = "🟢 STRONG"
 
         # حساب حجم العقد المالي لإدارة المخاطر
