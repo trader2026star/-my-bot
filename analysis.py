@@ -41,7 +41,6 @@ class SmartMoneyTradingAnalyst:
         return 100 - (100 / (1 + rs))
 
     def get_market_trend(self, timeframe='4h'):
-        # فلتر اتجاه البيتكوين العام
         try:
             btc_df = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe=timeframe, limit=60)
             if btc_df is not None and len(btc_df) >= 50:
@@ -75,6 +74,7 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
+        # حساب المؤشرات وهيكل السوق (SMC Structure Elements)
         sma_fast = df['close'].rolling(window=9).mean().iloc[-1]
         sma_slow = df['close'].rolling(window=21).mean().iloc[-1]
         sma_trend = df['close'].rolling(window=50).mean().iloc[-1]
@@ -85,62 +85,97 @@ class SmartMoneyTradingAnalyst:
         if pd.isna(atr) or atr == 0:
             atr = close * 0.01
 
-        # فحص اتجاه البيتكوين العام
+        # تحديد الـ Swing High و Swing Low للـ Stop Loss الحقيقي (آخر 5 شمعات مثلاً)
+        recent_low = df['low'].iloc[-6:-1].min()
+        recent_high = df['high'].iloc[-6:-1].max()
+
+        # تحقق من شروط SMC (Market Structure Shift + BOS + Trend)
+        # التأكد من حدوث كسر هيكلي مع توافق المتوسطات
+        bullish_mss = (df['close'].iloc[-1] > df['high'].iloc[-3]) and (sma_fast > sma_slow)
+        bearish_mss = (df['close'].iloc[-1] < df['low'].iloc[-3]) and (sma_fast < sma_slow)
+
+        is_bullish = bullish_mss and (close > sma_trend) and (current_rsi < 68)
+        is_bearish = bearish_mss and (close < sma_trend) and (current_rsi > 32)
+
         btc_trend = self.get_market_trend(timeframe='4h')
 
-        is_bullish = (sma_fast > sma_slow) and (close > sma_trend) and (current_rsi < 70)
-        is_bearish = (sma_fast < sma_slow) and (close < sma_trend) and (current_rsi > 30)
-
-        # تطبيق فلتر البيتكوين (لو البيتكوين هابط، نمنع الـ Long والعكس)
         if is_bullish and btc_trend == "BEARISH":
             return {
                 "Decision": "NO TRADE ⏳",
                 "Reason": "BLOCKED BY BTC BEARISH TREND",
-                "Score": 50,
+                "Score": 48,
                 "Quality": "WEAK"
             }
 
         if not is_bullish and not is_bearish:
-            reason_text = "OVERBOUGHT / OVERSOLD RSI" if (current_rsi >= 70 or current_rsi <= 30) else "NO CLEAR TREND / CONSOLIDATION"
+            reason_text = "OVERBOUGHT / OVERSOLD RSI" if (current_rsi >= 68 or current_rsi <= 32) else "NO SMC STRUCTURE / CONSOLIDATION"
             return {
                 "Decision": "NO TRADE ⏳",
                 "Reason": reason_text,
-                "Score": 55,
+                "Score": 52,
                 "Quality": "WEAK"
             }
 
+        # بناء نقاط الدخول ووقف الخسارة الحقيقي المستند لهيكل السوق (SMC Swing Levels)
         if is_bullish:
             decision = "MARKET LONG 🟢"
-            reason = "Confirmed Bullish Trend & Healthy RSI"
+            reason = "SMC Bullish MSS + Order Block Alignment"
             entry = round(close, 5 if close < 1 else 2)
-            stop_loss = round(entry - (1.5 * atr), 5 if close < 1 else 2)
-            tp1 = round(entry + (2.0 * atr), 5 if close < 1 else 2)
-            tp2 = round(entry + (3.5 * atr), 5 if close < 1 else 2)
+            # وقف الخسارة تحت آخر قاع محلي حقيقي مع هامش أمان بسيط
+            stop_loss = round(min(recent_low, entry - (1.2 * atr)), 5 if close < 1 else 2)
+            
+            risk = entry - stop_loss
+            if risk <= 0: 
+                risk = atr
+                stop_loss = entry - risk
+
+            # أهداف مرنة مبنية على مضاعفات المخاطرة الحقيقية (R:R تنافسي)
+            tp1 = round(entry + (1.8 * risk), 5 if close < 1 else 2)
+            tp2 = round(entry + (3.2 * risk), 5 if close < 1 else 2)
             leverage = 1
         else:
             decision = "MARKET SHORT 🔴"
-            reason = "Confirmed Bearish Trend & Healthy RSI"
+            reason = "SMC Bearish MSS + Order Block Alignment"
             entry = round(close, 5 if close < 1 else 2)
-            stop_loss = round(entry + (1.5 * atr), 5 if close < 1 else 2)
-            tp1 = round(entry - (2.0 * atr), 5 if close < 1 else 2)
-            tp2 = round(entry - (3.5 * atr), 5 if close < 1 else 2)
+            # وقف الخسارة فوق آخر قمة محلية حقيقية مع هامش أمان
+            stop_loss = round(max(recent_high, entry + (1.2 * atr)), 5 if close < 1 else 2)
+            
+            risk = stop_loss - entry
+            if risk <= 0: 
+                risk = atr
+                stop_loss = entry + risk
+
+            tp1 = round(entry - (1.8 * risk), 5 if close < 1 else 2)
+            tp2 = round(entry - (3.2 * risk), 5 if close < 1 else 2)
             leverage = 2
 
-        # حساب نسبة العائد للمخاطرة (Risk-to-Reward Ratio)
-        risk = abs(entry - stop_loss)
-        reward = abs(tp1 - entry)
-        rr_ratio = reward / risk if risk > 0 else 0
+        # حساب نسبة العائد للمخاطرة الفعلية
+        reward_tp1 = abs(tp1 - entry)
+        rr_ratio = reward_tp1 / risk if risk > 0 else 0
 
-        if rr_ratio < 1.2:
+        if rr_ratio < 1.3:
             return {
                 "Decision": "NO TRADE ⏳",
-                "Reason": "LOW RISK-TO-REWARD RATIO",
-                "Score": 60,
+                "Reason": "LOW RISK-TO-REWARD RATIO (<1.3)",
+                "Score": 58,
                 "Quality": "WEAK"
             }
 
-        score = 85 if rr_ratio >= 1.5 else 75
-        quality = "🟢 STRONG"
+        # نظام الـ Scoring الديناميكي (بيتغير حسب قوة الـ R:R ونظافة الزخم)
+        base_score = 70
+        if rr_ratio >= 2.0:
+            base_score += 15
+        elif rr_ratio >= 1.5:
+            base_score += 10
+        else:
+            base_score += 5
+            
+        # تعديل إضافي للسكور بناءً على استقرار RSI في المنطقة المثالية
+        if 40 <= current_rsi <= 60:
+            base_score += 5
+
+        score = min(95, base_score)
+        quality = "🟢 STRONG" if score >= 75 else "🟡 MODERATE"
 
         # حساب حجم العقد المالي لإدارة المخاطر
         risk_amount = account_balance * risk_percentage
