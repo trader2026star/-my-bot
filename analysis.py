@@ -45,33 +45,41 @@ class SmartMoneyTradingAnalyst:
             }
 
         close = df['close'].iloc[-1]
+        volume_recent = df['volume'].iloc[-5:].mean()
+        
+        # فلتر السيولة: استبعاد العملات ذات التداول الضعيف جداً لتجنب التلاعب
+        if volume_recent * close < 50000:  # الحد الأدنى لحجم التداول (50 ألف دولار مثلاً)
+            return {
+                "Decision": "NO TRADE ⏳",
+                "Reason": "LOW LIQUIDITY / VOLUME",
+                "Score": 40,
+                "Quality": "WEAK"
+            }
+
         sma_fast = df['close'].rolling(window=9).mean().iloc[-1]
         sma_slow = df['close'].rolling(window=21).mean().iloc[-1]
+        sma_trend = df['close'].rolling(window=50).mean().iloc[-1] # فلتر اتجاه إضافي
         atr = self.calculate_atr(df).iloc[-1]
 
         if pd.isna(atr) or atr == 0:
             atr = close * 0.01
 
-        is_bullish = sma_fast >= sma_slow
+        # شروط فنية حقيقية بدلاً من الاعتماد العشوائي
+        is_bullish = (sma_fast > sma_slow) and (close > sma_trend)
+        is_bearish = (sma_fast < sma_slow) and (close < sma_trend)
 
-        # استخدام نفس منطق الاستقرار والتحليل الإيجابي المعتمد لضمان ظهور الفرص القوية بدقة
-        np.random.seed(abs(hash(symbol)) % 10000)
-        has_setup = np.random.choice([True, False], p=[0.5, 0.5])
-
-        if not has_setup:
+        if not is_bullish and not is_bearish:
             return {
                 "Decision": "NO TRADE ⏳",
-                "Reason": "SCORE BELOW THRESHOLD / NO SETUP",
-                "Score": 50,
+                "Reason": "NO CLEAR TREND / CONSOLIDATION",
+                "Score": 55,
                 "Quality": "WEAK"
             }
 
-        score = 75
-        quality = "🟢 STRONG"
-        
+        # تحديد نقاط الدخول والأهداف بناءً على الـ ATR
         if is_bullish:
             decision = "MARKET LONG 🟢"
-            reason = "Balanced Bullish Setup"
+            reason = "Confirmed Bullish Trend (SMA & Price Action)"
             entry = round(close, 5 if close < 1 else 2)
             stop_loss = round(entry - (1.5 * atr), 5 if close < 1 else 2)
             tp1 = round(entry + (2.0 * atr), 5 if close < 1 else 2)
@@ -79,16 +87,33 @@ class SmartMoneyTradingAnalyst:
             leverage = 1
         else:
             decision = "MARKET SHORT 🔴"
-            reason = "Balanced Bearish Setup"
+            reason = "Confirmed Bearish Trend (SMA & Price Action)"
             entry = round(close, 5 if close < 1 else 2)
             stop_loss = round(entry + (1.5 * atr), 5 if close < 1 else 2)
             tp1 = round(entry - (2.0 * atr), 5 if close < 1 else 2)
             tp2 = round(entry - (3.5 * atr), 5 if close < 1 else 2)
             leverage = 2
 
-        # حساب حجم العقد المالي بدقة تامة لإدارة المخاطر
+        # حساب نسبة العائد للمخاطرة (Risk-to-Reward Ratio)
+        risk = abs(entry - stop_loss)
+        reward = abs(tp1 - entry)
+        rr_ratio = reward / risk if risk > 0 else 0
+
+        if rr_ratio < 1.2:  # لو العائد أقل من المخاطرة بنسبة مقبولة، نرفض الصفقة
+            return {
+                "Decision": "NO TRADE ⏳",
+                "Reason": "LOW RISK-TO-REWARD RATIO",
+                "Score": 60,
+                "Quality": "WEAK"
+            }
+
+        # تقييم السكور بناءً على قوة الـ R:R وقوة الاتجاه
+        score = 80 if rr_ratio >= 1.5 else 75
+        quality = "🟢 STRONG"
+
+        # حساب حجم العقد المالي لإدارة المخاطر
         risk_amount = account_balance * risk_percentage
-        risk_per_unit = abs(entry - stop_loss)
+        risk_per_unit = risk
         
         if risk_per_unit > 0:
             position_size = round((risk_amount / risk_per_unit) * entry / leverage, 2)
