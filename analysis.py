@@ -74,7 +74,7 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
-        # حساب المؤشرات وهيكل السوق (SMC Structure Elements)
+        # حساب المؤشرات وهيكل السوق
         sma_fast = df['close'].rolling(window=9).mean().iloc[-1]
         sma_slow = df['close'].rolling(window=21).mean().iloc[-1]
         sma_trend = df['close'].rolling(window=50).mean().iloc[-1]
@@ -85,12 +85,11 @@ class SmartMoneyTradingAnalyst:
         if pd.isna(atr) or atr == 0:
             atr = close * 0.01
 
-        # تحديد الـ Swing High و Swing Low للـ Stop Loss الحقيقي (آخر 5 شمعات مثلاً)
+        # تحديد الـ Swing High و Swing Low للـ Stop Loss الحقيقي
         recent_low = df['low'].iloc[-6:-1].min()
         recent_high = df['high'].iloc[-6:-1].max()
 
-        # تحقق من شروط SMC (Market Structure Shift + BOS + Trend)
-        # التأكد من حدوث كسر هيكلي مع توافق المتوسطات
+        # شروط هيكل السوق (MSS)
         bullish_mss = (df['close'].iloc[-1] > df['high'].iloc[-3]) and (sma_fast > sma_slow)
         bearish_mss = (df['close'].iloc[-1] < df['low'].iloc[-3]) and (sma_fast < sma_slow)
 
@@ -116,12 +115,11 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
-        # بناء نقاط الدخول ووقف الخسارة الحقيقي المستند لهيكل السوق (SMC Swing Levels)
+        # تحديد نقاط الدخول ووقف الخسارة والأهداف
         if is_bullish:
             decision = "MARKET LONG 🟢"
             reason = "SMC Bullish MSS + Order Block Alignment"
             entry = round(close, 5 if close < 1 else 2)
-            # وقف الخسارة تحت آخر قاع محلي حقيقي مع هامش أمان بسيط
             stop_loss = round(min(recent_low, entry - (1.2 * atr)), 5 if close < 1 else 2)
             
             risk = entry - stop_loss
@@ -129,7 +127,6 @@ class SmartMoneyTradingAnalyst:
                 risk = atr
                 stop_loss = entry - risk
 
-            # أهداف مرنة مبنية على مضاعفات المخاطرة الحقيقية (R:R تنافسي)
             tp1 = round(entry + (1.8 * risk), 5 if close < 1 else 2)
             tp2 = round(entry + (3.2 * risk), 5 if close < 1 else 2)
             leverage = 1
@@ -137,7 +134,6 @@ class SmartMoneyTradingAnalyst:
             decision = "MARKET SHORT 🔴"
             reason = "SMC Bearish MSS + Order Block Alignment"
             entry = round(close, 5 if close < 1 else 2)
-            # وقف الخسارة فوق آخر قمة محلية حقيقية مع هامش أمان
             stop_loss = round(max(recent_high, entry + (1.2 * atr)), 5 if close < 1 else 2)
             
             risk = stop_loss - entry
@@ -161,21 +157,45 @@ class SmartMoneyTradingAnalyst:
                 "Quality": "WEAK"
             }
 
-        # نظام الـ Scoring الديناميكي (بيتغير حسب قوة الـ R:R ونظافة الزخم)
-        base_score = 70
-        if rr_ratio >= 2.0:
-            base_score += 15
-        elif rr_ratio >= 1.5:
-            base_score += 10
-        else:
-            base_score += 5
-            
-        # تعديل إضافي للسكور بناءً على استقرار RSI في المنطقة المثالية
-        if 40 <= current_rsi <= 60:
-            base_score += 5
+        # === نظام تجميع المؤكدات الحقيقي (Multi-Confluence Scoring System) ===
+        confluences_count = 0
 
-        score = min(95, base_score)
-        quality = "🟢 STRONG" if score >= 75 else "🟡 MODERATE"
+        # 1. تأكيد هيكل السوق
+        if (is_bullish and bullish_mss) or (is_bearish and bearish_mss):
+            confluences_count += 1
+
+        # 2. توافق اتجاه السوق العام (BTC Trend)
+        if (is_bullish and btc_trend == "BULLISH") or (is_bearish and btc_trend == "BEARISH"):
+            confluences_count += 1
+
+        # 3. نظافة الزخم وعدم التشبع (RSI Optimal Zone)
+        if 40 <= current_rsi <= 60:
+            confluences_count += 1
+
+        # 4. تأكيد الفوليوم (Volume Expansion vs Average)
+        avg_volume_20 = df['volume'].rolling(window=20).mean().iloc[-1]
+        if volume_recent > avg_volume_20:
+            confluences_count += 1
+
+        # 5. نسبة العائد للمخاطرة (Strong R:R)
+        if rr_ratio >= 2.0:
+            confluences_count += 1
+
+        # اشتراط الحد الأدنى للمؤكدات (على الأقل 3 مؤكدات صحيحة من أصل 5)
+        if confluences_count < 3:
+            return {
+                "Decision": "NO TRADE ⏳",
+                "Reason": f"INSUFFICIENT CONFLUENCES ({confluences_count}/5)",
+                "Score": 55,
+                "Quality": "WEAK"
+            }
+
+        # تدرج السكور بناءً على عدد المؤكدات الحقيقية المجتمعة
+        base_score = 65
+        score = base_score + (confluences_count * 7)
+        score = min(95, score)
+        
+        quality = "🟢 STRONG" if score >= 80 else "🟡 MODERATE"
 
         # حساب حجم العقد المالي لإدارة المخاطر
         risk_amount = account_balance * risk_percentage
