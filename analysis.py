@@ -63,18 +63,15 @@ class ExpertAnalystBot:
         support_zone_low = fib_levels['0.5']
         support_zone_high = fib_levels['0.618']
         
-        # مقاومة مفتاحية (مثلاً مستوى القمة أو 1.0 أو قمة سابقة)
-        key_resistance = fib_levels['1.0'] * 0.98  # بالقرب من القمة
+        # مقاومة مفتاحية (مستوى القمة أو بالقرب منها)
+        key_resistance = fib_levels['1.0'] * 0.98  
         
-        # فلتر الاتجاه العام من الفريم الكبير (مثلاً إغلاق أحدث شمعة يومية أعلى المتوسط المتحرك 50)
+        # فلتر الاتجاه العام من الفريم الكبير
         ma_higher = df_higher['close'].rolling(window=50).mean().iloc[-1]
         trend_is_bullish = df_higher['close'].iloc[-1] > ma_higher
 
         # تطبيق سيناريوهات الخبير المشروطة:
-        # السيناريو الأول: اختراق المقاومة واستمرار الصعود
         breakout_scenario = (close >= key_resistance) and trend_is_bullish
-        
-        # السيناريو الثاني: تصحيح إلى منطقة الدعم الفيبوناتشي (0.5 - 0.618) والارتداد منها
         correction_scenario = (support_zone_low <= close <= support_zone_high) and trend_is_bullish
 
         if not breakout_scenario and not correction_scenario:
@@ -83,38 +80,46 @@ class ExpertAnalystBot:
                 "Reason": "السعر في منطقة حيادية، بانتظار اختبار دعم فيبو أو اختراق المقاومة."
             }
 
-        # بناء خطة التداول الاحترافية بـ 3 أهداف مثل التحليل المدروس
+        # حماية إضافية: منع مطاردة السعر إذا كان مغلقاً قرب القمة تماماً
+        recent_high = df_lower['high'].rolling(window=10).max().iloc[-1]
+        if close >= recent_high * 0.995 and breakout_scenario:
+            return None
+
+        # بناء خطة التداول الاحترافية مع مسافة أمان لوقف الخسارة لتفادي التذبذب
         entry_low = round(support_zone_low if correction_scenario else close * 0.995, 4 if close < 1 else 2)
         entry_high = round(support_zone_high if correction_scenario else close, 4 if close < 1 else 2)
         
-        stop_loss = round(fib_levels['0.382'] * 0.98, 4 if close < 1 else 2)  # وقف الخسارة تحت دعم فيبو أقوى
+        # تعديل وقف الخسارة ليبعد مسافة آمنة ومدروسة تحت القاع أو الدعم الأقوى بمسافة إضافية
+        recent_low = df_lower['low'].rolling(window=10).min().iloc[-1]
+        stop_loss = round(min(fib_levels['0.382'] * 0.97, recent_low * 0.985), 4 if close < 1 else 2)
+        
         risk = entry_high - stop_loss
         
-        # حساب الأهداف بناءً على نسب العائد للمخاطرة
-        tp1 = round(entry_high + (1.2 * risk), 4 if close < 1 else 2)
-        tp2 = round(entry_high + (2.2 * risk), 4 if close < 1 else 2)
+        # حساب الأهداف بناءً على نسب العائد للمخاطرة الآمنة
+        tp1 = round(entry_high + (1.5 * risk), 4 if close < 1 else 2)
+        tp2 = round(entry_high + (2.5 * risk), 4 if close < 1 else 2)
         tp3 = round(entry_high + (3.5 * risk), 4 if close < 1 else 2)
 
         clean_symbol = symbol.split('/')[0]
         scenario_name = "سيناريو 1: اختراق المقاومة واستمرار الصعود 🚀" if breakout_scenario else "سيناريو 2: ارتداد تصحيحي من مناطق دعم فيبوناتشي الذهبية 📊"
 
         report_message = f"""
-تحليل فني احترافي - دمج الفريمات وفيبوناتشي 📊
+تحليل فني احترافي (محدث وآمن) - دمج الفريمات وفيبوناتشي 📊
 
 ${clean_symbol} – صفقات شراء (LONG)
 {scenario_name}
 
 خطة التداول:
 منطقة الدخول: {entry_low} - {entry_high}
-وقف خسارة: {stop_loss}
+وقف خسارة: {stop_loss} (محمي ضد التذبذب اللحظي)
 الهدف الأول (TP1): {tp1}
 الهدف الثاني (TP2): {tp2}
 الهدف الثالث (TP3): {tp3}
 
 ملاحظات التحليل:
-- تم دمج الفريم اليومي مع فريم 15 دقيقة للتأكد من إيجابية الاتجاه العام[span_3](start_span)[span_3](end_span)[span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span).
-- الاعتماد على مستويات تصحيح فيبوناتشي (المنطقة الذهبية بين 0.5 و 0.618) لاختيار مناطق الطلب[span_6](start_span)[span_6](end_span)[span_7](start_span)[span_7](end_span)[span_8](start_span)[span_8](end_span).
-- القرار مبني على سيناريوهات مشروطة بدقة لتفادي التذبذب العشوائي[span_9](start_span)[span_9](end_span)[span_10](start_span)[span_10](end_span)[span_11](start_span)[span_11](end_span).
+- دمج الفريم اليومي مع فريم 15 دقيقة للتأكد من إيجابية الاتجاه العام.
+- الارتكاز على مناطق الطلب الذهبية لفيبوناتشي (0.5 و 0.618).
+- ضبط وقف الخسارة بمسافة أمان كافية لتفادي الفتل الوهمي والتذبذب.
 """
         return {
             "Decision": report_message.strip(),
