@@ -55,6 +55,12 @@ class ExpertAnalystBot:
 
         close = df_lower['close'].iloc[-1]
         
+        # --- إضافة أدوات قياس السيولة والزخم (Volume & Momentum) ---
+        current_volume = df_lower['volume'].iloc[-1]
+        average_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
+        # التحقق من أن حجم التداول يدعم الحركة (وجود سيولة وزخم)
+        has_good_volume = current_volume >= (average_volume * 0.8)
+
         # حساب مستويات فيبوناتشي
         fib_levels, high_p, low_p = self.calculate_fibonacci_levels(df_lower)
         
@@ -76,10 +82,10 @@ class ExpertAnalystBot:
             breakout_scenario = (close >= key_resistance)
             correction_scenario = (support_zone_low <= close <= support_zone_high)
 
-            if not breakout_scenario and not correction_scenario:
+            if not breakout_scenario and not correction_scenario or not has_good_volume:
                 return {
                     "Decision": "NO TRADE ⏳", 
-                    "Reason": "السعر في منطقة حيادية صاعدة، بانتظار اختبار الدعم أو الاختراق."
+                    "Reason": "السعر في منطقة حيادية أو السيولة/الزخم ضعيفون."
                 }
 
             recent_high = df_lower['high'].rolling(window=10).max().iloc[-1]
@@ -97,10 +103,10 @@ class ExpertAnalystBot:
             tp2 = round(entry_high + (2.5 * risk), 4 if close < 1 else 2)
             tp3 = round(entry_high + (3.5 * risk), 4 if close < 1 else 2)
 
-            scenario_name = "سيناريو صاعد 1: اختراق المقاومة واستمرار الصعود 🚀" if breakout_scenario else "سيناريو صاعد 2: ارتداد تصحيحي من دعم فيبوناتشي الذهبي 📊"
+            scenario_name = "سيناريو صاعد 1: اختراق المقاومة وزخم قوي 🚀" if breakout_scenario else "سيناريو صاعد 2: ارتداد تصحيحي من دعم فيبو الذهبي مع تدفق السيولة 📊"
 
             report_message = f"""
-تحليل فني احترافي - دمج الفريمات وفيبوناتشي 📊
+تحليل فني متكامل (فيبو + سيولة وزخم) 📊
 
 ${clean_symbol} – صفقات شراء (LONG) 🟢
 {scenario_name}
@@ -115,6 +121,7 @@ ${clean_symbol} – صفقات شراء (LONG) 🟢
 ملاحظات التحليل:
 - الاتجاه العام يومي صاعد مع دعم فريم 15 دقيقة.
 - الارتكاز على مستويات فيبو الذهبية ودعم الفريمات المتعددة.
+- تأكيد الإشارة بوجود حجم تداول وسيولة تدعم الزخم الإيجابي.
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
@@ -129,10 +136,10 @@ ${clean_symbol} – صفقات شراء (LONG) 🟢
             breakdown_scenario = (close <= key_support)
             rejection_scenario = (resistance_zone_low <= close <= resistance_zone_high)
 
-            if not breakdown_scenario and not rejection_scenario:
+            if not breakdown_scenario and not rejection_scenario or not has_good_volume:
                 return {
                     "Decision": "NO TRADE ⏳", 
-                    "Reason": "السعر في منطقة حيادية هابطة، بانتظار اختبار المقاومة أو كسر الدعم."
+                    "Reason": "السعر حيادي هابط أو السيولة والزخم لا يدعمون الدخول."
                 }
 
             recent_low_val = df_lower['low'].rolling(window=10).min().iloc[-1]
@@ -150,10 +157,10 @@ ${clean_symbol} – صفقات شراء (LONG) 🟢
             tp2 = round(entry_low - (2.5 * risk), 4 if close < 1 else 2)
             tp3 = round(entry_low - (3.5 * risk), 4 if close < 1 else 2)
 
-            scenario_name = "سيناريو هابط 1: كسر الدعم واستمرار الهبوط 📉" if breakdown_scenario else "سيناريو هابط 2: ارتداد بيعي من مناطق المقاومة الفيبوناتشية 📊"
+            scenario_name = "سيناريو هابط 1: كسر الدعم مع ضغط بيعي وزخم 📉" if breakdown_scenario else "سيناريو هابط 2: ارتداد بيعي من المقاومة بوجود سيولة سلبية 📊"
 
             report_message = f"""
-تحليل فني احترافي - دمج الفريمات وفيبوناتشي 📊
+تحليل فني متكامل (فيبو + سيولة وزخم) 📊
 
 ${clean_symbol} – صفقات بيع (SHORT) 🔴
 {scenario_name}
@@ -168,6 +175,7 @@ ${clean_symbol} – صفقات بيع (SHORT) 🔴
 ملاحظات التحليل:
 - الاتجاه العام يومي هابط مع استغلال ارتدادات فريم 15 دقيقة للبيع.
 - الارتكاز على مناطق المقاومة الفيبوناتشية بحماية وقف خسارة آمن.
+- تأكيد حركة السيولة وزخم الهبوط.
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
