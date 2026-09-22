@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import requests
 from flask import Flask
 from analysis import ExpertAnalystBot
 
@@ -13,11 +14,31 @@ app = Flask(__name__)
 API_KEY = os.environ.get("API_KEY", "")
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 
+# مفاتيح تليجرام يتم جلبها من بيئة العمل في رندر (Environment Variables)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
 # تهيئة محرك التحليل
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
 
 def send_telegram_message(message):
+    """إرسال التنبيهات والصفقات الحقيقية مباشرة إلى تليجرام"""
     logger.info(f"Telegram Notification: {message}")
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "Markdown"
+            }
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code != 200:
+                logger.error(f"Failed to send telegram message: {response.text}")
+        except Exception as e:
+            logger.error(f"Error sending message to telegram: {e}")
+    else:
+        logger.warning("Telegram Token or Chat ID is missing in environment variables.")
 
 @app.route('/')
 def home():
