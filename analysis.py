@@ -6,7 +6,9 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 class SmartMoneyTradingAnalyst:
-    def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
+    def __init__(self, exchange_id='bingx', api_key='', secret_key='', timeframe='4h'):
+        self.exchange_id = exchange_id
+        self.timeframe = timeframe  # إضافة الإطار الزمني ديناميكياً ليكون واضحاً في كل تقرير
         exchange_class = getattr(ccxt, exchange_id)
         self.exchange = exchange_class({
             'apiKey': api_key,
@@ -15,9 +17,9 @@ class SmartMoneyTradingAnalyst:
             'options': {'defaultType': 'swap'}
         })
 
-    def fetch_ohlcv_data(self, symbol, timeframe='4h', limit=100):
+    def fetch_ohlcv_data(self, symbol, limit=100):
         try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=self.timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
@@ -40,9 +42,9 @@ class SmartMoneyTradingAnalyst:
         rs = gain / loss
         return 100 - (100 / (1 + rs))
 
-    def get_market_trend(self, timeframe='4h'):
+    def get_market_trend(self):
         try:
-            btc_df = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe=timeframe, limit=60)
+            btc_df = self.fetch_ohlcv_data('BTC/USDT:USDT', limit=60)
             if btc_df is not None and len(btc_df) >= 50:
                 btc_close = btc_df['close'].iloc[-1]
                 btc_sma50 = btc_df['close'].rolling(window=50).mean().iloc[-1]
@@ -52,7 +54,7 @@ class SmartMoneyTradingAnalyst:
         return "NEUTRAL"
 
     def evaluate_strategy(self, symbol, account_balance=1000.0, risk_percentage=0.01):
-        df = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=100)
+        df = self.fetch_ohlcv_data(symbol, limit=100)
         
         if df is None or len(df) < 50:
             return {
@@ -60,13 +62,14 @@ class SmartMoneyTradingAnalyst:
                 "Reason": "INSUFFICIENT DATA / ERROR",
                 "Score": 50,
                 "Quality": "WEAK",
+                "Timeframe": self.timeframe,
                 "Details": "Data Error (< 50 candles)"
             }
 
         close = df['close'].iloc[-1]
         volume_recent = df['volume'].iloc[-5:].mean()
         
-        # فحص السيولة/الفوليوم
+        # فحص السيولة/الفوليوم الأساسي
         has_volume = (volume_recent * close >= 50000)
         
         # حساب المؤشرات وهيكل السوق
@@ -80,26 +83,28 @@ class SmartMoneyTradingAnalyst:
         if pd.isna(atr) or atr == 0:
             atr = close * 0.01
 
-        recent_low = df['low'].iloc[-6:-1].min()
-        recent_high = df['high'].iloc[-6:-1].max()
+        # نطاق السوينغات للتحليل الهيكلي وسحب السيولة المتقدم
+        recent_low = df['low'].iloc[-15:-1].min()
+        recent_high = df['high'].iloc[-15:-1].max()
         
         bullish_ob_low = df[['open', 'close']].iloc[-4].min() 
         bearish_ob_high = df[['open', 'close']].iloc[-4].max() 
 
-        # رصد الشروط الأساسية للـ SMC
-        liquidity_sweep_bull = (df['low'].iloc[-2] < recent_low) and (close > recent_low)
-        liquidity_sweep_bear = (df['high'].iloc[-2] > recent_high) and (close < recent_high)
-        has_liquidity = liquidity_sweep_bull or liquidity_sweep_bear
+        # === تحسين خوارزمية كشف السيولة الحقيقية (Liquidity Sweep / Stop Hunt) ===
+        # رصد ما إذا كان السعر قد كسر القاع أو القمة السابقة ثم ارتد بقوة داخل النطاق
+        liquidity_sweep_bull = (df['low'].iloc[-3:-1].min() < recent_low) and (close > recent_low)
+        liquidity_sweep_bear = (df['high'].iloc[-3:-1].max() > recent_high) and (close < recent_high)
+        has_liquidity = bool(liquidity_sweep_bull or liquidity_sweep_bear)
 
         bullish_mss = (df['close'].iloc[-1] > df['high'].iloc[-3]) and (sma_fast > sma_slow)
         bearish_mss = (df['close'].iloc[-1] < df['low'].iloc[-3]) and (sma_fast < sma_slow)
-        has_mss = bullish_mss or bearish_mss
+        has_mss = bool(bullish_mss or bearish_mss)
 
         # التحقق من هيكل الـ OB و Structure بشكل عام
         has_structure = (close > sma_trend) if bullish_mss else (close < sma_trend if bearish_mss else False)
-        has_ob = True # افتراض وجود نطاق Order Block محلي طالما تحققت الشروط الهيكلية
+        has_ob = True 
 
-        btc_trend = self.get_market_trend(timeframe='4h')
+        btc_trend = self.get_market_trend()
         has_btc_alignment = True
         if bullish_mss and btc_trend == "BEARISH":
             has_btc_alignment = False
@@ -132,8 +137,9 @@ class SmartMoneyTradingAnalyst:
 
         sl_pass = abs(entry - stop_loss) / entry <= 0.08
 
-        # صياغة تفاصيل التقرير بالشكل المطلوب تماماً
+        # صياغة تفاصيل التقرير مع إظهار الإطار الزمني وحالة السيولة المحسنة
         details_report = f"""
+⏱️ Timeframe: {self.timeframe}
 Structure: {'YES' if has_structure else 'NO'}
 OB: {'YES' if has_ob else 'NO'}
 MSS: {'YES' if has_mss else 'NO'}
@@ -144,7 +150,7 @@ Confluence: {confluences_count}/5
 SL: {'PASS' if sl_pass else 'FAIL'}
 """
 
-        # شروط القبول النهائية
+        # شروط القبول النهائية مع دعم مرونة الـ RSI Override في حال سحب السيولة
         is_bullish = bullish_mss and has_structure and has_btc_alignment and (current_rsi < 68 or has_liquidity)
         is_bearish = bearish_mss and has_structure and has_btc_alignment and (current_rsi > 32 or has_liquidity)
 
@@ -154,6 +160,7 @@ SL: {'PASS' if sl_pass else 'FAIL'}
                 "Reason": "LOW LIQUIDITY / VOLUME",
                 "Score": 40,
                 "Quality": "WEAK",
+                "Timeframe": self.timeframe,
                 "Details": details_report
             }
 
@@ -164,6 +171,7 @@ SL: {'PASS' if sl_pass else 'FAIL'}
                 "Reason": reason_text,
                 "Score": 52,
                 "Quality": "WEAK",
+                "Timeframe": self.timeframe,
                 "Details": details_report
             }
 
@@ -173,6 +181,7 @@ SL: {'PASS' if sl_pass else 'FAIL'}
                 "Reason": f"INSUFFICIENT CONFLUENCES ({confluences_count}/5) OR R:R",
                 "Score": 55,
                 "Quality": "WEAK",
+                "Timeframe": self.timeframe,
                 "Details": details_report
             }
 
@@ -197,5 +206,6 @@ SL: {'PASS' if sl_pass else 'FAIL'}
             "Position Size (USDT)": position_size,
             "Leverage": 1 if bullish_mss else 2,
             "Reason": "SMC Setup Confirmed",
+            "Timeframe": self.timeframe,
             "Details": details_report
         }
