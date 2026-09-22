@@ -22,23 +22,25 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
 
 def send_telegram_message(message):
-    """إرسال التنبيهات والصفقات الحقيقية مباشرة إلى تليجرام"""
+    """إرسال التنبيهات والصفقات الحقيقية مباشرة إلى تليجرام كنص عادي لتجنب أخطاء التنسيق"""
     logger.info(f"Telegram Notification: {message}")
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "Markdown"
+                "text": message
+                # تم إزالة parse_mode لضمان عدم تعطل الإرسال بسبب أي رموز خاصة
             }
             response = requests.post(url, json=payload, timeout=10)
-            if response.status_code != 200:
+            if response.status_code == 200:
+                logger.info("Telegram message sent successfully to bot!")
+            else:
                 logger.error(f"Failed to send telegram message: {response.text}")
         except Exception as e:
             logger.error(f"Error sending message to telegram: {e}")
     else:
-        logger.warning("Telegram Token or Chat ID is missing in environment variables.")
+        logger.warning("⚠️ TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is missing in environment variables.")
 
 @app.route('/')
 def home():
