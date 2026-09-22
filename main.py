@@ -14,8 +14,8 @@ app = Flask(__name__)
 API_KEY = os.environ.get("API_KEY", "")
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 
-# ⚠️ بيانات تليجرام مثبتة مباشرة لضمان العمل الفوري بدون أخطاء رندر
-TELEGRAM_TOKEN = "7547051280:AAED8qG4r85xR9qQ47r5E9m5m2m1m0m9m8" # (استبدل هذا السطر بتوكن البوت الحقيقي الخاص بك)
+# ⚠️ تم تثبيت بيانات تليجرام الخاصة بك مباشرة لضمان العمل الفوري
+TELEGRAM_TOKEN = "8523562412:AAFegshLw8TrNcAIdDuLgm3uWc0ao9myMqo"
 TELEGRAM_CHAT_ID = "7695985627"
 
 # تهيئة محرك التحليل
