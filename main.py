@@ -14,15 +14,15 @@ app = Flask(__name__)
 API_KEY = os.environ.get("API_KEY", "")
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 
-# مفاتيح تليجرام يتم جلبها من بيئة العمل في رندر (Environment Variables)
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+# ⚠️ بيانات تليجرام مثبتة مباشرة لضمان العمل الفوري بدون أخطاء رندر
+TELEGRAM_TOKEN = "7547051280:AAED8qG4r85xR9qQ47r5E9m5m2m1m0m9m8" # (استبدل هذا السطر بتوكن البوت الحقيقي الخاص بك)
+TELEGRAM_CHAT_ID = "7695985627"
 
 # تهيئة محرك التحليل
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
 
 def send_telegram_message(message):
-    """إرسال التنبيهات والصفقات الحقيقية مباشرة إلى تليجرام كنص عادي لتجنب أخطاء التنسيق"""
+    """إرسال التنبيهات والصفقات الحقيقية مباشرة إلى تليجرام"""
     logger.info(f"Telegram Notification: {message}")
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
@@ -30,7 +30,6 @@ def send_telegram_message(message):
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message
-                # تم إزالة parse_mode لضمان عدم تعطل الإرسال بسبب أي رموز خاصة
             }
             response = requests.post(url, json=payload, timeout=10)
             if response.status_code == 200:
@@ -40,7 +39,7 @@ def send_telegram_message(message):
         except Exception as e:
             logger.error(f"Error sending message to telegram: {e}")
     else:
-        logger.warning("⚠️ TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is missing in environment variables.")
+        logger.warning("⚠️ TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is missing!")
 
 @app.route('/')
 def home():
