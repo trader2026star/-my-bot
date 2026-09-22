@@ -1,39 +1,3 @@
-import os
-import random
-import logging
-import requests
-from flask import Flask
-from analysis import ExpertAnalystBot
-
-# إعداد السجلات (Logging)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-
-# قراءة مفاتيح تيليجرام بأمان تام من متغيرات البيئة (Render Environment Variables)
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("خطأ: مفاتيح تيليجرام غير مُعرفة في متغيرات البيئة.")
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
-        requests.post(url, json=payload, timeout=30)
-    except Exception as e:
-        logger.error(f"خطأ في الاتصال بخدمة تليجرام: {e}")
-
-API_KEY = os.getenv("API_KEY", "")
-SECRET_KEY = os.getenv("SECRET_KEY", "")
-
-# تهيئة البوت بالاعتماد على كلاس التحليل الخبير والفريم اللحظي 15 دقيقة
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
 
 @app.route('/')
