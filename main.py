@@ -3,7 +3,7 @@ import random
 import logging
 import requests
 from flask import Flask
-from analysis import SmartMoneyTradingAnalyst
+from analysis import WhaleBreakoutAnalyst
 
 # إعداد السجلات (Logging)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,42 +33,61 @@ def send_telegram_message(message):
 API_KEY = os.getenv("API_KEY", "")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
-analyst_engine = SmartMoneyTradingAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
+# تحديث اسم الكلاس ليتطابق تماماً مع ملف analysis.py الجديد
+analyst_engine = WhaleBreakoutAnalyst(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY)
 
 @app.route('/')
 def home():
-    """فحص العملات الحقيقية الأساسية فقط بطريقة عشوائية ومتجددة في كل زيارة"""
+    """فحص العملات وحفظ التقارير وإرسالها عند توفر فرص حقيقية مطابقة للشروط"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
 
-        # استبعاد العملات الوهمية والعقود التجريبية والتركيز على العملات الحقيقية التي تنتهي بـ USDT فقط    
+        # استبعاد العملات الوهمية والتركيز على العملات الحقيقية التي تنتهي بـ USDT فقط    
         all_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]    
             
-        # اختيار عينة آمنة وسريعة (مثلاً 10 عملات حقيقية)    
+        # اختيار عينة آمنة وسريعة (مثلاً 10 عملات حقيقية في كل زيارة)    
         sample_size = min(10, len(all_symbols))    
         symbols_to_scan = random.sample(all_symbols, sample_size)    
             
-        telegram_msg = f"🚨 *Smart Money Rotating Report (BingX)* 🚀\n\n"    
-        html_output = f"<h2>Smart Money Scanner Active 🚀 (Clean Real Coins Batch)</h2>"    
+        html_output = f"<h2>Whale Breakout Scanner Active 🐋 (Clean Real Coins Batch)</h2>"    
+        signals_found = 0
             
         for symbol in symbols_to_scan:    
             html_output += f"<h3>Analysis for {symbol}:</h3><ul>"    
-            telegram_msg += f"📊 *Symbol: {symbol}*\n"    
                 
             try:    
-                result = analyst_engine.evaluate_strategy(symbol=symbol, account_balance=1000.0, risk_percentage=0.01)    
-                for key, value in result.items():    
-                    html_output += f"<li><b>{key}:</b> {value}</li>"    
-                    telegram_msg += f"• *{key}*: {value}\n"    
+                # استدعاء الاستراتيجية الجديدة (تعتمد على symbol فقط)
+                result = analyst_engine.evaluate_strategy(symbol=symbol)    
+                
+                if result and isinstance(result, dict) and "Decision" in result:
+                    decision_val = result["Decision"]
+                    
+                    # إذا كانت النتيجة فرصة حقيقية وليست انتظار
+                    if "NO TRADE" not in decision_val:
+                        signals_found += 1
+                        html_output += f"<li><b>Status:</b> <span style='color:green;'>SIGNAL FOUND 🚀</span></li>"
+                        html_output += f"<li><pre>{decision_val}</pre></li>"
+                        
+                        # إرسال رسالة التنبيه فوراً إلى تليجرام بالتنسيق المطلوب
+                        send_telegram_message(decision_val)
+                    else:
+                        html_output += f"<li><b>Status:</b> NO TRADE ⏳ (Squeeze/Volume condition not met)</li>"
+                else:
+                    html_output += f"<li><b>Status:</b> Insufficient Data or Error</li>"
+
+                for key, value in result.items():
+                    if key != "Decision":
+                        html_output += f"<li><b>{key}:</b> {value}</li>"
+                        
             except Exception as ex:    
                 html_output += f"<li><b>Error:</b> {ex}</li>"    
-                telegram_msg += f"• Error analyzing this coin.\n"    
                     
             html_output += "</ul><hr>"    
-            telegram_msg += "-------------------\n"    
                 
-        send_telegram_message(telegram_msg)    
+        if signals_found == 0:
+            logger.info("تم فحص العينة الحالية، لم يتم رصد صفقات جديدة مطابقة لشروط انضغاط الحيتان.")
+            
         return html_output    
     except Exception as e:    
         error_msg = f"خطأ عام أثناء فحص السوق: {e}"    
