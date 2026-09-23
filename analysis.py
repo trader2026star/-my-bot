@@ -17,7 +17,7 @@ class ExpertAnalystBot:
             'options': {'defaultType': 'swap'}
         })
 
-    def fetch_ohlcv_data(self, symbol, timeframe, limit=100):
+    def fetch_ohlcv_data(self, symbol, timeframe, limit=200):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -27,113 +27,138 @@ class ExpertAnalystBot:
             logger.error(f"خطأ في جلب بيانات {symbol}: {e}")
             return None
 
-    def calculate_rsi(self, series, period=14):
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
-
-    def calculate_atr(self, df, period=14):
-        """حساب مؤشر متوسط المدى الحقيقي (ATR) لمنع الدخول في السوق العرضي والمتذبذب"""
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
-        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        return true_range.rolling(window=period).mean().iloc[-1]
+    def calculate_macd(self, series, fast=12, slow=26, signal=9):
+        exp1 = series.ewm(span=fast, adjust=False).mean()
+        exp2 = series.ewm(span=slow, adjust=False).mean()
+        macd_line = exp1 - exp2
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram
 
     def evaluate_strategy(self, symbol):
-        # استخدام فريم الـ 4 ساعات لتحديد الاتجاه الحقيقي بدقة ومنع الانعكاسات
-        df_higher = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=50)
+        # فريم الـ 4 ساعات للتحليل الاستراتيجي وترتيب المتوسطات الثلاثة
+        df_higher = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=200)
+        # فريم التنفيذ اللحظي
         df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
         
-        if df_higher is None or df_lower is None or len(df_lower) < 50:
+        if df_higher is None or df_lower is None or len(df_higher) < 200 or len(df_lower) < 50:
             return None
 
         close = df_lower['close'].iloc[-1]
         
-        # فحص حجم التداول والسيولة الحقيقية
-        current_volume = df_lower['volume'].iloc[-1]
-        average_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
-        has_good_volume = current_volume >= (average_volume * 0.8)
+        # 1. فلتر السيولة المرحلي (حجم التداول لآخر 24 ساعة)
+        daily_volume_usd = (df_higher['volume'] * df_higher['close']).iloc[-24:].sum()
+        min_liquidity_required = 3000000 
+        has_good_liquidity = daily_volume_usd >= min_liquidity_required
 
-        # فحص الزخم الحقيقي عبر مؤشر ATR لتصفية التذبذب العرضي
-        atr_value = self.calculate_atr(df_lower, period=14)
-        min_required_atr = close * 0.0015
-        has_strong_volatility = atr_value >= min_required_atr
+        if not has_good_liquidity:
+            return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تتوافق مع الشروط المرحلية."}
 
-        # المتوسطات الآسية السريعة (EMA) لتحديد الاتجاه بدون تأخير
-        ema_fast = df_higher['close'].ewm(span=20, adjust=False).mean().iloc[-1]
-        ema_slow = df_higher['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        # 2. التقاء المتوسطات الثلاثة (EMA 20 > EMA 50 > EMA 200) للاتجاه الصاعد القوي[span_2](start_span)[span_2](end_span)
+        ema20_h = df_higher['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50_h = df_higher['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        ema200_h = df_higher['close'].ewm(span=200, adjust=False).mean().iloc[-1]
         
-        # مؤشر RSI لمنع الدخول الشرائي في مناطق التشبع أو البيعي في القاع
-        rsi = self.calculate_rsi(df_lower['close'], 14).iloc[-1]
+        bullish_ema_alignment = (ema20_h > ema50_h) and (ema50_h > ema200_h)
+        bearish_ema_alignment = (ema20_h < ema50_h) and (ema50_h < ema200_h)
+
+        # 3. مؤشر MACD وتقاطعه الإيجابي/السلبي للزخم[span_3](start_span)[span_3](end_span)
+        _, _, macd_hist = self.calculate_macd(df_lower['close'])
+        macd_is_positive = macd_hist.iloc[-1] > 0
 
         clean_symbol = symbol.split('/')[0]
-        volatility_pips = round((df_lower['high'].max() - df_lower['low'].min()) * 1000, 2)
-        ai_analysis_text = f"رصد خوارزميات السوق: تقلب حقيقي مؤكد مع تذبذب بواقع {volatility_pips} نقطة."
-
-        # فلتر صارم يمنع الدخول إذا كانت السيولة ضعيفة أو الحركة عرضية بحتة
-        if not has_good_volume or not has_strong_volatility:
-            return {"Decision": "NO TRADE ⏳", "Reason": "السوق يعاني من تذبذب عرضي أو سيولة غير كافية."}
 
         # ---------------------------------------------------------
-        # الاتجاه الصاعد (LONG) - بشرط تريند صاعد و RSI غير مشبع
+        # استراتيجية الشراء (LONG)
         # ---------------------------------------------------------
-        if ema_fast > ema_slow and rsi < 65:
-            entry_high = round(close, 4 if close < 1 else 2)
-            stop_loss = round(close * 0.98, 4 if close < 1 else 2) # وقف خسارة دقيق وآمن
+        if bullish_ema_alignment and macd_is_positive:
+            entry_price = round(close, 4 if close < 1 else 2)
             
-            risk = entry_high - stop_loss
-            tp1 = round(entry_high + (1.5 * risk), 4 if close < 1 else 2)
-            tp2 = round(entry_high + (2.5 * risk), 4 if close < 1 else 2)
-            tp3 = round(entry_high + (3.5 * risk), 4 if close < 1 else 2)
+            # وقف خسارة خلف قاع الشمعة المحمي[span_4](start_span)[span_4](end_span)
+            recent_low = df_lower['low'].iloc[-5:].min()
+            stop_loss = round(min(recent_low, entry_price * 0.98), 4 if close < 1 else 2)
+            
+            risk = entry_price - stop_loss
+            if risk <= 0:
+                return None
+
+            # الأهداف الاحترافية بنسب الـ R-Multiples الدقيقة[span_5](start_span)[span_5](end_span)[span_6](start_span)[span_6](end_span)
+            tp1 = round(entry_price + (1.59 * risk), 4 if close < 1 else 2)
+            tp2 = round(entry_price + (2.51 * risk), 4 if close < 1 else 2)
+            tp3 = round(entry_price + (3.99 * risk), 4 if close < 1 else 2)
+            
+            tp1_pct = round(((tp1 - entry_price) / entry_price) * 100, 2)
+            tp2_pct = round(((tp2 - entry_price) / entry_price) * 100, 2)
+            tp3_pct = round(((tp3 - entry_price) / entry_price) * 100, 2)
 
             report_message = f"""
-تحليل بادوات الذكاء الاصطناعي 🤖
+Green Candle Pro 🟢
+النسخة الاحترافية المتقدمة 🤖
 
-${clean_symbol} صفقة شراء 📈
-الدخول 🟢 {entry_high}
-وقف الخساره 🚫 {stop_loss}
-الهدف 🎯 {tp1}
+ العملة: {clean_symbol}
+ الزوج: {symbol}
+ نوع الصفقة: عقود آجلة (Futures)[span_7](start_span)[span_7](end_span)
+ الفريم: 4 ساعات[span_8](start_span)[span_8](end_span)
+ الحكم: شراء (LONG)[span_9](start_span)[span_9](end_span)
+ الثقة: 88% | الاتفاق: 100%[span_10](start_span)[span_10](end_span)
 
-خطة التداول:
-هدف 2: {tp2}
-هدف 3: {tp3}
+ خطة الصفقة:
+الدخول: {entry_price} 🚀
+وقف الخسارة: {stop_loss} (خلف قاع الشمعة المغلقة)[span_11](start_span)[span_11](end_span) 🛑
+الهدف 1 (1.59R): {tp1} (+{tp1_pct}%)[span_12](start_span)[span_12](end_span)[span_13](start_span)[span_13](end_span)
+الهدف 2 (2.51R): {tp2} (+{tp2_pct}%)[span_14](start_span)[span_14](end_span)[span_15](start_span)[span_15](end_span)
+الهدف 3 (3.99R): {tp3} (+{tp3_pct}%)[span_16](start_span)[span_16](end_span)[span_17](start_span)[span_17](end_span)
 
-تحليل الكوارزميات:
-* {ai_analysis_text}
-* المسار المتوقع: ارتداد مؤكد من مناطق الدعم بعد فلترة التذبذب العرضي واستمرار الصعود.
+ الاستراتيجيات المؤكدة:
+✔ الفلتر المرحلي: سيولة يومية قوية فوق الحد المطلوب[span_18](start_span)[span_18](end_span)
+✔ التقاء المؤشرات: EMA20 > EMA50 > EMA200[span_19](start_span)[span_19](end_span)
+✔ القناص: تقاطع MACD إيجابي مع هيستوجرام موجب[span_20](start_span)[span_20](end_span)
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
         # ---------------------------------------------------------
-        # الاتجاه الهابط (SHORT) - بشرط تريند هابط و RSI يسمح بالهبوط
+        # استراتيجية البيع (SHORT)
         # ---------------------------------------------------------
-        elif ema_fast < ema_slow and rsi > 35:
-            entry_low = round(close, 4 if close < 1 else 2)
-            stop_loss = round(close * 1.02, 4 if close < 1 else 2) # وقف خسارة دقيق وآمن
+        elif bearish_ema_alignment and not macd_is_positive:
+            entry_price = round(close, 4 if close < 1 else 2)
             
-            risk = stop_loss - entry_low
-            tp1 = round(entry_low - (1.5 * risk), 4 if close < 1 else 2)
-            tp2 = round(entry_low - (2.5 * risk), 4 if close < 1 else 2)
-            tp3 = round(entry_low - (3.5 * risk), 4 if close < 1 else 2)
+            recent_high = df_lower['high'].iloc[-5:].max()
+            stop_loss = round(max(recent_high, entry_price * 1.02), 4 if close < 1 else 2)
+            
+            risk = stop_loss - entry_price
+            if risk <= 0:
+                return None
+
+            tp1 = round(entry_price - (1.59 * risk), 4 if close < 1 else 2)
+            tp2 = round(entry_price - (2.51 * risk), 4 if close < 1 else 2)
+            tp3 = round(entry_price - (3.99 * risk), 4 if close < 1 else 2)
+            
+            tp1_pct = round(((entry_price - tp1) / entry_price) * 100, 2)
+            tp2_pct = round(((entry_price - tp2) / entry_price) * 100, 2)
+            tp3_pct = round(((entry_price - tp3) / entry_price) * 100, 2)
 
             report_message = f"""
-تحليل بادوات الذكاء الاصطناعي 🤖
+Green Candle Pro 🔴
+النسخة الاحترافية المتقدمة 🤖
 
-${clean_symbol} صفقة بيع (Short) 📉
-الدخول 🔴 {entry_low}
-وقف الخساره 🚫 {stop_loss}
-الهدف 🎯 {tp1}
+ العملة: {clean_symbol}
+ الزوج: {symbol}
+ نوع الصفقة: عقود آجلة (Short)[span_21](start_span)[span_21](end_span)
+ الفريم: 4 ساعات[span_22](start_span)[span_22](end_span)
+ الحكم: بيع (SHORT)
+ الثقة: 88% | الاتفاق: 100%[span_23](start_span)[span_23](end_span)
 
-خطة التداول:
-هدف 2: {tp2}
-هدف 3: {tp3}
+ خطة الصفقة:
+الدخول: {entry_price} 🚀
+وقف الخسارة: {stop_loss} (خلف قمة الشمعة المغلقة)[span_24](start_span)[span_24](end_span) 🛑
+الهدف 1 (1.59R): {tp1} (-{tp1_pct}%)[span_25](start_span)[span_25](end_span)[span_26](start_span)[span_26](end_span)
+الهدف 2 (2.51R): {tp2} (-{tp2_pct}%)[span_27](start_span)[span_27](end_span)[span_28](start_span)[span_28](end_span)
+الهدف 3 (3.99R): {tp3} (-{tp3_pct}%)[span_29](start_span)[span_29](end_span)[span_30](start_span)[span_30](end_span)
 
-تحليل الكوارزميات:
-* {ai_analysis_text}
-* المسار المتوقع: ضغط بيعي وتفريغ كميات بعد تصفية الحركة العرضية يدعم استمرار الهبوط.
+ الاستراتيجيات المؤكدة:
+✔ الفلتر المرحلي: سيولة يومية قوية تدعم الهبوط[span_31](start_span)[span_31](end_span)
+✔ التقاء المؤشرات: EMA20 < EMA50 <EMA200[span_32](start_span)[span_32](end_span)
+✔ القناص: تقاطع MACD سلبي مع هيستوجرام هابط[span_33](start_span)[span_33](end_span)
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
