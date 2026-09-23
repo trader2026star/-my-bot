@@ -34,6 +34,14 @@ class ExpertAnalystBot:
         rs = gain / loss
         return 100 - (100 / (1 + rs))
 
+    def calculate_atr(self, df, period=14):
+        """حساب مؤشر متوسط المدى الحقيقي (ATR) لمنع الدخول في السوق العرضي والمتذبذب"""
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        return true_range.rolling(window=period).mean().iloc[-1]
+
     def evaluate_strategy(self, symbol):
         # استخدام فريم الـ 4 ساعات لتحديد الاتجاه الحقيقي بدقة ومنع الانعكاسات
         df_higher = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=50)
@@ -49,6 +57,11 @@ class ExpertAnalystBot:
         average_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
         has_good_volume = current_volume >= (average_volume * 0.8)
 
+        # فحص الزخم الحقيقي عبر مؤشر ATR لتصفية التذبذب العرضي
+        atr_value = self.calculate_atr(df_lower, period=14)
+        min_required_atr = close * 0.0015
+        has_strong_volatility = atr_value >= min_required_atr
+
         # المتوسطات الآسية السريعة (EMA) لتحديد الاتجاه بدون تأخير
         ema_fast = df_higher['close'].ewm(span=20, adjust=False).mean().iloc[-1]
         ema_slow = df_higher['close'].ewm(span=50, adjust=False).mean().iloc[-1]
@@ -58,15 +71,16 @@ class ExpertAnalystBot:
 
         clean_symbol = symbol.split('/')[0]
         volatility_pips = round((df_lower['high'].max() - df_lower['low'].min()) * 1000, 2)
-        ai_analysis_text = f"رصد خوارزميات السوق: تذبذب بواقع {volatility_pips} نقطة مع تأكيد الزخم."
+        ai_analysis_text = f"رصد خوارزميات السوق: تقلب حقيقي مؤكد مع تذبذب بواقع {volatility_pips} نقطة."
+
+        # فلتر صارم يمنع الدخول إذا كانت السيولة ضعيفة أو الحركة عرضية بحتة
+        if not has_good_volume or not has_strong_volatility:
+            return {"Decision": "NO TRADE ⏳", "Reason": "السوق يعاني من تذبذب عرضي أو سيولة غير كافية."}
 
         # ---------------------------------------------------------
         # الاتجاه الصاعد (LONG) - بشرط تريند صاعد و RSI غير مشبع
         # ---------------------------------------------------------
         if ema_fast > ema_slow and rsi < 65:
-            if not has_good_volume:
-                return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم الصعود."}
-
             entry_high = round(close, 4 if close < 1 else 2)
             stop_loss = round(close * 0.98, 4 if close < 1 else 2) # وقف خسارة دقيق وآمن
             
@@ -89,7 +103,7 @@ ${clean_symbol} صفقة شراء 📈
 
 تحليل الكوارزميات:
 * {ai_analysis_text}
-* المسار المتوقع: ارتداد مؤكد من مناطق الدعم واستمرار الصعود.
+* المسار المتوقع: ارتداد مؤكد من مناطق الدعم بعد فلترة التذبذب العرضي واستمرار الصعود.
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
@@ -97,9 +111,6 @@ ${clean_symbol} صفقة شراء 📈
         # الاتجاه الهابط (SHORT) - بشرط تريند هابط و RSI يسمح بالهبوط
         # ---------------------------------------------------------
         elif ema_fast < ema_slow and rsi > 35:
-            if not has_good_volume:
-                return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم الهبوط."}
-
             entry_low = round(close, 4 if close < 1 else 2)
             stop_loss = round(close * 1.02, 4 if close < 1 else 2) # وقف خسارة دقيق وآمن
             
@@ -122,7 +133,7 @@ ${clean_symbol} صفقة بيع (Short) 📉
 
 تحليل الكوارزميات:
 * {ai_analysis_text}
-* المسار المتوقع: ضغط بيعي وتفريغ كميات يدعم استمرار الهبوط.
+* المسار المتوقع: ضغط بيعي وتفريغ كميات بعد تصفية الحركة العرضية يدعم استمرار الهبوط.
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
