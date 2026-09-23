@@ -14,11 +14,11 @@ app = Flask(__name__)
 API_KEY = os.environ.get("API_KEY", "")
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 
-# ⚠️ تم تثبيت بيانات تليجرام الخاصة بك مباشرة لضمان العمل الفوري
+# بيانات تليجرام الخاصة بك
 TELEGRAM_TOKEN = "8523562412:AAFegshLw8TrNcAIdDuLgm3uWc0ao9myMqo"
 TELEGRAM_CHAT_ID = "7695985627"
 
-# تهيئة محرك التحليل
+# تهيئة محرك التحليل بالمنهجية الجديدة
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
 
 def send_telegram_message(message):
@@ -65,7 +65,7 @@ def home():
             except Exception as ex:    
                 logger.error(f"Error in symbol {symbol}: {ex}")
 
-        return f"🤖 Bot is running smoothly! Scanned a batch. Signals found: {signals_found}"
+        return f"🤖 Bot is running smoothly with AI Path Analysis! Scanned a batch. Signals found: {signals_found}"
     except Exception as e:
         return f"Bot is active, loop running: {e}"
 
