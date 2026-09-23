@@ -29,26 +29,21 @@ class ExpertAnalystBot:
 
     def calculate_algorithmic_path_and_targets(self, df):
         """
-        محاكاة تحليل خوارزميات الذكاء الاصطناعي وتتبع مسار صانع السوق:
+        تحليل خوارزميات الذكاء الاصطناعي وتتبع مسار صانع السوق:
         تحديد مستويات التذبذب، مناطق السيولة، ونقاط التحول الرقمية.
         """
         close = df['close'].iloc[-1]
         high_range = df['high'].max()
         low_range = df['low'].min()
         
-        # حساب المسار الخوارزمي المستهدف بناءً على الفلاتر السعرية والتقلبات
         volatility_pips = round((high_range - low_range) * 1000, 2)
-        
-        # مستويات تنبؤية رقمية مبنية على حركة الخوارزميات
         predicted_drop = round(close * 0.985, 4 if close < 1 else 2)
         predicted_pump = round(close * 1.025, 4 if close < 1 else 2)
         
         return volatility_pips, predicted_drop, predicted_pump
 
     def evaluate_strategy(self, symbol):
-        # 1. جلب بيانات الفريم الكبير لتحديد الاتجاه العام
         df_higher = self.fetch_ohlcv_data(symbol, timeframe='1d', limit=50)
-        # 2. جلب بيانات الفريم الصغير للدخول اللحظي
         df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
         
         if df_higher is None or df_lower is None or len(df_lower) < 50:
@@ -56,21 +51,18 @@ class ExpertAnalystBot:
 
         close = df_lower['close'].iloc[-1]
         
-        # تنفيذ أدوات تحليل الذكاء الاصطناعي والخوارزميات
         volatility_pips, pred_drop, pred_pump = self.calculate_algorithmic_path_and_targets(df_lower)
         
         current_volume = df_lower['volume'].iloc[-1]
         average_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
         has_good_volume = current_volume >= (average_volume * 0.8)
 
-        # فلتر الاتجاه العام من الفريم الكبير
         ma_higher = df_higher['close'].rolling(window=50).mean().iloc[-1]
         trend_is_bullish = df_higher['close'].iloc[-1] > ma_higher
         trend_is_bearish = df_higher['close'].iloc[-1] < ma_higher
 
         clean_symbol = symbol.split('/')[0]
 
-        # صياغة تقرير التحليل بخوارزميات الذكاء الاصطناعي ونقاط المسار الرقمي
         ai_analysis_text = f"رصد خوارزميات السوق: تذبذب بواقع {volatility_pips} نقطة مع توقعات مسار رقمي لاختبار نقاط السيولة."
 
         # ---------------------------------------------------------
@@ -80,7 +72,6 @@ class ExpertAnalystBot:
             if not has_good_volume:
                 return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم المسار الخوارزمي الصاعد."}
 
-            entry_low = round(close * 0.995, 4 if close < 1 else 2)
             entry_high = round(close, 4 if close < 1 else 2)
             stop_loss = round(close * 0.975, 4 if close < 1 else 2)
             
@@ -115,7 +106,6 @@ ${clean_symbol} صفقة شراء 📈
                 return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم المسار الخوارزمي الهابط."}
 
             entry_low = round(close, 4 if close < 1 else 2)
-            entry_high = round(close * 1.005, 4 if close < 1 else 2)
             stop_loss = round(close * 1.025, 4 if close < 1 else 2)
             
             risk = stop_loss - entry_low
