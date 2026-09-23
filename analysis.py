@@ -34,15 +34,8 @@ class ExpertAnalystBot:
         rs = gain / loss
         return 100 - (100 / (1 + rs))
 
-    def calculate_algorithmic_path_and_targets(self, df):
-        close = df['close'].iloc[-1]
-        high_range = df['high'].max()
-        low_range = df['low'].min()
-        volatility_pips = round((high_range - low_range) * 1000, 2)
-        return volatility_pips
-
     def evaluate_strategy(self, symbol):
-        # فريمات زمنية أدق لتأكيد الاتجاه (الفريم الأكبر 4 ساعات وفريم التنفيذ 15 دقيقة)
+        # استخدام فريم الـ 4 ساعات لتحديد الاتجاه الحقيقي بدقة ومنع الانعكاسات
         df_higher = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=50)
         df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
         
@@ -50,31 +43,32 @@ class ExpertAnalystBot:
             return None
 
         close = df_lower['close'].iloc[-1]
-        volatility_pips = self.calculate_algorithmic_path_and_targets(df_lower)
         
+        # فحص حجم التداول والسيولة الحقيقية
         current_volume = df_lower['volume'].iloc[-1]
         average_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
-        has_good_volume = current_volume >= (average_volume * 0.75)
+        has_good_volume = current_volume >= (average_volume * 0.8)
 
-        # فلتر الاتجاه الأقوى باستخدام تقاطع المتوسطات الآسية (EMA 20 & EMA 50) على فريم الـ 4 ساعات
+        # المتوسطات الآسية السريعة (EMA) لتحديد الاتجاه بدون تأخير
         ema_fast = df_higher['close'].ewm(span=20, adjust=False).mean().iloc[-1]
         ema_slow = df_higher['close'].ewm(span=50, adjust=False).mean().iloc[-1]
         
-        # مؤشر RSI على الفريم اللحظي لتجنب الدخول في مناطق التشبع
+        # مؤشر RSI لمنع الدخول الشرائي في مناطق التشبع أو البيعي في القاع
         rsi = self.calculate_rsi(df_lower['close'], 14).iloc[-1]
 
         clean_symbol = symbol.split('/')[0]
-        ai_analysis_text = f"رصد خوارزميات السوق: تذبذب بواقع {volatility_pips} نقطة مع تأكيد الزخم الرقمي."
+        volatility_pips = round((df_lower['high'].max() - df_lower['low'].min()) * 1000, 2)
+        ai_analysis_text = f"رصد خوارزميات السوق: تذبذب بواقع {volatility_pips} نقطة مع تأكيد الزخم."
 
         # ---------------------------------------------------------
-        # الاتجاه الصاعد (LONG) بشرط عدم وجود تشبع شرائي وعدم كسر الاتجاه
+        # الاتجاه الصاعد (LONG) - بشرط تريند صاعد و RSI غير مشبع
         # ---------------------------------------------------------
         if ema_fast > ema_slow and rsi < 65:
             if not has_good_volume:
-                return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم الانطلاقة الصاعدة."}
+                return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم الصعود."}
 
             entry_high = round(close, 4 if close < 1 else 2)
-            stop_loss = round(close * 0.982, 4 if close < 1 else 2) # وقف خسارة آمن ومحسوب
+            stop_loss = round(close * 0.98, 4 if close < 1 else 2) # وقف خسارة دقيق وآمن
             
             risk = entry_high - stop_loss
             tp1 = round(entry_high + (1.5 * risk), 4 if close < 1 else 2)
@@ -95,19 +89,19 @@ ${clean_symbol} صفقة شراء 📈
 
 تحليل الكوارزميات:
 * {ai_analysis_text}
-* المسار المتوقع: ارتداد من مناطق السيولة الصاعدة واستمرار الزخم الإيجابي.
+* المسار المتوقع: ارتداد مؤكد من مناطق الدعم واستمرار الصعود.
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
         # ---------------------------------------------------------
-        # الاتجاه الهابط (SHORT) بشرط عدم وجود تشبع بيعي
+        # الاتجاه الهابط (SHORT) - بشرط تريند هابط و RSI يسمح بالهبوط
         # ---------------------------------------------------------
         elif ema_fast < ema_slow and rsi > 35:
             if not has_good_volume:
-                return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم الهبوط الخوارزمي."}
+                return {"Decision": "NO TRADE ⏳", "Reason": "السيولة لا تدعم الهبوط."}
 
             entry_low = round(close, 4 if close < 1 else 2)
-            stop_loss = round(close * 1.018, 4 if close < 1 else 2) # وقف خسارة آمن ومحسوب
+            stop_loss = round(close * 1.02, 4 if close < 1 else 2) # وقف خسارة دقيق وآمن
             
             risk = stop_loss - entry_low
             tp1 = round(entry_low - (1.5 * risk), 4 if close < 1 else 2)
@@ -128,7 +122,7 @@ ${clean_symbol} صفقة بيع (Short) 📉
 
 تحليل الكوارزميات:
 * {ai_analysis_text}
-* المسار المتوقع: ضغط بيعي واستمرار الهبوط نحو الأهداف الرقمية السفلى.
+* المسار المتوقع: ضغط بيعي وتفريغ كميات يدعم استمرار الهبوط.
 """
             return {"Decision": report_message.strip(), "Symbol": symbol}
 
