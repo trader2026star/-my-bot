@@ -28,32 +28,43 @@ class ExpertAnalystBot:
             return None
 
     def evaluate_strategy(self, symbol):
-        # جلب البيانات على فريم الـ 4 ساعات لضمان قوة وثبات الاتجاه
+        # جلب البيانات على فريم الـ 4 ساعات لرصد الانفجارات الحقيقية
         df = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
         
         if df is None or len(df) < 50:
             return None
 
-        # حساب المتوسطات المتحركة الكبرى لتحديد الاتجاه العام
-        df['ma50'] = df['close'].rolling(window=50).mean()
-        df['ma200'] = df['close'].rolling(window=200).mean()
+        # حساب متوسط الفوليوم لآخر 20 شمعة لرصد الانفجارات الحقيقية
+        df['vol_ma20'] = df['volume'].rolling(window=20).mean()
+        
+        # حساب حجم الشمعة (الفرق بين الإغلاق والفتح أو مدى الشمعة)
+        df['candle_body'] = abs(df['close'] - df['open'])
+        df['body_ma20'] = df['candle_body'].rolling(window=20).mean()
 
         current_close = df['close'].iloc[-1]
-        current_open = df['close'].iloc[-1]
+        current_open = df['open'].iloc[-1]
+        current_volume = df['volume'].iloc[-1]
+        vol_ma20 = df['vol_ma20'].iloc[-1]
+        
         prev_low = df['low'].iloc[-2]
         current_low = df['low'].iloc[-1]
-        ma50 = df['ma50'].iloc[-1]
 
-        # شروط الاتجاه الصاعد الآمن (فوق المتوسط وبداية ارتداد من الدعم)
-        is_above_trend = current_close > ma50
-        is_bounce = current_close > df['open'].iloc[-1] and current_low >= prev_low * 0.995
+        # شروط استراتيجية الانفجار (Volume Spike + Breakout Candle)
+        # 1. شمعة خضراء صاعدة قوية
+        is_green_candle = current_close > current_open
+        # 2. الفوليوم أعلى من المتوسط بـ 1.8 مرة على الأقل (حركة حيتان)
+        is_high_volume = current_volume > (vol_ma20 * 1.8)
+        # 3. جسم الشمعة أكبر بوضوح من المتوسط لتأكيد الانفجار
+        is_big_body = df['candle_body'].iloc[-1] > (df['body_ma20'].iloc[-1] * 1.5)
+        
+        # التحقق من أن السعر في منطقة ارتداد هادئة بعد الانفجار (أو في بدايته)
+        is_valid_setup = is_green_candle and is_high_volume and is_big_body
 
-        # إذا لم تتوافر الشروط، نتجاهل العملة بصمت تام بدون رسائل مزعجة
-        if not (is_above_trend and is_bounce):
+        if not is_valid_setup:
             return None
 
-        # وقف خسارة آمن ومحمي خلف القاع السابق لتجنب الذيول الوهمية
-        stop_loss = round(min(prev_low, current_close * 0.96), 4 if current_close < 1 else 2)
+        # وقف خسارة آمن محمي تحت أدنى ذيول الشموع الأخيرة
+        stop_loss = round(min(prev_low, current_close * 0.95), 4 if current_close < 1 else 2)
         
         risk_distance = current_close - stop_loss
         if risk_distance <= 0:
@@ -61,7 +72,7 @@ class ExpertAnalystBot:
 
         risk_pct = round((risk_distance / current_close) * 100, 2)
 
-        # حساب الأهداف بنسب عوائد آمنة ومدروسة (1:2 و 1:3)
+        # حساب الأهداف بناءً على قوة الانفجار (1:2 و 1:3.5)
         tp1 = round(current_close + (2.0 * risk_distance), 4 if current_close < 1 else 2)
         tp2 = round(current_close + (3.5 * risk_distance), 4 if current_close < 1 else 2)
 
@@ -70,23 +81,23 @@ class ExpertAnalystBot:
 
         clean_symbol = symbol.split('/')[0]
 
-        # صياغة التقرير الاحترافي الآمن
+        # صياغة التقرير الاحترافي لانفجار السيولة
         report_message = f"""
-🎯 صفقة اتجاه آمنة ومدروسة (4H) 🚀
-تم رصد ارتداد حقيقي من مناطق السيولة الكبرى!
+🚀 رصد انفجار سيولة ونموذج ناجح (4H) 🎯
+تم رصد شمعة انفجار حقيقية بفوليوم حيتان مطابقة للشروط!
 
 🔹 العملة: ${clean_symbol}
-📊 سعر الدخول: {current_close}
+📊 سعر الدخول / المراقبة: {current_close}
 
 🛑 وقف الخسارة (محمي): {stop_loss} ({risk_pct}%)
 
-🎯 الأهداف الاستثمارية (Risk/Reward):
+🎯 الأهداف الاستثمارية:
 • TP1: {tp1} (+{tp1_pct}%)
 • TP2: {tp2} (+{tp2_pct}%)
 
-💡 مميزات الصفقة:
-✔ التداول مع الاتجاه العام (فريم 4 ساعات)
-✔ وقف خسارة بعيد عن ذيول التصفية
-✔ بناء استثماري هادئ ومستقر
+💡 مميزات الفرصة:
+✔ فوليوم تداول ضخم يفوق المتوسطات
+✔ شمعة انفجار صاعدة على فريم 4 ساعات
+✔ وقف خسارة محمي بعيد عن التذبذب
 """
-        return {"Decision": report_message.strip(), "Symbol": symbol}
+        return {"Decision": report_message.str_strip() if hasattr(report_message, 'str_strip') else report_message.strip(), "Symbol": symbol}
