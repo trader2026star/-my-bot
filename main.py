@@ -19,7 +19,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 TELEGRAM_TOKEN = "8523562412:AAFegshLw8TrNcAIdDuLgm3uWc0ao9myMqo"
 TELEGRAM_CHAT_ID = "7695985627"
 
-# تهيئة محرك التحليل على فريم الـ 4 ساعات الآمن
+# تهيئة محرك التحليل على فريم الـ 4 ساعات بمنطق الانفجار والفوليوم
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='4h')
 
 def send_telegram_message(message):
@@ -46,7 +46,7 @@ def send_telegram_message(message):
 
 @app.route('/')
 def home():
-    """فحص هادئ ومستقر للعملات على فريم الأربع ساعات"""
+    """فحص ذكي للعملات على فريم الأربع ساعات للبحث عن شمعات الانفجار"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
@@ -68,7 +68,7 @@ def home():
             except Exception as ex:    
                 logger.error(f"Error in symbol {symbol}: {ex}")
 
-        return f"🛡️ Safe Trend Bot Running (4H)! Scanned {sample_size} symbols. High-quality signals found: {signals_found}"
+        return f"🚀 Volume Breakout Bot Running (4H)! Scanned {sample_size} symbols. High-quality signals found: {signals_found}"
     except Exception as e:
         return f"Bot is active, loop running: {e}"
 
