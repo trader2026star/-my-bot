@@ -18,7 +18,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 TELEGRAM_TOKEN = "8523562412:AAFegshLw8TrNcAIdDuLgm3uWc0ao9myMqo"
 TELEGRAM_CHAT_ID = "7695985627"
 
-# تهيئة محرك التحليل بالمنهجية الجديدة الصافية
+# تهيئة محرك التحليل
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
 
 def send_telegram_message(message):
@@ -43,13 +43,15 @@ def send_telegram_message(message):
 
 @app.route('/')
 def home():
-    """فحص تلقائي فوري ورد للسيرفر لضمان بقائه نشطاً 24/7 دون أي أخطاء"""
+    """فحص موسع لزيادة فرص التقاط صفقات الانطلاقة المبكرة وإرسالها لتليجرام"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
 
         all_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]    
-        sample_size = min(5, len(all_symbols))    
+        
+        # زيادة عدد العملات المفحوصة في الباتش الواحد إلى 15 عملة لضمان سرعة التقاط الإشارات
+        sample_size = min(15, len(all_symbols))    
         symbols_to_scan = random.sample(all_symbols, sample_size)    
             
         signals_found = 0
@@ -59,13 +61,12 @@ def home():
                 result = analyst_engine.evaluate_strategy(symbol=symbol)    
                 if result and isinstance(result, dict) and "Decision" in result:
                     decision_val = result["Decision"]
-                    # إرسال التوصية فور تطابق شروط الزخم والنسب الجديدة
                     signals_found += 1
                     send_telegram_message(decision_val)
             except Exception as ex:    
                 logger.error(f"Error in symbol {symbol}: {ex}")
 
-        return f"🤖 Bot is running smoothly with Momentum & Risk/Reward Analysis! Scanned a batch. Signals found: {signals_found}"
+        return f"🤖 Bot is running smoothly! Scanned {sample_size} symbols. Signals found and sent: {signals_found}"
     except Exception as e:
         return f"Bot is active, loop running: {e}"
 
