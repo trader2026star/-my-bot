@@ -47,9 +47,6 @@ def send_telegram_message(message):
 @app.route('/')
 def home():
     """فحص ذكي للعملات على فريم الأربع ساعات للبحث عن شمعات الانفجار"""
-    # رسالة اختبار سريعة للتأكد من التيليجرام أول ما يشتغل السيرفر
-    send_telegram_message("🔔 تجربة بوت الانفجار: البوت شغال ومتصل بتليجرام بنجاح!")
-
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
