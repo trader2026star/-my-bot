@@ -17,7 +17,7 @@ class ExpertAnalystBot:
             'options': {'defaultType': 'swap'}
         })
 
-    def fetch_ohlcv_data(self, symbol, timeframe, limit=100):
+    def fetch_ohlcv_data(self, symbol, timeframe, limit=200):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -28,25 +28,34 @@ class ExpertAnalystBot:
             return None
 
     def evaluate_strategy(self, symbol):
-        # جلب البيانات اللحظية والاعتماد كلياً على أدوات الزخم ونسبة التغير
+        # جلب البيانات اللحظية واليومية لتطبيق أدوات الزخم والمتوسطات المتحركة معا
         df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
+        df_higher = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=200)
         
-        if df_lower is None or len(df_lower) < 50:
+        if df_lower is None or df_higher is None or len(df_lower) < 50 or len(df_higher) < 200:
             return None
 
         current_price = df_lower['close'].iloc[-1]
         
-        # 1. فلتر الزخم ونسبة التغير الحقيقي (24h Change)
+        # 1. فلتر الزخم ونسبة التغير (24h Change)
         price_24h_ago = df_lower['close'].iloc[0]
         change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
-        
-        # شرط أساسي: الزخم صاعد وقوي بناءً على نسبة التغير
         has_momentum = change_24h > 3.0  
 
         if not has_momentum:
             return None
 
-        # 2. قياس مسافة وقف الخسارة بدقة تامة بناءً على أدنى قاع سابق
+        # 2. أداة المتوسطات المتحركة (50 و 200) للتأكد أن السعر فوق المتوسطات (اتجاه صاعد حقيقي)[span_1](start_span)[span_1](end_span)
+        ma_50 = df_higher['close'].rolling(window=50).mean().iloc[-1]
+        ma_200 = df_higher['close'].rolling(window=200).mean().iloc[-1]
+        
+        # شرط الاتجاه بناءً على المتوسطات المتحركة (السعر فوق المتوسطات وميول صاعدة)[span_2](start_span)[span_2](end_span)
+        is_above_mas = (current_price > ma_50) and (ma_50 > ma_200)
+
+        if not is_above_mas:
+            return None
+
+        # 3. حساب مسافة وقف الخسارة بدقة خلف أدنى سعر سابق
         recent_low = df_lower['low'].iloc[-10:].min()
         stop_loss = round(min(recent_low, current_price * 0.95), 4 if current_price < 1 else 2)
         
@@ -56,7 +65,7 @@ class ExpertAnalystBot:
 
         risk_pct = round((risk_distance / current_price) * 100, 2)
 
-        # 3. حساب الأهداف بمضاعفات المخاطرة والعائد الصارمة (1:1.8, 1:3.0, 1:4.5)
+        # 4. حساب الأهداف بمضاعفات المخاطرة والعائد الصارمة (1:1.8, 1:3.0, 1:4.5)[span_3](start_span)[span_3](end_span)
         tp1 = round(current_price + (1.8 * risk_distance), 4 if current_price < 1 else 2)
         tp2 = round(current_price + (3.0 * risk_distance), 4 if current_price < 1 else 2)
         tp3 = round(current_price + (4.5 * risk_distance), 4 if current_price < 1 else 2)
@@ -67,31 +76,31 @@ class ExpertAnalystBot:
 
         clean_symbol = symbol.split('/')[0]
 
-        # صياغة التقرير الاحترافي بالمنطق الجديد بالكامل
+        # صياغة التقرير المدمج بأدوات الزخم والمتوسطات المتحركة وإدارة المخاطر
         report_message = f"""
-توصيات كريبتو هاند ⚡
-النسخة الجديدة بالكامل (الزخم وإدارة المخاطرة) 🤖
+توصيات تحليل السوق الشامل ⚡
+(الزخم + المتوسطات المتحركة + إدارة المخاطرة) 🤖
 
 ${clean_symbol} توصية ممتازة 🚀
-الزخم موجود واحتمالية استمرار الحركة قائمة[span_1](start_span)[span_1](end_span).
+الزخم موجود، والسعر فوق المتوسطات المتحركة (اتجاه صاعد مدعوم)[span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span).
 
 📊 بيانات التداول:
 • السعر الحالي: {current_price}
-• التغير 24h: +{round(change_24h, 2)}%[span_2](start_span)[span_2](end_span)
+• التغير 24h: +{round(change_24h, 2)}%[span_6](start_span)[span_6](end_span)
 
 🛑 وقف الخسارة: {stop_loss}
-• المسافة: {risk_pct}%[span_3](start_span)[span_3](end_span)
+• المسافة: {risk_pct}%[span_7](start_span)[span_7](end_span)
 
 🎯 الأهداف (Risk/Reward):
-TP1: {tp1} (1:1.8 | +{tp1_pct}%)[span_4](start_span)[span_4](end_span)
-TP2: {tp2} (1:3.0 | +{tp2_pct}%)[span_5](start_span)[span_5](end_span)
-TP3: {tp3} (1:4.5 | +{tp3_pct}%)[span_6](start_span)[span_6](end_span)
+TP1: {tp1} (1:1.8 | +{tp1_pct}%)[span_8](start_span)[span_8](end_span)
+TP2: {tp2} (1:3.0 | +{tp2_pct}%)[span_9](start_span)[span_9](end_span)
+TP3: {tp3} (1:4.5 | +{tp3_pct}%)[span_10](start_span)[span_10](end_span)
 
-📈 نسب المخاطرة/العائد:
-⚠️ الهدف 1: 1:1.8
-⭐ الهدف 2: 1:3.0
-🔥 الهدف 3: 1:4.5
+📈 أدوات التأكيد المطبقة:
+✔ قياس الزخم ونسبة التغير الإيجابي[span_11](start_span)[span_11](end_span)
+✔ المتوسطات المتحركة (MA 50 & 200): السعر في منطقة الميل الصاعد[span_12](start_span)[span_12](end_span)
+✔ مضاعفات العائد للمخاطرة بدقة[span_13](start_span)[span_13](end_span)
 
-💡 الأهداف الرئيسية مناسبة للسوينج، وللسكالبينج قسم كل هدف إلى 3 أهداف فرعية[span_7](start_span)[span_7](end_span).
+💡 الأهداف الرئيسية مناسبة للسوينج، وللسكالبينج قسم كل هدف إلى 3 أهداف فرعية[span_14](start_span)[span_14](end_span).
 """
         return {"Decision": report_message.strip(), "Symbol": symbol}
