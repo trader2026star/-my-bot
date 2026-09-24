@@ -17,7 +17,7 @@ class ExpertAnalystBot:
             'options': {'defaultType': 'swap'}
         })
 
-    def fetch_ohlcv_data(self, symbol, timeframe, limit=200):
+    def fetch_ohlcv_data(self, symbol, timeframe, limit=100):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -28,79 +28,76 @@ class ExpertAnalystBot:
             return None
 
     def evaluate_strategy(self, symbol):
-        # جلب البيانات اللحظية واليومية لتطبيق أدوات الزخم والمتوسطات المتحركة معا
-        df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
-        df_higher = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=200)
+        # جلب البيانات اللحظية على الفريم المحدد لاكتشاف أول شمعة انطلاق
+        df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=50)
         
-        if df_lower is None or df_higher is None or len(df_lower) < 50 or len(df_higher) < 200:
+        if df_lower is None or len(df_lower) < 30:
             return None
 
-        current_price = df_lower['close'].iloc[-1]
+        current_close = df_lower['close'].iloc[-1]
+        prev_close = df_lower['close'].iloc[-2]
         
-        # 1. فلتر الزخم ونسبة التغير (24h Change)
-        price_24h_ago = df_lower['close'].iloc[0]
-        change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
-        has_momentum = change_24h > 3.0  
+        current_open = df_lower['open'].iloc[-1]
+        current_volume = df_lower['volume'].iloc[-1]
+        avg_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
 
-        if not has_momentum:
+        # 1. شرط "أول شمعة صعود قوية" (شمعة خضراء تبدأ الانطلاقة الآن)
+        is_green_candle = current_close > current_open
+        # أن تكون الشمعة الحالية أكبر وذات زخم بداية مقارنة بالسابقة وبحجم تداول مرتفع مفاجئ
+        body_size = abs(current_close - current_open)
+        avg_body_size = abs(df_lower['close'] - df_lower['open']).rolling(window=10).mean().iloc[-1]
+        
+        # الشروط لاصطياد أول شمعة بدقة بدون تأخير:
+        # - شمعة خضراء صاعدة
+        # - جسم الشمعة أكبر من المتوسط (بداية زخم حقيقي)
+        # - حجم التداول أعلى من المتوسط المتحرك للحجوم (دخول سيولة فورية)
+        is_first_breakout = is_green_candle and (body_size > avg_body_size * 1.2) and (current_volume > avg_volume * 1.5)
+
+        if not is_first_breakout:
             return None
 
-        # 2. أداة المتوسطات المتحركة (50 و 200) للتأكد أن السعر فوق المتوسطات (اتجاه صاعد حقيقي)[span_1](start_span)[span_1](end_span)
-        ma_50 = df_higher['close'].rolling(window=50).mean().iloc[-1]
-        ma_200 = df_higher['close'].rolling(window=200).mean().iloc[-1]
+        # 2. قياس مسافة وقف الخسارة بدقة تحت قاع شمعة الانطلاقة مباشرة
+        stop_loss = round(min(df_lower['low'].iloc[-1], current_close * 0.98), 4 if current_close < 1 else 2)
         
-        # شرط الاتجاه بناءً على المتوسطات المتحركة (السعر فوق المتوسطات وميول صاعدة)[span_2](start_span)[span_2](end_span)
-        is_above_mas = (current_price > ma_50) and (ma_50 > ma_200)
-
-        if not is_above_mas:
-            return None
-
-        # 3. حساب مسافة وقف الخسارة بدقة خلف أدنى سعر سابق
-        recent_low = df_lower['low'].iloc[-10:].min()
-        stop_loss = round(min(recent_low, current_price * 0.95), 4 if current_price < 1 else 2)
-        
-        risk_distance = current_price - stop_loss
+        risk_distance = current_close - stop_loss
         if risk_distance <= 0:
             return None
 
-        risk_pct = round((risk_distance / current_price) * 100, 2)
+        risk_pct = round((risk_distance / current_close) * 100, 2)
 
-        # 4. حساب الأهداف بمضاعفات المخاطرة والعائد الصارمة (1:1.8, 1:3.0, 1:4.5)[span_3](start_span)[span_3](end_span)
-        tp1 = round(current_price + (1.8 * risk_distance), 4 if current_price < 1 else 2)
-        tp2 = round(current_price + (3.0 * risk_distance), 4 if current_price < 1 else 2)
-        tp3 = round(current_price + (4.5 * risk_distance), 4 if current_price < 1 else 2)
+        # 3. حساب الأهداف بمضاعفات المخاطرة والعائد الدقيقة (1:1.8, 1:3.0, 1:4.5)
+        tp1 = round(current_close + (1.8 * risk_distance), 4 if current_close < 1 else 2)
+        tp2 = round(current_close + (3.0 * risk_distance), 4 if current_close < 1 else 2)
+        tp3 = round(current_close + (4.5 * risk_distance), 4 if current_close < 1 else 2)
 
-        tp1_pct = round(((tp1 - current_price) / current_price) * 100, 2)
-        tp2_pct = round(((tp2 - current_price) / current_price) * 100, 2)
-        tp3_pct = round(((tp3 - current_price) / current_price) * 100, 2)
+        tp1_pct = round(((tp1 - current_close) / current_close) * 100, 2)
+        tp2_pct = round(((tp2 - current_close) / current_close) * 100, 2)
+        tp3_pct = round(((tp3 - current_close) / current_close) * 100, 2)
 
         clean_symbol = symbol.split('/')[0]
 
-        # صياغة التقرير المدمج بأدوات الزخم والمتوسطات المتحركة وإدارة المخاطر
+        # صياغة التقرير لاقتناص البدايات المبكرة
         report_message = f"""
-توصيات تحليل السوق الشامل ⚡
-(الزخم + المتوسطات المتحركة + إدارة المخاطرة) 🤖
+قناص البدايات المبكرة ⚡
+(اقتناص العملة من أول شمعة انطلاق) 🤖
 
-${clean_symbol} توصية ممتازة 🚀
-الزخم موجود، والسعر فوق المتوسطات المتحركة (اتجاه صاعد مدعوم)[span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span).
+${clean_symbol} إشارة دخول مبكرة جداً 🚀
+تم رصد أول شمعة صعود بزخم عالي وسيولة مفاجئة!
 
 📊 بيانات التداول:
-• السعر الحالي: {current_price}
-• التغير 24h: +{round(change_24h, 2)}%[span_6](start_span)[span_6](end_span)
+• سعر الدخول المبكر: {current_close}
 
 🛑 وقف الخسارة: {stop_loss}
-• المسافة: {risk_pct}%[span_7](start_span)[span_7](end_span)
+• المسافة: {risk_pct}%
 
 🎯 الأهداف (Risk/Reward):
-TP1: {tp1} (1:1.8 | +{tp1_pct}%)[span_8](start_span)[span_8](end_span)
-TP2: {tp2} (1:3.0 | +{tp2_pct}%)[span_9](start_span)[span_9](end_span)
-TP3: {tp3} (1:4.5 | +{tp3_pct}%)[span_10](start_span)[span_10](end_span)
+TP1: {tp1} (1:1.8 | +{tp1_pct}%)
+TP2: {tp2} (1:3.0 | +{tp2_pct}%)
+TP3: {tp3} (1:4.5 | +{tp3_pct}%)
 
 📈 أدوات التأكيد المطبقة:
-✔ قياس الزخم ونسبة التغير الإيجابي[span_11](start_span)[span_11](end_span)
-✔ المتوسطات المتحركة (MA 50 & 200): السعر في منطقة الميل الصاعد[span_12](start_span)[span_12](end_span)
-✔ مضاعفات العائد للمخاطرة بدقة[span_13](start_span)[span_13](end_span)
-
-💡 الأهداف الرئيسية مناسبة للسوينج، وللسكالبينج قسم كل هدف إلى 3 أهداف فرعية[span_14](start_span)[span_14](end_span).
+✔ اصطياد شمعة الانطلاق الأولى فوراً
+✔ فلتر حجم التداول المفاجئ (Volume Spike)
+✔ إدارة المخاطر الدقيقة ومضاعفات العائد
 """
         return {"Decision": report_message.strip(), "Symbol": symbol}
