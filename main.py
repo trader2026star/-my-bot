@@ -18,7 +18,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 TELEGRAM_TOKEN = "8523562412:AAFegshLw8TrNcAIdDuLgm3uWc0ao9myMqo"
 TELEGRAM_CHAT_ID = "7695985627"
 
-# تهيئة محرك التحليل بالمنهجية الجديدة
+# تهيئة محرك التحليل بالمنهجية الجديدة الصافية
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
 
 def send_telegram_message(message):
@@ -59,13 +59,13 @@ def home():
                 result = analyst_engine.evaluate_strategy(symbol=symbol)    
                 if result and isinstance(result, dict) and "Decision" in result:
                     decision_val = result["Decision"]
-                    if "NO TRADE" not in decision_val:
-                        signals_found += 1
-                        send_telegram_message(decision_val)
+                    # إرسال التوصية فور تطابق شروط الزخم والنسب الجديدة
+                    signals_found += 1
+                    send_telegram_message(decision_val)
             except Exception as ex:    
                 logger.error(f"Error in symbol {symbol}: {ex}")
 
-        return f"🤖 Bot is running smoothly with AI Path Analysis! Scanned a batch. Signals found: {signals_found}"
+        return f"🤖 Bot is running smoothly with Momentum & Risk/Reward Analysis! Scanned a batch. Signals found: {signals_found}"
     except Exception as e:
         return f"Bot is active, loop running: {e}"
 
