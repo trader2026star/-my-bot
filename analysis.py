@@ -28,7 +28,7 @@ class ExpertAnalystBot:
             return None
 
     def evaluate_strategy(self, symbol):
-        # جلب البيانات اللحظية لقياس الزخم والتغير بدقة
+        # جلب البيانات اللحظية والاعتماد كلياً على أدوات الزخم ونسبة التغير
         df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
         
         if df_lower is None or len(df_lower) < 50:
@@ -36,17 +36,17 @@ class ExpertAnalystBot:
 
         current_price = df_lower['close'].iloc[-1]
         
-        # 1. فلتر الزخم ونسبة التغير (مستوحى من أداة المتابعة اللحظية)
+        # 1. فلتر الزخم ونسبة التغير الحقيقي (24h Change)
         price_24h_ago = df_lower['close'].iloc[0]
         change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
         
-        # شرط أن تكون العملة في حالة زخم صاعد نشط وقوي
+        # شرط أساسي: الزخم صاعد وقوي بناءً على نسبة التغير
         has_momentum = change_24h > 3.0  
 
         if not has_momentum:
             return None
 
-        # 2. حساب مسافة وقف الخسارة بدقة خلف أدنى سعر سابق
+        # 2. قياس مسافة وقف الخسارة بدقة تامة بناءً على أدنى قاع سابق
         recent_low = df_lower['low'].iloc[-10:].min()
         stop_loss = round(min(recent_low, current_price * 0.95), 4 if current_price < 1 else 2)
         
@@ -56,7 +56,7 @@ class ExpertAnalystBot:
 
         risk_pct = round((risk_distance / current_price) * 100, 2)
 
-        # 3. حساب الأهداف بناءً على مضاعفات المخاطرة والعائد الدقيقة (1:1.8 ، 1:3.0 ، 1:4.5)[span_1](start_span)[span_1](end_span)
+        # 3. حساب الأهداف بمضاعفات المخاطرة والعائد الصارمة (1:1.8, 1:3.0, 1:4.5)
         tp1 = round(current_price + (1.8 * risk_distance), 4 if current_price < 1 else 2)
         tp2 = round(current_price + (3.0 * risk_distance), 4 if current_price < 1 else 2)
         tp3 = round(current_price + (4.5 * risk_distance), 4 if current_price < 1 else 2)
@@ -67,31 +67,31 @@ class ExpertAnalystBot:
 
         clean_symbol = symbol.split('/')[0]
 
-        # صياغة التقرير الاحترافي المطابق تماماً لنمط التوصيات المطلوب
+        # صياغة التقرير الاحترافي بالمنطق الجديد بالكامل
         report_message = f"""
 توصيات كريبتو هاند ⚡
-النسخة المتقدمة بالزخم وإدارة المخاطرة 🤖
+النسخة الجديدة بالكامل (الزخم وإدارة المخاطرة) 🤖
 
 ${clean_symbol} توصية ممتازة 🚀
-الزخم موجود واحتمالية استمرار الحركة قائمة[span_2](start_span)[span_2](end_span).
+الزخم موجود واحتمالية استمرار الحركة قائمة[span_1](start_span)[span_1](end_span).
 
 📊 بيانات التداول:
 • السعر الحالي: {current_price}
-• التغير 24h: +{round(change_24h, 2)}%[span_3](start_span)[span_3](end_span)
+• التغير 24h: +{round(change_24h, 2)}%[span_2](start_span)[span_2](end_span)
 
 🛑 وقف الخسارة: {stop_loss}
-• المسافة: {risk_pct}%[span_4](start_span)[span_4](end_span)
+• المسافة: {risk_pct}%[span_3](start_span)[span_3](end_span)
 
 🎯 الأهداف (Risk/Reward):
-TP1: {tp1} (1:1.8 | +{tp1_pct}%)[span_5](start_span)[span_5](end_span)
-TP2: {tp2} (1:3.0 | +{tp2_pct}%)[span_6](start_span)[span_6](end_span)
-TP3: {tp3} (1:4.5 | +{tp3_pct}%)[span_7](start_span)[span_7](end_span)
+TP1: {tp1} (1:1.8 | +{tp1_pct}%)[span_4](start_span)[span_4](end_span)
+TP2: {tp2} (1:3.0 | +{tp2_pct}%)[span_5](start_span)[span_5](end_span)
+TP3: {tp3} (1:4.5 | +{tp3_pct}%)[span_6](start_span)[span_6](end_span)
 
 📈 نسب المخاطرة/العائد:
 ⚠️ الهدف 1: 1:1.8
 ⭐ الهدف 2: 1:3.0
 🔥 الهدف 3: 1:4.5
 
-💡 الأهداف الرئيسية مناسبة للسوينج، وللسكالبينج قسم كل هدف إلى 3 أهداف فرعية[span_8](start_span)[span_8](end_span).
+💡 الأهداف الرئيسية مناسبة للسوينج، وللسكالبينج قسم كل هدف إلى 3 أهداف فرعية[span_7](start_span)[span_7](end_span).
 """
         return {"Decision": report_message.strip(), "Symbol": symbol}
