@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import time
 import requests
 from flask import Flask
 from analysis import ExpertAnalystBot
@@ -22,7 +23,7 @@ TELEGRAM_CHAT_ID = "7695985627"
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='4h')
 
 def send_telegram_message(message):
-    """إرسال الصفقات الحقيقية والمدروسة مباشرة إلى تليجرام"""
+    """إرسال الصفقات الحقيقية والمدروسة مباشرة إلى تليجرام مع تأخير لمنع حظر الطلبات"""
     logger.info(f"Telegram Notification: {message}")
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
@@ -32,6 +33,8 @@ def send_telegram_message(message):
                 "text": message
             }
             response = requests.post(url, json=payload, timeout=10)
+            # إضافة فاصل زمني بسيط لمنع خطأ Too Many Requests
+            time.sleep(1.5)
             if response.status_code == 200:
                 logger.info("Telegram message sent successfully to bot!")
             else:
