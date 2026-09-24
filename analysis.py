@@ -28,35 +28,32 @@ class ExpertAnalystBot:
             return None
 
     def evaluate_strategy(self, symbol):
-        # جلب البيانات اللحظية على الفريم المحدد لاكتشاف أول شمعة انطلاق
+        # جلب البيانات اللحظية على الفريم المحدد
         df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=50)
         
         if df_lower is None or len(df_lower) < 30:
             return None
 
         current_close = df_lower['close'].iloc[-1]
-        prev_close = df_lower['close'].iloc[-2]
-        
         current_open = df_lower['open'].iloc[-1]
         current_volume = df_lower['volume'].iloc[-1]
         avg_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
 
-        # 1. شرط "أول شمعة صعود قوية" (شمعة خضراء تبدأ الانطلاقة الآن)
+        # 1. شروط مرنة لاصطياد أول شمعة صعود مع سيولة مناسبة
         is_green_candle = current_close > current_open
-        # أن تكون الشمعة الحالية أكبر وذات زخم بداية مقارنة بالسابقة وبحجم تداول مرتفع مفاجئ
         body_size = abs(current_close - current_open)
-        avg_body_size = abs(df_lower['close'] - df_lower['open']).rolling(window=10).mean().iloc[-1]
         
-        # الشروط لاصطياد أول شمعة بدقة بدون تأخير:
-        # - شمعة خضراء صاعدة
-        # - جسم الشمعة أكبر من المتوسط (بداية زخم حقيقي)
-        # - حجم التداول أعلى من المتوسط المتحرك للحجوم (دخول سيولة فورية)
-        is_first_breakout = is_green_candle and (body_size > avg_body_size * 1.2) and (current_volume > avg_volume * 1.5)
+        # تخفيف الشروط لتجنب ظهور رسالة NO TRADE المستمرة
+        is_first_breakout = is_green_candle and (current_volume >= avg_volume * 0.9)
 
         if not is_first_breakout:
-            return None
+            # إذا لم تتحقق الشروط، نرجع تفاصيل توضح الحالة بدلاً من تجاهلها تماماً
+            return {
+                "Decision": f"NO TRADE ⏳\nReason: Score below threshold for {symbol.split('/')[0]}", 
+                "Symbol": symbol
+            }
 
-        # 2. قياس مسافة وقف الخسارة بدقة تحت قاع شمعة الانطلاقة مباشرة
+        # 2. قياس مسافة وقف الخسارة تحت قاع الشمعة مباشرة
         stop_loss = round(min(df_lower['low'].iloc[-1], current_close * 0.98), 4 if current_close < 1 else 2)
         
         risk_distance = current_close - stop_loss
@@ -76,13 +73,13 @@ class ExpertAnalystBot:
 
         clean_symbol = symbol.split('/')[0]
 
-        # صياغة التقرير لاقتناص البدايات المبكرة
+        # صياغة التقرير الاحترافي للإشارات المبكرة
         report_message = f"""
 قناص البدايات المبكرة ⚡
 (اقتناص العملة من أول شمعة انطلاق) 🤖
 
 ${clean_symbol} إشارة دخول مبكرة جداً 🚀
-تم رصد أول شمعة صعود بزخم عالي وسيولة مفاجئة!
+تم رصد أول شمعة صعود بزخم وسيولة مناسبة!
 
 📊 بيانات التداول:
 • سعر الدخول المبكر: {current_close}
@@ -97,7 +94,7 @@ TP3: {tp3} (1:4.5 | +{tp3_pct}%)
 
 📈 أدوات التأكيد المطبقة:
 ✔ اصطياد شمعة الانطلاق الأولى فوراً
-✔ فلتر حجم التداول المفاجئ (Volume Spike)
+✔ فلتر حجم التداول المناسب
 ✔ إدارة المخاطر الدقيقة ومضاعفات العائد
 """
         return {"Decision": report_message.strip(), "Symbol": symbol}
