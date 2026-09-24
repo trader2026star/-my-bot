@@ -23,7 +23,7 @@ TELEGRAM_CHAT_ID = "7695985627"
 analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='4h')
 
 def send_telegram_message(message):
-    """إرسال الصفقات الحقيقية والمدروسة مباشرة إلى تليجرام مع تأخير لمنع حظر الطلبات"""
+    """إرسال التقرير بالكامل كرسالة واحدة متكاملة لتفادي حظر تيليجرام"""
     logger.info(f"Telegram Notification: {message}")
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
@@ -33,8 +33,8 @@ def send_telegram_message(message):
                 "text": message
             }
             response = requests.post(url, json=payload, timeout=10)
-            # إضافة فاصل زمني بسيط لمنع خطأ Too Many Requests
-            time.sleep(1.5)
+            # فاصل زمني أمان بعد الإرسال لمنع حظر الطلبات
+            time.sleep(3)
             if response.status_code == 200:
                 logger.info("Telegram message sent successfully to bot!")
             else:
