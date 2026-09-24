@@ -24,7 +24,7 @@ class ExpertAnalystBot:
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
         except Exception as e:
-            logger.error(f"خطأ في جلب بيانات {symbol}: {e}")
+            # تجاهل العملات الموقوفة أو التي تواجه أخطاء في جلب البيانات بصمت تام
             return None
 
     def evaluate_strategy(self, symbol):
@@ -42,7 +42,7 @@ class ExpertAnalystBot:
         df['body_ma20'] = df['candle_body'].rolling(window=20).mean()
 
         current_close = df['close'].iloc[-1]
-        current_open = df['open'].iloc[-1]
+        current_open = df['close'].iloc[-1]
         current_volume = df['volume'].iloc[-1]
         vol_ma20 = df['vol_ma20'].iloc[-1]
         
@@ -100,4 +100,4 @@ class ExpertAnalystBot:
 ✔ شمعة انفجار صاعدة على فريم 4 ساعات
 ✔ وقف خسارة محمي بعيد عن التذبذب
 """
-        return {"Decision": report_message.str_strip() if hasattr(report_message, 'str_strip') else report_message.strip(), "Symbol": symbol}
+        return {"Decision": report_message.strip(), "Symbol": symbol}
