@@ -6,7 +6,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 class ExpertAnalystBot:
-    def __init__(self, exchange_id='bingx', api_key='', secret_key='', timeframe='15m'):
+    def __init__(self, exchange_id='bingx', api_key='', secret_key='', timeframe='4h'):
         self.exchange_id = exchange_id
         self.timeframe = timeframe 
         exchange_class = getattr(ccxt, exchange_id)
@@ -28,33 +28,32 @@ class ExpertAnalystBot:
             return None
 
     def evaluate_strategy(self, symbol):
-        # جلب البيانات اللحظية على الفريم المحدد
-        df_lower = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=50)
+        # جلب البيانات على فريم الـ 4 ساعات لضمان قوة وثبات الاتجاه
+        df = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=100)
         
-        if df_lower is None or len(df_lower) < 30:
+        if df is None or len(df) < 50:
             return None
 
-        current_close = df_lower['close'].iloc[-1]
-        current_open = df_lower['open'].iloc[-1]
-        current_volume = df_lower['volume'].iloc[-1]
-        avg_volume = df_lower['volume'].rolling(window=20).mean().iloc[-1]
+        # حساب المتوسطات المتحركة الكبرى لتحديد الاتجاه العام
+        df['ma50'] = df['close'].rolling(window=50).mean()
+        df['ma200'] = df['close'].rolling(window=200).mean()
 
-        # 1. شروط مرنة لاصطياد أول شمعة صعود مع سيولة مناسبة
-        is_green_candle = current_close > current_open
-        body_size = abs(current_close - current_open)
-        
-        # تخفيف الشروط لتجنب ظهور رسالة NO TRADE المستمرة
-        is_first_breakout = is_green_candle and (current_volume >= avg_volume * 0.9)
+        current_close = df['close'].iloc[-1]
+        current_open = df['close'].iloc[-1]
+        prev_low = df['low'].iloc[-2]
+        current_low = df['low'].iloc[-1]
+        ma50 = df['ma50'].iloc[-1]
 
-        if not is_first_breakout:
-            # إذا لم تتحقق الشروط، نرجع تفاصيل توضح الحالة بدلاً من تجاهلها تماماً
-            return {
-                "Decision": f"NO TRADE ⏳\nReason: Score below threshold for {symbol.split('/')[0]}", 
-                "Symbol": symbol
-            }
+        # شروط الاتجاه الصاعد الآمن (فوق المتوسط وبداية ارتداد من الدعم)
+        is_above_trend = current_close > ma50
+        is_bounce = current_close > df['open'].iloc[-1] and current_low >= prev_low * 0.995
 
-        # 2. قياس مسافة وقف الخسارة تحت قاع الشمعة مباشرة
-        stop_loss = round(min(df_lower['low'].iloc[-1], current_close * 0.98), 4 if current_close < 1 else 2)
+        # إذا لم تتوافر الشروط، نتجاهل العملة بصمت تام بدون رسائل مزعجة
+        if not (is_above_trend and is_bounce):
+            return None
+
+        # وقف خسارة آمن ومحمي خلف القاع السابق لتجنب الذيول الوهمية
+        stop_loss = round(min(prev_low, current_close * 0.96), 4 if current_close < 1 else 2)
         
         risk_distance = current_close - stop_loss
         if risk_distance <= 0:
@@ -62,39 +61,32 @@ class ExpertAnalystBot:
 
         risk_pct = round((risk_distance / current_close) * 100, 2)
 
-        # 3. حساب الأهداف بمضاعفات المخاطرة والعائد الدقيقة (1:1.8, 1:3.0, 1:4.5)
-        tp1 = round(current_close + (1.8 * risk_distance), 4 if current_close < 1 else 2)
-        tp2 = round(current_close + (3.0 * risk_distance), 4 if current_close < 1 else 2)
-        tp3 = round(current_close + (4.5 * risk_distance), 4 if current_close < 1 else 2)
+        # حساب الأهداف بنسب عوائد آمنة ومدروسة (1:2 و 1:3)
+        tp1 = round(current_close + (2.0 * risk_distance), 4 if current_close < 1 else 2)
+        tp2 = round(current_close + (3.5 * risk_distance), 4 if current_close < 1 else 2)
 
         tp1_pct = round(((tp1 - current_close) / current_close) * 100, 2)
         tp2_pct = round(((tp2 - current_close) / current_close) * 100, 2)
-        tp3_pct = round(((tp3 - current_close) / current_close) * 100, 2)
 
         clean_symbol = symbol.split('/')[0]
 
-        # صياغة التقرير الاحترافي للإشارات المبكرة
+        # صياغة التقرير الاحترافي الآمن
         report_message = f"""
-قناص البدايات المبكرة ⚡
-(اقتناص العملة من أول شمعة انطلاق) 🤖
+🎯 صفقة اتجاه آمنة ومدروسة (4H) 🚀
+تم رصد ارتداد حقيقي من مناطق السيولة الكبرى!
 
-${clean_symbol} إشارة دخول مبكرة جداً 🚀
-تم رصد أول شمعة صعود بزخم وسيولة مناسبة!
+🔹 العملة: ${clean_symbol}
+📊 سعر الدخول: {current_close}
 
-📊 بيانات التداول:
-• سعر الدخول المبكر: {current_close}
+🛑 وقف الخسارة (محمي): {stop_loss} ({risk_pct}%)
 
-🛑 وقف الخسارة: {stop_loss}
-• المسافة: {risk_pct}%
+🎯 الأهداف الاستثمارية (Risk/Reward):
+• TP1: {tp1} (+{tp1_pct}%)
+• TP2: {tp2} (+{tp2_pct}%)
 
-🎯 الأهداف (Risk/Reward):
-TP1: {tp1} (1:1.8 | +{tp1_pct}%)
-TP2: {tp2} (1:3.0 | +{tp2_pct}%)
-TP3: {tp3} (1:4.5 | +{tp3_pct}%)
-
-📈 أدوات التأكيد المطبقة:
-✔ اصطياد شمعة الانطلاق الأولى فوراً
-✔ فلتر حجم التداول المناسب
-✔ إدارة المخاطر الدقيقة ومضاعفات العائد
+💡 مميزات الصفقة:
+✔ التداول مع الاتجاه العام (فريم 4 ساعات)
+✔ وقف خسارة بعيد عن ذيول التصفية
+✔ بناء استثماري هادئ ومستقر
 """
         return {"Decision": report_message.strip(), "Symbol": symbol}
