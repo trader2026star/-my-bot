@@ -42,7 +42,7 @@ class ExpertAnalystBot:
         df['body_ma20'] = df['candle_body'].rolling(window=20).mean()
 
         current_close = df['close'].iloc[-1]
-        current_open = df['close'].iloc[-1]
+        current_open = df['open'].iloc[-1]  # تم تصحيحها هنا بنجاح لتأخذ سعر الفتح الحقيقي
         current_volume = df['volume'].iloc[-1]
         vol_ma20 = df['vol_ma20'].iloc[-1]
         
@@ -71,10 +71,14 @@ class ExpertAnalystBot:
             return None
 
         risk_pct = round((risk_distance / current_close) * 100, 2)
+        
+        # حماية إضافية: إذا كانت المسافة أكبر من 6% نتجنب الصفقة لتقليل المخاطر
+        if risk_pct > 6.0:
+            return None
 
-        # حساب الأهداف بناءً على قوة الانفجار (1:2 و 1:3.5)
-        tp1 = round(current_close + (2.0 * risk_distance), 4 if current_close < 1 else 2)
-        tp2 = round(current_close + (3.5 * risk_distance), 4 if current_close < 1 else 2)
+        # حساب الأهداف بناءً على قوة الانفجار (نسبة عائد ممتازة 1:2.2 و 1:3.8)
+        tp1 = round(current_close + (2.2 * risk_distance), 4 if current_close < 1 else 2)
+        tp2 = round(current_close + (3.8 * risk_distance), 4 if current_close < 1 else 2)
 
         tp1_pct = round(((tp1 - current_close) / current_close) * 100, 2)
         tp2_pct = round(((tp2 - current_close) / current_close) * 100, 2)
@@ -92,8 +96,8 @@ class ExpertAnalystBot:
 🛑 وقف الخسارة (محمي): {stop_loss} ({risk_pct}%)
 
 🎯 الأهداف الاستثمارية:
-• TP1: {tp1} (+{tp1_pct}%)
-• TP2: {tp2} (+{tp2_pct}%)
+• TP1: {tp1} (+{tp1_pct}%) [Risk/Reward 1:2.2]
+• TP2: {tp2} (+{tp2_pct}%) [Risk/Reward 1:3.8]
 
 💡 مميزات الفرصة:
 ✔ فوليوم تداول ضخم يفوق المتوسطات
