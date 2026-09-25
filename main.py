@@ -125,23 +125,30 @@ def send_telegram_message(message):
 
 
 def bot_worker():
-    logger.info("بدء تشغيل حلقة فحص السوق...")
+    logger.info("بدء تشغيل حلقة فحص السوق الشامل...")
     bot = ExpertAnalystBot(exchange_id='bingx')
     
-    # قائمة العملات التي يتم فحصها
-    symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 'ADA/USDT:USDT', 'AVAX/USDT:USDT']
+    # قائمة موسعة تضم أشهر وأهم عملات الفيوتشرز على المنصة
+    symbols = [
+        'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 
+        'ADA/USDT:USDT', 'AVAX/USDT:USDT', 'DOGE/USDT:USDT', 'LINK/USDT:USDT', 
+        'DOT/USDT:USDT', 'MATIC/USDT:USDT', 'NEAR/USDT:USDT', 'UNI/USDT:USDT', 
+        'FET/USDT:USDT', 'RNDR/USDT:USDT', 'INJ/USDT:USDT', 'SUI/USDT:USDT', 
+        'APT/USDT:USDT', 'ARBI/USDT:USDT', 'OP/USDT:USDT', 'PEPE/USDT:USDT', 
+        'SHIB/USDT:USDT', 'WIF/USDT:USDT', 'RENDER/USDT:USDT', 'TIA/USDT:USDT'
+    ]
     
     while True:
         try:
-            logger.info("جاري فحص العملات...")
+            logger.info("جاري فحص قائمة العملات الموسعة...")
             for symbol in symbols:
                 signal = bot.evaluate_strategy(symbol)
                 if signal:
                     send_telegram_message(signal)
                     logger.info(f"تم إرسال تنبيه للعملة: {symbol}")
-                time.sleep(3)
+                time.sleep(2) # فاصل زمني آمن بين كل عملة والأخرى
             
-            # الانتظار لمدة 30 دقيقة قبل إعادة الفحص
+            # الانتظار لمدة 30 دقيقة قبل إعادة الفحص لدورة الشموع الجديدة
             time.sleep(1800) 
         except Exception as e:
             logger.error(f"حدث خطأ في حلقة الفحص: {e}")
@@ -149,12 +156,10 @@ def bot_worker():
 
 
 if __name__ == "__main__":
-    # 1. تشغيل سيرفر الويب في الخلفية لإرضاء قيود Render المجاني
     t_web = threading.Thread(target=run_flask)
     t_web.start()
     
-    # 2. تشغيل بوت فحص السوق وإرسال التنبيهات في خلفية منفصلة
     t_bot = threading.Thread(target=bot_worker)
     t_bot.start()
     
-    logger.info("تم تشغيل السيرفر والبوت بنجاح تام.")
+    logger.info("تم تشغيل السيرفر وبوت الفحص الموسع بنجاح تام.")
