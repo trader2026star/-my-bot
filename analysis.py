@@ -5,95 +5,207 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
 class ExpertAnalystBot:
+
     def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
         self.exchange_id = exchange_id
+
         exchange_class = getattr(ccxt, exchange_id)
+
         self.exchange = exchange_class({
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'}
+            'options': {
+                'defaultType': 'swap'
+            }
         })
 
-    def fetch_ohlcv_data(self, symbol, timeframe, limit=100):
+    # =========================================================
+    # DATA
+    # =========================================================
+
+    def fetch_ohlcv_data(self, symbol, timeframe, limit=150):
         try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            ohlcv = self.exchange.fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                limit=limit
+            )
+
+            if not ohlcv or len(ohlcv) < 30:
+                return None
+
+            df = pd.DataFrame(
+                ohlcv,
+                columns=[
+                    'timestamp',
+                    'open',
+                    'high',
+                    'low',
+                    'close',
+                    'volume'
+                ]
+            )
+
+            df['timestamp'] = pd.to_datetime(
+                df['timestamp'],
+                unit='ms'
+            )
+
+            numeric_columns = [
+                'open',
+                'high',
+                'low',
+                'close',
+                'volume'
+            ]
+
+            for col in numeric_columns:
+                df[col] = pd.to_numeric(
+                    df[col],
+                    errors='coerce'
+                )
+
+            df = df.dropna().reset_index(drop=True)
+
             return df
+
         except Exception as e:
+            logger.warning(
+                f"OHLCV error {symbol} {timeframe}: {e}"
+            )
             return None
 
-    def evaluate_strategy(self, symbol):
-        # 1. فحص الاتجاه العام على فريم 4 ساعات (تأكيد سيولة الحيتان والاتجاه القوي)
-        df_4h = self.fetch_ohlcv_data(symbol, timeframe='4h', limit=50)
-        if df_4h is None or len(df_4h) < 30:
-            return None
+    # =========================================================
+    # INDICATORS
+    # =========================================================
 
-        df_4h['vol_ma20'] = df_4h['volume'].rolling(window=20).mean()
-        is_4h_bullish = df_4h['close'].iloc[-1] > df_4h['open'].iloc[-1]
-        is_4h_whale_vol = df_4h['volume'].iloc[-1] > (df_4h['vol_ma20'].iloc[-1] * 1.5)
+    def add_indicators(self, df):
 
-        # شرط أساسي: الـ 4 ساعات لازم يكون صاعد وبفوليوم قوي
-        if not (is_4h_bullish and is_4h_whale_vol):
-            return None
+        df = df.copy()
 
-        # 2. التوقيت الدقيق على فريم 15 دقيقة لاقتناص الدخول بدون تأخير
-        df_15m = self.fetch_ohlcv_data(symbol, timeframe='15m', limit=50)
-        if df_15m is None or len(df_15m) < 30:
-            return None
+        # EMA
+        df['ema20'] = df['close'].ewm(
+            span=20,
+            adjust=False
+        ).mean()
 
-        current_close = df_15m['close'].iloc[-1]
-        current_open = df_15m['open'].iloc[-1]
-        current_volume = df_15m['volume'].iloc[-1]
-        avg_volume_15m = df_15m['volume'].rolling(window=20).mean().iloc[-1]
-        body_size = abs(current_close - current_open)
-        avg_body_size = abs(df_15m['close'] - df_15m['open']).rolling(window=10).mean().iloc[-1]
+        df['ema50'] = df['close'].ewm(
+            span=50,
+            adjust=False
+        ).mean()
 
-        is_green_15m = current_close > current_open
-        is_breakout_15m = is_green_15m and (body_size > avg_body_size * 1.2) and (current_volume > avg_volume_15m * 1.4)
+        df['ema200'] = df['close'].ewm(
+            span=200,
+            adjust=False
+        ).mean()
 
-        if not is_breakout_15m:
-            return None
+        # Volume
+        df['vol_ma20'] = df['volume'].rolling(
+            20
+        ).mean()
 
-        # 3. إدارة المخاطر الدقيقة (وقف خسارة محمي تحت أدنى قاع حديث)
-        recent_low = min(df_15m['low'].iloc[-3], df_15m['low'].iloc[-2], df_15m['low'].iloc[-1])
-        stop_loss = round(min(recent_low, current_close * 0.985), 4 if current_close < 1 else 2)
-        
-        risk_distance = current_close - stop_loss
-        if risk_distance <= 0:
-            return None
+        df['vol_ratio'] = (
+            df['volume'] /
+            df['vol_ma20'].replace(0, np.nan)
+        )
 
-        risk_pct = round((risk_distance / current_close) * 100, 2)
-        if risk_pct > 4.5:  # لو المسافة كبيرة أكتر من اللازم نتجنب الصفقة حفاظاً على رأس المال
-            return None
+        # ATR
+        prev_close = df['close'].shift(1)
 
-        # 4. حساب الأهداف بنسب عائد ممتازة (1:2.2 و 1:4.0)
-        tp1 = round(current_close + (2.2 * risk_distance), 4 if current_close < 1 else 2)
-        tp2 = round(current_close + (4.0 * risk_distance), 4 if current_close < 1 else 2)
+        tr1 = df['high'] - df['low']
+        tr2 = abs(df['high'] - prev_close)
+        tr3 = abs(df['low'] - prev_close)
 
-        tp1_pct = round(((tp1 - current_close) / current_close) * 100, 2)
-        tp2_pct = round(((tp2 - current_close) / current_close) * 100, 2)
+        df['tr'] = pd.concat(
+            [tr1, tr2, tr3],
+            axis=1
+        ).max(axis=1)
 
-        clean_symbol = symbol.split('/')[0]
+        df['atr'] = df['tr'].rolling(14).mean()
 
-        report_message = f"""
-💎 النظام المثالي المؤكد (4H Trend + 15M Entry) 🚀
-تم اصطياد فرصة عالية الاحتمالية مطابقة لمعايير السيولة والهيكل!
+        # RSI
+        delta = df['close'].diff()
 
-🔹 العملة: ${clean_symbol}
-📊 سعر الدخول المثالي: {current_close}
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
 
-🛑 وقف الخسارة (آمن ومحمي): {stop_loss} ({risk_pct}%)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
 
-🎯 الأهداف الاستثمارية:
-• TP1 (مضمون نسبياً): {tp1} (+{tp1_pct}%) [Risk/Reward 1:2.2]
-• TP2 (الهدف الكامل): {tp2} (+{tp2_pct}%) [Risk/Reward 1:4.0]
+        rs = avg_gain / avg_loss.replace(0, np.nan)
 
-🛡️ شروط التأكيد المطبقة:
-✔ توافق اتجاه وفوليوم الحيتان (4 ساعات)
-✔ اقتناص الانطلاقة المبكرة بدقة (15 دقيقة)
-✔ وقف خسارة ضيق ومحمي لمنع أي خسائر مفاجئة
-"""
-        return {"Decision": report_message.strip(), "Symbol": symbol}
+        df['rsi'] = 100 - (
+            100 / (1 + rs)
+        )
+
+        # Candle body
+        df['body'] = abs(
+            df['close'] - df['open']
+        )
+
+        df['avg_body'] = df['body'].rolling(
+            10
+        ).mean()
+
+        # Recent highs/lows
+        df['recent_high'] = df['high'].rolling(
+            10
+        ).max().shift(1)
+
+        df['recent_low'] = df['low'].rolling(
+            10
+        ).min().shift(1)
+
+        return df
+
+    # =========================================================
+    # TREND
+    # =========================================================
+
+    def get_trend(self, df):
+
+        if df is None or len(df) < 50:
+            return "NEUTRAL"
+
+        row = df.iloc[-1]
+
+        bullish = (
+            row['close'] > row['ema20'] and
+            row['ema20'] > row['ema50']
+        )
+
+        bearish = (
+            row['close'] < row['ema20'] and
+            row['ema20'] < row['ema50']
+        )
+
+        if bullish:
+            return "BULLISH"
+
+        if bearish:
+            return "BEARISH"
+
+        return "NEUTRAL"
+
+    # =========================================================
+    # MARKET STRUCTURE
+    # =========================================================
+
+    def get_structure(self, df):
+
+        if df is None or len(df) < 25:
+            return {
+                'bullish': False,
+                'bearish': False,
+                'bos_bull': False,
+                'bos_bear': False,
+                'liquidity_bull': False,
+                'liquidity_bear': False
+            }
+
+        current = df.iloc[-1]
+
+        previous_high = df['high'].iloc[-11:-
