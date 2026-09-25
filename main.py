@@ -99,7 +99,7 @@ def send_telegram_message(message):
                     retry_after
                 )
                 time.sleep(retry_after)
-                continue  # إعادة المحاولة بعد انتهاء وقت الانتظار
+                continue
 
             logger.error(
                 "Telegram error: %s",
@@ -180,11 +180,11 @@ def get_bingx_symbols():
                     )
                 ).upper()
 
-                # 🛑 استبعاد صارم جداً لأي عملة تحتوي على USD وليست زوج USDT حقيقي
-                if 'USD' in base and not base.endswith('USDT'):
+                # 🛑 استبعاد قاطع وصارم لأي عملة وهمية تحتوي على USD أو ترميزات غريبة
+                if 'USD' in base and base != 'USDT':
                     continue
-                
-                if 'USD/USDT' in symbol or 'USDT/USDT' in symbol:
+
+                if '2USD' in base or '1USD' in base or 'USD/USDT' in symbol:
                     continue
 
                 if any(
@@ -504,14 +504,6 @@ def should_send_signal(signal):
     ).strip().upper()
 
     if not symbol or not direction:
-
-        logger.warning(
-            "Invalid duplicate key: "
-            "symbol=%r direction=%r",
-            symbol,
-            direction
-        )
-
         return False
 
     key = (
@@ -529,19 +521,6 @@ def should_send_signal(signal):
         now - last_sent
         < SIGNAL_COOLDOWN
     ):
-
-        remaining = int(
-            SIGNAL_COOLDOWN -
-            (now - last_sent)
-        )
-
-        logger.info(
-            "Duplicate blocked: %s "
-            "(%ss remaining)",
-            key,
-            remaining
-        )
-
         return False
 
     return True
@@ -586,7 +565,7 @@ def bot_worker():
         "Starting Expert Futures Analyst..."
     )
 
-    startup_sent = send_telegram_message(
+    send_telegram_message(
         "🚀 تم تشغيل Expert Futures Analyst Bot\n\n"
         "🧠 Multi-Timeframe Analysis\n"
         "📊 4H + 1H + 15M\n"
@@ -594,15 +573,6 @@ def bot_worker():
         "💧 Liquidity / BOS / Momentum / Volume\n"
         "🛡 Dynamic Risk Management"
     )
-
-    if startup_sent:
-        logger.info(
-            "Startup Telegram message sent successfully."
-        )
-    else:
-        logger.warning(
-            "Startup Telegram message was not sent."
-        )
 
     api_key = os.environ.get(
         'BINGX_API_KEY',
@@ -646,9 +616,7 @@ def bot_worker():
                 )
 
                 if new_symbols:
-
                     symbols = new_symbols
-
                     logger.info(
                         "Symbol list refreshed: %s symbols",
                         len(symbols)
@@ -684,16 +652,8 @@ def bot_worker():
                     score = signal.get('score', 0)
                     decision = str(signal.get('decision', '')).upper()
 
-                    # 🛑 فلترة الصفقات الوهمية أو اللي من غير سكور لمنع الضغط نهائياً
                     if score <= 0 or decision in ['NEUTRAL', 'NO_TRADE', '']:
                         continue
-
-                    logger.info(
-                        "Candidate signal: %s %s score=%s",
-                        signal.get('symbol', symbol),
-                        decision,
-                        score
-                    )
 
                     if not should_send_signal(
                         signal
@@ -707,10 +667,6 @@ def bot_worker():
                     )
 
                     if not message:
-                        logger.warning(
-                            "Signal message build failed: %s",
-                            symbol
-                        )
                         continue
 
                     sent = send_telegram_message(
@@ -718,73 +674,36 @@ def bot_worker():
                     )
 
                     if sent:
-
                         mark_signal_sent(
                             signal
                         )
-
                         signals_found += 1
-
-                        logger.info(
-                            "Signal sent successfully: "
-                            "%s %s",
-                            signal.get(
-                                'symbol'
-                            ),
-                            signal.get(
-                                'decision'
-                            )
-                        )
-
-                    else:
-
-                        logger.warning(
-                            "Telegram send failed: %s %s",
-                            signal.get(
-                                'symbol'
-                            ),
-                            signal.get(
-                                'decision'
-                            )
-                        )
-
-                    # -----------------------------------------
-                    # RATE LIMIT PROTECTION
-                    # -----------------------------------------
 
                     time.sleep(1.5)
 
                 except Exception as e:
-
                     logger.warning(
                         "Error analyzing %s: %s",
                         symbol,
                         e
                     )
-
                     time.sleep(1)
 
             logger.info(
-                        "Scan finished. "
-                        "Analyzed: %s | "
-                        "Signals sent: %s",
-                        analyzed_count,
-                        signals_found
-            )
-
-            logger.info(
-                "Next market scan in 15 minutes."
+                "Scan finished. "
+                "Analyzed: %s | "
+                "Signals sent: %s",
+                analyzed_count,
+                signals_found
             )
 
             time.sleep(900)
 
         except Exception as e:
-
             logger.exception(
                 "Worker error: %s",
                 e
             )
-
             time.sleep(60)
 
 
