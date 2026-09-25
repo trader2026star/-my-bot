@@ -125,21 +125,31 @@ class ExpertAnalystBot:
             adjust=False
         ).mean()
 
-        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rs = avg_gain / avg_loss.replace(
+            0,
+            np.nan
+        )
 
-        rsi = 100 - (100 / (1 + rs))
+        rsi = 100 - (
+            100 / (1 + rs)
+        )
 
         return rsi.fillna(50)
 
     def _atr(self, df, period=14):
-        high_low = df['high'] - df['low']
+        high_low = (
+            df['high'] -
+            df['low']
+        )
 
         high_close = (
-            df['high'] - df['close'].shift()
+            df['high'] -
+            df['close'].shift()
         ).abs()
 
         low_close = (
-            df['low'] - df['close'].shift()
+            df['low'] -
+            df['close'].shift()
         ).abs()
 
         tr = pd.concat(
@@ -192,7 +202,10 @@ class ExpertAnalystBot:
 
         df['volume_ratio'] = (
             df['volume'] /
-            df['avg_volume'].replace(0, np.nan)
+            df['avg_volume'].replace(
+                0,
+                np.nan
+            )
         )
 
         df['body'] = (
@@ -202,7 +215,10 @@ class ExpertAnalystBot:
 
         df['body_atr'] = (
             df['body'] /
-            df['atr'].replace(0, np.nan)
+            df['atr'].replace(
+                0,
+                np.nan
+            )
         )
 
         df['range'] = (
@@ -211,17 +227,24 @@ class ExpertAnalystBot:
         )
 
         df['bullish_candle'] = (
-            df['close'] > df['open']
+            df['close'] >
+            df['open']
         )
 
         df['bearish_candle'] = (
-            df['close'] < df['open']
+            df['close'] <
+            df['open']
         )
 
-        return df.replace(
-            [np.inf, -np.inf],
-            np.nan
-        ).dropna().reset_index(drop=True)
+        return (
+            df
+            .replace(
+                [np.inf, -np.inf],
+                np.nan
+            )
+            .dropna()
+            .reset_index(drop=True)
+        )
 
     # =========================================================
     # TREND
@@ -233,10 +256,10 @@ class ExpertAnalystBot:
 
         row = df.iloc[-2]
 
-        close = row['close']
-        ema20 = row['ema20']
-        ema50 = row['ema50']
-        ema200 = row['ema200']
+        close = float(row['close'])
+        ema20 = float(row['ema20'])
+        ema50 = float(row['ema50'])
+        ema200 = float(row['ema200'])
 
         bullish_strong = (
             close > ema20 >
@@ -267,65 +290,85 @@ class ExpertAnalystBot:
         return 'NEUTRAL'
 
     # =========================================================
-    # STRUCTURE
+    # MARKET STRUCTURE
     # =========================================================
 
     def get_structure(self, df, direction):
-        if df is None or len(df) < 35:
+        if df is None or len(df) < 40:
             return {
                 'structure': 'NEUTRAL',
                 'bos': False,
+                'mss': False,
                 'liquidity_sweep': False,
                 'hh_hl': False,
                 'lh_ll': False
             }
 
+        # Ignore current unfinished candle and last closed candle
         x = df.iloc[:-2].copy()
 
-        recent = x.tail(24)
+        recent = x.tail(30)
+
+        if len(recent) < 20:
+            return {
+                'structure': 'NEUTRAL',
+                'bos': False,
+                'mss': False,
+                'liquidity_sweep': False,
+                'hh_hl': False,
+                'lh_ll': False
+            }
 
         midpoint = len(recent) // 2
 
-        first_half = recent.iloc[:midpoint]
-        second_half = recent.iloc[midpoint:]
+        first = recent.iloc[:midpoint]
+        second = recent.iloc[midpoint:]
 
         prev_high = float(
-            first_half['high'].max()
+            first['high'].max()
         )
 
         prev_low = float(
-            first_half['low'].min()
+            first['low'].min()
         )
 
-        recent_high = float(
-            second_half['high'].max()
+        second_high = float(
+            second['high'].max()
         )
 
-        recent_low = float(
-            second_half['low'].min()
+        second_low = float(
+            second['low'].min()
         )
+
+        last = x.iloc[-1]
 
         last_close = float(
-            x['close'].iloc[-1]
+            last['close']
         )
 
         last_high = float(
-            x['high'].iloc[-1]
+            last['high']
         )
 
         last_low = float(
-            x['low'].iloc[-1]
+            last['low']
         )
 
+        # -----------------------------------------------------
+        # BOS
+        # -----------------------------------------------------
+
         bos_long = (
-            last_close > prev_high or
-            last_close > recent_high
+            last_close > prev_high
         )
 
         bos_short = (
-            last_close < prev_low or
-            last_close < recent_low
+            last_close < prev_low
         )
+
+        # -----------------------------------------------------
+        # LIQUIDITY SWEEP
+        # -----------------------------------------------------
 
         sweep_long = (
             last_low < prev_low and
@@ -337,40 +380,78 @@ class ExpertAnalystBot:
             last_close < prev_high
         )
 
+        # -----------------------------------------------------
+        # STRUCTURAL HIGHER/LOWER
+        # -----------------------------------------------------
+
         hh_hl = (
-            recent_high > prev_high and
-            recent_low > prev_low
+            second_high > prev_high and
+            second_low > prev_low
         )
 
         lh_ll = (
-            recent_high < prev_high and
-            recent_low < prev_low
+            second_high < prev_high and
+            second_low < prev_low
+        )
+
+        # -----------------------------------------------------
+        # MSS
+        # -----------------------------------------------------
+
+        mss_long = (
+            sweep_long and
+            last_close > (
+                float(first['high'].iloc[-1])
+            )
+        )
+
+        mss_short = (
+            sweep_short and
+            last_close < (
+                float(first['low'].iloc[-1])
+            )
         )
 
         if direction == 'LONG':
 
-            if bos_long or hh_hl:
-                structure = 'BULLISH'
-            else:
-                structure = 'NEUTRAL'
+            structure = (
+                'BULLISH'
+                if (
+                    bos_long or
+                    mss_long or
+                    hh_hl
+                )
+                else 'NEUTRAL'
+            )
 
-            bos = bool(bos_long)
-            sweep = bool(sweep_long)
+            return {
+                'structure': structure,
+                'bos': bool(bos_long),
+                'mss': bool(mss_long),
+                'liquidity_sweep': bool(
+                    sweep_long
+                ),
+                'hh_hl': bool(hh_hl),
+                'lh_ll': bool(lh_ll)
+            }
 
-        else:
-
-            if bos_short or lh_ll:
-                structure = 'BEARISH'
-            else:
-                structure = 'NEUTRAL'
-
-            bos = bool(bos_short)
-            sweep = bool(sweep_short)
+        structure = (
+            'BEARISH'
+            if (
+                bos_short or
+                mss_short or
+                lh_ll
+            )
+            else 'NEUTRAL'
+        )
 
         return {
             'structure': structure,
-            'bos': bos,
-            'liquidity_sweep': sweep,
+            'bos': bool(bos_short),
+            'mss': bool(mss_short),
+            'liquidity_sweep': bool(
+                sweep_short
+            ),
             'hh_hl': bool(hh_hl),
             'lh_ll': bool(lh_ll)
         }
@@ -383,18 +464,21 @@ class ExpertAnalystBot:
         row = df.iloc[-2]
 
         rsi = float(row['rsi'])
-        body_atr = float(row['body_atr'])
+        body_atr = float(
+            row['body_atr']
+        )
 
         if direction == 'LONG':
+
             return (
                 50 <= rsi <= 70 and
-                row['bullish_candle'] and
+                bool(row['bullish_candle']) and
                 body_atr >= 0.25
             )
 
         return (
             30 <= rsi <= 50 and
-            row['bearish_candle'] and
+            bool(row['bearish_candle']) and
             body_atr >= 0.25
         )
 
@@ -416,16 +500,19 @@ class ExpertAnalystBot:
     def get_displacement(self, df, direction):
         row = df.iloc[-2]
 
-        body_atr = float(row['body_atr'])
+        body_atr = float(
+            row['body_atr']
+        )
 
         if direction == 'LONG':
+
             return (
-                row['bullish_candle'] and
+                bool(row['bullish_candle']) and
                 body_atr >= 0.55
             )
 
         return (
-            row['bearish_candle'] and
+            bool(row['bearish_candle']) and
             body_atr >= 0.55
         )
 
@@ -434,20 +521,20 @@ class ExpertAnalystBot:
     # =========================================================
 
     def detect_fvg(self, df, direction):
-        if len(df) < 10:
+        if len(df) < 12:
             return False
-
-        atr = float(
-            df.iloc[-2]['atr']
-        )
 
         current = float(
             df.iloc[-2]['close']
         )
 
+        atr = float(
+            df.iloc[-2]['atr']
+        )
+
         start = max(
             2,
-            len(df) - 18
+            len(df) - 20
         )
 
         for i in range(
@@ -456,7 +543,12 @@ class ExpertAnalystBot:
         ):
 
             a = df.iloc[i - 1]
+            b = df.iloc[i]
             c = df.iloc[i + 1]
+
+            # Ignore tiny/non-displacement gaps
+            if float(b['body_atr']) < 0.35:
+                continue
 
             if direction == 'LONG':
 
@@ -468,21 +560,22 @@ class ExpertAnalystBot:
                     c['low']
                 )
 
-                if gap_high > gap_low:
+                if gap_high <= gap_low:
+                    continue
 
-                    distance = min(
-                        abs(
-                            current -
-                            gap_low
-                        ),
-                        abs(
-                            current -
-                            gap_high
-                        )
+                distance = min(
+                    abs(
+                        current -
+                        gap_low
+                    ),
+                    abs(
+                        current -
+                        gap_high
                     )
+                )
 
-                    if distance <= atr * 1.75:
-                        return True
+                if distance <= atr * 1.50:
+                    return True
 
             else:
 
@@ -494,21 +587,22 @@ class ExpertAnalystBot:
                     c['high']
                 )
 
-                if gap_high > gap_low:
+                if gap_high <= gap_low:
+                    continue
 
-                    distance = min(
-                        abs(
-                            current -
-                            gap_low
-                        ),
-                        abs(
-                            current -
-                            gap_high
-                        )
+                distance = min(
+                    abs(
+                        current -
+                        gap_low
+                    ),
+                    abs(
+                        current -
+                        gap_high
                     )
+                )
 
-                    if distance <= atr * 1.75:
-                        return True
+                if distance <= atr * 1.50:
+                    return True
 
         return False
 
@@ -517,227 +611,4 @@ class ExpertAnalystBot:
     # =========================================================
 
     def detect_order_block(self, df, direction):
-        if len(df) < 20:
-            return False
-
-        atr = float(
-            df.iloc[-2]['atr']
-        )
-
-        current = float(
-            df.iloc[-2]['close']
-        )
-
-        start = max(
-            3,
-            len(df) - 18
-        )
-
-        for i in range(
-            start,
-            len(df) - 2
-        ):
-
-            candle = df.iloc[i]
-            next_candle = df.iloc[i + 1]
-
-            distance = abs(
-                current -
-                float(candle['close'])
-            )
-
-            if distance > atr * 2.0:
-                continue
-
-            if direction == 'LONG':
-
-                if (
-                    candle['bearish_candle'] and
-                    next_candle['bullish_candle'] and
-                    float(
-                        next_candle['body_atr']
-                    ) >= 0.45 and
-                    float(
-                        next_candle['close']
-                    ) >
-                    float(candle['high'])
-                ):
-                    return True
-
-            else:
-
-                if (
-                    candle['bullish_candle'] and
-                    next_candle['bearish_candle'] and
-                    float(
-                        next_candle['body_atr']
-                    ) >= 0.45 and
-                    float(
-                        next_candle['close']
-                    ) <
-                    float(candle['low'])
-                ):
-                    return True
-
-        return False
-
-    # =========================================================
-    # BTC CONTEXT
-    # =========================================================
-
-    def get_btc_context(self):
-        try:
-
-            btc_symbol = 'BTC/USDT:USDT'
-
-            df = self._fetch_ohlcv(
-                btc_symbol,
-                '1h',
-                150
-            )
-
-            if df is None:
-                return 'NEUTRAL'
-
-            df = self._prepare(df)
-
-            return self.get_trend(df)
-
-        except Exception as e:
-
-            logger.warning(
-                "BTC context error: %s",
-                e
-            )
-
-            return 'NEUTRAL'
-
-    # =========================================================
-    # LEVELS
-    # =========================================================
-
-    def build_levels(self, df, direction):
-
-        if df is None or len(df) < 30:
-            return None
-
-        x = df.iloc[:-2]
-
-        row = df.iloc[-2]
-
-        entry = float(
-            row['close']
-        )
-
-        atr = float(
-            row['atr']
-        )
-
-        recent = x.tail(20)
-
-        swing_low = float(
-            recent['low'].min()
-        )
-
-        swing_high = float(
-            recent['high'].max()
-        )
-
-        if direction == 'LONG':
-
-            structural_sl = (
-                swing_low -
-                atr * 0.30
-            )
-
-            atr_sl = (
-                entry -
-                atr * 1.35
-            )
-
-            sl = min(
-                structural_sl,
-                atr_sl
-            )
-
-            risk = entry - sl
-
-            if risk <= 0:
-                return None
-
-            minimum_risk = (
-                entry * 0.008
-            )
-
-            if risk < minimum_risk:
-
-                sl = (
-                    entry -
-                    minimum_risk
-                )
-
-                risk = minimum_risk
-
-            risk_pct = (
-                risk /
-                entry
-            ) * 100
-
-            if risk_pct > 7.0:
-                return None
-
-            tp1 = entry + risk * 2.0
-            tp2 = entry + risk * 3.5
-            tp3 = entry + risk * 5.0
-
-        else:
-
-            structural_sl = (
-                swing_high +
-                atr * 0.30
-            )
-
-            atr_sl = (
-                entry +
-                atr * 1.35
-            )
-
-            sl = max(
-                structural_sl,
-                atr_sl
-            )
-
-            risk = sl - entry
-
-            if risk <= 0:
-                return None
-
-            minimum_risk = (
-                entry * 0.008
-            )
-
-            if risk < minimum_risk:
-
-                sl = (
-                    entry +
-                    minimum_risk
-                )
-
-                risk = minimum_risk
-
-            risk_pct = (
-                risk /
-                entry
-            ) * 100
-
-            if risk_pct > 7.0:
-                return None
-
-            tp1 = entry - risk * 2.0
-            tp2 = entry - risk * 3.5
-            tp3 = entry - risk * 5.0
-
-        return {
-            'entry': entry,
-            'sl': sl,
-            'tp1': tp1
+        if len(df
