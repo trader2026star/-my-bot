@@ -33,14 +33,14 @@ class ExpertAnalystBot:
         self.cache_seconds = 20
 
     # =========================================================
-    # BASIC DATA
+    # DATA
     # =========================================================
 
     def fetch_ohlcv(self, symbol, timeframe, limit=250):
         try:
             key = f"ohlcv:{symbol}:{timeframe}"
-
             now = time.time()
+
             cached = self._cache.get(key)
 
             if cached:
@@ -120,7 +120,10 @@ class ExpertAnalystBot:
         avg_gain = gain.rolling(14).mean()
         avg_loss = loss.rolling(14).mean()
 
-        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rs = avg_gain / avg_loss.replace(
+            0,
+            np.nan
+        )
 
         df['rsi'] = 100 - (
             100 / (1 + rs)
@@ -129,8 +132,12 @@ class ExpertAnalystBot:
         prev_close = df['close'].shift(1)
 
         tr1 = df['high'] - df['low']
-        tr2 = (df['high'] - prev_close).abs()
-        tr3 = (df['low'] - prev_close).abs()
+        tr2 = (
+            df['high'] - prev_close
+        ).abs()
+        tr3 = (
+            df['low'] - prev_close
+        ).abs()
 
         tr = pd.concat(
             [tr1, tr2, tr3],
@@ -143,16 +150,23 @@ class ExpertAnalystBot:
 
         df['volume_ratio'] = (
             df['volume'] /
-            df['vol_ma'].replace(0, np.nan)
+            df['vol_ma'].replace(
+                0,
+                np.nan
+            )
         )
 
         df['body'] = (
-            df['close'] - df['open']
+            df['close'] -
+            df['open']
         ).abs()
 
         df['body_atr'] = (
             df['body'] /
-            df['atr'].replace(0, np.nan)
+            df['atr'].replace(
+                0,
+                np.nan
+            )
         )
 
         return df
@@ -199,30 +213,33 @@ class ExpertAnalystBot:
         return 'NEUTRAL'
 
     # =========================================================
-    # MARKET STRUCTURE
+    # STRUCTURE
     # =========================================================
 
     def get_structure(self, df):
         if df is None or len(df) < 40:
             return {
                 'structure': 'NEUTRAL',
-                'bos': False,
-                'liquidity_sweep': False
+                'bos_long': False,
+                'bos_short': False,
+                'sweep_long': False,
+                'sweep_short': False
             }
 
         x = df.iloc[:-1].copy()
-
         last = x.iloc[-1]
 
         previous_high = x['high'].iloc[-13:-1].max()
         previous_low = x['low'].iloc[-13:-1].min()
 
         bos_long = (
-            last['close'] > previous_high
+            last['close'] >
+            previous_high
         )
 
         bos_short = (
-            last['close'] < previous_low
+            last['close'] <
+            previous_low
         )
 
         sweep_long = (
@@ -235,10 +252,18 @@ class ExpertAnalystBot:
             last['close'] < previous_high
         )
 
-        half = max(8, len(x) // 2)
+        half = max(
+            8,
+            len(x) // 2
+        )
 
-        first = x.iloc[-half:-half // 2]
-        second = x.iloc[-half // 2:]
+        first = x.iloc[
+            -half:-half // 2
+        ]
+
+        second = x.iloc[
+            -half // 2:
+        ]
 
         first_high = first['high'].max()
         second_high = second['high'].max()
@@ -288,25 +313,27 @@ class ExpertAnalystBot:
         rsi = float(row['rsi'])
         body_atr = float(row['body_atr'])
 
-        bullish_candle = (
-            row['close'] > row['open']
+        bullish = (
+            row['close'] >
+            row['open']
         )
 
-        bearish_candle = (
-            row['close'] < row['open']
+        bearish = (
+            row['close'] <
+            row['open']
         )
 
         if direction == 'LONG':
             return (
                 50 <= rsi <= 72 and
-                bullish_candle and
+                bullish and
                 body_atr >= 0.30
             )
 
         if direction == 'SHORT':
             return (
                 28 <= rsi <= 50 and
-                bearish_candle and
+                bearish and
                 body_atr >= 0.30
             )
 
@@ -326,7 +353,10 @@ class ExpertAnalystBot:
             row['volume_ratio']
         )
 
-        return ratio >= 1.10, ratio
+        return (
+            ratio >= 1.10,
+            ratio
+        )
 
     # =========================================================
     # DISPLACEMENT
@@ -344,13 +374,15 @@ class ExpertAnalystBot:
 
         if direction == 'LONG':
             return (
-                row['close'] > row['open'] and
+                row['close'] >
+                row['open'] and
                 body_atr >= 0.55
             )
 
         if direction == 'SHORT':
             return (
-                row['close'] < row['open'] and
+                row['close'] <
+                row['open'] and
                 body_atr >= 0.55
             )
 
@@ -366,8 +398,10 @@ class ExpertAnalystBot:
 
         x = df.iloc[:-1]
 
-        # نفحص آخر 12 شمعة مغلقة
-        start = max(2, len(x) - 14)
+        start = max(
+            2,
+            len(x) - 14
+        )
 
         current_price = float(
             x.iloc[-1]['close']
@@ -383,47 +417,76 @@ class ExpertAnalystBot:
         best = None
 
         for i in range(start, len(x)):
+
             a = x.iloc[i - 2]
-            b = x.iloc[i - 1]
             c = x.iloc[i]
 
-            # Bullish FVG
+            # ---------------------------------
+            # BULLISH FVG
+            # ---------------------------------
+
             if direction == 'LONG':
+
                 if c['low'] > a['high']:
 
-                    low_zone = float(a['high'])
-                    high_zone = float(c['low'])
-
-                    distance = min(
-                        abs(current_price - low_zone),
-                        abs(current_price - high_zone)
+                    zone_low = float(
+                        a['high']
                     )
 
-                    # لازم تكون المنطقة قريبة من السعر
+                    zone_high = float(
+                        c['low']
+                    )
+
+                    distance = min(
+                        abs(
+                            current_price -
+                            zone_low
+                        ),
+                        abs(
+                            current_price -
+                            zone_high
+                        )
+                    )
+
                     if distance <= atr * 1.5:
 
                         best = {
-                            'low': low_zone,
-                            'high': high_zone
+                            'low': zone_low,
+                            'high': zone_high
                         }
 
-            # Bearish FVG
+            # ---------------------------------
+            # BEARISH FVG
+            # ---------------------------------
+
             if direction == 'SHORT':
+
                 if c['high'] < a['low']:
 
-                    low_zone = float(c['high'])
-                    high_zone = float(a['low'])
+                    zone_low = float(
+                        c['high']
+                    )
+
+                    zone_high = float(
+                        a['low']
+                    )
 
                     distance = min(
-                        abs(current_price - low_zone),
-                        abs(current_price - high_zone)
+                        abs(
+                            current_price -
+                            zone_low
+                        ),
+                        abs(
+                            current_price -
+                            zone_high
+                        )
                     )
 
                     if distance <= atr * 1.5:
 
                         best = {
-                            'low': low_zone,
-                            'high': high_zone
+                            'low': zone_low,
+                            'high': zone_high
                         }
 
         return (
@@ -449,7 +512,10 @@ class ExpertAnalystBot:
             x.iloc[-1]['atr']
         )
 
-        if not np.isfinite(current_atr):
+        if (
+            not np.isfinite(current_atr)
+            or current_atr <= 0
+        ):
             return False, None
 
         start = max(
@@ -459,21 +525,18 @@ class ExpertAnalystBot:
 
         best = None
 
-        for i in range(start, len(x) - 1):
+        for i in range(
+            start,
+            len(x) - 1
+        ):
 
             candle = x.iloc[i]
             next_candle = x.iloc[i + 1]
 
-            candle_range = (
-                candle['high'] -
-                candle['low']
-            )
+            # ---------------------------------
+            # LONG OB
+            # ---------------------------------
 
-            if candle_range <= 0:
-                continue
-
-            # LONG:
-            # آخر شمعة هابطة قبل displacement صاعد
             if direction == 'LONG':
 
                 bearish = (
@@ -511,20 +574,30 @@ class ExpertAnalystBot:
                     )
 
                     distance = min(
-                        abs(current_price - zone_low),
-                        abs(current_price - zone_high)
+                        abs(
+                            current_price -
+                            zone_low
+                        ),
+                        abs(
+                            current_price -
+                            zone_high
+                        )
                     )
 
-                    # OB لازم يكون قريب
-                    if distance <= current_atr * 1.75:
+                    if (
+                        distance <=
+                        current_atr * 1.75
+                    ):
 
                         best = {
                             'low': zone_low,
                             'high': zone_high
                         }
 
-            # SHORT:
-            # آخر شمعة صاعدة قبل displacement هابط
+            # ---------------------------------
+            # SHORT OB
+            # ---------------------------------
+
             if direction == 'SHORT':
 
                 bullish = (
@@ -562,11 +635,20 @@ class ExpertAnalystBot:
                     )
 
                     distance = min(
-                        abs(current_price - zone_low),
-                        abs(current_price - zone_high)
+                        abs(
+                            current_price -
+                            zone_low
+                        ),
+                        abs(
+                            current_price -
+                            zone_high
+                        )
                     )
 
-                    if distance <= current_atr * 1.75:
+                    if (
+                        distance <=
+                        current_atr * 1.75
+                    ):
 
                         best = {
                             'low': zone_low,
@@ -579,15 +661,13 @@ class ExpertAnalystBot:
         )
 
     # =========================================================
-    # BTC CONTEXT
+    # BTC
     # =========================================================
 
     def get_btc_context(self):
         try:
-            btc_symbol = 'BTC/USDT:USDT'
-
             df = self.fetch_ohlcv(
-                btc_symbol,
+                'BTC/USDT:USDT',
                 '1h',
                 150
             )
@@ -597,20 +677,17 @@ class ExpertAnalystBot:
 
             df = self.add_indicators(df)
 
-            trend = self.get_trend(df)
-
-            return trend
+            return self.get_trend(df)
 
         except Exception as e:
             logger.warning(
                 "BTC context error: %s",
                 e
             )
-
             return 'UNKNOWN'
 
     # =========================================================
-    # LEVELS / RISK
+    # LEVELS
     # =========================================================
 
     def build_levels(
@@ -628,7 +705,10 @@ class ExpertAnalystBot:
             x.iloc[-1]['atr']
         )
 
-        if not np.isfinite(atr) or atr <= 0:
+        if (
+            not np.isfinite(atr)
+            or atr <= 0
+        ):
             return None
 
         recent = x.iloc[-12:]
@@ -661,15 +741,12 @@ class ExpertAnalystBot:
             risk = entry - raw_sl
 
             risk_pct = (
-                risk /
-                entry
+                risk / entry
             ) * 100
 
-            # لا نسمح بمخاطرة طبيعية ضخمة
             if risk_pct > 7.0:
                 return None
 
-            # حد أدنى معقول
             min_risk = entry * 0.008
 
             if risk < min_risk:
@@ -702,8 +779,7 @@ class ExpertAnalystBot:
             risk = raw_sl - entry
 
             risk_pct = (
-                risk /
-                entry
+                risk / entry
             ) * 100
 
             if risk_pct > 7.0:
@@ -731,7 +807,7 @@ class ExpertAnalystBot:
         }
 
     # =========================================================
-    # QUALITY FILTER
+    # QUALITY ENGINE
     # =========================================================
 
     def evaluate_quality(
@@ -742,109 +818,208 @@ class ExpertAnalystBot:
         rsi,
         volume_ratio,
         btc_conflict,
+        btc_aligned,
         risk_pct,
         bos,
+        sweep,
         displacement,
         fvg,
-        order_block
+        order_block,
+        momentum
     ):
-        # =========================================
-        # HARD REJECTIONS
-        # =========================================
 
-        if direction == 'LONG':
-            if rsi >= 78:
-                return False, 'RSI OVERHEATED'
+        # ---------------------------------
+        # HARD RSI FILTER
+        # ---------------------------------
 
-        if direction == 'SHORT':
-            if rsi <= 22:
-                return False, 'RSI OVERSOLD'
+        if direction == 'LONG' and rsi >= 78:
+            return {
+                'accepted': False,
+                'score': score,
+                'quality': 'REJECTED',
+                'reason': 'RSI OVERHEATED'
+            }
+
+        if direction == 'SHORT' and rsi <= 22:
+            return {
+                'accepted': False,
+                'score': score,
+                'quality': 'REJECTED',
+                'reason': 'RSI OVERSOLD'
+            }
+
+        # ---------------------------------
+        # RISK FILTER
+        # ---------------------------------
 
         if risk_pct > 7.0:
-            return False, 'RISK TOO WIDE'
+            return {
+                'accepted': False,
+                'score': score,
+                'quality': 'REJECTED',
+                'reason': 'RISK TOO WIDE'
+            }
 
-        # لازم يكون فيه دليل هيكلي حقيقي
-        structural = (
-            bos or
-            displacement or
-            fvg
-        )
+        # ---------------------------------
+        # REAL STRUCTURE
+        # ---------------------------------
 
-        if not structural:
-            return False, 'NO STRUCTURAL CONFIRMATION'
+        structural_count = sum([
+            bool(bos),
+            bool(sweep),
+            bool(displacement),
+            bool(fvg)
+        ])
+
+        if structural_count < 1:
+            return {
+                'accepted': False,
+                'score': score,
+                'quality': 'REJECTED',
+                'reason': 'NO STRUCTURAL CONFIRMATION'
+            }
+
+        # ---------------------------------
+        # MINIMUM CONFLUENCE
+        # ---------------------------------
 
         if confirmations < 3:
-            return False, 'INSUFFICIENT CONFIRMATION'
+            return {
+                'accepted': False,
+                'score': score,
+                'quality': 'REJECTED',
+                'reason': 'INSUFFICIENT CONFIRMATION'
+            }
 
-        # =========================================
-        # SCORE ADJUSTMENTS
-        # =========================================
+        adjusted_score = int(score)
 
-        adjusted_score = score
+        # ---------------------------------
+        # RSI PENALTY
+        # ---------------------------------
 
-        # RSI danger zone
         if direction == 'LONG':
+
             if rsi >= 75:
                 adjusted_score -= 2
+
             elif rsi >= 72:
                 adjusted_score -= 1
 
-        if direction == 'SHORT':
+        else:
+
             if rsi <= 25:
                 adjusted_score -= 2
+
             elif rsi <= 28:
                 adjusted_score -= 1
 
-        # weak volume
+        # ---------------------------------
+        # VOLUME
+        # ---------------------------------
+
         if volume_ratio < 1.05:
             adjusted_score -= 1
 
-        # BTC conflict
+        # ---------------------------------
+        # BTC CONFLICT
+        # ---------------------------------
+
         if btc_conflict:
             adjusted_score -= 1
 
-        # wide risk
+        # ---------------------------------
+        # WIDE RISK
+        # ---------------------------------
+
         if risk_pct >= 6.0:
             adjusted_score -= 1
 
-        # =========================================
-        # CRITICAL COMBINATION FILTER
-        # =========================================
+        # ---------------------------------
+        # BTC CONFLICT + WEAK VOLUME
+        # ---------------------------------
 
-        # لو BTC ضد الصفقة + الحجم ضعيف
-        # لازم يكون عندنا هيكل أقوى
         if (
             btc_conflict and
             volume_ratio < 1.05
         ):
 
-            strong_structure_count = sum([
+            strong_evidence = sum([
                 bool(bos),
+                bool(sweep),
                 bool(displacement),
                 bool(fvg),
-                bool(order_block)
+                bool(momentum)
             ])
 
-            if strong_structure_count < 3:
-                return False, 'BTC CONFLICT + WEAK VOLUME'
+            if strong_evidence < 3:
+                return {
+                    'accepted': False,
+                    'score': adjusted_score,
+                    'quality': 'REJECTED',
+                    'reason':
+                        'BTC CONFLICT + WEAK VOLUME'
+                }
 
-        # OB وحده لا يكفي
+        # ---------------------------------
+        # OB ALONE
+        # ---------------------------------
+
         if (
             order_block and
             not bos and
             not displacement and
-            not fvg
+            not fvg and
+            not sweep
         ):
-            return False, 'ORDER BLOCK ALONE'
-
-        # =========================================
-        # FINAL
-        # =========================================
+            return {
+                'accepted': False,
+                'score': adjusted_score,
+                'quality': 'REJECTED',
+                'reason': 'ORDER BLOCK ALONE'
+            }
 
         if adjusted_score < 5:
-            return False, 'SCORE BELOW THRESHOLD'
+            return {
+                'accepted': False,
+                'score': adjusted_score,
+                'quality': 'REJECTED',
+                'reason': 'SCORE BELOW THRESHOLD'
+            }
 
-        return True, adjusted_score
+        # =====================================================
+        # QUALITY CLASSIFICATION
+        # =====================================================
+
+        # STRONG:
+        # ممنوع مع BTC conflict
+        if (
+            adjusted_score >= 8 and
+            confirmations >= 5 and
+            btc_aligned and
+            not btc_conflict and
+            volume_ratio >= 1.10 and
+            risk_pct < 6.0 and
+            rsi < 72
+        ):
+            quality = 'STRONG SETUP'
+
+        # VALID:
+        # يسمح بـ BTC conflict لكن مع أدلة حقيقية
+        elif (
+            adjusted_score >= 5 and
+            confirmations >= 4
+        ):
+            quality = 'VALID SETUP'
+
+        else:
+            quality = 'MODERATE SETUP'
+
+        return {
+            'accepted': True,
+            'score': adjusted_score,
+            'quality': quality,
+            'reason': 'PASS'
+        }
 
     # =========================================================
     # MAIN ANALYSIS
@@ -854,9 +1029,9 @@ class ExpertAnalystBot:
 
         try:
 
-            # -------------------------------------
+            # ---------------------------------
             # DATA
-            # -------------------------------------
+            # ---------------------------------
 
             df4h = self.fetch_ohlcv(
                 symbol,
@@ -887,9 +1062,9 @@ class ExpertAnalystBot:
             df1h = self.add_indicators(df1h)
             df15 = self.add_indicators(df15)
 
-            # -------------------------------------
+            # ---------------------------------
             # TRENDS
-            # -------------------------------------
+            # ---------------------------------
 
             trend4h = self.get_trend(df4h)
             trend1h = self.get_trend(df1h)
@@ -897,15 +1072,28 @@ class ExpertAnalystBot:
             structure1h = self.get_structure(df1h)
             structure15 = self.get_structure(df15)
 
-            # -------------------------------------
+            # ---------------------------------
             # BTC
-            # -------------------------------------
+            # ---------------------------------
 
             btc_context = self.get_btc_context()
 
-            # -------------------------------------
-            # DIRECTION VOTES
-            # -------------------------------------
+            # ---------------------------------
+            # DIRECTION
+            # ---------------------------------
+
+            if trend4h == 'BULLISH':
+                direction = 'LONG'
+
+            elif trend4h == 'BEARISH':
+                direction = 'SHORT'
+
+            else:
+                return None
+
+            # ---------------------------------
+            # VOTES
+            # ---------------------------------
 
             long_votes = 0
             short_votes = 0
@@ -952,22 +1140,9 @@ class ExpertAnalystBot:
             if btc_context == 'BEARISH':
                 short_votes += 1
 
-            # -------------------------------------
-            # HARD 4H DIRECTION
-            # -------------------------------------
-
-            if trend4h == 'BULLISH':
-                direction = 'LONG'
-
-            elif trend4h == 'BEARISH':
-                direction = 'SHORT'
-
-            else:
-                return None
-
-            # -------------------------------------
-            # 15M DATA
-            # -------------------------------------
+            # ---------------------------------
+            # 15M
+            # ---------------------------------
 
             row15 = df15.iloc[-2]
 
@@ -981,9 +1156,9 @@ class ExpertAnalystBot:
                 )
             )
 
-            # -------------------------------------
+            # ---------------------------------
             # STRUCTURE
-            # -------------------------------------
+            # ---------------------------------
 
             if direction == 'LONG':
 
@@ -1017,23 +1192,25 @@ class ExpertAnalystBot:
                     structure15['structure']
                 )
 
-            # -------------------------------------
+            # ---------------------------------
             # MOMENTUM
-            # -------------------------------------
+            # ---------------------------------
 
             momentum = self.get_momentum(
                 df15,
                 direction
             )
 
-            displacement = self.get_displacement(
-                df15,
-                direction
+            displacement = (
+                self.get_displacement(
+                    df15,
+                    direction
+                )
             )
 
-            # -------------------------------------
+            # ---------------------------------
             # FVG / OB
-            # -------------------------------------
+            # ---------------------------------
 
             fvg_ok, fvg_zone = (
                 self.detect_fvg(
@@ -1049,74 +1226,69 @@ class ExpertAnalystBot:
                 )
             )
 
-            # -------------------------------------
+            # ---------------------------------
             # SCORE
-            # -------------------------------------
+            # ---------------------------------
 
             score = 0
             confirmations = []
 
-            # Trend
-            if (
-                direction == 'LONG' and
-                trend4h == 'BULLISH'
-            ):
-                score += 2
-                confirmations.append(
-                    '4H TREND'
-                )
+            # 4H
+            if direction == 'LONG':
 
-            elif (
-                direction == 'SHORT' and
-                trend4h == 'BEARISH'
-            ):
-                score += 2
-                confirmations.append(
-                    '4H TREND'
-                )
+                if trend4h == 'BULLISH':
+                    score += 2
+                    confirmations.append(
+                        '4H TREND'
+                    )
 
-            if (
-                direction == 'LONG' and
-                trend1h == 'BULLISH'
-            ):
-                score += 1
-                confirmations.append(
-                    '1H TREND'
-                )
+            else:
 
-            elif (
-                direction == 'SHORT' and
-                trend1h == 'BEARISH'
-            ):
-                score += 1
-                confirmations.append(
-                    '1H TREND'
-                )
+                if trend4h == 'BEARISH':
+                    score += 2
+                    confirmations.append(
+                        '4H TREND'
+                    )
+
+            # 1H
+            if direction == 'LONG':
+
+                if trend1h == 'BULLISH':
+                    score += 1
+                    confirmations.append(
+                        '1H TREND'
+                    )
+
+            else:
+
+                if trend1h == 'BEARISH':
+                    score += 1
+                    confirmations.append(
+                        '1H TREND'
+                    )
 
             # Structure
-            if (
-                direction == 'LONG' and
-                structure_name in (
+            if direction == 'LONG':
+
+                if structure_name in (
                     'HH/HL',
                     'BULLISH BOS'
-                )
-            ):
-                score += 1
-                confirmations.append(
-                    'STRUCTURE'
-                )
+                ):
+                    score += 1
+                    confirmations.append(
+                        'STRUCTURE'
+                    )
 
-            elif (
-                direction == 'SHORT' and
-                structure_name in (
+            else:
+
+                if structure_name in (
                     'LH/LL',
                     'BEARISH BOS'
-                )
-            ):
-                score += 1
-                confirmations.append(
-                    'STRUCTURE'
-                )
+                ):
+                    score += 1
+                    confirmations.append(
+                        'STRUCTURE'
+                    )
 
             # BOS
             if bos:
@@ -1167,7 +1339,10 @@ class ExpertAnalystBot:
                     'ORDER BLOCK'
                 )
 
-            # BTC
+            # ---------------------------------
+            # BTC ALIGNMENT
+            # ---------------------------------
+
             btc_conflict = (
                 (
                     direction == 'LONG' and
@@ -1198,9 +1373,9 @@ class ExpertAnalystBot:
                     'BTC ALIGNMENT'
                 )
 
-            # -------------------------------------
+            # ---------------------------------
             # LEVELS
-            # -------------------------------------
+            # ---------------------------------
 
             levels = self.build_levels(
                 df15,
@@ -1212,104 +1387,113 @@ class ExpertAnalystBot:
 
             risk_pct = levels['risk_pct']
 
-            # -------------------------------------
-            # QUALITY FILTER
-            # -------------------------------------
+            # ---------------------------------
+            # QUALITY
+            # ---------------------------------
 
-            quality_ok, quality_result = (
+            quality_result = (
                 self.evaluate_quality(
                     direction=direction,
                     score=score,
-                    confirmations=len(confirmations),
+                    confirmations=len(
+                        confirmations
+                    ),
                     rsi=rsi,
                     volume_ratio=volume_ratio,
                     btc_conflict=btc_conflict,
+                    btc_aligned=btc_aligned,
                     risk_pct=risk_pct,
                     bos=bos,
+                    sweep=sweep,
                     displacement=displacement,
                     fvg=fvg_ok,
-                    order_block=ob_ok
+                    order_block=ob_ok,
+                    momentum=momentum
                 )
             )
 
-            if not quality_ok:
+            if not quality_result['accepted']:
                 return None
 
-            adjusted_score = (
-                quality_result
-                if isinstance(
-                    quality_result,
-                    int
-                )
-                else score
+            final_score = int(
+                quality_result['score']
             )
 
-            # -------------------------------------
-            # QUALITY LABEL
-            # -------------------------------------
+            quality = (
+                quality_result['quality']
+            )
 
-            if (
-                adjusted_score >= 8 and
-                len(confirmations) >= 5 and
-                not btc_conflict and
-                volume_ratio >= 1.10 and
-                risk_pct < 6.0 and
-                rsi < 72
-            ):
-                quality = 'STRONG SETUP'
-
-            elif (
-                adjusted_score >= 6 and
-                len(confirmations) >= 4
-            ):
-                quality = 'VALID SETUP'
-
-            else:
-                quality = 'MODERATE SETUP'
-
-            # -------------------------------------
+            # ---------------------------------
             # ENTRY STATUS
-            # -------------------------------------
+            # ---------------------------------
 
             if btc_conflict:
-                entry_quality = (
-                    'BTC CONFLICT - REDUCED CONFIDENCE'
-                )
+
+                if volume_ratio >= 1.50:
+                    entry_quality = (
+                        'BTC CONFLICT - '
+                        'STRONG LOCAL CONFIRMATION'
+                    )
+
+                elif (
+                    displacement and
+                    bos and
+                    fvg_ok
+                ):
+                    entry_quality = (
+                        'BTC CONFLICT - '
+                        'STRUCTURE COMPENSATES'
+                    )
+
+                else:
+                    entry_quality = (
+                        'BTC CONFLICT - '
+                        'REDUCED CONFIDENCE'
+                    )
 
             elif risk_pct >= 6.0:
+
                 entry_quality = (
-                    'WIDE RISK - REDUCED CONFIDENCE'
+                    'WIDE RISK - '
+                    'REDUCED CONFIDENCE'
                 )
 
-            elif rsi >= 75 and direction == 'LONG':
+            elif (
+                direction == 'LONG' and
+                rsi >= 75
+            ):
+
                 entry_quality = (
-                    'RSI HIGH - AVOID CHASING'
+                    'RSI HIGH - '
+                    'AVOID CHASING'
                 )
 
-            elif rsi <= 25 and direction == 'SHORT':
+            elif (
+                direction == 'SHORT' and
+                rsi <= 25
+            ):
+
                 entry_quality = (
-                    'RSI LOW - AVOID CHASING'
+                    'RSI LOW - '
+                    'AVOID CHASING'
                 )
 
             else:
                 entry_quality = 'GOOD'
 
-            # -------------------------------------
-            # RISK STATUS
-            # -------------------------------------
+            # ---------------------------------
+            # RISK
+            # ---------------------------------
 
             if risk_pct < 6.0:
                 risk_filter = 'PASS'
 
-            elif risk_pct <= 7.0:
+            else:
                 risk_filter = 'PASS - WIDE'
 
-            else:
-                risk_filter = 'FAIL'
-
-            # -------------------------------------
+            # ---------------------------------
             # MESSAGE
-            # -------------------------------------
+            # ---------------------------------
 
             btc_warning = (
                 ' ⚠️ CONFLICT'
@@ -1319,9 +1503,10 @@ class ExpertAnalystBot:
 
             message = (
                 f"🚨 EXPERT FUTURES SIGNAL 🚨\n\n"
+
                 f"Symbol: {symbol}\n"
                 f"Decision: {direction}\n"
-                f"Score: {adjusted_score}\n"
+                f"Score: {final_score}\n"
                 f"Quality: {quality}\n\n"
 
                 f"Confirmations: "
@@ -1337,38 +1522,61 @@ class ExpertAnalystBot:
 
                 f"RSI 15M: {rsi:.1f}\n"
                 f"Volume: {volume_ratio:.2f}x\n"
+
+                f"Momentum: "
+                f"{'YES' if momentum else 'NO'}\n"
+
                 f"Displacement: "
                 f"{'YES' if displacement else 'NO'}\n"
+
                 f"FVG: "
                 f"{'ACTIVE' if fvg_ok else 'NO'}\n"
+
                 f"Order Block: "
                 f"{'ACTIVE' if ob_ok else 'NO'}\n\n"
 
                 f"Entry: "
                 f"{levels['entry']:.8f}\n"
+
                 f"SL: "
                 f"{levels['sl']:.8f} "
                 f"({risk_pct:.2f}%)\n"
+
                 f"TP1: "
                 f"{levels['tp1']:.8f} | 2R\n"
+
                 f"TP2: "
                 f"{levels['tp2']:.8f} | 3.5R\n"
+
                 f"TP3: "
                 f"{levels['tp3']:.8f} | 5R\n\n"
 
-                f"Risk: {risk_filter}\n"
-                f"Entry Status: {entry_quality}"
+                f"Risk Filter: {risk_filter}\n"
+
+                f"Structure Confirmation: "
+                f"{'PASS' if (
+                    bos or
+                    sweep or
+                    displacement or
+                    fvg_ok
+                ) else 'FAIL'}\n"
+
+                f"Entry Status: "
+                f"{entry_quality}\n\n"
+
+                f"⚠️ Setup signal — "
+                f"not a guaranteed result."
             )
 
-            # -------------------------------------
+            # ---------------------------------
             # RETURN
-            # -------------------------------------
+            # ---------------------------------
 
             return {
                 'symbol': symbol,
                 'decision': direction,
 
-                'score': int(adjusted_score),
+                'score': final_score,
                 'quality': quality,
 
                 'confirmations': confirmations,
@@ -1404,6 +1612,7 @@ class ExpertAnalystBot:
                     'PASS'
                     if (
                         bos or
+                        sweep or
                         displacement or
                         fvg_ok
                     )
