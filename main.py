@@ -75,7 +75,6 @@ def send_telegram_message(message):
         'text': message
     }
 
-    # محاولة الإرسال مع تكرارها لو حصل ضغط (Rate Limit)
     while True:
         try:
             response = requests.post(
@@ -90,7 +89,6 @@ def send_telegram_message(message):
             data = response.json()
             error_code = data.get("error_code")
 
-            # لو حصل خطأ 429 (Too Many Requests)
             if error_code == 429:
                 parameters = data.get("parameters", {})
                 retry_after = parameters.get("retry_after", 10)
@@ -180,7 +178,10 @@ def get_bingx_symbols():
                     )
                 ).upper()
 
-                # 🛑 استبعاد قاطع وصارم لأي عملة وهمية تحتوي على USD أو ترميزات غريبة
+                # 🛑 فلترة قاطعة لأي عملة وهمية تبدأ بـ NCSK أو تحتوي على USD وهمي
+                if 'NCSK' in symbol or 'NCSK' in base:
+                    continue
+
                 if 'USD' in base and base != 'USDT':
                     continue
 
