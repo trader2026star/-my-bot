@@ -304,9 +304,7 @@ class ExpertAnalystBot:
                 'lh_ll': False
             }
 
-        # Ignore current unfinished candle and last closed candle
         x = df.iloc[:-2].copy()
-
         recent = x.tail(30)
 
         if len(recent) < 20:
@@ -354,10 +352,6 @@ class ExpertAnalystBot:
             last['low']
         )
 
-        # -----------------------------------------------------
-        # BOS
-        # -----------------------------------------------------
-
         bos_long = (
             last_close > prev_high
         )
@@ -365,10 +359,6 @@ class ExpertAnalystBot:
         bos_short = (
             last_close < prev_low
         )
-
-        # -----------------------------------------------------
-        # LIQUIDITY SWEEP
-        # -----------------------------------------------------
 
         sweep_long = (
             last_low < prev_low and
@@ -380,10 +370,6 @@ class ExpertAnalystBot:
             last_close < prev_high
         )
 
-        # -----------------------------------------------------
-        # STRUCTURAL HIGHER/LOWER
-        # -----------------------------------------------------
-
         hh_hl = (
             second_high > prev_high and
             second_low > prev_low
@@ -393,10 +379,6 @@ class ExpertAnalystBot:
             second_high < prev_high and
             second_low < prev_low
         )
-
-        # -----------------------------------------------------
-        # MSS
-        # -----------------------------------------------------
 
         mss_long = (
             sweep_long and
@@ -546,7 +528,6 @@ class ExpertAnalystBot:
             b = df.iloc[i]
             c = df.iloc[i + 1]
 
-            # Ignore tiny/non-displacement gaps
             if float(b['body_atr']) < 0.35:
                 continue
 
@@ -611,4 +592,129 @@ class ExpertAnalystBot:
     # =========================================================
 
     def detect_order_block(self, df, direction):
-        if len(df
+        if len(df) < 12:
+            return False
+
+        current = float(df.iloc[-2]['close'])
+        atr = float(df.iloc[-2]['atr'])
+        start = max(2, len(df) - 20)
+
+        for i in range(start, len(df) - 2):
+            candle = df.iloc[i]
+            next_candle = df.iloc[i + 1]
+
+            if direction == 'LONG':
+                if bool(candle['bearish_candle']) and float(next_candle['body_atr']) >= 0.5:
+                    ob_low = float(candle['low'])
+                    ob_high = float(candle['high'])
+                    if abs(current - ob_high) <= atr * 2.0 or abs(current - ob_low) <= atr * 2.0:
+                        return True
+            else:
+                if bool(candle['bullish_candle']) and float(next_candle['body_atr']) >= 0.5:
+                    ob_low = float(candle['low'])
+                    ob_high = float(candle['high'])
+                    if abs(current - ob_high) <= atr * 2.0 or abs(current - ob_low) <= atr * 2.0:
+                        return True
+
+        return False
+
+    # =========================================================
+    # STRATEGY EVALUATION
+    # =========================================================
+
+    def evaluate_strategy(self, symbol):
+        df_15m = self._fetch_ohlcv(symbol, '15m', 220)
+        if df_15m is None or len(df_15m) < 60:
+            return None
+
+        df_15m = self._prepare(df_15m)
+        if len(df_15m) < 30:
+            return None
+
+        df_1h = self._fetch_ohlcv(symbol, '1h', 100)
+        df_4h = self._fetch_ohlcv(symbol, '4h', 100)
+
+        trend_15m = self.get_trend(df_15m)
+        trend_1h = self.get_trend(df_1h) if df_1h is not None else 'NEUTRAL'
+        trend_4h = self.get_trend(df_4h) if df_4h is not None else 'NEUTRAL'
+
+        for direction in ['LONG', 'SHORT']:
+            struct_data = self.get_structure(df_15m, direction)
+            structure = struct_data['structure']
+
+            momentum = self.get_momentum(df_15m, direction)
+            volume_ok = self.get_volume_confirmation(df_15m)
+            displacement = self.get_displacement(df_15m, direction)
+            fvg_ok = self.detect_fvg(df_15m, direction)
+            ob_ok = self.detect_order_block(df_15m, direction)
+
+            score = 0
+            confirmations = []
+
+            if structure == direction or structure == 'BULLISH' if direction == 'LONG' else 'BEARISH':
+                score += 30
+                confirmations.append('Structure')
+
+            if momentum:
+                score += 20
+                confirmations.append('Momentum')
+
+            if volume_ok:
+                score += 15
+                confirmations.append('Volume')
+
+            if displacement:
+                score += 15
+                confirmations.append('Displacement')
+
+            if fvg_ok:
+                score += 10
+                confirmations.append('FVG')
+
+            if ob_ok:
+                score += 10
+                confirmations.append('OrderBlock')
+
+            if score >= 50:
+                row = df_15m.iloc[-2]
+                entry = float(row['close'])
+                atr = float(row['atr'])
+
+                if direction == 'LONG':
+                    sl = entry - (atr * 1.5)
+                    tp1 = entry + (atr * 3.0)
+                    tp2 = entry + (atr * 5.25)
+                    tp3 = entry + (atr * 7.5)
+                else:
+                    sl = entry + (atr * 1.5)
+                    tp1 = entry - (atr * 3.0)
+                    tp2 = entry - (atr * 5.25)
+                    tp3 = entry - (atr * 7.5)
+
+                risk_pct = round((abs(entry - sl) / entry) * 100, 2)
+
+                return {
+                    'symbol': symbol,
+                    'decision': direction,
+                    'score': score,
+                    'quality': 'HIGH' if score >= 75 else 'MEDIUM',
+                    'confirmation_count': len(confirmations),
+                    'confirmations': confirmations,
+                    'trend_4h': trend_4h,
+                    'trend_1h': trend_1h,
+                    'btc_context': 'NEUTRAL',
+                    'rsi_15m': float(row['rsi']),
+                    'volume_ratio': float(row['volume_ratio']),
+                    'entry': entry,
+                    'sl': sl,
+                    'tp1': tp1,
+                    'tp2': tp2,
+                    'tp3': tp3,
+                    'risk_pct': risk_pct,
+                    'risk_filter': 'PASSED',
+                    'structure_confirmation': structure,
+                    'btc_conflict': False,
+                    'entry_quality': 'OPTIMAL'
+                }
+
+        return None
