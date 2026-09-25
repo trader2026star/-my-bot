@@ -12,16 +12,11 @@ import requests
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# إعدادات تطبيق الـ Flask لإبقاء الخدمة مفتوحة على Render المجاني
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "Expert Analyst Bot with Telegram is running perfectly!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
 
 
 class ExpertAnalystBot:
@@ -125,10 +120,11 @@ def send_telegram_message(message):
 
 
 def bot_worker():
+    # إرسال رسالة تأكيد فورية عند بدء تشغيل البوت للتأكد من أن الاتصال يعمل
+    send_telegram_message("🟢 تم بدء تشغيل بوت تحليل السوق وفحص العملات بنجاح تام على السيرفر!")
     logger.info("بدء تشغيل حلقة فحص السوق الشامل...")
     bot = ExpertAnalystBot(exchange_id='bingx')
     
-    # قائمة موسعة تضم أشهر وأهم عملات الفيوتشرز على المنصة
     symbols = [
         'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 
         'ADA/USDT:USDT', 'AVAX/USDT:USDT', 'DOGE/USDT:USDT', 'LINK/USDT:USDT', 
@@ -146,20 +142,17 @@ def bot_worker():
                 if signal:
                     send_telegram_message(signal)
                     logger.info(f"تم إرسال تنبيه للعملة: {symbol}")
-                time.sleep(2) # فاصل زمني آمن بين كل عملة والأخرى
+                time.sleep(2)
             
-            # الانتظار لمدة 30 دقيقة قبل إعادة الفحص لدورة الشموع الجديدة
             time.sleep(1800) 
         except Exception as e:
             logger.error(f"حدث خطأ في حلقة الفحص: {e}")
             time.sleep(60)
 
+# تشغيل خيط البوت تلقائياً فور تحميل الملف بواسطة Gunicorn
+bot_thread = threading.Thread(target=bot_worker, daemon=True)
+bot_thread.start()
 
 if __name__ == "__main__":
-    t_web = threading.Thread(target=run_flask)
-    t_web.start()
-    
-    t_bot = threading.Thread(target=bot_worker)
-    t_bot.start()
-    
-    logger.info("تم تشغيل السيرفر وبوت الفحص الموسع بنجاح تام.")
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
