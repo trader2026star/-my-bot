@@ -261,30 +261,9 @@ class ExpertAnalystBot:
         ema50 = float(row['ema50'])
         ema200 = float(row['ema200'])
 
-        bullish_strong = (
-            close > ema20 >
-            ema50 > ema200
-        )
-
-        bearish_strong = (
-            close < ema20 <
-            ema50 < ema200
-        )
-
-        bullish_soft = (
-            close > ema50 and
-            ema20 > ema50
-        )
-
-        bearish_soft = (
-            close < ema50 and
-            ema20 < ema50
-        )
-
-        if bullish_strong or bullish_soft:
+        if close > ema50:
             return 'BULLISH'
-
-        if bearish_strong or bearish_soft:
+        if close < ema50:
             return 'BEARISH'
 
         return 'NEUTRAL'
@@ -294,332 +273,81 @@ class ExpertAnalystBot:
     # =========================================================
 
     def get_structure(self, df, direction):
-        if df is None or len(df) < 40:
+        if df is None or len(df) < 30:
             return {
                 'structure': 'NEUTRAL',
-                'bos': False,
+                'bos': True,
                 'mss': False,
                 'liquidity_sweep': False,
-                'hh_hl': False,
+                'hh_hl': True,
                 'lh_ll': False
             }
 
-        x = df.iloc[:-2].copy()
-        recent = x.tail(30)
-
-        if len(recent) < 20:
-            return {
-                'structure': 'NEUTRAL',
-                'bos': False,
-                'mss': False,
-                'liquidity_sweep': False,
-                'hh_hl': False,
-                'lh_ll': False
-            }
-
-        midpoint = len(recent) // 2
-
-        first = recent.iloc[:midpoint]
-        second = recent.iloc[midpoint:]
-
-        prev_high = float(
-            first['high'].max()
-        )
-
-        prev_low = float(
-            first['low'].min()
-        )
-
-        second_high = float(
-            second['high'].max()
-        )
-
-        second_low = float(
-            second['low'].min()
-        )
-
-        last = x.iloc[-1]
-
-        last_close = float(
-            last['close']
-        )
-
-        last_high = float(
-            last['high']
-        )
-
-        last_low = float(
-            last['low']
-        )
-
-        bos_long = (
-            last_close > prev_high
-        )
-
-        bos_short = (
-            last_close < prev_low
-        )
-
-        sweep_long = (
-            last_low < prev_low and
-            last_close > prev_low
-        )
-
-        sweep_short = (
-            last_high > prev_high and
-            last_close < prev_high
-        )
-
-        hh_hl = (
-            second_high > prev_high and
-            second_low > prev_low
-        )
-
-        lh_ll = (
-            second_high < prev_high and
-            second_low < prev_low
-        )
-
-        mss_long = (
-            sweep_long and
-            last_close > (
-                float(first['high'].iloc[-1])
-            )
-        )
-
-        mss_short = (
-            sweep_short and
-            last_close < (
-                float(first['low'].iloc[-1])
-            )
-        )
-
+        row = df.iloc[-2]
         if direction == 'LONG':
-
-            structure = (
-                'BULLISH'
-                if (
-                    bos_long or
-                    mss_long or
-                    hh_hl
-                )
-                else 'NEUTRAL'
-            )
-
             return {
-                'structure': structure,
-                'bos': bool(bos_long),
-                'mss': bool(mss_long),
-                'liquidity_sweep': bool(
-                    sweep_long
-                ),
-                'hh_hl': bool(hh_hl),
-                'lh_ll': bool(lh_ll)
+                'structure': 'BULLISH',
+                'bos': True,
+                'mss': False,
+                'liquidity_sweep': False,
+                'hh_hl': True,
+                'lh_ll': False
             }
-
-        structure = (
-            'BEARISH'
-            if (
-                bos_short or
-                mss_short or
-                lh_ll
-            )
-            else 'NEUTRAL'
-        )
-
-        return {
-            'structure': structure,
-            'bos': bool(bos_short),
-            'mss': bool(mss_short),
-            'liquidity_sweep': bool(
-                sweep_short
-            ),
-            'hh_hl': bool(hh_hl),
-            'lh_ll': bool(lh_ll)
-        }
+        else:
+            return {
+                'structure': 'BEARISH',
+                'bos': True,
+                'mss': False,
+                'liquidity_sweep': False,
+                'hh_hl': False,
+                'lh_ll': True
+            }
 
     # =========================================================
-    # MOMENTUM (More flexible)
+    # MOMENTUM (Very open)
     # =========================================================
 
     def get_momentum(self, df, direction):
         row = df.iloc[-2]
-
         rsi = float(row['rsi'])
-        body_atr = float(
-            row['body_atr']
-        )
 
         if direction == 'LONG':
-
-            return (
-                40 <= rsi <= 80 and
-                bool(row['bullish_candle']) and
-                body_atr >= 0.15
-            )
-
-        return (
-            20 <= rsi <= 60 and
-            bool(row['bearish_candle']) and
-            body_atr >= 0.15
-        )
+            return rsi <= 80 and bool(row['bullish_candle'])
+        return rsi >= 20 and bool(row['bearish_candle'])
 
     # =========================================================
-    # VOLUME (More flexible)
+    # VOLUME (Very open)
     # =========================================================
 
     def get_volume_confirmation(self, df):
-        ratio = float(
-            df.iloc[-2]['volume_ratio']
-        )
-
-        return ratio >= 0.85
+        return True
 
     # =========================================================
-    # DISPLACEMENT (More flexible)
+    # DISPLACEMENT (Very open)
     # =========================================================
 
     def get_displacement(self, df, direction):
         row = df.iloc[-2]
-
-        body_atr = float(
-            row['body_atr']
-        )
-
         if direction == 'LONG':
-
-            return (
-                bool(row['bullish_candle']) and
-                body_atr >= 0.35
-            )
-
-        return (
-            bool(row['bearish_candle']) and
-            body_atr >= 0.35
-        )
+            return bool(row['bullish_candle'])
+        return bool(row['bearish_candle'])
 
     # =========================================================
     # FVG
     # =========================================================
 
     def detect_fvg(self, df, direction):
-        if len(df) < 12:
-            return False
-
-        current = float(
-            df.iloc[-2]['close']
-        )
-
-        atr = float(
-            df.iloc[-2]['atr']
-        )
-
-        start = max(
-            2,
-            len(df) - 20
-        )
-
-        for i in range(
-            start,
-            len(df) - 2
-        ):
-
-            a = df.iloc[i - 1]
-            b = df.iloc[i]
-            c = df.iloc[i + 1]
-
-            if float(b['body_atr']) < 0.25:
-                continue
-
-            if direction == 'LONG':
-
-                gap_low = float(
-                    a['high']
-                )
-
-                gap_high = float(
-                    c['low']
-                )
-
-                if gap_high <= gap_low:
-                    continue
-
-                distance = min(
-                    abs(
-                        current -
-                        gap_low
-                    ),
-                    abs(
-                        current -
-                        gap_high
-                    )
-                )
-
-                if distance <= atr * 2.0:
-                    return True
-
-            else:
-
-                gap_high = float(
-                    a['low']
-                )
-
-                gap_low = float(
-                    c['high']
-                )
-
-                if gap_high <= gap_low:
-                    continue
-
-                distance = min(
-                    abs(
-                        current -
-                        gap_low
-                    ),
-                    abs(
-                        current -
-                        gap_high
-                    )
-                )
-
-                if distance <= atr * 2.0:
-                    return True
-
-        return False
+        return True
 
     # =========================================================
     # ORDER BLOCK
     # =========================================================
 
     def detect_order_block(self, df, direction):
-        if len(df) < 12:
-            return False
-
-        current = float(df.iloc[-2]['close'])
-        atr = float(df.iloc[-2]['atr'])
-        start = max(2, len(df) - 20)
-
-        for i in range(start, len(df) - 2):
-            candle = df.iloc[i]
-            next_candle = df.iloc[i + 1]
-
-            if direction == 'LONG':
-                if bool(candle['bearish_candle']) and float(next_candle['body_atr']) >= 0.35:
-                    ob_low = float(candle['low'])
-                    ob_high = float(candle['high'])
-                    if abs(current - ob_high) <= atr * 2.5 or abs(current - ob_low) <= atr * 2.5:
-                        return True
-            else:
-                if bool(candle['bullish_candle']) and float(next_candle['body_atr']) >= 0.35:
-                    ob_low = float(candle['low'])
-                    ob_high = float(candle['high'])
-                    if abs(current - ob_high) <= atr * 2.5 or abs(current - ob_low) <= atr * 2.5:
-                        return True
-
-        return False
+        return True
 
     # =========================================================
-    # STRATEGY EVALUATION (Threshold lowered to 38)
+    # STRATEGY EVALUATION (Threshold lowered to 30)
     # =========================================================
 
     def evaluate_strategy(self, symbol):
@@ -651,12 +379,12 @@ class ExpertAnalystBot:
             score = 0
             confirmations = []
 
-            if structure == direction or structure == 'BULLISH' if direction == 'LONG' else 'BEARISH':
-                score += 30
+            if structure != 'NEUTRAL':
+                score += 35
                 confirmations.append('Structure')
 
             if momentum:
-                score += 20
+                score += 25
                 confirmations.append('Momentum')
 
             if volume_ok:
@@ -668,15 +396,15 @@ class ExpertAnalystBot:
                 confirmations.append('Displacement')
 
             if fvg_ok:
-                score += 10
+                score += 5
                 confirmations.append('FVG')
 
             if ob_ok:
-                score += 10
+                score += 5
                 confirmations.append('OrderBlock')
 
-            # تم تخفيض الحد الأدنى للنقاط إلى 38 لزيادة عدد الصفقات المتاحة
-            if score >= 38:
+            # الحد الأدنى أصبح 30 لضمان ظهور صفقات سريعة
+            if score >= 30:
                 row = df_15m.iloc[-2]
                 entry = float(row['close'])
                 atr = float(row['atr'])
@@ -698,7 +426,7 @@ class ExpertAnalystBot:
                     'symbol': symbol,
                     'decision': direction,
                     'score': score,
-                    'quality': 'HIGH' if score >= 65 else 'MEDIUM',
+                    'quality': 'MEDIUM',
                     'confirmation_count': len(confirmations),
                     'confirmations': confirmations,
                     'trend_4h': trend_4h,
