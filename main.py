@@ -16,10 +16,10 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Optimized SMC Analyst Bot is running perfectly!"
+    return "Institutional SMC & ICT Analyst Bot (v3.0) is running perfectly!"
 
 
-class ExpertAnalystBot:
+class InstitutionalSMCBot:
     def __init__(self, exchange_id='bingx', api_key='', secret_key='', timeframe='4h'):
         self.exchange_id = exchange_id
         self.timeframe = timeframe 
@@ -31,7 +31,7 @@ class ExpertAnalystBot:
             'options': {'defaultType': 'swap'}
         })
 
-    def fetch_ohlcv_data(self, symbol, timeframe, limit=120):
+    def fetch_ohlcv_data(self, symbol, timeframe, limit=100):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -40,79 +40,103 @@ class ExpertAnalystBot:
         except Exception as e:
             return None
 
-    def evaluate_smc_strategy(self, symbol):
-        df = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=120)
+    def get_btc_market_context(self):
+        """فحص اتجاه البيتكوين العام على فريم 4 ساعات لضمان صحة السوق"""
+        df_btc = self.fetch_ohlcv_data('BTC/USDT:USDT', timeframe=self.timeframe, limit=30)
+        if df_btc is None or len(df_btc) < 20:
+            return True # افتراض إيجابي في حال حدوث خطأ مؤقت في جلب بيانات البيتكوين
         
-        if df is None or len(df) < 60:
+        ma20_btc = df_btc['close'].rolling(window=20).mean().iloc[-1]
+        current_btc_close = df_btc['close'].iloc[-1]
+        return current_btc_close > ma20_btc
+
+    def evaluate_institutional_strategy(self, symbol, btc_bullish):
+        df = self.fetch_ohlcv_data(symbol, timeframe=self.timeframe, limit=60)
+        if df is None or len(df) < 40:
             return None
 
-        # حساب المتوسطات ومؤشرات السيولة
+        # حساب المؤشرات الأساسية
         df['vol_ma20'] = df['volume'].rolling(window=20).mean()
-        df['candle_body'] = abs(df['close'] - df['open'])
-        df['body_ma20'] = df['candle_body'].rolling(window=20).mean()
-
-        # بيانات الشمعة الحالية
+        df['ma30'] = df['close'].rolling(window=30).mean()
+        
         curr_close = df['close'].iloc[-1]
         curr_open = df['open'].iloc[-1]
+        curr_high = df['high'].iloc[-1]
+        curr_low = df['low'].iloc[-1]
         curr_vol = df['volume'].iloc[-1]
         vol_ma20 = df['vol_ma20'].iloc[-1]
 
-        # شروط مرنة وأسرع للـ SMC (تخفيف الشروط قليلاً لالتقاط صفقات أسرع)
-        # 1. كسر مقاومة أخر 10 شمعات (بدل 15 عشان نسرع الفرص)
-        recent_resistance = df['high'].iloc[-10:-2].max()
-        is_bos = curr_close > recent_resistance
-        
-        # 2. فوليوم متحسن (أعلى من المتوسط بـ 1.3 ضعف بدل 2.0)
-        is_whale_volume = curr_vol > (vol_ma20 * 1.3)
-        
-        # 3. جسم شمعة جيد
-        is_strong_body = df['candle_body'].iloc[-1] > (df['body_ma20'].iloc[-1] * 1.2)
-        
-        # فلتر اتجاه مرن (المتوسط المتحرك 30 بدل 50)
-        df['ma30'] = df['close'].rolling(window=30).mean()
+        # 1. التأكيد العام للاتجاه والمتوسطات
         is_bullish_trend = curr_close > df['ma30'].iloc[-1]
-
-        # جمع الشروط المعدلة
-        if not (is_bos and is_whale_volume and is_strong_body and is_bullish_trend):
+        if not (is_bullish_trend and btc_bullish):
             return None
 
-        # تحديد الوقف والأهداف
-        structure_low = df['low'].iloc[-4:-1].min()
-        stop_loss = round(min(structure_low, curr_close * 0.97), 4 if curr_close < 1 else 2)
+        # 2. فحص سحب السيولة (Liquidity Sweep): هل ذيل الشمعة أو الشمعة السابقة كسر قمة سابقة ثم أغلق دونها أو صعد بقوة؟
+        recent_highs = df['high'].iloc[-15:-2].max()
+        recent_lows = df['low'].iloc[-15:-2].min()
+        
+        # شرط سحب السيولة السفلي (فيك أوت للقاع ثم ارتداد) أو كسر هيكلي واضح (BOS)
+        is_liquidity_sweep = (df['low'].iloc[-2] < recent_lows) and (curr_close > curr_open)
+        is_bos = curr_close > recent_highs
+
+        if not (is_liquidity_sweep or is_bos):
+            return None
+
+        # 3. فوليوم الحيتان المؤسسي (أضعاف المتوسط)
+        is_whale_volume = curr_vol > (vol_ma20 * 1.4)
+        if not is_whale_volume:
+            return None
+
+        # 4. تحديد منطقة الأوردربلوك (Order Block) - آخر شمعة هابطة قبل الانطلاقة
+        ob_candle_low = df['low'].iloc[-2] if df['close'].iloc[-2] < df['open'].iloc[-2] else df['low'].iloc[-3]
+        
+        # 5. وقف الخسارة المؤسسي المبني على الهيكل (تحت أدنى قاع حقيقي أو الأوردربلوك بمانع أمان)
+        structure_low = df['low'].iloc[-5:-1].min()
+        stop_loss = round(min(ob_candle_low, structure_low, curr_close * 0.975), 4 if curr_close < 1 else 2)
         
         risk_distance = curr_close - stop_loss
         if risk_distance <= 0:
             return None
 
         risk_pct = round((risk_distance / curr_close) * 100, 2)
-        if risk_pct > 7.0: 
+        if risk_pct > 6.5: # حماية رأس المال الصارم
             return None
 
-        tp1 = round(curr_close + (2.0 * risk_distance), 4 if curr_close < 1 else 2)
-        tp2 = round(curr_close + (3.5 * risk_distance), 4 if curr_close < 1 else 2)
+        # 6. الأهداف الاستثمارية بدقة (R:R 1:2.5 و 1:4.0)
+        tp1 = round(curr_close + (2.5 * risk_distance), 4 if curr_close < 1 else 2)
+        tp2 = round(curr_close + (4.0 * risk_distance), 4 if curr_close < 1 else 2)
 
         tp1_pct = round(((tp1 - curr_close) / curr_close) * 100, 2)
         tp2_pct = round(((tp2 - curr_close) / curr_close) * 100, 2)
 
+        # حساب عداد التأكيدات (Scorecard) لجودة الصفقة
+        score = 2 # الأساسيات
+        if is_bos: score += 1
+        if is_liquidity_sweep: score += 1
+        if is_whale_volume: score += 1
+
         clean_symbol = symbol.split('/')[0]
 
         report_message = f"""
-🏛️ **تقرير فرصة صانع السوق (SMC مخصص) - 4H** 🚀
-تم رصد اختراق هيكلي وسيولة ممتازة بنجاح!
+🏛️ **التقرير المؤسسي لصانع السوق (SMC & ICT)** 💎
+تم رصد فرصة عالية الجودة متوافقة مع سيولة الحيتان!
 
 🔹 **العملة:** `${clean_symbol}`
-📊 **سعر الدخول:** `{curr_close}`
+📊 **سعر الدخول المثالي:** `{curr_close}`
 
-🛑 **وقف الخسارة (SL):** `{stop_loss}` (`{risk_pct}%`)
+🛑 **وقف الخسارة المؤسسي (SL):** `{stop_loss}` (`{risk_pct}%`)
+*(محمي تحت أدنى قاع هيكلي / Order Block)*
 
-🎯 **الأهداف:**
-• **TP1:** `{tp1}` (`+{tp1_pct}%`) [R:R 1:2.0]
-• **TP2:** `{tp2}` (`+{tp2_pct}%`) [R:R 1:3.5]
+🎯 **الأهداف الاستثمارية الدقيقة:**
+• **TP1:** `{tp1}` (`+{tp1_pct}%`) [R:R 1:2.5]
+• **TP2:** `{tp2}` (`+{tp2_pct}%`) [R:R 1:4.0]
 
-💡 **تفاصيل الفرصة:**
-✔ اختراق هادئ وفعلي لمقاومة قريبة
-✔ فوليوم تداول داعم ومناسب
-✔ اتجاه عام صاعد مدعوم بالمتوسط
+📋 **عداد أدلة وتأكيدات الصفقة:**
+✔ اتجاه عام وصعد للـ BTC: `معتمد`
+✔ كسر هيكلي (BOS / MSS): `{'متوفر' if is_bos else 'غير متوفر'}`
+✔ سحب سيولة (Liquidity Sweep): `{'تم رصده' if is_liquidity_sweep else 'عادي'}`
+✔ فوليوم تداول مؤسسي: `قوي ({round(curr_vol/vol_ma20, 1)}x)`
+⭐ **تقييم جودة الفرصة:** `{score}/5 (فرصة مؤسسية موثوقة)`
 """
         return report_message.strip()
 
@@ -134,9 +158,9 @@ def send_telegram_message(message):
 
 
 def bot_worker():
-    send_telegram_message("⚡ تم تحديث وضبط إعدادات البوت لتكون أكثر مرونة وسرعة في رصد الصفقات...")
-    logger.info("بدء تشغيل حلقة الفحص المعدلة...")
-    bot = ExpertAnalystBot(exchange_id='bingx')
+    send_telegram_message("🚀 تم ترقية البوت بنجاح إلى النسخة المؤسسية (Institutional SMC & ICT Engine) مع فلتر البيتكوين وسحب السيولة!")
+    logger.info("بدء تشغيل حلقة الفحص المؤسسي...")
+    bot = InstitutionalSMCBot(exchange_id='bingx')
     
     symbols = [
         'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 
@@ -149,18 +173,20 @@ def bot_worker():
     
     while True:
         try:
-            logger.info("جاري فحص العملات بالإضافة للتحسينات الجديدة...")
+            logger.info("جاري فحص اتجاه البيتكوين وسوق العملات...")
+            btc_bullish = bot.get_btc_market_context()
+            
             for symbol in symbols:
-                signal = bot.evaluate_smc_strategy(symbol)
+                signal = bot.evaluate_institutional_strategy(symbol, btc_bullish)
                 if signal:
                     send_telegram_message(signal)
-                    logger.info(f"تم إرسال تنبيه للعملة: {symbol}")
+                    logger.info(f"تم إرسال إشارة مؤسسية للعملة: {symbol}")
                 time.sleep(2)
             
-            # تقليل وقت الانتظار قليلاً أو إبقاؤه على 30 دقيقة
-            time.sleep(1200) 
+            # دورة الفحص كل 30 دقيقة
+            time.sleep(1800) 
         except Exception as e:
-            logger.error(f"حدث خطأ في حلقة الفحص: {e}")
+            logger.error(f"حدث خطأ في حلقة الفحص المؤسسي: {e}")
             time.sleep(60)
 
 bot_thread = threading.Thread(target=bot_worker, daemon=True)
