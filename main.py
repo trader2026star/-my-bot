@@ -2,8 +2,23 @@ import logging
 import ccxt
 import pandas as pd
 import numpy as np
+from flask import Flask
+import threading
+import os
 
 logger = logging.getLogger(__name__)
+
+# إعداد تطبيق الـ Flask البسيط لإبقاء الخدمة مفتوحة على Render
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Expert Analyst Bot is running perfectly!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
 
 class ExpertAnalystBot:
     def __init__(self, exchange_id='bingx', api_key='', secret_key='', timeframe='4h'):
@@ -42,7 +57,7 @@ class ExpertAnalystBot:
         df['body_ma20'] = df['candle_body'].rolling(window=20).mean()
 
         current_close = df['close'].iloc[-1]
-        current_open = df['open'].iloc[-1]  # تم تصحيحها هنا بنجاح لتأخذ سعر الفتح الحقيقي
+        current_open = df['open'].iloc[-1]  # تم التصحيح هنا بنجاح لتأخذ سعر الفتح الحقيقي
         current_volume = df['volume'].iloc[-1]
         vol_ma20 = df['vol_ma20'].iloc[-1]
         
@@ -72,7 +87,7 @@ class ExpertAnalystBot:
 
         risk_pct = round((risk_distance / current_close) * 100, 2)
         
-        # حماية إضافية: إذا كانت المسافة أكبر من 6% نتجنب الصفقة لتقليل المخاطر
+        # فلتر الأمان: تجنب الصفقات التي تكون مسافة وقف الخسارة فيها أكبر من 6%
         if risk_pct > 6.0:
             return None
 
@@ -105,3 +120,10 @@ class ExpertAnalystBot:
 ✔ وقف خسارة محمي بعيد عن التذبذب
 """
         return {"Decision": report_message.strip(), "Symbol": symbol}
+
+
+if __name__ == "__main__":
+    # تشغيل سيرفر الويب في الخلفية ليناسب قيود منصة Render المجانية
+    t = threading.Thread(target=run_flask)
+    t.start()
+    print("Bot web server started successfully.")
