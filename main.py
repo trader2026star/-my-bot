@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import time
 import requests
 from flask import Flask
 from analysis import ExpertAnalystBot
@@ -18,11 +19,11 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 TELEGRAM_TOKEN = "8523562412:AAFegshLw8TrNcAIdDuLgm3uWc0ao9myMqo"
 TELEGRAM_CHAT_ID = "7695985627"
 
-# تهيئة محرك التحليل
-analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='15m')
+# تهيئة محرك التحليل على فريم الـ 4 ساعات بمنطق الانفجار والفوليوم
+analyst_engine = ExpertAnalystBot(exchange_id='bingx', api_key=API_KEY, secret_key=SECRET_KEY, timeframe='4h')
 
 def send_telegram_message(message):
-    """إرسال التنبيهات والصفقات الحقيقية مباشرة إلى تليجرام"""
+    """إرسال التقرير بالكامل كرسالة واحدة متكاملة لتفادي حظر تيليجرام"""
     logger.info(f"Telegram Notification: {message}")
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
@@ -32,6 +33,8 @@ def send_telegram_message(message):
                 "text": message
             }
             response = requests.post(url, json=payload, timeout=10)
+            # فاصل زمني أمان بعد الإرسال لمنع حظر الطلبات
+            time.sleep(3)
             if response.status_code == 200:
                 logger.info("Telegram message sent successfully to bot!")
             else:
@@ -43,14 +46,13 @@ def send_telegram_message(message):
 
 @app.route('/')
 def home():
-    """فحص موسع لزيادة فرص التقاط صفقات الانطلاقة المبكرة وإرسالها لتليجرام"""
+    """فحص ذكي للعملات على فريم الأربع ساعات للبحث عن شمعات الانفجار"""
     try:
         exchange = analyst_engine.exchange
         exchange.load_markets()
 
         all_symbols = [symbol for symbol in exchange.symbols if symbol.endswith('/USDT:USDT') and not symbol.startswith('NC')]    
         
-        # زيادة عدد العملات المفحوصة في الباتش الواحد إلى 15 عملة لضمان سرعة التقاط الإشارات
         sample_size = min(15, len(all_symbols))    
         symbols_to_scan = random.sample(all_symbols, sample_size)    
             
@@ -66,7 +68,7 @@ def home():
             except Exception as ex:    
                 logger.error(f"Error in symbol {symbol}: {ex}")
 
-        return f"🤖 Bot is running smoothly! Scanned {sample_size} symbols. Signals found and sent: {signals_found}"
+        return f"🚀 Volume Breakout Bot Running (4H)! Scanned {sample_size} symbols. High-quality signals found: {signals_found}"
     except Exception as e:
         return f"Bot is active, loop running: {e}"
 
