@@ -439,7 +439,7 @@ class ExpertAnalystBot:
         }
 
     # =========================================================
-    # MOMENTUM
+    # MOMENTUM (Relaxed slightly)
     # =========================================================
 
     def get_momentum(self, df, direction):
@@ -453,19 +453,19 @@ class ExpertAnalystBot:
         if direction == 'LONG':
 
             return (
-                50 <= rsi <= 70 and
+                45 <= rsi <= 75 and
                 bool(row['bullish_candle']) and
-                body_atr >= 0.25
+                body_atr >= 0.20
             )
 
         return (
-            30 <= rsi <= 50 and
+            25 <= rsi <= 55 and
             bool(row['bearish_candle']) and
-            body_atr >= 0.25
+            body_atr >= 0.20
         )
 
     # =========================================================
-    # VOLUME
+    # VOLUME (Relaxed slightly)
     # =========================================================
 
     def get_volume_confirmation(self, df):
@@ -473,10 +473,10 @@ class ExpertAnalystBot:
             df.iloc[-2]['volume_ratio']
         )
 
-        return ratio >= 1.05
+        return ratio >= 0.95
 
     # =========================================================
-    # DISPLACEMENT
+    # DISPLACEMENT (Relaxed slightly)
     # =========================================================
 
     def get_displacement(self, df, direction):
@@ -490,12 +490,12 @@ class ExpertAnalystBot:
 
             return (
                 bool(row['bullish_candle']) and
-                body_atr >= 0.55
+                body_atr >= 0.45
             )
 
         return (
             bool(row['bearish_candle']) and
-            body_atr >= 0.55
+            body_atr >= 0.45
         )
 
     # =========================================================
@@ -528,7 +528,7 @@ class ExpertAnalystBot:
             b = df.iloc[i]
             c = df.iloc[i + 1]
 
-            if float(b['body_atr']) < 0.35:
+            if float(b['body_atr']) < 0.30:
                 continue
 
             if direction == 'LONG':
@@ -555,7 +555,7 @@ class ExpertAnalystBot:
                     )
                 )
 
-                if distance <= atr * 1.50:
+                if distance <= atr * 1.8:
                     return True
 
             else:
@@ -582,7 +582,7 @@ class ExpertAnalystBot:
                     )
                 )
 
-                if distance <= atr * 1.50:
+                if distance <= atr * 1.8:
                     return True
 
         return False
@@ -604,22 +604,22 @@ class ExpertAnalystBot:
             next_candle = df.iloc[i + 1]
 
             if direction == 'LONG':
-                if bool(candle['bearish_candle']) and float(next_candle['body_atr']) >= 0.5:
+                if bool(candle['bearish_candle']) and float(next_candle['body_atr']) >= 0.4:
                     ob_low = float(candle['low'])
                     ob_high = float(candle['high'])
-                    if abs(current - ob_high) <= atr * 2.0 or abs(current - ob_low) <= atr * 2.0:
+                    if abs(current - ob_high) <= atr * 2.2 or abs(current - ob_low) <= atr * 2.2:
                         return True
             else:
-                if bool(candle['bullish_candle']) and float(next_candle['body_atr']) >= 0.5:
+                if bool(candle['bullish_candle']) and float(next_candle['body_atr']) >= 0.4:
                     ob_low = float(candle['low'])
                     ob_high = float(candle['high'])
-                    if abs(current - ob_high) <= atr * 2.0 or abs(current - ob_low) <= atr * 2.0:
+                    if abs(current - ob_high) <= atr * 2.2 or abs(current - ob_low) <= atr * 2.2:
                         return True
 
         return False
 
     # =========================================================
-    # STRATEGY EVALUATION
+    # STRATEGY EVALUATION (Threshold lowered to 45)
     # =========================================================
 
     def evaluate_strategy(self, symbol):
@@ -675,7 +675,8 @@ class ExpertAnalystBot:
                 score += 10
                 confirmations.append('OrderBlock')
 
-            if score >= 50:
+            # تم تخفيض الحد الأدنى للقبول إلى 45 لإعطاء فرص أكثر أماناً
+            if score >= 45:
                 row = df_15m.iloc[-2]
                 entry = float(row['close'])
                 atr = float(row['atr'])
@@ -697,7 +698,7 @@ class ExpertAnalystBot:
                     'symbol': symbol,
                     'decision': direction,
                     'score': score,
-                    'quality': 'HIGH' if score >= 75 else 'MEDIUM',
+                    'quality': 'HIGH' if score >= 70 else 'MEDIUM',
                     'confirmation_count': len(confirmations),
                     'confirmations': confirmations,
                     'trend_4h': trend_4h,
