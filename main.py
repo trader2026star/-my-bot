@@ -33,7 +33,7 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     return (
-        "Expert Futures Analyst Bot v4.0 "
+        "Expert Futures Analyst Bot v4.1 "
         "is running perfectly!"
     )
 
@@ -48,12 +48,6 @@ def health():
 # =========================================================
 
 def send_telegram_message(message):
-
-    # نفس فكرة الاتصال القديمة:
-    # Telegram Bot API + requests.
-    #
-    # لكن التوكن والـchat_id يتم أخذهم من Environment
-    # حتى لا يتم كشفهم داخل GitHub/Render.
 
     token = os.environ.get(
         'TELEGRAM_BOT_TOKEN',
@@ -128,37 +122,48 @@ def get_bingx_symbols():
 
         symbols = []
 
+        blocked = [
+            'SP500',
+            'NASDAQ',
+            'DXY',
+            'GOLD',
+            'SILVER',
+            'OIL',
+            'WTI',
+            'BRENT'
+        ]
+
         for symbol, market in markets.items():
 
             try:
 
-                if not market.get('active', True):
+                if not market.get(
+                    'active',
+                    True
+                ):
                     continue
 
-                if market.get('swap') is not True:
+                if market.get(
+                    'swap'
+                ) is not True:
                     continue
 
-                if market.get('quote') != 'USDT':
+                if market.get(
+                    'quote'
+                ) != 'USDT':
                     continue
 
-                if market.get('settle') != 'USDT':
+                if market.get(
+                    'settle'
+                ) != 'USDT':
                     continue
 
                 base = str(
-                    market.get('base', '')
+                    market.get(
+                        'base',
+                        ''
+                    )
                 ).upper()
-
-                # استبعاد أصول ليست Crypto
-                blocked = [
-                    'SP500',
-                    'NASDAQ',
-                    'DXY',
-                    'GOLD',
-                    'SILVER',
-                    'OIL',
-                    'WTI',
-                    'BRENT'
-                ]
 
                 if any(
                     item in base
@@ -171,7 +176,6 @@ def get_bingx_symbols():
             except Exception:
                 continue
 
-        # إزالة التكرار
         symbols = list(
             dict.fromkeys(symbols)
         )
@@ -190,7 +194,6 @@ def get_bingx_symbols():
             e
         )
 
-        # fallback
         return [
             'BTC/USDT:USDT',
             'ETH/USDT:USDT',
@@ -217,6 +220,269 @@ def get_bingx_symbols():
 
 
 # =========================================================
+# PRICE FORMAT
+# =========================================================
+
+def format_price(price):
+
+    try:
+
+        price = float(price)
+
+        if price >= 100:
+            return f"{price:.4f}"
+
+        if price >= 1:
+            return f"{price:.5f}"
+
+        if price >= 0.01:
+            return f"{price:.7f}"
+
+        if price >= 0.0001:
+            return f"{price:.9f}"
+
+        return f"{price:.12f}"
+
+    except Exception:
+        return str(price)
+
+
+# =========================================================
+# SIGNAL MESSAGE BUILDER
+# =========================================================
+
+def build_signal_message(signal):
+
+    if not signal:
+        return None
+
+    # ---------------------------------------------------------
+    # IMPORTANT:
+    # analysis.py returns lowercase keys.
+    # ---------------------------------------------------------
+
+    symbol = signal.get(
+        'symbol',
+        ''
+    )
+
+    decision = signal.get(
+        'decision',
+        ''
+    )
+
+    score = signal.get(
+        'score',
+        0
+    )
+
+    quality = signal.get(
+        'quality',
+        'UNKNOWN'
+    )
+
+    if not symbol or not decision:
+        logger.warning(
+            "Invalid signal data: symbol=%s decision=%s",
+            symbol,
+            decision
+        )
+        return None
+
+    direction = str(
+        decision
+    ).upper()
+
+    symbol_display = str(
+        symbol
+    )
+
+    # ---------------------------------------------------------
+    # CONFIRMATIONS
+    # ---------------------------------------------------------
+
+    confirmations = signal.get(
+        'confirmations',
+        []
+    )
+
+    if not isinstance(
+        confirmations,
+        list
+    ):
+        confirmations = []
+
+    confirmation_count = signal.get(
+        'confirmation_count',
+        len(confirmations)
+    )
+
+    confirmation_text = (
+        ', '.join(
+            str(x)
+            for x in confirmations
+        )
+        if confirmations
+        else 'NONE'
+    )
+
+    # ---------------------------------------------------------
+    # DATA
+    # ---------------------------------------------------------
+
+    trend_4h = signal.get(
+        'trend_4h',
+        'UNKNOWN'
+    )
+
+    trend_1h = signal.get(
+        'trend_1h',
+        'UNKNOWN'
+    )
+
+    btc_context = signal.get(
+        'btc_context',
+        'UNKNOWN'
+    )
+
+    rsi = signal.get(
+        'rsi_15m',
+        0
+    )
+
+    volume_ratio = signal.get(
+        'volume_ratio',
+        0
+    )
+
+    entry = signal.get(
+        'entry'
+    )
+
+    sl = signal.get(
+        'sl'
+    )
+
+    tp1 = signal.get(
+        'tp1'
+    )
+
+    tp2 = signal.get(
+        'tp2'
+    )
+
+    tp3 = signal.get(
+        'tp3'
+    )
+
+    risk_pct = signal.get(
+        'risk_pct',
+        0
+    )
+
+    risk_filter = signal.get(
+        'risk_filter',
+        'UNKNOWN'
+    )
+
+    structure_confirmation = signal.get(
+        'structure_confirmation',
+        'UNKNOWN'
+    )
+
+    btc_conflict = signal.get(
+        'btc_conflict',
+        False
+    )
+
+    # ---------------------------------------------------------
+    # BTC STATUS
+    # ---------------------------------------------------------
+
+    if btc_conflict:
+        btc_label = (
+            f"{btc_context} ⚠️ CONFLICT"
+        )
+    else:
+        btc_label = str(
+            btc_context
+        )
+
+    # ---------------------------------------------------------
+    # ENTRY QUALITY
+    # ---------------------------------------------------------
+
+    entry_quality = signal.get(
+        'entry_quality',
+        'DIRECT'
+    )
+
+    # ---------------------------------------------------------
+    # FORMAT NUMBERS
+    # ---------------------------------------------------------
+
+    try:
+        rsi_text = f"{float(rsi):.1f}"
+    except Exception:
+        rsi_text = str(rsi)
+
+    try:
+        volume_text = (
+            f"{float(volume_ratio):.2f}x"
+        )
+    except Exception:
+        volume_text = str(volume_ratio)
+
+    try:
+        risk_text = (
+            f"{float(risk_pct):.2f}%"
+        )
+    except Exception:
+        risk_text = str(risk_pct)
+
+    # ---------------------------------------------------------
+    # BUILD MESSAGE
+    # ---------------------------------------------------------
+
+    message = (
+        "🚨 EXPERT FUTURES SIGNAL 🚨\n\n"
+
+        f"📊 Symbol: {symbol_display}\n"
+        f"🎯 Decision: {direction}\n"
+        f"⭐ Score: {score}\n"
+        f"🏷 Quality: {quality}\n\n"
+
+        f"📌 Confirmations: "
+        f"{confirmation_count}/3+\n"
+        f"🧠 {confirmation_text}\n\n"
+
+        f"📈 4H Trend: {trend_4h}\n"
+        f"📊 1H Trend: {trend_1h}\n"
+        f"₿ BTC Context: {btc_label}\n\n"
+
+        f"💪 RSI 15M: {rsi_text}\n"
+        f"🔊 Volume: {volume_text}\n\n"
+
+        f"💰 Entry: {format_price(entry)}\n"
+        f"🛑 SL: {format_price(sl)} "
+        f"({risk_text})\n\n"
+
+        f"🎯 TP1: {format_price(tp1)} | R:R 1:2\n"
+        f"🎯 TP2: {format_price(tp2)} | R:R 1:3.5\n"
+        f"🎯 TP3: {format_price(tp3)} | R:R 1:5\n\n"
+
+        f"🛡 Risk Filter: {risk_filter}\n"
+        f"📋 Structure Confirmation: "
+        f"{structure_confirmation}\n"
+        f"⚡ Entry Status: {entry_quality}\n\n"
+
+        "⚠️ Setup signal — not a guaranteed result."
+    )
+
+    return message
+
+
+# =========================================================
 # DUPLICATE PROTECTION
 # =========================================================
 
@@ -230,15 +496,36 @@ def should_send_signal(signal):
     if not signal:
         return False
 
-    symbol = signal.get(
-        'Symbol',
-        ''
-    )
+    # =====================================================
+    # FIX:
+    # analysis.py uses lowercase keys.
+    # =====================================================
 
-    direction = signal.get(
-        'Direction',
-        ''
-    )
+    symbol = str(
+        signal.get(
+            'symbol',
+            ''
+        )
+    ).strip().upper()
+
+    direction = str(
+        signal.get(
+            'decision',
+            ''
+        )
+    ).strip().upper()
+
+    # لا تسمح بمفتاح فارغ مثل ":"
+    if not symbol or not direction:
+
+        logger.warning(
+            "Invalid duplicate key: "
+            "symbol=%r direction=%r",
+            symbol,
+            direction
+        )
+
+        return False
 
     key = (
         f"{symbol}:{direction}"
@@ -251,18 +538,62 @@ def should_send_signal(signal):
         0
     )
 
-    if now - last_sent < SIGNAL_COOLDOWN:
+    if (
+        now - last_sent
+        < SIGNAL_COOLDOWN
+    ):
+
+        remaining = int(
+            SIGNAL_COOLDOWN -
+            (now - last_sent)
+        )
 
         logger.info(
-            "Duplicate blocked: %s",
-            key
+            "Duplicate blocked: %s "
+            "(%ss remaining)",
+            key,
+            remaining
         )
 
         return False
 
-    sent_signals[key] = now
+    # =====================================================
+    # IMPORTANT:
+    # لا نسجلها هنا.
+    #
+    # سيتم تسجيلها بعد نجاح Telegram.
+    # =====================================================
 
     return True
+
+
+def mark_signal_sent(signal):
+
+    if not signal:
+        return
+
+    symbol = str(
+        signal.get(
+            'symbol',
+            ''
+        )
+    ).strip().upper()
+
+    direction = str(
+        signal.get(
+            'decision',
+            ''
+        )
+    ).strip().upper()
+
+    if not symbol or not direction:
+        return
+
+    key = (
+        f"{symbol}:{direction}"
+    )
+
+    sent_signals[key] = time.time()
 
 
 # =========================================================
@@ -275,7 +606,7 @@ def bot_worker():
         "Starting Expert Futures Analyst..."
     )
 
-    send_telegram_message(
+    startup_sent = send_telegram_message(
         "🚀 تم تشغيل Expert Futures Analyst Bot\n\n"
         "🧠 Multi-Timeframe Analysis\n"
         "📊 4H + 1H + 15M\n"
@@ -284,16 +615,33 @@ def bot_worker():
         "🛡 Dynamic Risk Management"
     )
 
-    # نفس اتصال BingX عبر CCXT
-    # مع تمرير المفاتيح إن كانت موجودة.
+    if startup_sent:
+        logger.info(
+            "Startup Telegram message sent successfully."
+        )
+    else:
+        logger.warning(
+            "Startup Telegram message was not sent."
+        )
+
+    # =====================================================
+    # BINGX CREDENTIALS
+    # =====================================================
+
     api_key = os.environ.get(
         'BINGX_API_KEY',
-        os.environ.get('API_KEY', '')
+        os.environ.get(
+            'API_KEY',
+            ''
+        )
     )
 
     secret_key = os.environ.get(
         'BINGX_SECRET_KEY',
-        os.environ.get('SECRET_KEY', '')
+        os.environ.get(
+            'SECRET_KEY',
+            ''
+        )
     )
 
     bot = ExpertAnalystBot(
@@ -303,7 +651,10 @@ def bot_worker():
         timeframe='15m'
     )
 
-    # أول تحميل للعملات
+    # =====================================================
+    # SYMBOLS
+    # =====================================================
+
     symbols = get_bingx_symbols()
 
     last_symbol_refresh = time.time()
@@ -312,10 +663,13 @@ def bot_worker():
 
         try:
 
-            # تحديث قائمة العملات كل 30 دقيقة
+            # =================================================
+            # REFRESH SYMBOLS
+            # =================================================
+
             if (
-                time.time() -
-                last_symbol_refresh
+                time.time()
+                - last_symbol_refresh
                 > 1800
             ):
 
@@ -324,7 +678,13 @@ def bot_worker():
                 )
 
                 if new_symbols:
+
                     symbols = new_symbols
+
+                    logger.info(
+                        "Symbol list refreshed: %s symbols",
+                        len(symbols)
+                    )
 
                 last_symbol_refresh = (
                     time.time()
@@ -336,10 +696,17 @@ def bot_worker():
             )
 
             signals_found = 0
+            analyzed_count = 0
+
+            # =================================================
+            # SCAN
+            # =================================================
 
             for symbol in symbols:
 
                 try:
+
+                    analyzed_count += 1
 
                     signal = (
                         bot.evaluate_strategy(
@@ -347,34 +714,108 @@ def bot_worker():
                         )
                     )
 
-                    if signal:
+                    # -----------------------------------------
+                    # NO SIGNAL
+                    # -----------------------------------------
 
-                        if should_send_signal(
+                    if not signal:
+
+                        continue
+
+                    # -----------------------------------------
+                    # SIGNAL FOUND
+                    # -----------------------------------------
+
+                    logger.info(
+                        "Candidate signal: %s %s score=%s",
+                        signal.get(
+                            'symbol',
+                            symbol
+                        ),
+                        signal.get(
+                            'decision',
+                            ''
+                        ),
+                        signal.get(
+                            'score',
+                            0
+                        )
+                    )
+
+                    # -----------------------------------------
+                    # DUPLICATE CHECK
+                    # -----------------------------------------
+
+                    if not should_send_signal(
+                        signal
+                    ):
+
+                        continue
+
+                    # -----------------------------------------
+                    # BUILD TELEGRAM MESSAGE
+                    # -----------------------------------------
+
+                    message = (
+                        build_signal_message(
                             signal
-                        ):
+                        )
+                    )
 
-                            message = signal.get(
-                                'Decision',
-                                ''
+                    if not message:
+
+                        logger.warning(
+                            "Signal message build failed: %s",
+                            symbol
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # SEND TELEGRAM
+                    # -----------------------------------------
+
+                    sent = send_telegram_message(
+                        message
+                    )
+
+                    if sent:
+
+                        # IMPORTANT:
+                        # سجل الـduplicate بعد نجاح الإرسال فقط
+                        mark_signal_sent(
+                            signal
+                        )
+
+                        signals_found += 1
+
+                        logger.info(
+                            "Signal sent successfully: "
+                            "%s %s",
+                            signal.get(
+                                'symbol'
+                            ),
+                            signal.get(
+                                'decision'
                             )
+                        )
 
-                            if message:
+                    else:
 
-                                if send_telegram_message(
-                                    message
-                                ):
+                        logger.warning(
+                            "Telegram send failed: %s %s",
+                            signal.get(
+                                'symbol'
+                            ),
+                            signal.get(
+                                'decision'
+                            )
+                        )
 
-                                    signals_found += 1
+                    # -----------------------------------------
+                    # RATE LIMIT PROTECTION
+                    # -----------------------------------------
 
-                                    logger.info(
-                                        "Signal sent: %s %s",
-                                        symbol,
-                                        signal.get(
-                                            'Direction'
-                                        )
-                                    )
-
-                    # حماية من Rate Limits
                     time.sleep(0.7)
 
                 except Exception as e:
@@ -387,12 +828,26 @@ def bot_worker():
 
                     time.sleep(1)
 
+            # =================================================
+            # SCAN SUMMARY
+            # =================================================
+
             logger.info(
-                "Scan finished. Signals sent: %s",
+                "Scan finished. "
+                "Analyzed: %s | "
+                "Signals sent: %s",
+                analyzed_count,
                 signals_found
             )
 
-            # دورة جديدة كل 15 دقيقة
+            # =================================================
+            # NEXT CYCLE
+            # =================================================
+
+            logger.info(
+                "Next market scan in 15 minutes."
+            )
+
             time.sleep(900)
 
         except Exception as e:
