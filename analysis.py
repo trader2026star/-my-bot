@@ -1,4 +1,5 @@
 import logging
+import time
 import ccxt
 import pandas as pd
 import numpy as np
@@ -7,7 +8,38 @@ logger = logging.getLogger(__name__)
 
 
 class ExpertAnalystBot:
-    def __init__(self, exchange_id='bingx', api_key='', secret_key='', timeframe='15m'):
+    """
+    Expert Futures Analyst
+    ----------------------
+    Multi-Timeframe:
+        4H  -> Macro Trend
+        1H  -> Market Structure
+        15M -> Entry Trigger
+
+    Confirmation groups:
+        Trend
+        Structure
+        Liquidity
+        Momentum
+        Volume
+        Breakout / Displacement
+        FVG
+        Order Block
+        BTC Context
+
+    الهدف:
+        استخراج صفقات LONG / SHORT بجودة متوازنة
+        بدون الإفراط في NO TRADE وبدون تخفيف الفلاتر لدرجة
+        إصدار إشارات عشوائية.
+    """
+
+    def __init__(
+        self,
+        exchange_id='bingx',
+        api_key='',
+        secret_key='',
+        timeframe='15m'
+    ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
 
@@ -22,26 +54,36 @@ class ExpertAnalystBot:
             }
         })
 
-        self.min_confirmations = 3
-        self.min_score = 5
+        self.exchange.timeout = 15000
 
-    # =========================================================
-    # DATA
-    # =========================================================
+        self._cache = {}
 
-    def fetch_ohlcv_data(self, symbol, timeframe, limit=150):
+    # ============================================================
+    # BASIC DATA
+    # ============================================================
+
+    def fetch_ohlcv_data(self, symbol, timeframe, limit=250):
         try:
-            ohlcv = self.exchange.fetch_ohlcv(
+            cache_key = f"{symbol}_{timeframe}_{limit}"
+            now = time.time()
+
+            cached = self._cache.get(cache_key)
+
+            # Cache 20 seconds
+            if cached and now - cached['time'] < 20:
+                return cached['data'].copy()
+
+            data = self.exchange.fetch_ohlcv(
                 symbol,
                 timeframe=timeframe,
                 limit=limit
             )
 
-            if not ohlcv or len(ohlcv) < 50:
+            if not data or len(data) < 80:
                 return None
 
             df = pd.DataFrame(
-                ohlcv,
+                data,
                 columns=[
                     'timestamp',
                     'open',
@@ -52,42 +94,29 @@ class ExpertAnalystBot:
                 ]
             )
 
-            df['timestamp'] = pd.to_datetime(
-                df['timestamp'],
-                unit='ms'
-            )
-
-            for col in [
-                'open',
-                'high',
-                'low',
-                'close',
-                'volume'
-            ]:
-                df[col] = pd.to_numeric(
-                    df[col],
-                    errors='coerce'
-                )
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
 
             df = df.dropna().reset_index(drop=True)
 
-            return df
+            self._cache[cache_key] = {
+                'time': now,
+                'data': df
+            }
+
+            return df.copy()
 
         except Exception as e:
             logger.warning(
-                "OHLCV error %s %s: %s",
-                symbol,
-                timeframe,
-                e
+                f"OHLCV error {symbol} {timeframe}: {e}"
             )
             return None
 
-    # =========================================================
+    # ============================================================
     # INDICATORS
-    # =========================================================
+    # ============================================================
 
     def add_indicators(self, df):
-
         df = df.copy()
 
         df['ema20'] = df['close'].ewm(
@@ -105,6 +134,7 @@ class ExpertAnalystBot:
             adjust=False
         ).mean()
 
+        # ATR
         prev_close = df['close'].shift(1)
 
         tr1 = df['high'] - df['low']
@@ -118,59 +148,79 @@ class ExpertAnalystBot:
 
         df['atr'] = df['tr'].rolling(14).mean()
 
+        # RSI
         delta = df['close'].diff()
 
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
 
-        avg_gain = gain.ewm(
-            alpha=1 / 14,
-            adjust=False
-        ).mean()
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
 
-        avg_loss = loss.ewm(
-            alpha=1 / 14,
-            adjust=False
-        ).mean()
-
-        rs = avg_gain / avg_loss.replace(
-            0,
-            np.nan
-        )
+        rs = avg_gain / avg_loss.replace(0, np.nan)
 
         df['rsi'] = 100 - (
             100 / (1 + rs)
         )
 
-        df['volume_ma20'] = df['volume'].rolling(
-            20
-        ).mean()
+        # Volume
+        df['volume_ma'] = (
+            df['volume']
+            .rolling(20)
+            .mean()
+        )
 
         df['volume_ratio'] = (
             df['volume'] /
-            df['volume_ma20'].replace(0, np.nan)
+            df['volume_ma'].replace(0, np.nan)
         )
 
+        # Candle body
         df['body'] = (
             df['close'] -
             df['open']
         ).abs()
 
-        df['body_ma10'] = df['body'].rolling(
-            10
-        ).mean()
+        df['body_ratio'] = (
+            df['body'] /
+            (df['high'] - df['low'])
+            .replace(0, np.nan)
+        )
+
+        # Bollinger
+        df['bb_mid'] = (
+            df['close']
+            .rolling(20)
+            .mean()
+        )
+
+        df['bb_std'] = (
+            df['close']
+            .rolling(20)
+            .std()
+        )
+
+        df['bb_upper'] = (
+            df['bb_mid'] +
+            2 * df['bb_std']
+        )
+
+        df['bb_lower'] = (
+            df['bb_mid'] -
+            2 * df['bb_std']
+        )
 
         return df
 
-    # =========================================================
+    # ============================================================
     # TREND
-    # =========================================================
+    # ============================================================
 
     def get_trend(self, df):
-
-        if df is None or len(df) < 30:
+        if df is None or len(df) < 50:
             return 'NEUTRAL'
 
+        # آخر شمعة مغلقة
         row = df.iloc[-2]
 
         close = row['close']
@@ -178,537 +228,287 @@ class ExpertAnalystBot:
         ema50 = row['ema50']
         ema200 = row['ema200']
 
-        bull = 0
-        bear = 0
+        bullish = (
+            close > ema20 >
+            ema50 > ema200
+        )
 
-        if close > ema20:
-            bull += 1
-        elif close < ema20:
-            bear += 1
+        bearish = (
+            close < ema20 <
+            ema50 < ema200
+        )
 
-        if ema20 > ema50:
-            bull += 1
-        elif ema20 < ema50:
-            bear += 1
-
-        if close > ema200:
-            bull += 1
-        elif close < ema200:
-            bear += 1
-
-        if bull >= 2:
+        if bullish:
             return 'BULLISH'
 
-        if bear >= 2:
+        if bearish:
+            return 'BEARISH'
+
+        # اتجاه متوسط حتى لو لم تكن كل المتوسطات مصطفة
+        if close > ema50 and ema20 > ema50:
+            return 'BULLISH'
+
+        if close < ema50 and ema20 < ema50:
             return 'BEARISH'
 
         return 'NEUTRAL'
 
-    # =========================================================
-    # STRUCTURE
-    # =========================================================
+    # ============================================================
+    # MARKET STRUCTURE
+    # ============================================================
 
     def get_structure(self, df):
-
         result = {
-            'bull_bos': False,
-            'bear_bos': False,
-            'bull_sweep': False,
-            'bear_sweep': False,
-            'bull_structure': False,
-            'bear_structure': False
+            'direction': 'NEUTRAL',
+            'bos_long': False,
+            'bos_short': False,
+            'sweep_long': False,
+            'sweep_short': False,
+            'hh_hl': False,
+            'lh_ll': False
         }
 
         if df is None or len(df) < 40:
             return result
 
-        i = len(df) - 2
-        current = df.iloc[i]
-
-        previous_high = df['high'].iloc[
-            max(0, i - 12):i
-        ].max()
-
-        previous_low = df['low'].iloc[
-            max(0, i - 12):i
-        ].min()
-
-        if current['close'] > previous_high:
-            result['bull_bos'] = True
-
-        if current['close'] < previous_low:
-            result['bear_bos'] = True
-
-        liquidity_high = df['high'].iloc[
-            max(0, i - 8):i
-        ].max()
-
-        liquidity_low = df['low'].iloc[
-            max(0, i - 8):i
-        ].min()
-
-        if (
-            current['low'] < liquidity_low
-            and current['close'] > liquidity_low
-        ):
-            result['bull_sweep'] = True
-
-        if (
-            current['high'] > liquidity_high
-            and current['close'] < liquidity_high
-        ):
-            result['bear_sweep'] = True
-
-        recent = df.iloc[
-            max(0, i - 20):i
-        ]
-
-        if len(recent) >= 10:
-
-            mid = len(recent) // 2
-
-            first = recent.iloc[:mid]
-            second = recent.iloc[mid:]
-
-            first_high = first['high'].max()
-            second_high = second['high'].max()
-
-            first_low = first['low'].min()
-            second_low = second['low'].min()
-
-            if (
-                second_high > first_high
-                and second_low > first_low
-            ):
-                result['bull_structure'] = True
-
-            if (
-                second_high < first_high
-                and second_low < first_low
-            ):
-                result['bear_structure'] = True
-
-        return result
-
-    # =========================================================
-    # MOMENTUM
-    # =========================================================
-
-    def get_momentum(self, df):
-
-        result = {
-            'bullish': False,
-            'bearish': False,
-            'rsi': 50
-        }
-
-        if df is None or len(df) < 30:
-            return result
-
+        # آخر شمعة مغلقة
         row = df.iloc[-2]
 
-        rsi = row['rsi']
+        prev_high = df['high'].iloc[-14:-2].max()
+        prev_low = df['low'].iloc[-14:-2].min()
 
-        if pd.isna(rsi):
-            return result
+        # ========================================================
+        # BOS
+        # ========================================================
 
-        result['rsi'] = float(rsi)
-
-        if (
-            row['close'] > row['ema20']
-            and 50 <= rsi <= 72
-        ):
-            result['bullish'] = True
-
-        elif (
-            row['close'] < row['ema20']
-            and 28 <= rsi <= 50
-        ):
-            result['bearish'] = True
-
-        return result
-
-    # =========================================================
-    # VOLUME
-    # =========================================================
-
-    def get_volume_confirmation(self, df):
-
-        if df is None or len(df) < 25:
-            return {
-                'bullish': False,
-                'bearish': False,
-                'ratio': 0
-            }
-
-        row = df.iloc[-2]
-
-        ratio = row['volume_ratio']
-
-        if pd.isna(ratio):
-            ratio = 0
-
-        recent_ratio = df['volume_ratio'].iloc[
-            -4:-1
-        ].mean()
-
-        if pd.isna(recent_ratio):
-            recent_ratio = 0
-
-        effective_ratio = max(
-            float(ratio),
-            float(recent_ratio)
+        result['bos_long'] = (
+            row['close'] > prev_high
         )
 
-        confirmed = effective_ratio >= 1.05
+        result['bos_short'] = (
+            row['close'] < prev_low
+        )
 
-        return {
-            'bullish': (
-                confirmed
-                and row['close'] > row['open']
-            ),
-            'bearish': (
-                confirmed
-                and row['close'] < row['open']
-            ),
-            'ratio': round(
-                effective_ratio,
-                2
-            )
-        }
+        # ========================================================
+        # LIQUIDITY SWEEP
+        # ========================================================
 
-    # =========================================================
-    # BREAKOUT
-    # =========================================================
+        liquidity_high = df['high'].iloc[-10:-2].max()
+        liquidity_low = df['low'].iloc[-10:-2].min()
 
-    def get_breakout_confirmation(self, df):
+        result['sweep_long'] = (
+            row['low'] < liquidity_low
+            and row['close'] > liquidity_low
+        )
 
+        result['sweep_short'] = (
+            row['high'] > liquidity_high
+            and row['close'] < liquidity_high
+        )
+
+        # ========================================================
+        # HH / HL
+        # ========================================================
+
+        recent_highs = df['high'].iloc[-20:-2]
+        recent_lows = df['low'].iloc[-20:-2]
+
+        mid = len(recent_highs) // 2
+
+        first_high = recent_highs.iloc[:mid].max()
+        second_high = recent_highs.iloc[mid:].max()
+
+        first_low = recent_lows.iloc[:mid].min()
+        second_low = recent_lows.iloc[mid:].min()
+
+        result['hh_hl'] = (
+            second_high > first_high
+            and second_low > first_low
+        )
+
+        result['lh_ll'] = (
+            second_high < first_high
+            and second_low < first_low
+        )
+
+        if (
+            result['bos_long']
+            or result['sweep_long']
+            or result['hh_hl']
+        ):
+            result['direction'] = 'BULLISH'
+
+        elif (
+            result['bos_short']
+            or result['sweep_short']
+            or result['lh_ll']
+        ):
+            result['direction'] = 'BEARISH'
+
+        return result
+
+    # ============================================================
+    # FVG
+    # ============================================================
+
+    def detect_fvg(self, df):
         result = {
             'bullish': False,
             'bearish': False
         }
 
-        if df is None or len(df) < 30:
+        if df is None or len(df) < 10:
             return result
 
-        i = len(df) - 2
-        row = df.iloc[i]
+        # نستخدم آخر 3 شموع مغلقة
+        c1 = df.iloc[-4]
+        c2 = df.iloc[-3]
+        c3 = df.iloc[-2]
 
-        previous_high = df['high'].iloc[
-            max(0, i - 10):i
-        ].max()
-
-        previous_low = df['low'].iloc[
-            max(0, i - 10):i
-        ].min()
-
-        avg_body = df['body'].iloc[
-            max(0, i - 10):i
-        ].mean()
-
-        if pd.isna(avg_body) or avg_body <= 0:
-            avg_body = row['body']
-
-        if (
-            row['close'] > previous_high
-            and row['close'] > row['open']
-        ):
+        # Bullish FVG
+        if c3['low'] > c1['high']:
             result['bullish'] = True
 
-        elif (
-            row['close'] > row['open']
-            and row['body'] >= avg_body * 1.25
-        ):
-            result['bullish'] = True
-
-        if (
-            row['close'] < previous_low
-            and row['close'] < row['open']
-        ):
-            result['bearish'] = True
-
-        elif (
-            row['close'] < row['open']
-            and row['body'] >= avg_body * 1.25
-        ):
+        # Bearish FVG
+        if c3['high'] < c1['low']:
             result['bearish'] = True
 
         return result
 
-    # =========================================================
-    # BTC
-    # =========================================================
+    # ============================================================
+    # ORDER BLOCK
+    # ============================================================
 
-    def get_btc_context(self):
-
-        try:
-
-            df = self.fetch_ohlcv_data(
-                'BTC/USDT:USDT',
-                '1h',
-                100
-            )
-
-            if df is None:
-                return 'NEUTRAL'
-
-            df = self.add_indicators(df)
-
-            return self.get_trend(df)
-
-        except Exception:
-            return 'NEUTRAL'
-
-    # =========================================================
-    # SCORE
-    # =========================================================
-
-    def calculate_scores(
-        self,
-        trend_4h,
-        trend_1h,
-        structure,
-        momentum,
-        volume,
-        breakout,
-        btc_context
-    ):
-
-        long_score = 0
-        short_score = 0
-
-        long_conf = []
-        short_conf = []
-
-        if trend_4h == 'BULLISH':
-            long_score += 2
-            long_conf.append('4H TREND')
-
-        elif trend_4h == 'BEARISH':
-            short_score += 2
-            short_conf.append('4H TREND')
-
-        if trend_1h == 'BULLISH':
-            long_score += 1
-            long_conf.append('1H TREND')
-
-        elif trend_1h == 'BEARISH':
-            short_score += 1
-            short_conf.append('1H TREND')
-
-        if structure['bull_bos']:
-            long_score += 2
-            long_conf.append('BULLISH BOS')
-
-        if structure['bear_bos']:
-            short_score += 2
-            short_conf.append('BEARISH BOS')
-
-        if structure['bull_sweep']:
-            long_score += 1
-            long_conf.append('LIQUIDITY SWEEP')
-
-        if structure['bear_sweep']:
-            short_score += 1
-            short_conf.append('LIQUIDITY SWEEP')
-
-        if structure['bull_structure']:
-            long_score += 1
-            long_conf.append('HH/HL')
-
-        if structure['bear_structure']:
-            short_score += 1
-            short_conf.append('LH/LL')
-
-        if momentum['bullish']:
-            long_score += 1
-            long_conf.append('MOMENTUM')
-
-        if momentum['bearish']:
-            short_score += 1
-            short_conf.append('MOMENTUM')
-
-        if volume['bullish']:
-            long_score += 1
-            long_conf.append('VOLUME')
-
-        if volume['bearish']:
-            short_score += 1
-            short_conf.append('VOLUME')
-
-        if breakout['bullish']:
-            long_score += 1
-            long_conf.append('BREAKOUT')
-
-        if breakout['bearish']:
-            short_score += 1
-            short_conf.append('BREAKOUT')
-
-        if btc_context == 'BULLISH':
-            long_score += 1
-            long_conf.append('BTC SUPPORT')
-            short_score -= 1
-
-        elif btc_context == 'BEARISH':
-            short_score += 1
-            short_conf.append('BTC SUPPORT')
-            long_score -= 1
-
-        return {
-            'long_score': long_score,
-            'short_score': short_score,
-            'long_conf': long_conf,
-            'short_conf': short_conf
+    def detect_order_block(self, df):
+        result = {
+            'bullish': False,
+            'bearish': False,
+            'bullish_low': None,
+            'bullish_high': None,
+            'bearish_low': None,
+            'bearish_high': None
         }
 
-    # =========================================================
-    # RISK / LEVELS
-    # =========================================================
-
-    def build_levels(self, df, direction):
-
         if df is None or len(df) < 30:
-            return None
+            return result
+
+        # آخر 12 شمعة مغلقة
+        start = max(2, len(df) - 14)
+
+        for i in range(start, len(df) - 2):
+            candle = df.iloc[i]
+            next_candle = df.iloc[i + 1]
+
+            candle_range = candle['high'] - candle['low']
+
+            if candle_range <= 0:
+                continue
+
+            # Bullish displacement بعد شمعة هابطة
+            if (
+                candle['close'] < candle['open']
+                and next_candle['close'] > candle['high']
+            ):
+                result['bullish'] = True
+                result['bullish_low'] = candle['low']
+                result['bullish_high'] = candle['high']
+
+            # Bearish displacement بعد شمعة صاعدة
+            if (
+                candle['close'] > candle['open']
+                and next_candle['close'] < candle['low']
+            ):
+                result['bearish'] = True
+                result['bearish_low'] = candle['low']
+                result['bearish_high'] = candle['high']
+
+        return result
+
+    # ============================================================
+    # MOMENTUM
+    # ============================================================
+
+    def get_momentum(self, df, direction):
+        if df is None or len(df) < 30:
+            return False, 50
 
         row = df.iloc[-2]
 
-        entry = float(row['close'])
-        atr = float(row['atr'])
+        rsi = float(row['rsi'])
 
-        if pd.isna(atr) or atr <= 0:
-            return None
+        atr = float(row['atr']) if pd.notna(row['atr']) else 0
 
-        recent = df.iloc[-12:-1]
+        body = float(row['body'])
 
-        recent_low = float(
-            recent['low'].min()
+        bullish_candle = (
+            row['close'] > row['open']
         )
 
-        recent_high = float(
-            recent['high'].max()
+        bearish_candle = (
+            row['close'] < row['open']
+        )
+
+        body_strength = (
+            body >= atr * 0.35
+            if atr > 0
+            else False
         )
 
         if direction == 'LONG':
-
-            structural_sl = (
-                recent_low -
-                atr * 0.20
+            valid_rsi = (
+                50 <= rsi <= 72
             )
 
-            atr_sl = (
-                entry -
-                atr * 1.35
+            return (
+                valid_rsi
+                and bullish_candle
+                and body_strength,
+                rsi
             )
 
-            stop_loss = min(
-                structural_sl,
-                atr_sl
-            )
+        valid_rsi = (
+            28 <= rsi <= 50
+        )
 
-            risk = entry - stop_loss
+        return (
+            valid_rsi
+            and bearish_candle
+            and body_strength,
+            rsi
+        )
 
-            if risk <= 0:
-                return None
+    # ============================================================
+    # VOLUME
+    # ============================================================
 
-            risk_pct = (
-                risk / entry
-            ) * 100
-
-            if risk_pct > 6.0:
-
-                stop_loss = (
-                    entry -
-                    atr * 1.50
-                )
-
-                risk = entry - stop_loss
-
-                if risk <= 0:
-                    return None
-
-                risk_pct = (
-                    risk / entry
-                ) * 100
-
-            if risk_pct > 6.5:
-                return None
-
-            tp1 = entry + risk * 2
-            tp2 = entry + risk * 3.5
-            tp3 = entry + risk * 5
-
-        else:
-
-            structural_sl = (
-                recent_high +
-                atr * 0.20
-            )
-
-            atr_sl = (
-                entry +
-                atr * 1.35
-            )
-
-            stop_loss = max(
-                structural_sl,
-                atr_sl
-            )
-
-            risk = stop_loss - entry
-
-            if risk <= 0:
-                return None
-
-            risk_pct = (
-                risk / entry
-            ) * 100
-
-            if risk_pct > 6.0:
-
-                stop_loss = (
-                    entry +
-                    atr * 1.50
-                )
-
-                risk = stop_loss - entry
-
-                if risk <= 0:
-                    return None
-
-                risk_pct = (
-                    risk / entry
-                ) * 100
-
-            if risk_pct > 6.5:
-                return None
-
-            tp1 = entry - risk * 2
-            tp2 = entry - risk * 3.5
-            tp3 = entry - risk * 5
-
-        return {
-            'entry': entry,
-            'sl': stop_loss,
-            'tp1': tp1,
-            'tp2': tp2,
-            'tp3': tp3,
-            'risk_pct': risk_pct
-        }
-
-    # =========================================================
-    # ANTI CHASE
-    # =========================================================
-
-    def is_overextended(self, df):
-
+    def get_volume_confirmation(self, df):
         if df is None or len(df) < 30:
-            return True
+            return False, 0
 
         row = df.iloc[-2]
 
-        atr = row['atr']
+        ratio = float(
+            row['volume_ratio']
+        )
 
-        if pd.isna(atr) or atr <= 0:
+        # أقل من 1.05 لا نعتبره Confirmation
+        confirmed = ratio >= 1.10
+
+        return confirmed, ratio
+
+    # ============================================================
+    # DISPLACEMENT / BREAKOUT
+    # ============================================================
+
+    def get_breakout_confirmation(self, df, direction):
+        if df is None or len(df) < 30:
+            return False
+
+        row = df.iloc[-2]
+
+        atr = float(row['atr'])
+
+        if atr <= 0:
             return False
 
         body = abs(
@@ -716,192 +516,659 @@ class ExpertAnalystBot:
             row['open']
         )
 
-        return body > atr * 3.0
+        strong_body = (
+            body >= atr * 0.55
+        )
 
-    # =========================================================
-    # FORMAT
-    # =========================================================
+        if direction == 'LONG':
+            candle_direction = (
+                row['close'] > row['open']
+            )
+        else:
+            candle_direction = (
+                row['close'] < row['open']
+            )
 
-    def format_price(self, value):
+        return (
+            strong_body
+            and candle_direction
+        )
 
-        value = float(value)
+    # ============================================================
+    # BTC CONTEXT
+    # ============================================================
 
-        if value >= 1000:
-            return round(value, 2)
+    def get_btc_context(self):
+        try:
+            btc_symbol = None
 
-        if value >= 1:
-            return round(value, 4)
+            markets = self.exchange.load_markets()
 
-        if value >= 0.1:
-            return round(value, 5)
+            possible = [
+                'BTC/USDT:USDT',
+                'BTC/USDT'
+            ]
 
-        if value >= 0.01:
-            return round(value, 6)
+            for symbol in possible:
+                if symbol in markets:
+                    btc_symbol = symbol
+                    break
 
-        if value >= 0.001:
-            return round(value, 7)
+            if not btc_symbol:
+                return 'UNKNOWN'
 
-        return round(value, 9)
+            df = self.fetch_ohlcv_data(
+                btc_symbol,
+                '1h',
+                120
+            )
 
-    # =========================================================
+            if df is None:
+                return 'UNKNOWN'
+
+            df = self.add_indicators(df)
+
+            trend = self.get_trend(df)
+
+            if trend == 'BULLISH':
+                return 'BULLISH'
+
+            if trend == 'BEARISH':
+                return 'BEARISH'
+
+            return 'NEUTRAL'
+
+        except Exception as e:
+            logger.warning(
+                f"BTC context error: {e}"
+            )
+            return 'UNKNOWN'
+
+    # ============================================================
+    # LEVELS
+    # ============================================================
+
+    def build_levels(self, df15, direction):
+        if df15 is None or len(df15) < 40:
+            return None
+
+        row = df15.iloc[-2]
+
+        entry = float(row['close'])
+
+        atr = float(row['atr'])
+
+        if atr <= 0:
+            return None
+
+        recent_low = float(
+            df15['low'].iloc[-12:-2].min()
+        )
+
+        recent_high = float(
+            df15['high'].iloc[-12:-2].max()
+        )
+
+        # ========================================================
+        # LONG
+        # ========================================================
+
+        if direction == 'LONG':
+
+            swing_sl = recent_low - (
+                atr * 0.25
+            )
+
+            atr_sl = entry - (
+                atr * 1.25
+            )
+
+            # نختار الوقف الأكثر منطقية
+            sl = min(
+                swing_sl,
+                atr_sl
+            )
+
+            risk = entry - sl
+
+            # حماية من SL ضيق جدًا
+            min_risk = entry * 0.008
+
+            if risk < min_risk:
+                sl = entry - min_risk
+                risk = min_risk
+
+            # سقف مخاطرة
+            max_risk = entry * 0.065
+
+            if risk > max_risk:
+                sl = entry - max_risk
+                risk = max_risk
+
+            tp1 = entry + risk * 2.0
+            tp2 = entry + risk * 3.5
+            tp3 = entry + risk * 5.0
+
+        # ========================================================
+        # SHORT
+        # ========================================================
+
+        else:
+
+            swing_sl = recent_high + (
+                atr * 0.25
+            )
+
+            atr_sl = entry + (
+                atr * 1.25
+            )
+
+            sl = max(
+                swing_sl,
+                atr_sl
+            )
+
+            risk = sl - entry
+
+            # حماية من SL ضيق جدًا
+            min_risk = entry * 0.008
+
+            if risk < min_risk:
+                sl = entry + min_risk
+                risk = min_risk
+
+            max_risk = entry * 0.065
+
+            if risk > max_risk:
+                sl = entry + max_risk
+                risk = max_risk
+
+            tp1 = entry - risk * 2.0
+            tp2 = entry - risk * 3.5
+            tp3 = entry - risk * 5.0
+
+        if risk <= 0:
+            return None
+
+        risk_pct = (
+            risk / entry
+        ) * 100
+
+        return {
+            'entry': entry,
+            'sl': sl,
+            'tp1': tp1,
+            'tp2': tp2,
+            'tp3': tp3,
+            'risk_pct': risk_pct
+        }
+
+    # ============================================================
+    # OVEREXTENSION
+    # ============================================================
+
+    def is_overextended(self, df):
+        if df is None or len(df) < 30:
+            return False
+
+        row = df.iloc[-2]
+
+        atr = float(row['atr'])
+
+        body = float(row['body'])
+
+        if atr <= 0:
+            return False
+
+        # شمعة ضخمة جدًا
+        if body > atr * 2.8:
+            return True
+
+        # RSI extreme
+        rsi = float(row['rsi'])
+
+        if rsi > 78 or rsi < 22:
+            return True
+
+        return False
+
+    # ============================================================
+    # PRICE FORMAT
+    # ============================================================
+
+    def format_price(self, price):
+        if price is None:
+            return 'N/A'
+
+        if price >= 100:
+            return f"{price:.4f}"
+
+        if price >= 1:
+            return f"{price:.5f}"
+
+        if price >= 0.01:
+            return f"{price:.7f}"
+
+        if price >= 0.0001:
+            return f"{price:.9f}"
+
+        return f"{price:.12f}"
+
+    # ============================================================
     # MAIN ANALYSIS
-    # =========================================================
+    # ============================================================
 
     def evaluate_strategy(self, symbol):
-
         try:
 
-            df_4h = self.fetch_ohlcv_data(
+            # ====================================================
+            # FETCH DATA
+            # ====================================================
+
+            df4h = self.fetch_ohlcv_data(
                 symbol,
                 '4h',
-                150
+                250
             )
 
-            df_1h = self.fetch_ohlcv_data(
+            df1h = self.fetch_ohlcv_data(
                 symbol,
                 '1h',
-                150
+                250
             )
 
-            df_15m = self.fetch_ohlcv_data(
+            df15 = self.fetch_ohlcv_data(
                 symbol,
                 '15m',
-                150
+                250
             )
 
             if (
-                df_4h is None
-                or df_1h is None
-                or df_15m is None
+                df4h is None
+                or df1h is None
+                or df15 is None
             ):
                 return None
 
-            df_4h = self.add_indicators(df_4h)
-            df_1h = self.add_indicators(df_1h)
-            df_15m = self.add_indicators(df_15m)
+            df4h = self.add_indicators(df4h)
+            df1h = self.add_indicators(df1h)
+            df15 = self.add_indicators(df15)
 
-            trend_4h = self.get_trend(df_4h)
-            trend_1h = self.get_trend(df_1h)
+            # ====================================================
+            # TRENDS
+            # ====================================================
 
-            structure_1h = self.get_structure(df_1h)
-            structure_15m = self.get_structure(df_15m)
+            trend4h = self.get_trend(df4h)
+            trend1h = self.get_trend(df1h)
 
-            structure = {
-                'bull_bos': (
-                    structure_1h['bull_bos']
-                    or structure_15m['bull_bos']
-                ),
-                'bear_bos': (
-                    structure_1h['bear_bos']
-                    or structure_15m['bear_bos']
-                ),
-                'bull_sweep': (
-                    structure_1h['bull_sweep']
-                    or structure_15m['bull_sweep']
-                ),
-                'bear_sweep': (
-                    structure_1h['bear_sweep']
-                    or structure_15m['bear_sweep']
-                ),
-                'bull_structure': (
-                    structure_1h['bull_structure']
-                    or structure_15m['bull_structure']
-                ),
-                'bear_structure': (
-                    structure_1h['bear_structure']
-                    or structure_15m['bear_structure']
-                )
-            }
+            # ====================================================
+            # STRUCTURE
+            # ====================================================
 
-            momentum = self.get_momentum(df_15m)
-            volume = self.get_volume_confirmation(df_15m)
-            breakout = self.get_breakout_confirmation(df_15m)
+            structure1h = self.get_structure(df1h)
+            structure15 = self.get_structure(df15)
+
+            # ====================================================
+            # BTC
+            # ====================================================
 
             btc_context = self.get_btc_context()
 
-            if self.is_overextended(df_15m):
-                logger.info(
-                    "%s rejected: overextended",
-                    symbol
-                )
-                return None
+            # ====================================================
+            # DETERMINE DIRECTION
+            # ====================================================
 
-            scores = self.calculate_scores(
-                trend_4h,
-                trend_1h,
-                structure,
-                momentum,
-                volume,
-                breakout,
-                btc_context
-            )
+            long_votes = 0
+            short_votes = 0
 
-            long_score = scores['long_score']
-            short_score = scores['short_score']
+            if trend4h == 'BULLISH':
+                long_votes += 2
 
-            long_conf = scores['long_conf']
-            short_conf = scores['short_conf']
+            elif trend4h == 'BEARISH':
+                short_votes += 2
 
-            if (
-                long_score >= self.min_score
-                and long_score > short_score
-                and len(long_conf) >= self.min_confirmations
-            ):
+            if trend1h == 'BULLISH':
+                long_votes += 1
 
+            elif trend1h == 'BEARISH':
+                short_votes += 1
+
+            if structure1h['direction'] == 'BULLISH':
+                long_votes += 1
+
+            elif structure1h['direction'] == 'BEARISH':
+                short_votes += 1
+
+            if structure15['direction'] == 'BULLISH':
+                long_votes += 1
+
+            elif structure15['direction'] == 'BEARISH':
+                short_votes += 1
+
+            # BTC is a vote, not an automatic blocker
+            if btc_context == 'BULLISH':
+                long_votes += 1
+
+            elif btc_context == 'BEARISH':
+                short_votes += 1
+
+            if long_votes > short_votes:
                 direction = 'LONG'
-                score = long_score
-                confirmations = long_conf
 
-            elif (
-                short_score >= self.min_score
-                and short_score > long_score
-                and len(short_conf) >= self.min_confirmations
-            ):
-
+            elif short_votes > long_votes:
                 direction = 'SHORT'
-                score = short_score
-                confirmations = short_conf
 
             else:
                 return None
+
+            # ====================================================
+            # HARD TREND FILTER
+            # ====================================================
+
+            if direction == 'LONG':
+                if trend4h != 'BULLISH':
+                    return None
+
+            else:
+                if trend4h != 'BEARISH':
+                    return None
+
+            # ====================================================
+            # ENTRY DATA
+            # ====================================================
+
+            momentum_ok, rsi = self.get_momentum(
+                df15,
+                direction
+            )
+
+            volume_ok, volume_ratio = (
+                self.get_volume_confirmation(df15)
+            )
+
+            breakout_ok = (
+                self.get_breakout_confirmation(
+                    df15,
+                    direction
+                )
+            )
+
+            # ====================================================
+            # STRUCTURE EVENTS
+            # ====================================================
 
             if direction == 'LONG':
 
-                structural = (
-                    structure['bull_bos']
-                    or structure['bull_sweep']
-                    or structure['bull_structure']
-                    or breakout['bullish']
+                bos = (
+                    structure1h['bos_long']
+                    or structure15['bos_long']
+                )
+
+                sweep = (
+                    structure1h['sweep_long']
+                    or structure15['sweep_long']
+                )
+
+                hh_hl = (
+                    structure1h['hh_hl']
+                    or structure15['hh_hl']
                 )
 
             else:
 
-                structural = (
-                    structure['bear_bos']
-                    or structure['bear_sweep']
-                    or structure['bear_structure']
-                    or breakout['bearish']
+                bos = (
+                    structure1h['bos_short']
+                    or structure15['bos_short']
                 )
 
-            if not structural:
+                sweep = (
+                    structure1h['sweep_short']
+                    or structure15['sweep_short']
+                )
+
+                hh_hl = (
+                    structure1h['lh_ll']
+                    or structure15['lh_ll']
+                )
+
+            # ====================================================
+            # FVG
+            # ====================================================
+
+            fvg = self.detect_fvg(df15)
+
+            fvg_ok = (
+                fvg['bullish']
+                if direction == 'LONG'
+                else fvg['bearish']
+            )
+
+            # ====================================================
+            # ORDER BLOCK
+            # ====================================================
+
+            ob = self.detect_order_block(df15)
+
+            ob_ok = (
+                ob['bullish']
+                if direction == 'LONG'
+                else ob['bearish']
+            )
+
+            # ====================================================
+            # BTC ALIGNMENT
+            # ====================================================
+
+            btc_aligned = (
+                (
+                    direction == 'LONG'
+                    and btc_context == 'BULLISH'
+                )
+                or
+                (
+                    direction == 'SHORT'
+                    and btc_context == 'BEARISH'
+                )
+            )
+
+            btc_conflict = (
+                (
+                    direction == 'LONG'
+                    and btc_context == 'BEARISH'
+                )
+                or
+                (
+                    direction == 'SHORT'
+                    and btc_context == 'BULLISH'
+                )
+            )
+
+            # ====================================================
+            # REAL CONFIRMATION GROUPS
+            # ====================================================
+
+            confirmations = []
+
+            # 1. Macro trend
+            confirmations.append(
+                '4H TREND'
+            )
+
+            # 2. 1H trend
+            if trend1h == (
+                'BULLISH'
+                if direction == 'LONG'
+                else 'BEARISH'
+            ):
+                confirmations.append(
+                    '1H TREND'
+                )
+
+            # 3. Structure
+            if bos:
+                confirmations.append(
+                    'BOS'
+                )
+
+            elif sweep:
+                confirmations.append(
+                    'LIQUIDITY SWEEP'
+                )
+
+            elif hh_hl:
+                confirmations.append(
+                    'HH/HL'
+                    if direction == 'LONG'
+                    else 'LH/LL'
+                )
+
+            # 4. Momentum
+            if momentum_ok:
+                confirmations.append(
+                    'MOMENTUM'
+                )
+
+            # 5. Volume
+            if volume_ok:
+                confirmations.append(
+                    'VOLUME'
+                )
+
+            # 6. Displacement
+            if breakout_ok:
+                confirmations.append(
+                    'DISPLACEMENT'
+                )
+
+            # 7. FVG
+            if fvg_ok:
+                confirmations.append(
+                    'FVG'
+                )
+
+            # 8. OB
+            if ob_ok:
+                confirmations.append(
+                    'ORDER BLOCK'
+                )
+
+            # 9. BTC
+            if btc_aligned:
+                confirmations.append(
+                    'BTC SUPPORT'
+                )
+
+            # ====================================================
+            # SCORE
+            # ====================================================
+
+            score = 0
+
+            # Macro trend
+            if trend4h == (
+                'BULLISH'
+                if direction == 'LONG'
+                else 'BEARISH'
+            ):
+                score += 2
+
+            # 1H trend
+            if trend1h == (
+                'BULLISH'
+                if direction == 'LONG'
+                else 'BEARISH'
+            ):
+                score += 1
+
+            # Structure
+            if bos:
+                score += 2
+
+            elif sweep:
+                score += 1
+
+            elif hh_hl:
+                score += 1
+
+            # Momentum
+            if momentum_ok:
+                score += 1
+
+            # Volume
+            if volume_ok:
+                score += 1
+
+            # Displacement
+            if breakout_ok:
+                score += 1
+
+            # FVG
+            if fvg_ok:
+                score += 1
+
+            # Order Block
+            if ob_ok:
+                score += 1
+
+            # BTC
+            if btc_aligned:
+                score += 1
+
+            elif btc_conflict:
+                score -= 1
+
+            # ====================================================
+            # UNIQUE CONFIRMATION COUNT
+            # ====================================================
+
+            confirmation_count = len(
+                set(confirmations)
+            )
+
+            # ====================================================
+            # MUST HAVE REAL STRUCTURE
+            # ====================================================
+
+            structure_confirmation = (
+                bos
+                or sweep
+                or hh_hl
+                or fvg_ok
+                or ob_ok
+            )
+
+            if not structure_confirmation:
                 return None
 
+            # ====================================================
+            # MINIMUM CONFIRMATIONS
+            # ====================================================
+
+            if confirmation_count < 3:
+                return None
+
+            # Score floor
+            if score < 5:
+                return None
+
+            # ====================================================
+            # ANTI CHASE
+            # ====================================================
+
+            if self.is_overextended(df15):
+                return None
+
+            # ====================================================
+            # LEVELS
+            # ====================================================
+
             levels = self.build_levels(
-                df_15m,
+                df15,
                 direction
             )
 
             if levels is None:
                 return None
-
-            if score >= 8 and len(confirmations) >= 5:
-                quality = 'HIGH PROBABILITY'
-
-            elif score >= 6 and len(confirmations) >= 4:
-                quality = 'STRONG'
-
-            else:
-                quality = 'VALID SETUP'
 
             entry = levels['entry']
             sl = levels['sl']
@@ -910,63 +1177,126 @@ class ExpertAnalystBot:
             tp3 = levels['tp3']
             risk_pct = levels['risk_pct']
 
-            symbol_name = symbol.split('/')[0]
+            # ====================================================
+            # RISK FILTER
+            # ====================================================
 
-            report = f"""
-🚨 EXPERT FUTURES SIGNAL 🚨
+            if risk_pct < 0.8:
+                return None
 
-📊 Symbol: {symbol_name}
-🎯 Decision: {direction}
-⭐ Score: {score}
-🏷 Quality: {quality}
+            if risk_pct > 6.5:
+                return None
 
-📌 Confirmations: {len(confirmations)}/3+
-🧠 {', '.join(confirmations)}
+            risk_filter = 'PASS'
 
-📈 4H Trend: {trend_4h}
-📊 1H Trend: {trend_1h}
-₿ BTC Context: {btc_context}
+            # ====================================================
+            # QUALITY ENGINE
+            # ====================================================
 
-💪 RSI 15M: {momentum['rsi']:.1f}
-🔊 Volume: {volume['ratio']:.2f}x
+            # STRONG only if:
+            # - score >= 7
+            # - at least 5 confirmations
+            # - structure exists
+            # - no BTC conflict
+            # - volume reasonable
 
-💰 Entry: {self.format_price(entry)}
-🛑 SL: {self.format_price(sl)} ({risk_pct:.2f}%)
+            if (
+                score >= 7
+                and confirmation_count >= 5
+                and not btc_conflict
+                and volume_ratio >= 1.10
+            ):
+                quality = 'STRONG'
 
-🎯 TP1: {self.format_price(tp1)} | R:R 1:2
-🎯 TP2: {self.format_price(tp2)} | R:R 1:3.5
-🎯 TP3: {self.format_price(tp3)} | R:R 1:5
+            elif (
+                score >= 5
+                and confirmation_count >= 4
+            ):
+                quality = 'VALID SETUP'
 
-🛡 Risk Filter: PASS
-📋 Structure Confirmation: PASS
+            else:
+                quality = 'EARLY SETUP'
 
-⚠️ Setup signal — not a guaranteed result.
-""".strip()
+            # BTC conflict prevents fake STRONG
+            if btc_conflict and quality == 'STRONG':
+                quality = 'VALID SETUP'
+
+            # Very weak volume prevents STRONG
+            if volume_ratio < 1.10:
+                if quality == 'STRONG':
+                    quality = 'VALID SETUP'
+
+            # ====================================================
+            # ENTRY QUALITY
+            # ====================================================
+
+            entry_quality = 'DIRECT'
+
+            if btc_conflict:
+                entry_quality = 'BTC CONFLICT'
+
+            # ====================================================
+            # FINAL RESULT
+            # ====================================================
 
             return {
-                'Decision': report,
-                'Symbol': symbol,
-                'Direction': direction,
-                'Score': score,
-                'Quality': quality,
-                'Entry': entry,
-                'StopLoss': sl,
-                'TP1': tp1,
-                'TP2': tp2,
-                'TP3': tp3,
-                'RiskPct': risk_pct,
-                'Confirmations': confirmations,
-                'Trend4H': trend_4h,
-                'Trend1H': trend_1h,
-                'BTCContext': btc_context
+                'symbol': symbol,
+                'decision': direction,
+                'score': int(score),
+                'quality': quality,
+
+                'confirmations': confirmations,
+                'confirmation_count': confirmation_count,
+
+                'trend_4h': trend4h,
+                'trend_1h': trend1h,
+
+                'btc_context': btc_context,
+                'btc_conflict': btc_conflict,
+                'btc_aligned': btc_aligned,
+
+                'rsi_15m': float(rsi),
+                'volume_ratio': float(volume_ratio),
+
+                'entry': float(entry),
+                'sl': float(sl),
+                'tp1': float(tp1),
+                'tp2': float(tp2),
+                'tp3': float(tp3),
+
+                'risk_pct': float(risk_pct),
+
+                'risk_filter': risk_filter,
+                'structure_confirmation': 'PASS',
+
+                'bos': bos,
+                'liquidity_sweep': sweep,
+                'structure': hh_hl,
+                'momentum': momentum_ok,
+                'volume_confirmation': volume_ok,
+                'displacement': breakout_ok,
+                'fvg': fvg_ok,
+                'order_block': ob_ok,
+
+                'entry_quality': entry_quality,
+
+                'message': (
+                    'Setup signal — not a guaranteed result.'
+                )
             }
 
         except Exception as e:
-
             logger.exception(
-                "Analysis error %s: %s",
-                symbol,
-                e
+                f"Analysis error for {symbol}: {e}"
             )
-
             return None
+
+    # ============================================================
+    # COMPATIBILITY METHODS
+    # ============================================================
+
+    def analyze(self, symbol):
+        return self.evaluate_strategy(symbol)
+
+    def get_coin_analysis(self, symbol):
+        return self.evaluate_strategy(symbol)
