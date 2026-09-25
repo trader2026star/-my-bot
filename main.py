@@ -180,6 +180,10 @@ def get_bingx_symbols():
                     )
                 ).upper()
 
+                # 🛑 استبعاد العقود الوهمية أو اللي فيها اسماء غريبة وموقوفة
+                if 'USD/USDT' in symbol or ('USD' in base and not base.endswith('USDT')):
+                    continue
+
                 if any(
                     item in base
                     for item in blocked
@@ -742,7 +746,7 @@ def bot_worker():
                         )
 
                     # -----------------------------------------
-                    # RATE LIMIT PROTECTION (تم رفع الفاصل لأمان أكتر)
+                    # RATE LIMIT PROTECTION
                     # -----------------------------------------
 
                     time.sleep(1.5)
