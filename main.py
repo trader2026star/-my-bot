@@ -180,8 +180,11 @@ def get_bingx_symbols():
                     )
                 ).upper()
 
-                # 🛑 استبعاد العقود الوهمية أو اللي فيها اسماء غريبة وموقوفة
-                if 'USD/USDT' in symbol or ('USD' in base and not base.endswith('USDT')):
+                # 🛑 استبعاد صارم جداً لأي عملة تحتوي على USD وليست زوج USDT حقيقي
+                if 'USD' in base and not base.endswith('USDT'):
+                    continue
+                
+                if 'USD/USDT' in symbol or 'USDT/USDT' in symbol:
                     continue
 
                 if any(
@@ -762,11 +765,11 @@ def bot_worker():
                     time.sleep(1)
 
             logger.info(
-                "Scan finished. "
-                "Analyzed: %s | "
-                "Signals sent: %s",
-                analyzed_count,
-                signals_found
+                        "Scan finished. "
+                        "Analyzed: %s | "
+                        "Signals sent: %s",
+                        analyzed_count,
+                        signals_found
             )
 
             logger.info(
