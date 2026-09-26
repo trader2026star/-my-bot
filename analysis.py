@@ -34,10 +34,15 @@ class ExpertAnalystBot:
         self.cache_seconds = 20
 
     # =========================================================
-    # DATA
+    # DATA & FILTERING
     # =========================================================
 
     def _fetch_ohlcv(self, symbol, timeframe, limit=220):
+        # فلتر ذكي لتخطي أزواج الفوركس أو العملات غير الرقمية التي تسبب أخطاء
+        unwanted_tokens = ['EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 'USDCUSD']
+        if any(token in symbol for token in unwanted_tokens):
+            return None
+
         key = f"{symbol}:{timeframe}:{limit}"
         now = time.time()
 
@@ -332,7 +337,7 @@ class ExpertAnalystBot:
 
     def _evaluate_long(self, df_4h, df_1h, df_15m, btc_context):
         row15 = df_15m.iloc[-1]
-        score = 30  # سكور أساسي مرن لضمان عمل الحنفية
+        score = 30
         confirmations = ['Flexible Structure', 'Trend Support']
 
         trend4 = self.get_trend(df_4h)
@@ -361,7 +366,7 @@ class ExpertAnalystBot:
 
     def _evaluate_short(self, df_4h, df_1h, df_15m, btc_context):
         row15 = df_15m.iloc[-1]
-        score = 30  # سكور أساسي مرن للشورت
+        score = 30
         confirmations = ['Flexible Structure', 'Trend Support']
 
         trend4 = self.get_trend(df_4h)
@@ -487,7 +492,6 @@ class ExpertAnalystBot:
 
         btc_context = self._get_btc_context()
 
-        # فحص إمكانية الصعود (LONG)
         if df_1h is not None and df_4h is not None:
             long_eval = self._evaluate_long(df_4h, df_1h, df_15m, btc_context)
             if long_eval['score'] >= 30:
@@ -502,7 +506,6 @@ class ExpertAnalystBot:
                 if trade:
                     return trade
 
-            # فحص إمكانية الهبوط (SHORT)
             short_eval = self._evaluate_short(df_4h, df_1h, df_15m, btc_context)
             if short_eval['score'] >= 30:
                 trade = self._build_short_trade(
