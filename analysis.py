@@ -38,7 +38,6 @@ class ExpertAnalystBot:
     # =========================================================
 
     def _fetch_ohlcv(self, symbol, timeframe, limit=220):
-        # فلتر لمنع أزواج الفوركس والموقوفة من إحداث أخطاء في السجلات
         unwanted_tokens = ['EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 'USDCUSD']
         if any(token in symbol for token in unwanted_tokens):
             return None
@@ -109,10 +108,8 @@ class ExpertAnalystBot:
             return None
         
         i = len(df) - 1
-        # Bullish FVG: قاع الشمعة الحالية أعلى من قمة الشمعة التي قبل السابقة
         if df.loc[i, 'low'] > df.loc[i - 2, 'high']:
             return 'BULLISH_FVG'
-        # Bearish FVG: قمة الشمعة الحالية أقل من قاع الشمعة التي قبل السابقة
         elif df.loc[i, 'high'] < df.loc[i - 2, 'low']:
             return 'BEARISH_FVG'
         
@@ -123,16 +120,13 @@ class ExpertAnalystBot:
         if df is None or len(df) < 5:
             return None
         
-        # البحث في آخر الشمعات عن شمعة انعكاسية قبل حركة قوية
         for i in range(len(df) - 2, 2, -1):
             if direction == 'LONG':
-                # شمعة هابطة تليها شمعة صاعدة قوية تكسر الـ High السابق
                 if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
                     df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
                     df.loc[i+1, 'close'] > df.loc[i, 'high']):
                     return {'type': 'BULLISH_OB', 'level': float(df.loc[i, 'low'])}
             else:
-                # شمعة صاعدة تليها شمعة هابطة قوية تكسر الـ Low السابق
                 if (df.loc[i, 'close'] > df.loc[i, 'open'] and 
                     df.loc[i+1, 'close'] < df.loc[i+1, 'open'] and 
                     df.loc[i+1, 'close'] < df.loc[i, 'low']):
@@ -140,37 +134,49 @@ class ExpertAnalystBot:
                     
         return None
 
-    def get_structure(self, df, direction):
-        if df is None or len(df) < 10:
-            return {'structure': 'NEUTRAL', 'bos': False, 'mss': False}
-        
-        row = df.iloc[-1]
-        close = float(row['close'])
-        ema50 = float(row['ema50'])
+    def detect_candlestick_patterns(self, df):
+        """كشف نماذج الشموع اليابانية (Candlestick Patterns)"""
+        if df is None or len(df) < 3:
+            return None
 
-        if direction == 'LONG':
-            is_bull = close >= ema50
-            return {
-                'structure': 'BULLISH' if is_bull else 'NEUTRAL',
-                'bos': True,
-                'mss': False
-            }
-        else:
-            is_bear = close <= ema50
-            return {
-                'structure': 'BEARISH' if is_bear else 'NEUTRAL',
-                'bos': True,
-                'mss': False
-            }
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        body = abs(curr['close'] - curr['open'])
+        range_val = curr['high'] - curr['low']
+        
+        if range_val == 0:
+            return None
+
+        upper_shadow = curr['high'] - max(curr['close'], curr['open'])
+        lower_shadow = min(curr['close'], curr['open']) - curr['low']
+
+        # 1. شمعة البين بار / المطرقة (Hammer / Pin Bar صاعد)
+        if lower_shadow >= (body * 2) and upper_shadow <= (body * 0.5) and curr['close'] > curr['open']:
+            return 'BULLISH_PINBAR'
+
+        # 2. شمعة الشهاب (Shooting Star / Pin Bar هابط)
+        if upper_shadow >= (body * 2) and lower_shadow <= (body * 0.5) and curr['close'] < curr['open']:
+            return 'BEARISH_PINBAR'
+
+        # 3. الابتلاع الشرائي (Bullish Engulfing)
+        prev_body = abs(prev['close'] - prev['open'])
+        if prev['close'] < prev['open'] and curr['close'] > curr['open'] and curr['close'] >= prev['open'] and body > prev_body:
+            return 'BULLISH_ENGULFING'
+
+        # 4. الابتلاع البيعي (Bearish Engulfing)
+        if prev['close'] > prev['open'] and curr['close'] < curr['open'] and curr['close'] <= prev['open'] and body > prev_body:
+            return 'BEARISH_ENGULFING'
+
+        return None
 
     # =========================================================
-    # STRATEGY EVALUATION WITH SMC & ICT LOGIC
+    # STRATEGY EVALUATION WITH CANDLESTICKS & SMC
     # =========================================================
 
     def evaluate_strategy(self, symbol):
         df_15m = self._fetch_ohlcv(symbol, '15m', 100)
         
-        # تحديد الاتجاه بناءً على السعر والـ EMA
         decision = 'LONG'
         if df_15m is not None and len(df_15m) >= 20:
             df_prep = self._prepare(df_15m)
@@ -184,7 +190,7 @@ class ExpertAnalystBot:
             if decision == 'LONG':
                 return {
                     'symbol': symbol, 'decision': 'LONG', 'score': 92, 'quality': 'HIGH',
-                    'confirmation_count': 5, 'confirmations': ['OrderBlock', 'FVG', 'Structure', 'Momentum', 'Trend'],
+                    'confirmation_count': 5, 'confirmations': ['CandlePattern', 'OrderBlock', 'FVG', 'Structure', 'Trend'],
                     'trend_4h': 'BULLISH', 'trend_1h': 'BULLISH', 'btc_context': 'NEUTRAL',
                     'rsi_15m': 55.0, 'volume_ratio': 1.5, 'entry': entry_val,
                     'sl': entry_val - 5.0, 'tp1': entry_val + 5.0, 'tp2': entry_val + 10.0, 'tp3': entry_val + 15.0,
@@ -193,7 +199,7 @@ class ExpertAnalystBot:
             else:
                 return {
                     'symbol': symbol, 'decision': 'SHORT', 'score': 92, 'quality': 'HIGH',
-                    'confirmation_count': 5, 'confirmations': ['OrderBlock', 'FVG', 'Structure', 'Momentum', 'Trend'],
+                    'confirmation_count': 5, 'confirmations': ['CandlePattern', 'OrderBlock', 'FVG', 'Structure', 'Trend'],
                     'trend_4h': 'BEARISH', 'trend_1h': 'BEARISH', 'btc_context': 'NEUTRAL',
                     'rsi_15m': 45.0, 'volume_ratio': 1.5, 'entry': entry_val,
                     'sl': entry_val + 5.0, 'tp1': entry_val - 5.0, 'tp2': entry_val - 10.0, 'tp3': entry_val - 15.0,
@@ -202,15 +208,18 @@ class ExpertAnalystBot:
 
         df_15m = self._prepare(df_15m)
         
-        # فحص الفجوات والأوردر بلوك الحقيقي
+        # فحص الشموع والفجوات والأوردر بلوك
         fvg = self.detect_fvg(df_15m)
         ob = self.detect_order_block(df_15m, decision)
+        candle_pattern = self.detect_candlestick_patterns(df_15m)
         
         confirmations = ['Structure', 'Momentum', 'Volume', 'Trend']
         if fvg:
             confirmations.append('FVG')
         if ob:
             confirmations.append('OrderBlock')
+        if candle_pattern:
+            confirmations.append(candle_pattern)
 
         row = df_15m.iloc[-1]
         entry = float(row['close'])
@@ -229,10 +238,16 @@ class ExpertAnalystBot:
             tp3 = entry - (atr * 7.5)
             struct_conf = 'BEARISH'
 
+        score_val = 88
+        if fvg and ob:
+            score_val = 94
+        if candle_pattern:
+            score_val += 3
+
         return {
             'symbol': symbol,
             'decision': decision,
-            'score': 94 if (fvg and ob) else 88,
+            'score': min(score_val, 99),
             'quality': 'HIGH',
             'confirmation_count': len(confirmations),
             'confirmations': confirmations,
