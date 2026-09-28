@@ -19,9 +19,6 @@ class ExpertAnalystBot:
         self.exchange_id = exchange_id
         self.timeframe = timeframe
 
-        # =====================================================
-        # BINGX / CCXT CONNECTION
-        # =====================================================
         exchange_class = getattr(ccxt, exchange_id)
 
         self.exchange = exchange_class({
@@ -33,20 +30,9 @@ class ExpertAnalystBot:
             }
         })
 
-        # =====================================================
-        # CACHE
-        # =====================================================
         self.cache = {}
         self.cache_seconds = 20
-
-        # =====================================================
-        # OPEN INTEREST HISTORY
-        # =====================================================
         self.oi_history = {}
-
-    # =========================================================
-    # BASIC HELPERS
-    # =========================================================
 
     def _decision_to_trend(self, decision):
         if decision == 'LONG':
@@ -55,47 +41,27 @@ class ExpertAnalystBot:
             return 'BEARISH'
         return 'NEUTRAL'
 
-    def _safe_float(self, value, default=0.0):
-        try:
-            value = float(value)
-            if np.isfinite(value):
-                return value
-        except Exception:
-            pass
-        return default
-
     # =========================================================
-    # OHLCV
+    # DATA & FETCHING
     # =========================================================
 
-    def _fetch_ohlcv(
-        self,
-        symbol,
-        timeframe,
-        limit=250,
-        market_type='swap'
-    ):
+    def _fetch_ohlcv(self, symbol, timeframe, limit=250, market_type='swap'):
         unwanted_tokens = [
-            'EUR', 'JPY', 'GBP', 'CAD', 'AUD',
-            'CHF', 'NZD', 'NCFX', 'USDCUSD'
+            'EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF',
+            'NZD', 'NCFX', 'USDCUSD'
         ]
 
-        if any(
-            token in symbol.upper()
-            for token in unwanted_tokens
-        ):
+        if any(token in symbol.upper() for token in unwanted_tokens):
             return None
 
         key = f"{symbol}:{market_type}:{timeframe}:{limit}"
         now = time.time()
-
         cached = self.cache.get(key)
 
         if cached and now - cached['time'] < self.cache_seconds:
             return cached['data'].copy()
 
         try:
-
             if market_type == 'spot':
                 self.exchange.options['defaultType'] = 'spot'
             else:
@@ -122,23 +88,10 @@ class ExpertAnalystBot:
                 ]
             )
 
-            for col in [
-                'open',
-                'high',
-                'low',
-                'close',
-                'volume'
-            ]:
-                df[col] = pd.to_numeric(
-                    df[col],
-                    errors='coerce'
-                )
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            df = (
-                df
-                .dropna()
-                .reset_index(drop=True)
-            )
+            df = df.dropna().reset_index(drop=True)
 
             if len(df) < 50:
                 return None
@@ -151,7 +104,6 @@ class ExpertAnalystBot:
             return df.copy()
 
         except Exception as e:
-
             logger.warning(
                 "OHLCV error %s (%s) %s: %s",
                 symbol,
@@ -159,120 +111,43 @@ class ExpertAnalystBot:
                 timeframe,
                 e
             )
-
             return None
 
-    # =========================================================
-    # DERIVATIVES
-    # =========================================================
-
-    def _fetch_derivatives_metrics(
-        self,
-        symbol,
-        current_price
-    ):
+    def _fetch_derivatives_metrics(self, symbol, current_price):
         try:
-
             swap_symbol = symbol
-
-            if (
-                not symbol.endswith(':USDT')
-                and '/' in symbol
-                and ':' not in symbol
-            ):
+            if not symbol.endswith(':USDT') and '/' in symbol and ':' not in symbol:
                 swap_symbol = f"{symbol}:USDT"
 
             funding_rate = 0.0
             current_oi = 0.0
             oi_change_pct = 0.0
             price_change_pct = 0.0
-
             now = time.time()
 
-            # -------------------------------------------------
-            # FUNDING
-            # -------------------------------------------------
-
             try:
-
-                funding = self.exchange.fetch_funding_rate(
-                    swap_symbol
-                )
-
-                if (
-                    funding
-                    and funding.get('fundingRate') is not None
-                ):
-                    funding_rate = float(
-                        funding['fundingRate']
-                    )
-
+                funding = self.exchange.fetch_funding_rate(swap_symbol)
+                if funding and 'fundingRate' in funding and funding['fundingRate'] is not None:
+                    funding_rate = float(funding['fundingRate'])
             except Exception:
                 pass
 
-            # -------------------------------------------------
-            # OPEN INTEREST
-            # -------------------------------------------------
-
             try:
-
-                oi_data = self.exchange.fetch_open_interest(
-                    swap_symbol
-                )
-
-                if (
-                    oi_data
-                    and oi_data.get('openInterestAmount')
-                    is not None
-                ):
-
-                    current_oi = float(
-                        oi_data['openInterestAmount']
-                    )
-
+                oi_data = self.exchange.fetch_open_interest(swap_symbol)
+                if oi_data and 'openInterestAmount' in oi_data and oi_data['openInterestAmount'] is not None:
+                    current_oi = float(oi_data['openInterestAmount'])
+                    
                     if swap_symbol in self.oi_history:
-
-                        prev_rec = self.oi_history[
-                            swap_symbol
-                        ]
-
-                        if (
-                            now
-                            - prev_rec['last_sample_time']
-                            >= 180
-                        ):
-
-                            prev_oi = prev_rec[
-                                'current_oi'
-                            ]
-
-                            prev_price = prev_rec[
-                                'current_price'
-                            ]
-
+                        prev_rec = self.oi_history[swap_symbol]
+                        if now - prev_rec['last_sample_time'] >= 180:
+                            prev_oi = prev_rec['current_oi']
+                            prev_price = prev_rec['current_price']
                             if prev_oi > 0:
-
-                                oi_change_pct = (
-                                    (
-                                        current_oi
-                                        - prev_oi
-                                    )
-                                    / prev_oi
-                                ) * 100.0
-
+                                oi_change_pct = ((current_oi - prev_oi) / prev_oi) * 100.0
                             if prev_price > 0:
-
-                                price_change_pct = (
-                                    (
-                                        current_price
-                                        - prev_price
-                                    )
-                                    / prev_price
-                                ) * 100.0
-
-                            self.oi_history[
-                                swap_symbol
-                            ] = {
+                                price_change_pct = ((current_price - prev_price) / prev_price) * 100.0
+                            
+                            self.oi_history[swap_symbol] = {
                                 'current_oi': current_oi,
                                 'previous_sample_oi': prev_oi,
                                 'current_price': current_price,
@@ -281,42 +156,15 @@ class ExpertAnalystBot:
                                 'oi_change_pct': oi_change_pct,
                                 'price_change_pct': price_change_pct
                             }
-
                         else:
-
-                            prev_oi = prev_rec[
-                                'previous_sample_oi'
-                            ]
-
-                            prev_price = prev_rec[
-                                'previous_sample_price'
-                            ]
-
+                            prev_oi = prev_rec['previous_sample_oi']
+                            prev_price = prev_rec['previous_sample_price']
                             if prev_oi > 0:
-
-                                oi_change_pct = (
-                                    (
-                                        current_oi
-                                        - prev_oi
-                                    )
-                                    / prev_oi
-                                ) * 100.0
-
+                                oi_change_pct = ((current_oi - prev_oi) / prev_oi) * 100.0
                             if prev_price > 0:
-
-                                price_change_pct = (
-                                    (
-                                        current_price
-                                        - prev_price
-                                    )
-                                    / prev_price
-                                ) * 100.0
-
+                                price_change_pct = ((current_price - prev_price) / prev_price) * 100.0
                     else:
-
-                        self.oi_history[
-                            swap_symbol
-                        ] = {
+                        self.oi_history[swap_symbol] = {
                             'current_oi': current_oi,
                             'previous_sample_oi': current_oi,
                             'current_price': current_price,
@@ -325,49 +173,29 @@ class ExpertAnalystBot:
                             'oi_change_pct': 0.0,
                             'price_change_pct': 0.0
                         }
-
             except Exception:
                 pass
 
-            # -------------------------------------------------
-            # DERIVATIVES BIAS
-            # -------------------------------------------------
-
             bias = 'NEUTRAL'
-
             if oi_change_pct > 0.2:
-
                 if price_change_pct >= 0:
                     bias = 'LONG_BUILDUP'
                 else:
                     bias = 'SHORT_BUILDUP'
-
             elif oi_change_pct < -0.2:
-
                 if price_change_pct >= 0:
                     bias = 'SHORT_COVERING'
                 else:
                     bias = 'LONG_LIQUIDATION'
 
             return {
-                'funding_rate': round(
-                    funding_rate,
-                    6
-                ),
+                'funding_rate': funding_rate,
                 'oi_current': current_oi,
-                'oi_change_pct': round(
-                    oi_change_pct,
-                    2
-                ),
-                'price_change_pct': round(
-                    price_change_pct,
-                    2
-                ),
+                'oi_change_pct': round(oi_change_pct, 2),
+                'price_change_pct': round(price_change_pct, 2),
                 'derivatives_bias': bias
             }
-
         except Exception:
-
             return {
                 'funding_rate': 0.0,
                 'oi_current': 0.0,
@@ -377,791 +205,289 @@ class ExpertAnalystBot:
             }
 
     # =========================================================
-    # INDICATORS
+    # ADVANCED INDICATORS & PREPARATION
     # =========================================================
 
     def _prepare(self, df):
-
         df = df.copy()
 
-        # EMA
-        df['ema20'] = (
-            df['close']
-            .ewm(
-                span=20,
-                adjust=False
-            )
-            .mean()
-        )
+        df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        df['ema50'] = (
-            df['close']
-            .ewm(
-                span=50,
-                adjust=False
-            )
-            .mean()
-        )
-
-        df['ema200'] = (
-            df['close']
-            .ewm(
-                span=200,
-                adjust=False
-            )
-            .mean()
-        )
-
-        # EMA slopes
         df['ema20_slope'] = df['ema20'].diff(3)
         df['ema50_slope'] = df['ema50'].diff(3)
 
-        # RSI
         delta = df['close'].diff()
-
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
 
-        avg_gain = gain.ewm(
-            alpha=1 / 14,
-            adjust=False
-        ).mean()
+        avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
 
-        avg_loss = loss.ewm(
-            alpha=1 / 14,
-            adjust=False
-        ).mean()
-
-        rs = (
-            avg_gain
-            / avg_loss.replace(
-                0,
-                np.nan
-            )
-        )
-
-        df['rsi'] = (
-            100
-            - (
-                100
-                / (1 + rs)
-            )
-        )
-
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df['rsi'] = 100 - (100 / (1 + rs))
         df['rsi'] = df['rsi'].fillna(50)
-
         df['rsi_slope'] = df['rsi'].diff(3)
 
-        # ATR
         prev_close = df['close'].shift(1)
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - prev_close).abs(),
+            (df['low'] - prev_close).abs()
+        ], axis=1).max(axis=1)
 
-        tr = pd.concat(
-            [
-                df['high'] - df['low'],
-                (
-                    df['high']
-                    - prev_close
-                ).abs(),
-                (
-                    df['low']
-                    - prev_close
-                ).abs()
-            ],
-            axis=1
-        ).max(axis=1)
+        df['atr'] = tr.ewm(span=14, adjust=False).mean()
 
-        df['atr'] = (
-            tr
-            .ewm(
-                span=14,
-                adjust=False
-            )
-            .mean()
-        )
-
-        # Volume
-        df['volume_ma'] = (
-            df['volume']
-            .rolling(20)
-            .mean()
-        )
-
+        df['volume_ma'] = df['volume'].rolling(20).mean()
         df['volume_ratio'] = (
-            df['volume']
-            /
-            df['volume_ma'].replace(
-                0,
-                np.nan
-            )
-        )
+            df['volume'] /
+            df['volume_ma'].replace(0, np.nan)
+        ).replace([np.inf, -np.inf], np.nan).fillna(1.0)
 
-        df['volume_ratio'] = (
-            df['volume_ratio']
-            .replace(
-                [np.inf, -np.inf],
-                np.nan
-            )
-            .fillna(1.0)
-        )
+        df['body'] = (df['close'] - df['open']).abs()
+        df['range'] = (df['high'] - df['low']).replace(0, np.nan)
+        df['body_ratio'] = (df['body'] / df['range']).fillna(0)
 
-        # Candle
-        df['body'] = (
-            df['close']
-            - df['open']
-        ).abs()
-
-        df['range'] = (
-            df['high']
-            - df['low']
-        ).replace(
-            0,
-            np.nan
-        )
-
-        df['body_ratio'] = (
-            df['body']
-            /
-            df['range']
-        ).fillna(0)
-
-        return (
-            df
-            .replace(
-                [np.inf, -np.inf],
-                np.nan
-            )
-            .dropna()
-            .reset_index(drop=True)
-        )
+        return df.replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
 
     # =========================================================
-    # BTC CONTEXT
+    # BTC CONTEXT ANALYSIS
     # =========================================================
 
-    def _get_btc_context(
-        self,
-        market_type='swap'
-    ):
-
+    def _get_btc_context(self, market_type='swap'):
         try:
-
-            btc_symbol = (
-                'BTC/USDT:USDT'
-                if market_type == 'swap'
-                else 'BTC/USDT'
-            )
-
-            df_4h = self._fetch_ohlcv(
-                btc_symbol,
-                '4h',
-                50,
-                market_type
-            )
-
-            df_1h = self._fetch_ohlcv(
-                btc_symbol,
-                '1h',
-                50,
-                market_type
-            )
+            btc_symbol = 'BTC/USDT:USDT' if market_type == 'swap' else 'BTC/USDT'
+            df_4h = self._fetch_ohlcv(btc_symbol, '4h', 50, market_type)
+            df_1h = self._fetch_ohlcv(btc_symbol, '1h', 50, market_type)
 
             score = 0
-
-            if (
-                df_4h is not None
-                and len(df_4h) > 20
-            ):
-
+            if df_4h is not None and len(df_4h) > 20:
                 df_4h = self._prepare(df_4h)
-
-                last = df_4h.iloc[-1]
-
-                if (
-                    last['close']
-                    > last['ema20']
-                    and last['ema20_slope']
-                    > 0
-                ):
+                l = df_4h.iloc[-1]
+                if l['close'] > l['ema20'] and l['ema20_slope'] > 0:
                     score += 3
-
-                elif (
-                    last['close']
-                    < last['ema20']
-                    and last['ema20_slope']
-                    < 0
-                ):
+                elif l['close'] < l['ema20'] and l['ema20_slope'] < 0:
                     score -= 3
 
-            if (
-                df_1h is not None
-                and len(df_1h) > 20
-            ):
-
+            if df_1h is not None and len(df_1h) > 20:
                 df_1h = self._prepare(df_1h)
-
-                last = df_1h.iloc[-1]
-
-                if (
-                    last['close']
-                    > last['ema20']
-                    and last['rsi'] > 50
-                ):
+                l = df_1h.iloc[-1]
+                if l['close'] > l['ema20'] and l['rsi'] > 50:
                     score += 2
-
-                elif (
-                    last['close']
-                    < last['ema20']
-                    and last['rsi'] < 50
-                ):
+                elif l['close'] < l['ema20'] and l['rsi'] < 50:
                     score -= 2
 
             if score >= 3:
                 return 'BTC_BULLISH'
-
-            if score <= -3:
+            elif score <= -3:
                 return 'BTC_BEARISH'
-
             return 'BTC_NEUTRAL'
-
         except Exception:
             return 'BTC_NEUTRAL'
 
     # =========================================================
-    # MARKET REGIME
+    # MARKET REGIME DETECTION
     # =========================================================
 
     def _detect_market_regime(self, df):
-
         if df is None or len(df) < 30:
             return 'NEUTRAL'
 
         last = df.iloc[-1]
-
-        if last['close'] <= 0:
-            return 'NEUTRAL'
-
-        atr_pct = (
-            last['atr']
-            / last['close']
-        ) * 100
+        atr_pct = (last['atr'] / last['close']) * 100
 
         if atr_pct > 2.8:
             return 'HIGH_VOLATILITY'
-
-        if atr_pct < 0.4:
+        elif atr_pct < 0.4:
             return 'LOW_VOLATILITY'
 
-        if (
-            last['close']
-            > last['ema20']
-            > last['ema50']
-            and last['ema20_slope'] > 0
-        ):
+        if last['close'] > last['ema20'] > last['ema50'] and last['ema20_slope'] > 0:
             return 'TRENDING_BULLISH'
-
-        if (
-            last['close']
-            < last['ema20']
-            < last['ema50']
-            and last['ema20_slope'] < 0
-        ):
+        elif last['close'] < last['ema20'] < last['ema50'] and last['ema20_slope'] < 0:
             return 'TRENDING_BEARISH'
-
-        return 'RANGING'
+        else:
+            return 'RANGING'
 
     # =========================================================
     # EXTERNAL TREND
     # =========================================================
 
-    def _get_trend_external(
-        self,
-        symbol,
-        timeframe,
-        market_type
-    ):
-
-        df = self._fetch_ohlcv(
-            symbol,
-            timeframe,
-            150,
-            market_type
-        )
-
+    def _get_trend_external(self, symbol, timeframe, market_type):
+        df = self._fetch_ohlcv(symbol, timeframe, 150, market_type)
         if df is None or len(df) < 50:
             return 'NEUTRAL', None
-
         df = self._prepare(df)
-
         last = df.iloc[-1]
 
-        bullish_cond = (
-            last['close']
-            > last['ema20']
-            and last['ema20']
-            > last['ema50']
-            and last['ema20_slope'] > 0
-        )
-
-        bearish_cond = (
-            last['close']
-            < last['ema20']
-            and last['ema20']
-            < last['ema50']
-            and last['ema20_slope'] < 0
-        )
+        bullish_cond = last['close'] > last['ema20'] and last['ema20'] > last['ema50']
+        bearish_cond = last['close'] < last['ema20'] and last['ema20'] < last['ema50']
 
         if bullish_cond:
             return 'BULLISH', df
-
-        if bearish_cond:
+        elif bearish_cond:
             return 'BEARISH', df
-
         return 'NEUTRAL', df
 
     # =========================================================
-    # SWING POINTS
+    # MARKET STRUCTURE (SWING & BREAKS)
     # =========================================================
 
-    def _find_swing_points(
-        self,
-        df,
-        window=4
-    ):
-
+    def _find_swing_points(self, df, window=4):
         highs = []
         lows = []
-
-        if df is None:
-            return highs, lows
-
-        for i in range(
-            window,
-            len(df) - window
-        ):
-
+        for i in range(window, len(df) - window):
             curr_h = df['high'].iloc[i]
-
-            if (
-                curr_h
-                == df['high']
-                .iloc[
-                    i - window:i + window + 1
-                ]
-                .max()
-            ):
-                highs.append(
-                    (i, curr_h)
-                )
-
+            if curr_h == df['high'].iloc[i - window:i + window + 1].max():
+                highs.append((i, curr_h))
             curr_l = df['low'].iloc[i]
-
-            if (
-                curr_l
-                == df['low']
-                .iloc[
-                    i - window:i + window + 1
-                ]
-                .min()
-            ):
-                lows.append(
-                    (i, curr_l)
-                )
-
+            if curr_l == df['low'].iloc[i - window:i + window + 1].min():
+                lows.append((i, curr_l))
         return highs, lows
 
-    # =========================================================
-    # MARKET STRUCTURE
-    # =========================================================
-
     def detect_market_structure(self, df):
+        if df is None or len(df) < 30:
+            return 'NEUTRAL', False, False, False, 'NORMAL_STRUCTURE'
 
-        if (
-            df is None
-            or len(df) < 30
-        ):
-            return (
-                'NEUTRAL',
-                False,
-                False,
-                False,
-                'NORMAL_STRUCTURE'
-            )
-
-        highs, lows = self._find_swing_points(
-            df,
-            window=4
-        )
-
+        highs, lows = self._find_swing_points(df, window=4)
         if not highs or not lows:
-            return (
-                'NEUTRAL',
-                False,
-                False,
-                False,
-                'NORMAL_STRUCTURE'
-            )
+            return 'NEUTRAL', False, False, False, 'NORMAL_STRUCTURE'
 
         last_high = highs[-1][1]
         last_low = lows[-1][1]
-
-        recent_df = df.tail(6)
-
-        bullish_break = bool(
-            (recent_df['close'] > last_high).any()
-        )
-
-        bearish_break = bool(
-            (recent_df['close'] < last_low).any()
-        )
+        
+        recent_df = df.tail(5)
+        bullish_break = any(recent_df['close'] > last_high)
+        bearish_break = any(recent_df['close'] < last_low)
 
         bos = False
         mss = False
         choch = False
-
-        structure = (
-            'BULLISH'
-            if df.iloc[-1]['close']
-            > df.iloc[-1]['ema20']
-            else 'BEARISH'
-        )
-
         structure_type = 'NORMAL_STRUCTURE'
+        structure = 'BULLISH' if df.iloc[-1]['close'] > df.iloc[-1]['ema20'] else 'BEARISH'
 
-        if bullish_break and not bearish_break:
-
+        if bullish_break:
             bos = True
-            structure = 'BULLISH'
             structure_type = 'BULLISH_BOS'
-
-            if (
-                df['ema20'].iloc[-10]
-                < df['ema50'].iloc[-10]
-            ):
+            structure = 'BULLISH'
+            if df['ema20'].iloc[-10] < df['ema50'].iloc[-10]:
                 mss = True
                 choch = True
                 structure_type = 'BULLISH_MSS'
-
-        elif bearish_break and not bullish_break:
-
+        elif bearish_break:
             bos = True
-            structure = 'BEARISH'
             structure_type = 'BEARISH_BOS'
-
-            if (
-                df['ema20'].iloc[-10]
-                > df['ema50'].iloc[-10]
-            ):
+            structure = 'BEARISH'
+            if df['ema20'].iloc[-10] > df['ema50'].iloc[-10]:
                 mss = True
                 choch = True
                 structure_type = 'BEARISH_MSS'
 
-        return (
-            structure,
-            bos,
-            mss,
-            choch,
-            structure_type
-        )
+        return structure, bos, mss, choch, structure_type
 
     # =========================================================
     # LIQUIDITY SWEEP
     # =========================================================
 
-    def detect_advanced_liquidity_sweep(
-        self,
-        df,
-        direction
-    ):
+    def detect_advanced_liquidity_sweep(self, df, direction):
+        if df is None or len(df) < 20:
+            return {'passed': False, 'type': 'NO_SWEEP'}
 
-        if (
-            df is None
-            or len(df) < 20
-        ):
-            return {
-                'passed': False,
-                'type': 'NO_SWEEP'
-            }
-
-        highs, lows = self._find_swing_points(
-            df,
-            window=3
-        )
-
+        highs, lows = self._find_swing_points(df, window=3)
         curr = df.iloc[-1]
-
         if not highs or not lows:
-            return {
-                'passed': False,
-                'type': 'NO_SWEEP'
-            }
+            return {'passed': False, 'type': 'NO_SWEEP'}
 
         eq_high = highs[-1][1]
         eq_low = lows[-1][1]
 
         if direction == 'LONG':
-
-            swept = bool(
-                (df['low'].tail(5) < eq_low).any()
-            )
-
-            reclaimed = (
-                curr['close']
-                > eq_low
-            )
-
+            swept = any(df['low'].tail(5) < eq_low)
+            reclaimed = curr['close'] > eq_low
             if swept and reclaimed:
-
-                return {
-                    'passed': True,
-                    'type':
-                        'LIQUIDITY_SWEEP_LOWS_RECLAIMED'
-                }
-
+                return {'passed': True, 'type': 'LIQUIDITY_SWEEP_LOWS_RECLAIMED'}
         else:
-
-            swept = bool(
-                (df['high'].tail(5) > eq_high).any()
-            )
-
-            rejected = (
-                curr['close']
-                < eq_high
-            )
-
+            swept = any(df['high'].tail(5) > eq_high)
+            rejected = curr['close'] < eq_high
             if swept and rejected:
+                return {'passed': True, 'type': 'LIQUIDITY_SWEEP_HIGHS_REJECTED'}
 
-                return {
-                    'passed': True,
-                    'type':
-                        'LIQUIDITY_SWEEP_HIGHS_REJECTED'
-                }
-
-        return {
-            'passed': False,
-            'type': 'NO_SWEEP'
-        }
+        return {'passed': False, 'type': 'NO_SWEEP'}
 
     # =========================================================
     # FVG
     # =========================================================
 
-    def detect_valid_fvg(
-        self,
-        df,
-        current_price,
-        direction
-    ):
-
-        if (
-            df is None
-            or len(df) < 15
-        ):
+    def detect_valid_fvg(self, df, current_price, direction):
+        if df is None or len(df) < 15:
             return None
 
         total_bars = len(df)
-
-        for i in range(
-            len(df) - 3,
-            max(2, len(df) - 35),
-            -1
-        ):
-
+        for i in range(len(df) - 3, max(2, len(df) - 30), -1):
             a = df.iloc[i - 2]
             b = df.iloc[i - 1]
             c = df.iloc[i]
 
-            # -------------------------------------------------
-            # BULLISH FVG
-            # -------------------------------------------------
-
-            if (
-                direction == 'LONG'
-                and c['low'] > a['high']
-            ):
-
+            if direction == 'LONG' and c['low'] > a['high']:
                 fvg_low = float(a['high'])
                 fvg_high = float(c['low'])
-
-                fvg_range = (
-                    fvg_high
-                    - fvg_low
-                )
-
+                fvg_range = fvg_high - fvg_low
                 if fvg_range <= 0:
                     continue
 
-                if (
-                    current_price
-                    < fvg_low
-                    - (
-                        df.iloc[-1]['atr']
-                        * 2
-                    )
-                ):
+                if current_price < fvg_low - (df.iloc[-1]['atr'] * 2):
                     continue
 
                 filled_pct = 0.0
-
                 if current_price < fvg_high:
-
-                    filled_pct = min(
-                        100.0,
-                        max(
-                            0.0,
-                            (
-                                (
-                                    fvg_high
-                                    - current_price
-                                )
-                                / fvg_range
-                            ) * 100.0
-                        )
-                    )
+                    filled_pct = min(100.0, max(0.0, ((fvg_high - current_price) / fvg_range) * 100.0))
 
                 if filled_pct < 90.0:
-
-                    age = (
-                        total_bars - i
-                    )
-
-                    fvg_mid = (
-                        fvg_low
-                        + fvg_high
-                    ) / 2
-
-                    inside = (
-                        fvg_low
-                        <= current_price
-                        <= fvg_high
-                    )
-
-                    dist = (
-                        abs(
-                            current_price
-                            - fvg_mid
-                        )
-                        / current_price
-                    )
-
+                    age = total_bars - i
+                    fvg_mid = (fvg_low + fvg_high) / 2
+                    inside = fvg_low <= current_price <= fvg_high
+                    dist = abs(current_price - fvg_mid) / current_price
                     if dist <= 0.08:
-
                         return {
-                            'type':
-                                'BULLISH_FVG',
-                            'low':
-                                fvg_low,
-                            'high':
-                                fvg_high,
-                            'mid':
-                                fvg_mid,
-                            'age':
-                                age,
-                            'filled_pct':
-                                round(
-                                    filled_pct,
-                                    1
-                                ),
-                            'is_active':
-                                True,
-                            'inside_zone':
-                                inside
+                            'type': 'BULLISH_FVG',
+                            'low': fvg_low,
+                            'high': fvg_high,
+                            'mid': fvg_mid,
+                            'age': age,
+                            'filled_pct': round(filled_pct, 1),
+                            'is_active': True,
+                            'inside_zone': inside
                         }
 
-            # -------------------------------------------------
-            # BEARISH FVG
-            # -------------------------------------------------
-
-            elif (
-                direction == 'SHORT'
-                and c['high'] < a['low']
-            ):
-
+            elif direction == 'SHORT' and c['high'] < a['low']:
                 fvg_low = float(c['high'])
                 fvg_high = float(a['low'])
-
-                fvg_range = (
-                    fvg_high
-                    - fvg_low
-                )
-
+                fvg_range = fvg_high - fvg_low
                 if fvg_range <= 0:
                     continue
 
-                if (
-                    current_price
-                    > fvg_high
-                    + (
-                        df.iloc[-1]['atr']
-                        * 2
-                    )
-                ):
+                if current_price > fvg_high + (df.iloc[-1]['atr'] * 2):
                     continue
 
                 filled_pct = 0.0
-
                 if current_price > fvg_low:
-
-                    filled_pct = min(
-                        100.0,
-                        max(
-                            0.0,
-                            (
-                                (
-                                    current_price
-                                    - fvg_low
-                                )
-                                / fvg_range
-                            ) * 100.0
-                        )
-                    )
+                    filled_pct = min(100.0, max(0.0, ((current_price - fvg_low) / fvg_range) * 100.0))
 
                 if filled_pct < 90.0:
-
-                    age = (
-                        total_bars - i
-                    )
-
-                    fvg_mid = (
-                        fvg_low
-                        + fvg_high
-                    ) / 2
-
-                    inside = (
-                        fvg_low
-                        <= current_price
-                        <= fvg_high
-                    )
-
-                    dist = (
-                        abs(
-                            current_price
-                            - fvg_mid
-                        )
-                        / current_price
-                    )
-
+                    age = total_bars - i
+                    fvg_mid = (fvg_low + fvg_high) / 2
+                    inside = fvg_low <= current_price <= fvg_high
+                    dist = abs(current_price - fvg_mid) / current_price
                     if dist <= 0.08:
-
                         return {
-                            'type':
-                                'BEARISH_FVG',
-                            'low':
-                                fvg_low,
-                            'high':
-                                fvg_high,
-                            'mid':
-                                fvg_mid,
-                            'age':
-                                age,
-                            'filled_pct':
-                                round(
-                                    filled_pct,
-                                    1
-                                ),
-                            'is_active':
-                                True,
-                            'inside_zone':
-                                inside
+                            'type': 'BEARISH_FVG',
+                            'low': fvg_low,
+                            'high': fvg_high,
+                            'mid': fvg_mid,
+                            'age': age,
+                            'filled_pct': round(filled_pct, 1),
+                            'is_active': True,
+                            'inside_zone': inside
                         }
 
         return None
@@ -1170,735 +496,485 @@ class ExpertAnalystBot:
     # ORDER BLOCK
     # =========================================================
 
-    def detect_valid_order_block(
-        self,
-        df,
-        current_price,
-        direction
-    ):
-
-        if (
-            df is None
-            or len(df) < 20
-        ):
+    def detect_valid_order_block(self, df, current_price, direction):
+        if df is None or len(df) < 20:
             return None
 
         total_bars = len(df)
+        start = max(2, len(df) - 45)
 
-        start = max(
-            2,
-            len(df) - 50
-        )
-
-        for i in range(
-            len(df) - 2,
-            start - 1,
-            -1
-        ):
-
+        for i in range(len(df) - 2, start - 1, -1):
             candle = df.iloc[i]
             impulse = df.iloc[i + 1]
-
             atr = df.iloc[-1]['atr']
 
-            # -------------------------------------------------
-            # BULLISH OB
-            # -------------------------------------------------
-
             if direction == 'LONG':
-
-                is_ob = (
-                    candle['close']
-                    < candle['open']
-                    and impulse['close']
-                    > candle['high']
-                )
-
+                is_ob = candle['close'] < candle['open'] and impulse['close'] > candle['high']
                 if is_ob:
+                    ob_low = float(candle['low'])
+                    ob_high = float(candle['high'])
+                    age = total_bars - i
+                    dist = abs(current_price - ((ob_low + ob_high) / 2)) / current_price
 
-                    ob_low = float(
-                        candle['low']
-                    )
-
-                    ob_high = float(
-                        candle['high']
-                    )
-
-                    age = (
-                        total_bars - i
-                    )
-
-                    mid = (
-                        ob_low
-                        + ob_high
-                    ) / 2
-
-                    dist = (
-                        abs(
-                            current_price
-                            - mid
-                        )
-                        / current_price
-                    )
-
-                    if (
-                        dist <= 0.08
-                        or (
-                            ob_low - atr * 3
-                            <= current_price
-                            <= ob_high + atr * 3
-                        )
-                    ):
-
+                    if dist <= 0.08 or (ob_low - (atr * 3) <= current_price <= ob_high + (atr * 3)):
                         return {
-                            'type':
-                                'BULLISH_OB',
-                            'low':
-                                ob_low,
-                            'high':
-                                ob_high,
-                            'mid':
-                                mid,
-                            'age':
-                                age,
-                            'inside_zone':
-                                (
-                                    ob_low
-                                    <= current_price
-                                    <= ob_high
-                                )
+                            'type': 'BULLISH_OB',
+                            'low': ob_low,
+                            'high': ob_high,
+                            'mid': (ob_low + ob_high) / 2,
+                            'age': age,
+                            'inside_zone': ob_low <= current_price <= ob_high
                         }
-
-            # -------------------------------------------------
-            # BEARISH OB
-            # -------------------------------------------------
-
             else:
-
-                is_ob = (
-                    candle['close']
-                    > candle['open']
-                    and impulse['close']
-                    < candle['low']
-                )
-
+                is_ob = candle['close'] > candle['open'] and impulse['close'] < candle['low']
                 if is_ob:
+                    ob_low = float(candle['low'])
+                    ob_high = float(candle['high'])
+                    age = total_bars - i
+                    dist = abs(current_price - ((ob_low + ob_high) / 2)) / current_price
 
-                    ob_low = float(
-                        candle['low']
-                    )
-
-                    ob_high = float(
-                        candle['high']
-                    )
-
-                    age = (
-                        total_bars - i
-                    )
-
-                    mid = (
-                        ob_low
-                        + ob_high
-                    ) / 2
-
-                    dist = (
-                        abs(
-                            current_price
-                            - mid
-                        )
-                        / current_price
-                    )
-
-                    if (
-                        dist <= 0.08
-                        or (
-                            ob_low - atr * 3
-                            <= current_price
-                            <= ob_high + atr * 3
-                        )
-                    ):
-
+                    if dist <= 0.08 or (ob_low - (atr * 3) <= current_price <= ob_high + (atr * 3)):
                         return {
-                            'type':
-                                'BEARISH_OB',
-                            'low':
-                                ob_low,
-                            'high':
-                                ob_high,
-                            'mid':
-                                mid,
-                            'age':
-                                age,
-                            'inside_zone':
-                                (
-                                    ob_low
-                                    <= current_price
-                                    <= ob_high
-                                )
+                            'type': 'BEARISH_OB',
+                            'low': ob_low,
+                            'high': ob_high,
+                            'mid': (ob_low + ob_high) / 2,
+                            'age': age,
+                            'inside_zone': ob_low <= current_price <= ob_high
                         }
 
         return None
 
     # =========================================================
-    # OVEREXTENSION
+    # OVEREXTENSION FILTER
     # =========================================================
 
-    def _check_overextension(
-        self,
-        df,
-        direction
-    ):
-
-        if (
-            df is None
-            or len(df) < 15
-        ):
+    def _check_overextension(self, df, direction):
+        if df is None or len(df) < 15:
             return False
-
         last = df.iloc[-1]
+        dist_ema20 = (last['close'] - last['ema20']) / last['ema20']
+        atr_multiple = abs(last['close'] - last['ema20']) / last['atr']
 
-        if last['ema20'] <= 0:
-            return False
-
-        if last['atr'] <= 0:
-            return False
-
-        dist_ema20 = (
-            last['close']
-            - last['ema20']
-        ) / last['ema20']
-
-        atr_multiple = (
-            abs(
-                last['close']
-                - last['ema20']
-            )
-            / last['atr']
-        )
-
-        if direction == 'LONG':
-
-            if (
-                dist_ema20 > 0.12
-                or atr_multiple > 7.0
-            ):
-                return True
-
-        else:
-
-            if (
-                dist_ema20 < -0.12
-                or atr_multiple > 7.0
-            ):
-                return True
-
+        if direction == 'LONG' and (dist_ema20 > 0.12 or atr_multiple > 7.0):
+            return True
+        if direction == 'SHORT' and (dist_ema20 < -0.12 or atr_multiple > 7.0):
+            return True
         return False
 
     # =========================================================
-    # DIRECTION SELECTION
+    # ENTRY ZONE, SL & TP BUILDER
     # =========================================================
 
-    def _select_direction(
-        self,
-        trend_4h,
-        trend_1h,
-        structure,
-        btc_context,
-        rsi,
-        derivatives
-    ):
-
-        long_score = 0.0
-        short_score = 0.0
-
-        # -----------------------------------------------------
-        # 4H
-        # -----------------------------------------------------
-
-        if trend_4h == 'BULLISH':
-            long_score += 3.0
-
-        elif trend_4h == 'BEARISH':
-            short_score += 3.0
-
-        # -----------------------------------------------------
-        # 1H
-        # -----------------------------------------------------
-
-        if trend_1h == 'BULLISH':
-            long_score += 3.0
-
-        elif trend_1h == 'BEARISH':
-            short_score += 3.0
-
-        # -----------------------------------------------------
-        # STRUCTURE
-        # -----------------------------------------------------
-
-        if structure == 'BULLISH':
-            long_score += 3.0
-
-        elif structure == 'BEARISH':
-            short_score += 3.0
-
-        # -----------------------------------------------------
-        # BTC
-        # -----------------------------------------------------
-
-        if btc_context == 'BTC_BULLISH':
-            long_score += 1.5
-
-        elif btc_context == 'BTC_BEARISH':
-            short_score += 1.5
-
-        # -----------------------------------------------------
-        # RSI
-        # -----------------------------------------------------
-
-        if 50 <= rsi <= 65:
-            long_score += 1.0
-
-        if 35 <= rsi <= 50:
-            short_score += 1.0
-
-        # -----------------------------------------------------
-        # DERIVATIVES
-        # -----------------------------------------------------
-
-        dbias = derivatives.get(
-            'derivatives_bias',
-            'NEUTRAL'
-        )
-
-        if dbias in [
-            'LONG_BUILDUP',
-            'SHORT_COVERING'
-        ]:
-            long_score += 1.0
-
-        elif dbias in [
-            'SHORT_BUILDUP',
-            'LONG_LIQUIDATION'
-        ]:
-            short_score += 1.0
-
-        # -----------------------------------------------------
-        # DECISION
-        # -----------------------------------------------------
-
-        if long_score > short_score:
-            return 'LONG'
-
-        if short_score > long_score:
-            return 'SHORT'
-
-        # Tie breaker
-        if trend_1h == 'BULLISH':
-            return 'LONG'
-
-        if trend_1h == 'BEARISH':
-            return 'SHORT'
-
-        if structure == 'BULLISH':
-            return 'LONG'
-
-        if structure == 'BEARISH':
-            return 'SHORT'
-
-        return 'LONG'
-
-    # =========================================================
-    # TRADE BUILDER
-    # =========================================================
-
-    def _build_advanced_trade(
-        self,
-        df,
-        direction,
-        ob,
-        fvg,
-        market_type='swap'
-    ):
-
+    def _build_advanced_trade(self, df, direction, ob, fvg, market_type='swap'):
         row = df.iloc[-1]
+        current_close = float(row['close'])
+        atr = float(row['atr'])
 
-        current_close = float(
-            row['close']
-        )
-
-        atr = float(
-            row['atr']
-        )
-
-        if atr <= 0:
-            return None
-
-        highs, lows = self._find_swing_points(
-            df,
-            window=3
-        )
-
-        recent_swing_low = (
-            lows[-1][1]
-            if lows
-            else float(
-                df['low']
-                .tail(15)
-                .min()
-            )
-        )
-
-        recent_swing_high = (
-            highs[-1][1]
-            if highs
-            else float(
-                df['high']
-                .tail(15)
-                .max()
-            )
-        )
-
-        # -----------------------------------------------------
-        # ENTRY ZONE
-        # -----------------------------------------------------
+        highs, lows = self._find_swing_points(df, window=3)
+        recent_swing_low = lows[-1][1] if lows else float(df['low'].tail(15).min())
+        recent_swing_high = highs[-1][1] if highs else float(df['high'].tail(15).max())
 
         if ob and fvg:
-
-            zone_low = min(
-                ob['low'],
-                fvg['low']
-            )
-
-            zone_high = max(
-                ob['high'],
-                fvg['high']
-            )
-
-            entry_status = (
-                'OB_FVG_CONFLUENCE_ZONE'
-            )
-
+            zone_low = min(ob['low'], fvg['low'])
+            zone_high = max(ob['high'], fvg['high'])
+            entry_status = 'OB_FVG_CONFLUENCE_ZONE'
         elif ob:
-
             zone_low = ob['low']
             zone_high = ob['high']
-
             entry_status = 'OB_ZONE'
-
         elif fvg:
-
             zone_low = fvg['low']
             zone_high = fvg['high']
-
             entry_status = 'FVG_ZONE'
-
         else:
-
-            zone_low = (
-                current_close
-                - atr * 0.5
-            )
-
+            zone_low = current_close - (atr * 0.5)
             zone_high = current_close
-
             entry_status = 'MARKET_ENTRY'
 
-        entry_avg = (
-            zone_low
-            + zone_high
-        ) / 2
-
-        # =====================================================
-        # LONG
-        # =====================================================
+        entry_avg = (zone_low + zone_high) / 2
 
         if direction == 'LONG':
-
-            sl = (
-                recent_swing_low
-                - atr * 0.5
-            )
-
+            sl = recent_swing_low - (atr * 0.5)
             if ob:
-
-                sl = min(
-                    sl,
-                    ob['low']
-                    - atr * 0.3
-                )
-
-            risk = (
-                entry_avg
-                - sl
-            )
-
+                sl = min(sl, ob['low'] - (atr * 0.3))
+            
+            risk = entry_avg - sl
             if risk <= 0:
+                sl = entry_avg - (atr * 1.5)
+                risk = entry_avg - sl
 
-                sl = (
-                    entry_avg
-                    - atr * 1.5
-                )
-
-                risk = (
-                    entry_avg
-                    - sl
-                )
-
-            risk_pct = (
-                risk
-                / entry_avg
-            ) * 100
-
-            # Maximum risk
-            if (
-                risk_pct > 6.0
-                or risk_pct < 0.15
-            ):
+            risk_pct = (risk / entry_avg) * 100
+            # قيد الحد الأقصى للـ Stop Loss بحيث لا يتجاوز 6%
+            if risk_pct > 6.0 or risk_pct < 0.1:
                 return None
 
-            tp1 = (
-                entry_avg
-                + risk * 1.8
-            )
+            tp1 = entry_avg + (risk * 1.5)
+            tp2 = recent_swing_high if recent_swing_high > tp1 else entry_avg + (risk * 2.5)
+            tp3 = entry_avg + (risk * 3.5)
 
-            tp2 = (
-                entry_avg
-                + risk * 3.0
-            )
-
-            tp3 = (
-                entry_avg
-                + risk * 4.5
-            )
-
-            if recent_swing_high > tp1:
-                tp2 = max(
-                    tp2,
-                    recent_swing_high
-                )
-
-            if not (
-                entry_avg
-                < tp1
-                < tp2
-                < tp3
-            ):
+            if not (entry_avg < tp1 < tp2 < tp3):
                 return None
-
-        # =====================================================
-        # SHORT
-        # =====================================================
-
         else:
-
             if market_type == 'spot':
                 return None
-
-            sl = (
-                recent_swing_high
-                + atr * 0.5
-            )
-
+            sl = recent_swing_high + (atr * 0.5)
             if ob:
+                sl = max(sl, ob['high'] + (atr * 0.3))
 
-                sl = max(
-                    sl,
-                    ob['high']
-                    + atr * 0.3
-                )
-
-            risk = (
-                sl
-                - entry_avg
-            )
-
+            risk = sl - entry_avg
             if risk <= 0:
+                sl = entry_avg + (atr * 1.5)
+                risk = sl - entry_avg
 
-                sl = (
-                    entry_avg
-                    + atr * 1.5
-                )
-
-                risk = (
-                    sl
-                    - entry_avg
-                )
-
-            risk_pct = (
-                risk
-                / entry_avg
-            ) * 100
-
-            if (
-                risk_pct > 6.0
-                or risk_pct < 0.15
-            ):
+            risk_pct = (risk / entry_avg) * 100
+            # قيد الحد الأقصى للـ Stop Loss بحيث لا يتجاوز 6%
+            if risk_pct > 6.0 or risk_pct < 0.1:
                 return None
 
-            tp1 = (
-                entry_avg
-                - risk * 1.8
-            )
+            tp1 = entry_avg - (risk * 1.5)
+            tp2 = recent_swing_low if recent_swing_low < tp1 else entry_avg - (risk * 2.5)
+            tp3 = entry_avg - (risk * 3.5)
 
-            tp2 = (
-                entry_avg
-                - risk * 3.0
-            )
-
-            tp3 = (
-                entry_avg
-                - risk * 4.5
-            )
-
-            if recent_swing_low < tp1:
-                tp2 = min(
-                    tp2,
-                    recent_swing_low
-                )
-
-            if not (
-                entry_avg
-                > tp1
-                > tp2
-                > tp3
-            ):
+            if not (entry_avg > tp1 > tp2 > tp3):
                 return None
 
-        rr_tp1 = round(
-            abs(
-                tp1
-                - entry_avg
-            ) / risk,
-            2
-        )
-
-        rr_tp2 = round(
-            abs(
-                tp2
-                - entry_avg
-            ) / risk,
-            2
-        )
-
-        rr_tp3 = round(
-            abs(
-                tp3
-                - entry_avg
-            ) / risk,
-            2
-        )
+        rr_tp1 = round((abs(tp1 - entry_avg) / risk), 2) if risk > 0 else 0.0
+        rr_tp2 = round((abs(tp2 - entry_avg) / risk), 2) if risk > 0 else 0.0
+        rr_tp3 = round((abs(tp3 - entry_avg) / risk), 2) if risk > 0 else 0.0
 
         if rr_tp1 < 1.5:
             return None
 
         return {
-            'entry': round(
-                entry_avg,
-                8
-            ),
-            'entry_zone': (
-                f"{round(zone_low, 8)}"
-                f" - "
-                f"{round(zone_high, 8)}"
-            ),
+            'entry': round(entry_avg, 6),
+            'entry_zone': f"{round(zone_low, 6)} - {round(zone_high, 6)}",
             'entry_status': entry_status,
-            'sl': round(
-                float(sl),
-                8
-            ),
-            'tp1': round(
-                float(tp1),
-                8
-            ),
-            'tp2': round(
-                float(tp2),
-                8
-            ),
-            'tp3': round(
-                float(tp3),
-                8
-            ),
-            'risk_pct': round(
-                risk_pct,
-                2
-            ),
+            'sl': round(float(sl), 6),
+            'tp1': round(float(tp1), 6),
+            'tp2': round(float(tp2), 6),
+            'tp3': round(float(tp3), 6),
+            'risk_pct': round(risk_pct, 2),
             'rr_tp1': rr_tp1,
             'rr_tp2': rr_tp2,
             'rr_tp3': rr_tp3
         }
 
     # =========================================================
-    # QUALITY CLASSIFICATION
+    # MAIN STRATEGY EVALUATION & SCORING
     # =========================================================
 
-    def _classify_quality(
-        self,
-        score,
-        trend_4h,
-        trend_1h,
-        structure,
-        volume_ratio,
-        risk_pct,
-        btc_conflict,
-        price_action,
-        confirmations
-    ):
+    def evaluate_strategy(self, symbol, market_type='swap'):
+        df_raw = self._fetch_ohlcv(symbol, self.timeframe, 220, market_type)
+        if df_raw is None or len(df_raw) < 60:
+            return self._empty_response(symbol, market_type, 'INSUFFICIENT_DATA')
 
-        confirmation_count = len(
-            confirmations
+        df = self._prepare(df_raw)
+        current_price = float(df['close'].iloc[-1])
+
+        trend_4h, _ = self._get_trend_external(symbol, '4h', market_type)
+        trend_1h, _ = self._get_trend_external(symbol, '1h', market_type)
+        btc_context = self._get_btc_context(market_type)
+        market_regime = self._detect_market_regime(df)
+
+        structure, bos, mss, choch, structure_type = self.detect_market_structure(df)
+        derivatives = self._fetch_derivatives_metrics(symbol, current_price)
+
+        # تحديد الاتجاه بناءً على عدة عوامل متكاملة
+        long_score_vote = 0
+        short_score_vote = 0
+
+        if trend_4h == 'BULLISH': long_score_vote += 2
+        elif trend_4h == 'BEARISH': short_score_vote += 2
+
+        if trend_1h == 'BULLISH': long_score_vote += 2
+        elif trend_1h == 'BEARISH': short_score_vote += 2
+
+        if structure == 'BULLISH': long_score_vote += 2
+        elif structure == 'BEARISH': short_score_vote += 2
+
+        if btc_context == 'BTC_BULLISH': long_score_vote += 1
+        elif btc_context == 'BTC_BEARISH': short_score_vote += 1
+
+        if market_type == 'spot':
+            decision = 'LONG'
+        else:
+            decision = 'LONG' if long_score_vote >= short_score_vote else 'SHORT'
+
+        liquidity_sweep = self.detect_advanced_liquidity_sweep(df, decision)
+        if liquidity_sweep['passed']:
+            trade_style = 'REVERSAL'
+        else:
+            trade_style = 'TREND_CONTINUATION'
+
+        if self._check_overextension(df, decision):
+            return self._empty_response(symbol, market_type, 'OVEREXTENDED')
+
+        fvg = self.detect_valid_fvg(df, current_price, decision)
+        ob = self.detect_valid_order_block(df, current_price, decision)
+
+        trade = self._build_advanced_trade(df, decision, ob, fvg, market_type)
+        if trade is None:
+            return self._empty_response(symbol, market_type, 'POOR_RR_OR_INVALID_SL')
+
+        last_row = df.iloc[-1]
+        v_ratio = float(last_row['volume_ratio'])
+        rsi_val = float(last_row['rsi'])
+        risk_pct = trade['risk_pct']
+
+        # =========================================================
+        # قواعد Volume والفلترة الخاصة
+        # =========================================================
+        warnings = []
+        
+        # Volume < 0.50x لا يسمح بـ DIRECT
+        allow_direct = True
+        if v_ratio < 0.50:
+            allow_direct = False
+
+        # Volume < 0.35x ارفض الصفقة افتراضيًا إلا إذا وجد استثناء Liquidity + MSS/CHoCH + OB + FVG + SL <= 4%
+        if v_ratio < 0.35:
+            has_exception_criteria = (
+                liquidity_sweep['passed'] and
+                (mss or choch) and
+                ob is not None and
+                fvg is not None and
+                risk_pct <= 4.0
+            )
+            if not has_exception_criteria:
+                return self._empty_response(symbol, market_type, 'LOW_VOLUME_REJECTED')
+
+        # Low Volume + Wide SL إذا كان Volume < 0.50 و SL Risk > 4%: -> NO TRADE
+        if v_ratio < 0.50 and risk_pct > 4.0:
+            return self._empty_response(symbol, market_type, 'LOW_VOLUME_WIDE_SL_REJECTED')
+
+        # تصنيف جودة الحجم
+        if v_ratio >= 1.20:
+            volume_quality = 'VERY_STRONG'
+        elif v_ratio >= 1.00:
+            volume_quality = 'STRONG'
+        elif v_ratio >= 0.80:
+            volume_quality = 'ACCEPTABLE'
+        elif v_ratio >= 0.50:
+            volume_quality = 'WEAK'
+        else:
+            volume_quality = 'VERY_LOW'
+
+        # تحذيرات RSI
+        if decision == 'LONG' and rsi_val > 67:
+            warnings.append('RSI_OVERBOUGHT_WARNING')
+        elif decision == 'SHORT' and rsi_val < 33:
+            warnings.append('RSI_OVERSOLD_WARNING')
+
+        # =========================================================
+        # حساب الـ Score الموزع بدقة (إجمالي 100 نقطة)
+        # =========================================================
+        score = 0
+
+        # 1. 4H Trend (10 pts)
+        if trend_4h == self._decision_to_trend(decision):
+            score += 10
+        elif trend_4h == 'NEUTRAL':
+            score += 4
+
+        # 2. 1H Trend (10 pts)
+        if trend_1h == self._decision_to_trend(decision):
+            score += 10
+        elif trend_1h == 'NEUTRAL':
+            score += 4
+
+        # 3. Structure (10 pts)
+        if structure == self._decision_to_trend(decision):
+            score += 10
+        else:
+            score += 4
+
+        # 4. Structural Events (BOS or MSS/CHoCH) (10 pts)
+        if mss or choch:
+            score += 10
+        elif bos:
+            score += 7
+
+        # 5. Liquidity Sweep (15 pts)
+        if liquidity_sweep['passed']:
+            score += 15
+
+        # 6. OB / FVG Confluence (10 pts)
+        if ob and fvg:
+            score += 10
+        elif ob or fvg:
+            score += 6
+
+        # 7. Volume Score (10 pts)
+        if v_ratio >= 1.20:
+            score += 10
+        elif v_ratio >= 1.00:
+            score += 8
+        elif v_ratio >= 0.80:
+            score += 6
+        elif v_ratio >= 0.50:
+            score += 3
+        else:
+            score += 1
+
+        # 8. RSI Optimal Zone (5 pts)
+        if decision == 'LONG' and 45 <= rsi_val <= 65:
+            score += 5
+        elif decision == 'SHORT' and 35 <= rsi_val <= 55:
+            score += 5
+        else:
+            score += 2
+
+        # 9. BTC Context (10 pts)
+        if (decision == 'LONG' and btc_context == 'BTC_BULLISH') or (decision == 'SHORT' and btc_context == 'BTC_BEARISH'):
+            score += 10
+        elif btc_context == 'BTC_NEUTRAL':
+            score += 5
+
+        # 10. Risk & R:R (10 pts)
+        if trade['rr_tp1'] >= 1.5 and risk_pct <= 5.0:
+            score += 10
+        elif trade['rr_tp1'] >= 1.2:
+            score += 5
+
+        score = int(max(0, min(score, 100)))
+
+        # تجميع المؤكدات (Confirmations) مع معاملة BOS و MSS/CHoCH كحدث هيكلي واحد غير مكرر
+        confirmations = []
+        if trend_4h == self._decision_to_trend(decision): confirmations.append('Trend4H')
+        if trend_1h == self._decision_to_trend(decision): confirmations.append('Trend1H')
+        if structure == self._decision_to_trend(decision): confirmations.append('Structure')
+        
+        # دمج الحدث الهيكلي (Structural Event) منعاً للتكرار
+        if mss or choch:
+            confirmations.append('MSS_CHoCH')
+        elif bos:
+            confirmations.append('BOS')
+
+        if liquidity_sweep['passed']: confirmations.append('LiquiditySweep')
+        if ob: confirmations.append('OrderBlock')
+        if fvg: confirmations.append('FVG')
+        if v_ratio >= 1.0: confirmations.append('Volume')
+
+        # شروط القبول الأساسية
+        if score < 68 or len(confirmations) < 3:
+            return self._empty_response(symbol, market_type, 'CONFLUENCE_INSUFFICIENT')
+
+        # =========================================================
+        # تصنيف الجودة (Quality Rules)
+        # =========================================================
+        # شروط مانعة للـ STRONG:
+        # 1. 4H Neutral يمنع STRONG.
+        # 2. Volume أقل من 0.80x يمنع STRONG.
+        # 3. Risk أكبر من 5% يمنع STRONG.
+        can_be_strong = True
+        if trend_4h == 'NEUTRAL' or v_ratio < 0.80 or risk_pct > 5.0:
+            can_be_strong = False
+
+        if score >= 85 and can_be_strong:
+            quality = 'HIGH QUALITY'
+        elif score >= 75 and can_be_strong:
+            quality = 'STRONG'
+        elif trend_4h == 'NEUTRAL' and score >= 68:
+            quality = 'VALID SETUP'
+        else:
+            quality = 'VALID SETUP'
+
+        # تحديد ما إذا كانت الإشارة DIRECT
+        price_action_confirmed = (ob is not None or fvg is not None or liquidity_sweep['passed'])
+        btc_conflict = (decision == 'LONG' and btc_context == 'BTC_BEARISH') or (decision == 'SHORT' and btc_context == 'BTC_BULLISH')
+
+        is_direct = (
+            score >= 70 and
+            price_action_confirmed and
+            allow_direct and
+            not btc_conflict and
+            risk_pct <= 5.0
         )
+        if not is_direct and quality == 'HIGH QUALITY':
+            quality = 'STRONG' if can_be_strong else 'VALID SETUP'
 
-        # -----------------------------------------------------
-        # STRONG REQUIREMENTS
-        # -----------------------------------------------------
+        return {
+            'symbol': symbol,
+            'market_type': market_type.upper(),
+            'decision': decision,
+            'score': score,
+            'quality': quality,
+            'confirmation_count': len(confirmations),
+            'confirmations': confirmations,
+            'strong_confirmations': confirmations,
+            'trend_4h': trend_4h,
+            'trend_1h': trend_1h,
+            'btc_context': btc_context,
+            'btc_conflict': btc_conflict,
+            'funding_rate': derivatives['funding_rate'],
+            'oi_change_pct': derivatives['oi_change_pct'],
+            'derivatives_bias': derivatives['derivatives_bias'],
+            'market_regime': market_regime,
+            'structure_type': structure_type,
+            'liquidity_type': liquidity_sweep['type'],
+            'entry_status': trade['entry_status'],
+            'entry_zone': trade['entry_zone'],
+            'rr_tp1': trade['rr_tp1'],
+            'rr_tp2': trade['rr_tp2'],
+            'rr_tp3': trade['rr_tp3'],
+            'rsi_15m': round(rsi_val, 1),
+            'volume_ratio': round(v_ratio, 2),
+            'volume_quality': volume_quality,
+            'warnings': warnings,
+            'entry': trade['entry'],
+            'sl': trade['sl'],
+            'tp1': trade['tp1'],
+            'tp2': trade['tp2'],
+            'tp3': trade['tp3'],
+            'risk_pct': trade['risk_pct'],
+            'risk_filter': 'PASSED',
+            'structure_confirmation': structure,
+            'rejection_reason': 'NONE',
+            'digital_data': {'near_digital_level': False},
+            'candlestick': 'CONFIRMED',
+            'trade_style': trade_style,
+            'setup_type': 'DIRECT' if is_direct else trade_style
+        }
 
-        strong_allowed = True
-
-        # 4H Neutral prevents STRONG
-        if trend_4h == 'NEUTRAL':
-            strong_allowed = False
-
-        # Need 4H and 1H alignment
-        if not (
-            trend_4h
-            == structure
-            == trend_1h
-        ):
-            strong_allowed = False
-
-        # Volume requirement
-        if volume_ratio < 1.0:
-            strong_allowed = False
-
-        # Risk requirement
-        if risk_pct > 5.0:
-            strong_allowed = False
-
-        # BTC conflict
-        if btc_conflict:
-            strong_allowed = False
-
-        # Need price action
-        if not price_action:
-            strong_allowed = False
-
-        # Need enough real confirmations
-        if confirmation_count < 4:
-            strong_allowed = False
-
-        if strong_allowed and score >= 75:
-            return 'STRONG'
-
-        # -----------------------------------------------------
-        # HIGH QUALITY
-        # -----------------------------------------------------
-
-        if (
-            score >= 85
-            and volume_ratio >= 0.80
-            and risk_pct <= 5.0
-            and confirmation_count >= 4
-            and price_action
-            and not btc_conflict
-        ):
-           
+    def _empty_response(self, symbol, market_type, reason='NO_TRADE'):
+        return {
+            'symbol': symbol,
+            'market_type': market_type.upper(),
+            'decision': 'NO TRADE',
+            'score': 0,
+            'quality': 'WEAK',
+            'confirmation_count': 0,
+            'confirmations': [],
+            'strong_confirmations': [],
+            'trend_4h': 'NEUTRAL',
+            'trend_1h': 'NEUTRAL',
+            'btc_context': 'BTC_NEUTRAL',
+            'btc_conflict': False,
+            'funding_rate': 0.0,
+            'oi_change_pct': 0.0,
+            'derivatives_bias': 'NEUTRAL',
+            'market_regime': 'NEUTRAL',
+            'structure_type': 'NORMAL',
+            'liquidity_type': 'NONE',
+            'entry_status': 'INVALID',
+            'entry_zone': 'N/A',
+            'rr_tp1': 0.0,
+            'rr_tp2': 0.0,
+            'rr_tp3': 0.0,
+            'rsi_15m': 50.0,
+            'volume_ratio': 1.0,
+            'volume_quality': 'NORMAL',
+            'warnings': [],
+            'entry': 0.0,
+            'sl': 0.0,
+            'tp1': 0.0,
+            'tp2': 0.0,
+            'tp3': 0.0,
+            'risk_pct': 0.0,
+            'risk_filter': 'FAILED',
+            'structure_confirmation': 'NEUTRAL',
+            'rejection_reason': reason,
+            'trade_style': 'NONE',
+            'setup_type': 'NONE'
+        }
