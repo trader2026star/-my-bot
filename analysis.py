@@ -191,12 +191,12 @@ class ExpertAnalystBot:
                     swap_symbol
                 )
 
-                if (
-                    oi_data
-                    and oi_data.get('openInterestAmount') is not None
-                ):
+                if oi_data:
+                    # التعامل مع اختلاف مفاتيح الـ Open Interest بين منصات CCXT
                     current_oi = float(
-                        oi_data['openInterestAmount']
+                        oi_data.get('openInterestAmount') or
+                        oi_data.get('openInterest') or
+                        0.0
                     )
 
                     if swap_symbol in self.oi_history:
@@ -706,7 +706,6 @@ class ExpertAnalystBot:
         last_high = highs[-1][1]
         last_low = lows[-1][1]
 
-        # Use only latest few candles for actual break.
         recent_df = df.tail(6)
 
         bullish_break = (
@@ -723,7 +722,6 @@ class ExpertAnalystBot:
 
         last = df.iloc[-1]
 
-        # Start from EMA structure.
         if (
             last['close'] >
             last['ema20']
@@ -747,17 +745,12 @@ class ExpertAnalystBot:
 
         structure_type = 'NORMAL_STRUCTURE'
 
-        # -----------------------------------------------------
-        # Bullish break
-        # -----------------------------------------------------
-
         if bullish_break and not bearish_break:
 
             bos = True
             structure = 'BULLISH'
             structure_type = 'BULLISH_BOS'
 
-            # MSS/CHoCH only when previous structure was bearish.
             old_ema20 = df['ema20'].iloc[-12]
             old_ema50 = df['ema50'].iloc[-12]
 
@@ -765,10 +758,6 @@ class ExpertAnalystBot:
                 mss = True
                 choch = True
                 structure_type = 'BULLISH_MSS_CHoCH'
-
-        # -----------------------------------------------------
-        # Bearish break
-        # -----------------------------------------------------
 
         elif bearish_break and not bullish_break:
 
@@ -784,13 +773,8 @@ class ExpertAnalystBot:
                 choch = True
                 structure_type = 'BEARISH_MSS_CHoCH'
 
-        # -----------------------------------------------------
-        # Conflicting simultaneous break
-        # -----------------------------------------------------
-
         elif bullish_break and bearish_break:
 
-            # Do not manufacture directional confirmation.
             structure = 'NEUTRAL'
             structure_type = 'CONFLICTING_BREAKS'
 
@@ -897,7 +881,6 @@ class ExpertAnalystBot:
 
         total_bars = len(df)
 
-        # Search recent 35 candles.
         start_i = max(
             2,
             len(df) - 35
@@ -917,10 +900,6 @@ class ExpertAnalystBot:
                 float(df.iloc[-1]['atr']),
                 current_price * 0.0005
             )
-
-            # -------------------------------------------------
-            # Bullish FVG
-            # -------------------------------------------------
 
             if (
                 direction == 'LONG'
@@ -967,7 +946,6 @@ class ExpertAnalystBot:
 
                 age = total_bars - i
 
-                # Do not use very old zones.
                 if age > 35:
                     continue
 
@@ -1003,10 +981,6 @@ class ExpertAnalystBot:
                         current_price <=
                         fvg_high
                     }
-
-            # -------------------------------------------------
-            # Bearish FVG
-            # -------------------------------------------------
 
             elif (
                 direction == 'SHORT'
@@ -1206,7 +1180,7 @@ class ExpertAnalystBot:
                         }
 
             # -------------------------------------------------
-            # Bearish OB
+            # Bearish OB (تمت إكمال وتصحيح الكود هنا)
             # -------------------------------------------------
 
             else:
@@ -1245,3 +1219,44 @@ class ExpertAnalystBot:
                             (
                                 (
                                     ob_low +
+                                    ob_high
+                                ) / 2
+                            )
+                        )
+                        /
+                        current_price
+                    )
+
+                    near_zone = (
+                        ob_low -
+                        atr * 2.0
+                        <=
+                        current_price
+                        <=
+                        ob_high +
+                        atr * 2.0
+                    )
+
+                    if dist <= 0.06 or near_zone:
+
+                        return {
+                            'type':
+                            'BEARISH_OB',
+                            'low':
+                            ob_low,
+                            'high':
+                            ob_high,
+                            'mid':
+                            (
+                                ob_low +
+                                ob_high
+                            ) / 2,
+                            'age':
+                            age,
+                            'inside_zone':
+                            ob_low <=
+                            current_price <=
+                            ob_high
+                        }
+
+        return None
