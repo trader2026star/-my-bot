@@ -356,7 +356,6 @@ class ExpertAnalystBot:
         last_high = highs[-1][1]
         last_low = lows[-1][1]
         
-        # فحص عبر آخر عدة شموع وليس الشمعة الأخيرة فقط
         recent_df = df.tail(5)
         bullish_break = any(recent_df['close'] > last_high)
         bearish_break = any(recent_df['close'] < last_low)
@@ -457,7 +456,7 @@ class ExpertAnalystBot:
                             'age': age,
                             'filled_pct': round(filled_pct, 1),
                             'is_active': True,
-                            ' inside_zone': inside
+                            'inside_zone': inside
                         }
 
             elif direction == 'SHORT' and c['high'] < a['low']:
@@ -488,7 +487,7 @@ class ExpertAnalystBot:
                             'age': age,
                             'filled_pct': round(filled_pct, 1),
                             'is_active': True,
-                            ' inside_zone': inside
+                            'inside_zone': inside
                         }
 
         return None
@@ -557,9 +556,10 @@ class ExpertAnalystBot:
         dist_ema20 = (last['close'] - last['ema20']) / last['ema20']
         atr_multiple = abs(last['close'] - last['ema20']) / last['atr']
 
-        if direction == 'LONG' and (dist_ema20 > 0.07 or atr_multiple > 5.0):
+        # منع الرفض التام بخصوص RSI، والاعتماد فقط على التطرف الشديد الحقيقي في السعر عن المتوسطات
+        if direction == 'LONG' and (dist_ema20 > 0.12 or atr_multiple > 7.0):
             return True
-        if direction == 'SHORT' and (dist_ema20 < -0.07 or atr_multiple > 5.0):
+        if direction == 'SHORT' and (dist_ema20 < -0.12 or atr_multiple > 7.0):
             return True
         return False
 
@@ -606,12 +606,12 @@ class ExpertAnalystBot:
                 risk = entry_avg - sl
 
             risk_pct = (risk / entry_avg) * 100
-            if risk_pct > 6.0 or risk_pct < 0.2:
+            if risk_pct > 8.0 or risk_pct < 0.1:
                 return None
 
-            tp1 = entry_avg + (risk * 1.6)
-            tp2 = recent_swing_high if recent_swing_high > tp1 else entry_avg + (risk * 2.8)
-            tp3 = entry_avg + (risk * 4.0)
+            tp1 = entry_avg + (risk * 1.5)
+            tp2 = recent_swing_high if recent_swing_high > tp1 else entry_avg + (risk * 2.5)
+            tp3 = entry_avg + (risk * 3.5)
 
             if not (entry_avg < tp1 < tp2 < tp3):
                 return None
@@ -628,12 +628,12 @@ class ExpertAnalystBot:
                 risk = sl - entry_avg
 
             risk_pct = (risk / entry_avg) * 100
-            if risk_pct > 6.0 or risk_pct < 0.2:
+            if risk_pct > 8.0 or risk_pct < 0.1:
                 return None
 
-            tp1 = entry_avg - (risk * 1.6)
-            tp2 = recent_swing_low if recent_swing_low < tp1 else entry_avg - (risk * 2.8)
-            tp3 = entry_avg - (risk * 4.0)
+            tp1 = entry_avg - (risk * 1.5)
+            tp2 = recent_swing_low if recent_swing_low < tp1 else entry_avg - (risk * 2.5)
+            tp3 = entry_avg - (risk * 3.5)
 
             if not (entry_avg > tp1 > tp2 > tp3):
                 return None
@@ -642,7 +642,7 @@ class ExpertAnalystBot:
         rr_tp2 = round((abs(tp2 - entry_avg) / risk), 2) if risk > 0 else 0.0
         rr_tp3 = round((abs(tp3 - entry_avg) / risk), 2) if risk > 0 else 0.0
 
-        if rr_tp1 < 1.4:
+        if rr_tp1 < 1.2:
             return None
 
         return {
@@ -679,7 +679,6 @@ class ExpertAnalystBot:
         structure, bos, mss, choch, structure_type = self.detect_market_structure(df)
         derivatives = self._fetch_derivatives_metrics(symbol, current_price)
 
-        # تحديد الاتجاه المحتمل بناءً على بنية 15m و 1h
         long_score_vote = 0
         short_score_vote = 0
 
@@ -691,7 +690,6 @@ class ExpertAnalystBot:
         else:
             decision = 'LONG' if long_score_vote >= short_score_vote else 'SHORT'
 
-        # فحص الانعكاس المحتمل (Reversal Detection)
         liquidity_sweep = self.detect_advanced_liquidity_sweep(df, decision)
         if liquidity_sweep['passed']:
             trade_style = 'REVERSAL'
@@ -707,6 +705,32 @@ class ExpertAnalystBot:
         trade = self._build_advanced_trade(df, decision, ob, fvg, market_type)
         if trade is None:
             return self._empty_response(symbol, market_type, 'POOR_RR_OR_INVALID_SL')
+
+        last_row = df.iloc[-1]
+        v_ratio = float(last_row['volume_ratio'])
+
+        # =========================================================
+        # تحليل وحسابات حجم التداول (Volume Logic الجديد)
+        # =========================================================
+        warnings = []
+        if v_ratio < 0.2:
+            volume_quality = 'VERY_LOW'
+            warnings.append('VERY_LOW_VOLUME')
+        elif v_ratio < 0.5:
+            volume_quality = 'WEAK'
+        elif v_ratio < 1.0:
+            volume_quality = 'NORMAL'
+        elif v_ratio < 1.2:
+            volume_quality = 'CONFIRMING'
+        else:
+            volume_quality = 'STRONG'
+
+        # فحص تحذيرات RSI
+        rsi_val = float(last_row['rsi'])
+        if decision == 'LONG' and rsi_val > 67:
+            warnings.append('RSI_OVERBOUGHT_WARNING')
+        elif decision == 'SHORT' and rsi_val < 33:
+            warnings.append('RSI_OVERSOLD_WARNING')
 
         # =========================================================
         # نظام النقاط الجديد (مجموعه 100)
@@ -725,15 +749,21 @@ class ExpertAnalystBot:
         elif trend_1h == 'NEUTRAL':
             score += 5
 
-        # 3. 15M Momentum = 10 pts
-        last_row = df.iloc[-1]
-        rsi_val = last_row['rsi']
-        if decision == 'LONG' and rsi_val >= 45:
-            score += 10
-        elif decision == 'SHORT' and rsi_val <= 55:
-            score += 10
+        # 3. 15M Momentum (RSI) = 10 pts (مع التحذير بدلا من الرفض)
+        if decision == 'LONG':
+            if rsi_val >= 45 and rsi_val <= 67:
+                score += 10
+            elif rsi_val > 67:
+                score += 5 # تحذير وتشبع
+            else:
+                score += 3
         else:
-            score += 5
+            if rsi_val <= 55 and rsi_val >= 33:
+                score += 10
+            elif rsi_val < 33:
+                score += 5 # تحذير وتشبع
+            else:
+                score += 3
 
         # 4. Structure = 15 pts
         if structure == self._decision_to_trend(decision):
@@ -755,9 +785,17 @@ class ExpertAnalystBot:
         elif ob or fvg:
             score += 7
 
-        # 8. Volume = 5 pts
-        if last_row['volume_ratio'] >= 1.05:
+        # 8. Volume Scoring (تأثير تدريجي حقيقي غير معطل) = 5 pts
+        if v_ratio >= 1.2:
             score += 5
+        elif v_ratio >= 1.0:
+            score += 4
+        elif v_ratio >= 0.5:
+            score += 2
+        elif v_ratio >= 0.2:
+            score += 1
+        else:
+            score -= 8  # خصم واضح وقوي للـ Volume الضعيف جداً دون منع الصفقة
 
         # 9. BTC Context = 5 pts
         if (decision == 'LONG' and btc_context == 'BTC_BULLISH') or (decision == 'SHORT' and btc_context == 'BTC_BEARISH'):
@@ -773,12 +811,12 @@ class ExpertAnalystBot:
             score += 5
 
         # 11. Risk / RR = 5 pts
-        if trade['rr_tp1'] >= 1.4:
+        if trade['rr_tp1'] >= 1.2:
             score += 5
 
         score = int(max(0, min(score, 100)))
 
-        # تجميع المؤكدات (Confirmations)
+        # تجميع المؤكدات القوية (Strong Confirmations)
         confirmations = []
         if trend_4h == self._decision_to_trend(decision): confirmations.append('Trend4H')
         if trend_1h == self._decision_to_trend(decision): confirmations.append('Trend1H')
@@ -789,18 +827,22 @@ class ExpertAnalystBot:
         if liquidity_sweep['passed']: confirmations.append('LiquiditySweep')
         if ob: confirmations.append('OrderBlock')
         if fvg: confirmations.append('FVG')
-        if last_row['volume_ratio'] >= 1.05: confirmations.append('Volume')
+        if v_ratio >= 1.0: confirmations.append('Volume')
 
-        # اشتراط 3 تأكيدات قوية على الأقل ونقاط أكبر من أو تساوي 68
+        # شروط القبول: Score >= 68 وألّف على الأقل 3 مؤكدات قوية
         if score < 68 or len(confirmations) < 3:
             return self._empty_response(symbol, market_type, 'CONFLUENCE_INSUFFICIENT')
 
-        if score >= 85:
-            quality = 'HIGH QUALITY'
-        elif score >= 75:
-            quality = 'STRONG'
+        # تصنيف الجودة مع قيد الـ Volume الضعيف جداً
+        if v_ratio < 0.2:
+            quality = 'VALID SETUP' # منع HIGH QUALITY أو STRONG تماماً إذا كان الحجم ضعيفاً جداً
         else:
-            quality = 'VALID SETUP'
+            if score >= 85:
+                quality = 'HIGH QUALITY'
+            elif score >= 75:
+                quality = 'STRONG'
+            else:
+                quality = 'VALID SETUP'
 
         return {
             'symbol': symbol,
@@ -810,6 +852,7 @@ class ExpertAnalystBot:
             'quality': quality,
             'confirmation_count': len(confirmations),
             'confirmations': confirmations,
+            'strong_confirmations': confirmations,
             'trend_4h': trend_4h,
             'trend_1h': trend_1h,
             'btc_context': btc_context,
@@ -825,8 +868,10 @@ class ExpertAnalystBot:
             'rr_tp1': trade['rr_tp1'],
             'rr_tp2': trade['rr_tp2'],
             'rr_tp3': trade['rr_tp3'],
-            'rsi_15m': round(float(rsi_val), 1),
-            'volume_ratio': round(float(last_row['volume_ratio']), 2),
+            'rsi_15m': round(rsi_val, 1),
+            'volume_ratio': round(v_ratio, 2),
+            'volume_quality': volume_quality,
+            'warnings': warnings,
             'entry': trade['entry'],
             'sl': trade['sl'],
             'tp1': trade['tp1'],
@@ -838,7 +883,8 @@ class ExpertAnalystBot:
             'rejection_reason': 'NONE',
             'digital_data': {'near_digital_level': False},
             'candlestick': 'CONFIRMED',
-            'trade_style': trade_style
+            'trade_style': trade_style,
+            'setup_type': trade_style
         }
 
     def _empty_response(self, symbol, market_type, reason='NO_TRADE'):
@@ -850,6 +896,7 @@ class ExpertAnalystBot:
             'quality': 'WEAK',
             'confirmation_count': 0,
             'confirmations': [],
+            'strong_confirmations': [],
             'trend_4h': 'NEUTRAL',
             'trend_1h': 'NEUTRAL',
             'btc_context': 'BTC_NEUTRAL',
@@ -867,6 +914,8 @@ class ExpertAnalystBot:
             'rr_tp3': 0.0,
             'rsi_15m': 50.0,
             'volume_ratio': 1.0,
+            'volume_quality': 'NORMAL',
+            'warnings': [],
             'entry': 0.0,
             'sl': 0.0,
             'tp1': 0.0,
@@ -876,5 +925,6 @@ class ExpertAnalystBot:
             'risk_filter': 'FAILED',
             'structure_confirmation': 'NEUTRAL',
             'rejection_reason': reason,
-            'trade_style': 'NONE'
+            'trade_style': 'NONE',
+            'setup_type': 'NONE'
         }
