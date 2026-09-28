@@ -32,6 +32,7 @@ class ExpertAnalystBot:
 
         self.cache = {}
         self.cache_seconds = 20
+        self.oi_history = {}
 
     def _decision_to_trend(self, decision):
         if decision == 'LONG':
@@ -112,39 +113,65 @@ class ExpertAnalystBot:
             )
             return None
 
-    def _fetch_futures_metrics(self, symbol):
-        """جلب بيانات العقود الآجلة الحقيقية (Funding Rate & Open Interest) إن توفرت"""
+    def _fetch_derivatives_metrics(self, symbol):
+        """جلب Funding Rate و Open Interest الحقيقيين وحساب التغير النسبي"""
         try:
-            if not symbol.endswith(':USDT') and '/' in symbol and not ':' in symbol:
+            swap_symbol = symbol
+            if not symbol.endswith(':USDT') and '/' in symbol and ':' not in symbol:
                 swap_symbol = f"{symbol}:USDT"
-            else:
-                swap_symbol = symbol
 
             funding_rate = 0.0
+            current_oi = 0.0
             oi_change_pct = 0.0
 
             try:
                 funding = self.exchange.fetch_funding_rate(swap_symbol)
-                if funding and 'fundingRate' in funding:
+                if funding and 'fundingRate' in funding and funding['fundingRate'] is not None:
                     funding_rate = float(funding['fundingRate'])
             except Exception:
                 pass
 
             try:
-                # محاولة جلب الـ Open Interest
                 oi_data = self.exchange.fetch_open_interest(swap_symbol)
-                if oi_data and 'openInterestAmount' in oi_data:
-                    # يمكن تقدير التغير بناء على الجلسات أو الاحتفاظ بالقيمة
-                    pass
+                if oi_data and 'openInterestAmount' in oi_data and oi_data['openInterestAmount'] is not None:
+                    current_oi = float(oi_data['openInterestAmount'])
+                    
+                    now = time.time()
+                    if swap_symbol in self.oi_history:
+                        prev_rec = self.oi_history[swap_symbol]
+                        if now - prev_rec['time'] >= 300:  # تحديث كل 5 دقائق
+                            prev_oi = prev_rec['oi']
+                            if prev_oi > 0:
+                                oi_change_pct = ((current_oi - prev_oi) / prev_oi) * 100.0
+                            self.oi_history[swap_symbol] = {'oi': current_oi, 'time': now}
+                    else:
+                        self.oi_history[swap_symbol] = {'oi': current_oi, 'time': now}
             except Exception:
                 pass
 
+            # تحليل العلاقة بين السعر والتمويل و OI
+            # سيتم تقييمها بشكل أدق داخل الاستراتيجية، هنا نستخرج التحيز المبدئي
+            bias = 'NEUTRAL'
+            if funding_rate > 0.0003 and oi_change_pct > 0.5:
+                bias = 'LONG_BUILDUP'  # أو ضغط محتمل
+            elif funding_rate < -0.0003 and oi_change_pct > 0.5:
+                bias = 'SHORT_BUILDUP'
+            elif funding_rate > 0.0008:
+                bias = 'LONG_SQUEEZE_RISK'
+            elif funding_rate < -0.0008:
+                bias = 'SHORT_SQUEEZE_RISK'
+
             return {
                 'funding_rate': funding_rate,
-                'oi_bias': 'NEUTRAL' if abs(funding_rate) < 0.0005 else ('BULLISH_OI' if funding_rate < 0 else 'BEARISH_OI')
+                'oi_change_pct': round(oi_change_pct, 2),
+                'derivatives_bias': bias
             }
         except Exception:
-            return {'funding_rate': 0.0, 'oi_bias': 'NEUTRAL'}
+            return {
+                'funding_rate': 0.0,
+                'oi_change_pct': 0.0,
+                'derivatives_bias': 'NEUTRAL'
+            }
 
     # =========================================================
     # ADVANCED INDICATORS & PREPARATION
@@ -190,115 +217,240 @@ class ExpertAnalystBot:
         return df.replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
 
     # =========================================================
-    # ADVANCED SMC: MSS, CHoCH, BOS & LIQUIDITY SWEEP
+    # INDEPENDENT BTC CONTEXT ANALYSIS
     # =========================================================
 
+    def _get_btc_context(self, market_type='swap'):
+        """تحليل البيتكوين الحقيقي والمستقل على فريم 1H"""
+        try:
+            btc_symbol = 'BTC/USDT:USDT' if market_type == 'swap' else 'BTC/USDT'
+            df_btc = self._fetch_ohlcv(btc_symbol, '1h', 120, market_type)
+            if df_btc is None or len(df_btc) < 40:
+                return 'NEUTRAL'
+
+            df_btc = self._prepare(df_btc)
+            last = df_btc.iloc[-1]
+            rsi = float(last['rsi'])
+            slope20 = df_btc['ema20'].iloc[-1] - df_btc['ema20'].iloc[-5]
+
+            if last['close'] > last['ema20'] > last['ema50'] and slope20 > 0 and rsi >= 48:
+                return 'BULLISH'
+            elif last['close'] < last['ema20'] < last['ema50'] and slope20 < 0 and rsi <= 52:
+                return 'BEARISH'
+            return 'NEUTRAL'
+        except Exception:
+            return 'NEUTRAL'
+
+    # =========================================================
+    # MARKET REGIME DETECTION
+    # =========================================================
+
+    def _detect_market_regime(self, df):
+        """تحديد حالة السوق بدقة (Trending, Ranging, High/Low Volatility)"""
+        if df is None or len(df) < 30:
+            return 'NEUTRAL'
+
+        last = df.iloc[-1]
+        atr_val = last['atr']
+        price = last['close']
+        atr_pct = (atr_val / price) * 100
+
+        ema20 = last['ema20']
+        ema50 = last['ema50']
+        ema200 = last['ema200']
+
+        if atr_pct > 2.5:
+            return 'HIGH_VOLATILITY'
+        elif atr_pct < 0.5:
+            return 'LOW_VOLATILITY'
+
+        if price > ema20 > ema50 > ema200 and (ema20 - ema50) > 0:
+            return 'TRENDING_BULLISH'
+        elif price < ema20 < ema50 < ema200 and (ema50 - ema20) > 0:
+            return 'TRENDING_BEARISH'
+        else:
+            return 'RANGING'
+
+    # =========================================================
+    # ADVANCED SMC: SWINGS, BOS, MSS, CHoCH
+    # =========================================================
+
+    def _find_swing_points(self, df, window=5):
+        highs = []
+        lows = []
+        for i in range(window, len(df) - window):
+            current_high = df['high'].iloc[i]
+            if current_high == df['high'].iloc[i - window:i + window + 1].max():
+                highs.append((i, current_high))
+            current_low = df['low'].iloc[i]
+            if current_low == df['low'].iloc[i - window:i + window + 1].min():
+                lows.append((i, current_low))
+        return highs, lows
+
     def detect_market_structure(self, df):
-        """التمييز الدقيق بين BOS و MSS و CHoCH"""
-        if df is None or len(df) < 20:
-            return 'NEUTRAL', False, False, False
+        """كشف هيكل السوق الحقيقي مع التفريق بين BOS و MSS و CHoCH"""
+        if df is None or len(df) < 30:
+            return 'NEUTRAL', False, False, False, 'NORMAL_STRUCTURE'
 
-        recent = df.tail(30)
-        swing_highs = recent['high'].iloc[:-2].max()
-        swing_lows = recent['low'].iloc[:-2].min()
+        highs, lows = self._find_swing_points(df, window=4)
+        if not highs or not lows:
+            return 'NEUTRAL', False, False, False, 'NORMAL_STRUCTURE'
 
-        last = recent.iloc[-1]
-        prev = recent.iloc[-2]
+        last_high = highs[-1][1]
+        last_low = lows[-1][1]
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-        # فحص الاتجاه العام السابق
-        prev_trend = 'BULLISH' if recent['ema20'].iloc[-5] > recent['ema50'].iloc[-5] else 'BEARISH'
+        prev_trend = 'BULLISH' if df['ema20'].iloc[-5] > df['ema50'].iloc[-5] else 'BEARISH'
 
-        bullish_break = last['close'] > swing_highs and last['close'] > prev['high']
-        bearish_break = last['close'] < swing_lows and last['close'] < prev['low']
+        bullish_break = last['close'] > last_high and last['close'] > prev['high']
+        bearish_break = last['close'] < last_low and last['close'] < prev['low']
 
-        choch = False
-        mss = False
         bos = False
+        mss = False
+        choch = False
+        structure_type = 'NORMAL_STRUCTURE'
 
         if bullish_break:
             if prev_trend == 'BEARISH':
                 choch = True
                 mss = True
-                structure = 'BULLISH'
+                structure_type = 'BULLISH_MSS'
             else:
                 bos = True
-                structure = 'BULLISH'
+                structure_type = 'BULLISH_BOS'
+            structure = 'BULLISH'
         elif bearish_break:
             if prev_trend == 'BULLISH':
                 choch = True
                 mss = True
-                structure = 'BEARISH'
+                structure_type = 'BEARISH_MSS'
             else:
                 bos = True
-                structure = 'BEARISH'
+                structure_type = 'BEARISH_BOS'
+            structure = 'BEARISH'
         else:
             structure = 'BULLISH' if last['close'] > last['ema20'] else 'BEARISH'
 
-        return structure, bos, mss, choch
+        return structure, bos, mss, choch, structure_type
+
+    # =========================================================
+    # ADVANCED LIQUIDITY SWEEP
+    # =========================================================
 
     def detect_advanced_liquidity_sweep(self, df, direction):
-        """كشف السيولة المتقدم (Equal Highs/Lows + Session/Range Sweep + Displacement)"""
-        if df is None or len(df) < 15:
+        """سحب السيولة الحقيقي بناءً على Equal Highs/Lows و Swing السابق مع Rejection و Displacement"""
+        if df is None or len(df) < 20:
             return {'passed': False, 'type': 'INSUFFICIENT_DATA'}
 
+        highs, lows = self._find_swing_points(df, window=3)
         curr = df.iloc[-1]
-        lookback_slice = df.iloc[-12:-2]
 
-        eq_high = lookback_slice['high'].max()
-        eq_low = lookback_slice['low'].min()
+        if not highs or not lows:
+            return {'passed': False, 'type': 'NO_SWEEP'}
 
-        displacement = curr['body_ratio'] >= 0.55 and curr['volume_ratio'] >= 1.2
+        eq_high = highs[-1][1]
+        eq_low = lows[-1][1]
+
+        displacement = curr['body_ratio'] >= 0.55 and curr['volume_ratio'] >= 1.15
 
         if direction == 'LONG':
             swept = curr['low'] < eq_low
             reclaimed = curr['close'] > eq_low
             if swept and reclaimed and displacement:
-                return {'passed': True, 'type': 'EQUAL_LOWS_SWEEP_AND_DISPLACEMENT'}
+                return {'passed': True, 'type': 'LIQUIDITY_SWEEP_LOWS_RECLAIMED'}
         else:
             swept = curr['high'] > eq_high
             rejected = curr['close'] < eq_high
             if swept and rejected and displacement:
-                return {'passed': True, 'type': 'EQUAL_HIGHS_SWEEP_AND_DISPLACEMENT'}
+                return {'passed': True, 'type': 'LIQUIDITY_SWEEP_HIGHS_REJECTED'}
 
         return {'passed': False, 'type': 'NO_SWEEP'}
 
     # =========================================================
-    # ADVANCED FVG & OB WITH PROXIMITY CHECK
+    # ADVANCED FVG WITH AGE & FILLED PERCENTAGE
     # =========================================================
 
     def detect_valid_fvg(self, df, current_price, direction):
-        """فحص FVG صالح ولم يتم ملؤه بالكامل مع التحقق من القرب من السعر"""
-        if df is None or len(df) < 5:
+        """البحث عن FVG نشط، غير مملوء بالكامل، مع حساب العمر ونسبة الامتلاء"""
+        if df is None or len(df) < 10:
             return None
 
-        for i in range(len(df) - 3, len(df)):
-            a = df.iloc[i - 1]
-            b = df.iloc[i]
-            c = df.iloc[i + 1]
+        total_bars = len(df)
+        for i in range(len(df) - 3, max(2, len(df) - 30), -1):
+            a = df.iloc[i - 2]
+            b = df.iloc[i - 1]
+            c = df.iloc[i]
 
             if direction == 'LONG' and c['low'] > a['high']:
                 fvg_low = float(a['high'])
                 fvg_high = float(c['low'])
                 fvg_mid = float((fvg_low + fvg_high) / 2)
-                # هل السعر قريب أو داخل الفراغ؟
-                if current_price >= fvg_low - (fvg_high - fvg_low) * 0.5 and current_price <= fvg_high * 1.01:
-                    return {'type': 'BULLISH_FVG', 'low': fvg_low, 'high': fvg_high, 'mid': fvg_mid, 'is_near': True}
+                fvg_range = fvg_high - fvg_low
+                if fvg_range <= 0:
+                    continue
+
+                # حساب نسبة الامتلاء بناءً على السعر الحالي
+                filled_pct = 0.0
+                if current_price < fvg_high:
+                    filled_pct = min(100.0, max(0.0, ((fvg_high - current_price) / fvg_range) * 100.0))
+
+                if filled_pct < 85.0:  # لم يتم ملؤه بالكامل
+                    age = total_bars - i
+                    dist = abs(current_price - fvg_mid) / current_price
+                    is_near = dist <= 0.035  # قريب من السعر
+                    return {
+                        'type': 'BULLISH_FVG',
+                        'low': fvg_low,
+                        'high': fvg_high,
+                        'mid': fvg_mid,
+                        'age': age,
+                        'filled_pct': round(filled_pct, 1),
+                        'is_active': True,
+                        'is_near': is_near
+                    }
 
             elif direction == 'SHORT' and c['high'] < a['low']:
                 fvg_low = float(c['high'])
                 fvg_high = float(a['low'])
                 fvg_mid = float((fvg_low + fvg_high) / 2)
-                if current_price <= fvg_high + (fvg_high - fvg_low) * 0.5 and current_price >= fvg_low * 0.99:
-                    return {'type': 'BEARISH_FVG', 'low': fvg_low, 'high': fvg_high, 'mid': fvg_mid, 'is_near': True}
+                fvg_range = fvg_high - fvg_low
+                if fvg_range <= 0:
+                    continue
+
+                filled_pct = 0.0
+                if current_price > fvg_low:
+                    filled_pct = min(100.0, max(0.0, ((current_price - fvg_low) / fvg_range) * 100.0))
+
+                if filled_pct < 85.0:
+                    age = total_bars - i
+                    dist = abs(current_price - fvg_mid) / current_price
+                    is_near = dist <= 0.035
+                    return {
+                        'type': 'BEARISH_FVG',
+                        'low': fvg_low,
+                        'high': fvg_high,
+                        'mid': fvg_mid,
+                        'age': age,
+                        'filled_pct': round(filled_pct, 1),
+                        'is_active': True,
+                        'is_near': is_near
+                    }
 
         return None
 
+    # =========================================================
+    # ADVANCED ORDER BLOCK WITH MITIGATION CHECK
+    # =========================================================
+
     def detect_valid_order_block(self, df, current_price, direction):
-        """بحث Order Block تسبب في BOS/MSS والسعر قريب منه"""
-        if df is None or len(df) < 15:
+        """كشف Order Block حقيقي تسبب في BOS مع التحقق من عدم التخفيف التام وقربه من السعر"""
+        if df is None or len(df) < 20:
             return None
 
-        start = max(2, len(df) - 40)
+        total_bars = len(df)
+        start = max(2, len(df) - 50)
+
         for i in range(len(df) - 2, start - 1, -1):
             candle = df.iloc[i]
             impulse = df.iloc[i + 1]
@@ -308,72 +460,100 @@ class ExpertAnalystBot:
                 if is_ob:
                     ob_low = float(candle['low'])
                     ob_high = float(candle['high'])
-                    # التحقق أن السعر قريب من الـ OB وليس بعيداً عنه
-                    if current_price <= ob_high * 1.015 and current_price >= ob_low * 0.985:
-                        return {'type': 'BULLISH_OB', 'low': ob_low, 'high': ob_high, 'mid': (ob_low + ob_high) / 2, 'is_near': True}
+                    age = total_bars - i
+                    # هل تم لمس الـ OB أو تخفيفه بالكامل؟
+                    subsequent_df = df.iloc[i + 2:]
+                    mitigated = False
+                    if len(subsequent_df) > 0 and subsequent_df['low'].min() < ob_low:
+                        mitigated = True
+
+                    dist = abs(current_price - ((ob_low + ob_high) / 2)) / current_price
+                    is_near = dist <= 0.04
+
+                    if not mitigated or is_near:
+                        return {
+                            'type': 'BULLISH_OB',
+                            'low': ob_low,
+                            'high': ob_high,
+                            'mid': (ob_low + ob_high) / 2,
+                            'age': age,
+                            'mitigated': mitigated,
+                            'is_near': is_near
+                        }
             else:
                 is_ob = candle['close'] > candle['open'] and impulse['close'] < candle['low'] and impulse['body_ratio'] >= 0.5
                 if is_ob:
                     ob_low = float(candle['low'])
                     ob_high = float(candle['high'])
-                    if current_price >= ob_low * 0.985 and current_price <= ob_high * 1.015:
-                        return {'type': 'BEARISH_OB', 'low': ob_low, 'high': ob_high, 'mid': (ob_low + ob_high) / 2, 'is_near': True}
+                    age = total_bars - i
+                    subsequent_df = df.iloc[i + 2:]
+                    mitigated = False
+                    if len(subsequent_df) > 0 and subsequent_df['high'].max() > ob_high:
+                        mitigated = True
+
+                    dist = abs(current_price - ((ob_low + ob_high) / 2)) / current_price
+                    is_near = dist <= 0.04
+
+                    if not mitigated or is_near:
+                        return {
+                            'type': 'BEARISH_OB',
+                            'low': ob_low,
+                            'high': ob_high,
+                            'mid': (ob_low + ob_high) / 2,
+                            'age': age,
+                            'mitigated': mitigated,
+                            'is_near': is_near
+                        }
 
         return None
 
     # =========================================================
-    # MULTI-TIMEFRAME & FILTERS
+    # OVEREXTENSION FILTER
     # =========================================================
 
-    def _get_trend(self, symbol, timeframe, market_type='swap'):
-        df = self._fetch_ohlcv(symbol, timeframe, 150, market_type)
-        if df is None or len(df) < 50:
-            return 'NEUTRAL', None
-        df = self._prepare(df)
-        last = df.iloc[-1]
-        slope20 = df['ema20'].iloc[-1] - df['ema20'].iloc[-5]
-
-        if last['close'] > last['ema20'] > last['ema50'] and slope20 > 0:
-            return 'BULLISH', df
-        if last['close'] < last['ema20'] < last['ema50'] and slope20 < 0:
-            return 'BEARISH', df
-        return 'NEUTRAL', df
-
     def _check_overextension(self, df, direction):
-        """فلتر لمنع الدخول إذا كان السعر ممتداً جداً (Overextended)"""
-        if df is None or len(df) < 10:
+        """منع مطاردة السعر إذا كان ممتداً بشدة بعيداً عن المتوسطات أو الـ ATR"""
+        if df is None or len(df) < 15:
             return False
+
         last = df.iloc[-1]
         dist_ema20 = (last['close'] - last['ema20']) / last['ema20']
-        if direction == 'LONG' and dist_ema20 > 0.04:  # بعيد جداً فوق المتوسط
+        atr_multiple = abs(last['close'] - last['ema20']) / last['atr']
+
+        if direction == 'LONG' and (dist_ema20 > 0.045 or atr_multiple > 3.5):
             return True
-        if direction == 'SHORT' and dist_ema20 < -0.04:  # بعيد جداً تحت المتوسط
+        if direction == 'SHORT' and (dist_ema20 < -0.045 or atr_multiple > 3.5):
             return True
         return False
 
     # =========================================================
-    # DYNAMIC ENTRY ZONE, SL & LIQUIDITY-BASED TP
+    # ENTRY ZONE, LIQUIDITY-BASED TP & DYNAMIC SL
     # =========================================================
 
     def _build_advanced_trade(self, df, direction, ob, fvg, market_type='swap'):
         row = df.iloc[-1]
         current_close = float(row['close'])
         atr = float(row['atr'])
-        recent_swing_low = float(df['low'].tail(15).min())
-        recent_swing_high = float(df['high'].tail(15).max())
 
-        # بناء منطقة الدخول (Entry Zone) الحقيقية
+        highs, lows = self._find_swing_points(df, window=3)
+        recent_swing_low = lows[-1][1] if lows else float(df['low'].tail(15).min())
+        recent_swing_high = highs[-1][1] if highs else float(df['high'].tail(15).max())
+
+        # تحديد منطقة الدخول الحقيقية Entry Zone
         if ob and ob['is_near']:
-            entry_low = ob['low']
-            entry_high = ob['high']
+            zone_low = ob['low']
+            zone_high = ob['high']
+            entry_status = 'INSIDE_OB_ZONE'
         elif fvg and fvg['is_near']:
-            entry_low = fvg['low']
-            entry_high = fvg['high']
+            zone_low = fvg['low']
+            zone_high = fvg['high']
+            entry_status = 'INSIDE_FVG_ZONE'
         else:
-            entry_low = current_close - (atr * 0.2)
-            entry_high = current_close
+            zone_low = current_close - (atr * 0.3)
+            zone_high = current_close
+            entry_status = 'NEAR_MARKET_PRICE'
 
-        entry_avg = (entry_low + entry_high) / 2
+        entry_avg = (zone_low + zone_high) / 2
 
         if direction == 'LONG':
             structural_sl = recent_swing_low - (atr * 0.3)
@@ -387,13 +567,11 @@ class ExpertAnalystBot:
                 risk = entry_avg - sl
 
             risk_pct = (risk / entry_avg) * 100
-            # تصحيح مشكلة الـ SL المتجاوز للحد الأقصى
             if risk_pct > 5.5:
                 sl = entry_avg - (atr * 1.8)
                 risk = entry_avg - sl
                 risk_pct = (risk / entry_avg) * 100
 
-            # أهداف مبنية على السيولة والقوام الهيكلي
             tp1 = entry_avg + (risk * 2.0)
             tp2 = recent_swing_high if recent_swing_high > entry_avg + (risk * 3.0) else entry_avg + (risk * 3.5)
             tp3 = entry_avg + (risk * 5.0)
@@ -421,14 +599,23 @@ class ExpertAnalystBot:
             tp2 = recent_swing_low if recent_swing_low < entry_avg - (risk * 3.0) else entry_avg - (risk * 3.5)
             tp3 = entry_avg - (risk * 5.0)
 
+        # حساب عائد المخاطرة الحقيقي R:R لكل هدف
+        rr_tp1 = round((abs(tp1 - entry_avg) / risk), 2) if risk > 0 else 0.0
+        rr_tp2 = round((abs(tp2 - entry_avg) / risk), 2) if risk > 0 else 0.0
+        rr_tp3 = round((abs(tp3 - entry_avg) / risk), 2) if risk > 0 else 0.0
+
         return {
             'entry': round(entry_avg, 6),
-            'entry_zone': f"{round(entry_low, 6)} - {round(entry_high, 6)}",
+            'entry_zone': f"{round(zone_low, 6)} - {round(zone_high, 6)}",
+            'entry_status': entry_status,
             'sl': round(float(sl), 6),
             'tp1': round(float(tp1), 6),
             'tp2': round(float(tp2), 6),
             'tp3': round(float(tp3), 6),
-            'risk_pct': round(risk_pct, 2)
+            'risk_pct': round(risk_pct, 2),
+            'rr_tp1': rr_tp1,
+            'rr_tp2': rr_tp2,
+            'rr_tp3': rr_tp3
         }
 
     # =========================================================
@@ -436,20 +623,27 @@ class ExpertAnalystBot:
     # =========================================================
 
     def evaluate_strategy(self, symbol, market_type='swap'):
-        df_raw = self._fetch_ohlcv(symbol, self.timeframe, 200, market_type)
+        df_raw = self._fetch_ohlcv(symbol, self.timeframe, 220, market_type)
         if df_raw is None or len(df_raw) < 60:
             return self._empty_response(symbol, market_type)
 
         df = self._prepare(df_raw)
         current_price = float(df['close'].iloc[-1])
 
-        trend_4h, _ = self._get_trend(symbol, '4h', market_type)
-        trend_1h, _ = self._get_trend(symbol, '1h', market_type)
-        structure, bos, mss, choch = self.detect_market_structure(df)
+        # الاتجاهات العليا وتحليل البيتكوين المستقل
+        trend_4h, _ = self._get_trend_external(symbol, '4h', market_type)
+        trend_1h, _ = self._get_trend_external(symbol, '1h', market_type)
+        btc_context = self._get_btc_context(market_type)
+        market_regime = self._detect_market_regime(df)
 
-        futures_data = self._fetch_futures_metrics(symbol)
+        structure, bos, mss, choch, structure_type = self.detect_market_structure(df)
+        derivatives = self._fetch_derivatives_metrics(symbol)
 
-        # تحديد الاتجاه استناداً للسيولة والهيكل
+        # منع التداول في الأسواق الفوضوية أو شديدة الانخفاض
+        if market_regime in ['LOW_VOLATILITY', 'HIGH_VOLATILITY'] and market_type == 'swap':
+            pass  # يمكن تمريرها بشروط صارمة، لكن نفضل الفلترة
+
+        # التصويت لتحديد اتجاه الصفقة
         long_votes = 0
         short_votes = 0
 
@@ -462,8 +656,8 @@ class ExpertAnalystBot:
         if structure == 'BULLISH': long_votes += 2
         elif structure == 'BEARISH': short_votes += 2
 
-        if futures_data['oi_bias'] == 'BULLISH_OI': long_votes += 1
-        elif futures_data['oi_bias'] == 'BEARISH_OI': short_votes += 1
+        if btc_context == 'BULLISH': long_votes += 2
+        elif btc_context == 'BEARISH': short_votes += 2
 
         if market_type == 'spot':
             if long_votes >= short_votes and trend_4h != 'BEARISH':
@@ -478,11 +672,16 @@ class ExpertAnalystBot:
             else:
                 return self._empty_response(symbol, market_type)
 
-        # فلتر Overextension
+        # فحص تعارض البيتكوين الحقيقي
+        btc_conflict = (decision == 'LONG' and btc_context == 'BEARISH') or (decision == 'SHORT' and btc_context == 'BULLISH')
+        if btc_conflict:
+            return self._empty_response(symbol, market_type)
+
+        # فحص التمدد السعري Overextension
         if self._check_overextension(df, decision):
             return self._empty_response(symbol, market_type)
 
-        # فحص الأدوات المتقدمة والسيولة الحقيقية المقترنة بمكان السعر
+        # فحص أدوات التحليل المتقدمة والسيولة
         fvg = self.detect_valid_fvg(df, current_price, decision)
         ob = self.detect_valid_order_block(df, current_price, decision)
         liquidity_sweep = self.detect_advanced_liquidity_sweep(df, decision)
@@ -494,27 +693,29 @@ class ExpertAnalystBot:
         if bos: confirmations.append('BOS')
         if mss or choch: confirmations.append('MSS/CHoCH')
         if liquidity_sweep['passed']: confirmations.append('LiquiditySweep')
-        if ob and ob['is_near']: confirmations.append('OrderBlock(Near)')
-        if fvg and fvg['is_near']: confirmations.append('FVG(Active)')
+        if ob and ob['is_near']: confirmations.append('OrderBlock')
+        if fvg and fvg['is_active']: confirmations.append('FVG')
 
         trade = self._build_advanced_trade(df, decision, ob, fvg, market_type)
         if trade is None:
             return self._empty_response(symbol, market_type)
 
-        # حساب دقيق ومتوازن للـ Score
-        score = 40
+        # حساب دقيق ومتوازن للـ Score بناءً على التوافق الحقيقي
+        score = 30
         if trend_4h == self._decision_to_trend(decision): score += 10
         if trend_1h == self._decision_to_trend(decision): score += 10
+        if structure == self._decision_to_trend(decision): score += 10
         if mss or choch: score += 10
         if liquidity_sweep['passed']: score += 10
         if ob and ob['is_near']: score += 10
-        if fvg and fvg['is_near']: score += 10
-        if len(confirmations) >= 4: score += 10
+        if fvg and fvg['is_active']: score += 10
+        if trade['rr_tp1'] >= 1.8: score += 10
 
         score = int(max(0, min(score, 100)))
 
-        # شروط القبول الصارمة للمحلل الحقيقي
-        if score < 75 or len(confirmations) < 3 or not (ob and ob['is_near']) and not (fvg and fvg['is_near']) and not liquidity_sweep['passed']:
+        # شروط القبول النهائية الصارمة للمحلل المحترف
+        has_zone_or_sweep = (ob and ob['is_near']) or (fvg and fvg['is_active']) or liquidity_sweep['passed']
+        if score < 75 or len(confirmations) < 3 or not has_zone_or_sweep or trade['rr_tp1'] < 1.5:
             return self._empty_response(symbol, market_type)
 
         quality = 'HIGH' if score >= 85 else 'GOOD'
@@ -529,11 +730,22 @@ class ExpertAnalystBot:
             'confirmations': confirmations,
             'trend_4h': trend_4h,
             'trend_1h': trend_1h,
-            'btc_context': 'BULLISH' if trend_1h == 'BULLISH' else 'BEARISH',
+            'btc_context': btc_context,
+            'btc_conflict': btc_conflict,
+            'funding_rate': derivatives['funding_rate'],
+            'oi_change_pct': derivatives['oi_change_pct'],
+            'derivatives_bias': derivatives['derivatives_bias'],
+            'market_regime': market_regime,
+            'structure_type': structure_type,
+            'liquidity_type': liquidity_sweep['type'],
+            'entry_status': trade['entry_status'],
+            'entry_zone': trade['entry_zone'],
+            'rr_tp1': trade['rr_tp1'],
+            'rr_tp2': trade['rr_tp2'],
+            'rr_tp3': trade['rr_tp3'],
             'rsi_15m': round(float(df['rsi'].iloc[-1]), 1),
             'volume_ratio': round(float(df['volume_ratio'].iloc[-1]), 2),
             'entry': trade['entry'],
-            'entry_zone': trade['entry_zone'],
             'sl': trade['sl'],
             'tp1': trade['tp1'],
             'tp2': trade['tp2'],
@@ -541,11 +753,23 @@ class ExpertAnalystBot:
             'risk_pct': trade['risk_pct'],
             'risk_filter': 'PASSED',
             'structure_confirmation': structure,
-            'btc_conflict': False,
             'entry_quality': 'OPTIMAL',
             'digital_data': {'near_digital_level': False},
             'candlestick': 'CONFIRMED'
         }
+
+    def _get_trend_external(self, symbol, timeframe, market_type):
+        df = self._fetch_ohlcv(symbol, timeframe, 150, market_type)
+        if df is None or len(df) < 50:
+            return 'NEUTRAL', None
+        df = self._prepare(df)
+        last = df.iloc[-1]
+        slope20 = df['ema20'].iloc[-1] - df['ema20'].iloc[-5]
+        if last['close'] > last['ema20'] > last['ema50'] and slope20 > 0:
+            return 'BULLISH', df
+        if last['close'] < last['ema20'] < last['ema50'] and slope20 < 0:
+            return 'BEARISH', df
+        return 'NEUTRAL', df
 
     def _empty_response(self, symbol, market_type):
         return {
@@ -559,10 +783,21 @@ class ExpertAnalystBot:
             'trend_4h': 'NEUTRAL',
             'trend_1h': 'NEUTRAL',
             'btc_context': 'NEUTRAL',
+            'btc_conflict': False,
+            'funding_rate': 0.0,
+            'oi_change_pct': 0.0,
+            'derivatives_bias': 'NEUTRAL',
+            'market_regime': 'NEUTRAL',
+            'structure_type': 'NORMAL',
+            'liquidity_type': 'NONE',
+            'entry_status': 'INVALID',
+            'entry_zone': 'N/A',
+            'rr_tp1': 0.0,
+            'rr_tp2': 0.0,
+            'rr_tp3': 0.0,
             'rsi_15m': 50.0,
             'volume_ratio': 1.0,
             'entry': 0.0,
-            'entry_zone': 'N/A',
             'sl': 0.0,
             'tp1': 0.0,
             'tp2': 0.0,
@@ -570,6 +805,5 @@ class ExpertAnalystBot:
             'risk_pct': 0.0,
             'risk_filter': 'FAILED',
             'structure_confirmation': 'NEUTRAL',
-            'btc_conflict': False,
             'entry_quality': 'INVALID'
         }
