@@ -114,7 +114,6 @@ class ExpertAnalystBot:
             return None
 
     def _fetch_derivatives_metrics(self, symbol, current_price):
-        """تتبع دقيق للـ OI والسعر عبر عينات زمنية مدتها 180 ثانية"""
         try:
             swap_symbol = symbol
             if not symbol.endswith(':USDT') and '/' in symbol and ':' not in symbol:
@@ -178,7 +177,6 @@ class ExpertAnalystBot:
                 pass
 
             bias = 'NEUTRAL'
-            # تصنيف العلاقة بدقة بناءً على تغير السعر والـ OI
             if oi_change_pct > 0.2:
                 if price_change_pct >= 0:
                     bias = 'LONG_BUILDUP'
@@ -322,8 +320,8 @@ class ExpertAnalystBot:
         df = self._prepare(df)
         last = df.iloc[-1]
 
-        bullish_cond = last['close'] > last['ema20'] and last['ema20'] > last['ema50'] and last['ema20_slope'] > 0 and last['rsi'] > 48
-        bearish_cond = last['close'] < last['ema20'] and last['ema20'] < last['ema50'] and last['ema20_slope'] < 0 and last['rsi'] < 52
+        bullish_cond = last['close'] > last['ema20'] and last['ema20'] > last['ema50']
+        bearish_cond = last['close'] < last['ema20'] and last['ema20'] < last['ema50']
 
         if bullish_cond:
             return 'BULLISH', df
@@ -357,17 +355,17 @@ class ExpertAnalystBot:
 
         last_high = highs[-1][1]
         last_low = lows[-1][1]
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        bullish_break = last['close'] > last_high and prev['close'] <= last_high
-        bearish_break = last['close'] < last_low and prev['close'] >= last_low
+        
+        # فحص عبر آخر عدة شموع وليس الشمعة الأخيرة فقط
+        recent_df = df.tail(5)
+        bullish_break = any(recent_df['close'] > last_high)
+        bearish_break = any(recent_df['close'] < last_low)
 
         bos = False
         mss = False
         choch = False
         structure_type = 'NORMAL_STRUCTURE'
-        structure = 'BULLISH' if last['close'] > last['ema20'] else 'BEARISH'
+        structure = 'BULLISH' if df.iloc[-1]['close'] > df.iloc[-1]['ema20'] else 'BEARISH'
 
         if bullish_break:
             bos = True
@@ -394,7 +392,7 @@ class ExpertAnalystBot:
 
     def detect_advanced_liquidity_sweep(self, df, direction):
         if df is None or len(df) < 20:
-            return {'passed': False, 'type': 'INSUFFICIENT_DATA'}
+            return {'passed': False, 'type': 'NO_SWEEP'}
 
         highs, lows = self._find_swing_points(df, window=3)
         curr = df.iloc[-1]
@@ -403,17 +401,16 @@ class ExpertAnalystBot:
 
         eq_high = highs[-1][1]
         eq_low = lows[-1][1]
-        displacement = curr['body_ratio'] >= 0.55 and curr['volume_ratio'] >= 1.2 and curr['range'] > df['atr'].iloc[-1] * 0.75
 
         if direction == 'LONG':
-            swept = curr['low'] < eq_low
+            swept = any(df['low'].tail(5) < eq_low)
             reclaimed = curr['close'] > eq_low
-            if swept and reclaimed and displacement:
+            if swept and reclaimed:
                 return {'passed': True, 'type': 'LIQUIDITY_SWEEP_LOWS_RECLAIMED'}
         else:
-            swept = curr['high'] > eq_high
+            swept = any(df['high'].tail(5) > eq_high)
             rejected = curr['close'] < eq_high
-            if swept and rejected and displacement:
+            if swept and rejected:
                 return {'passed': True, 'type': 'LIQUIDITY_SWEEP_HIGHS_REJECTED'}
 
         return {'passed': False, 'type': 'NO_SWEEP'}
@@ -427,7 +424,7 @@ class ExpertAnalystBot:
             return None
 
         total_bars = len(df)
-        for i in range(len(df) - 3, max(2, len(df) - 25), -1):
+        for i in range(len(df) - 3, max(2, len(df) - 30), -1):
             a = df.iloc[i - 2]
             b = df.iloc[i - 1]
             c = df.iloc[i]
@@ -439,21 +436,19 @@ class ExpertAnalystBot:
                 if fvg_range <= 0:
                     continue
 
-                # إذا تم اختراقها بالكامل (السعر أسفل الـ FVG تماماً) -> INVALID
-                if current_price < fvg_low:
+                if current_price < fvg_low - (df.iloc[-1]['atr'] * 2):
                     continue
 
                 filled_pct = 0.0
                 if current_price < fvg_high:
                     filled_pct = min(100.0, max(0.0, ((fvg_high - current_price) / fvg_range) * 100.0))
 
-                if filled_pct < 80.0:
+                if filled_pct < 90.0:
                     age = total_bars - i
                     fvg_mid = (fvg_low + fvg_high) / 2
                     inside = fvg_low <= current_price <= fvg_high
                     dist = abs(current_price - fvg_mid) / current_price
-                    # يجب أن تكون قريبة نسبياً وليست بعيدة جداً
-                    if dist <= 0.045:
+                    if dist <= 0.08:
                         return {
                             'type': 'BULLISH_FVG',
                             'low': fvg_low,
@@ -462,7 +457,7 @@ class ExpertAnalystBot:
                             'age': age,
                             'filled_pct': round(filled_pct, 1),
                             'is_active': True,
-                            'inside_zone': inside
+                            ' inside_zone': inside
                         }
 
             elif direction == 'SHORT' and c['high'] < a['low']:
@@ -472,19 +467,19 @@ class ExpertAnalystBot:
                 if fvg_range <= 0:
                     continue
 
-                if current_price > fvg_high:
+                if current_price > fvg_high + (df.iloc[-1]['atr'] * 2):
                     continue
 
                 filled_pct = 0.0
                 if current_price > fvg_low:
                     filled_pct = min(100.0, max(0.0, ((current_price - fvg_low) / fvg_range) * 100.0))
 
-                if filled_pct < 80.0:
+                if filled_pct < 90.0:
                     age = total_bars - i
                     fvg_mid = (fvg_low + fvg_high) / 2
                     inside = fvg_low <= current_price <= fvg_high
                     dist = abs(current_price - fvg_mid) / current_price
-                    if dist <= 0.045:
+                    if dist <= 0.08:
                         return {
                             'type': 'BEARISH_FVG',
                             'low': fvg_low,
@@ -493,7 +488,7 @@ class ExpertAnalystBot:
                             'age': age,
                             'filled_pct': round(filled_pct, 1),
                             'is_active': True,
-                            'inside_zone': inside
+                            ' inside_zone': inside
                         }
 
         return None
@@ -507,72 +502,45 @@ class ExpertAnalystBot:
             return None
 
         total_bars = len(df)
-        start = max(2, len(df) - 40)
+        start = max(2, len(df) - 45)
 
         for i in range(len(df) - 2, start - 1, -1):
             candle = df.iloc[i]
             impulse = df.iloc[i + 1]
+            atr = df.iloc[-1]['atr']
 
             if direction == 'LONG':
-                is_ob = candle['close'] < candle['open'] and impulse['close'] > candle['high'] and impulse['body_ratio'] >= 0.5 and impulse['volume_ratio'] >= 1.1
+                is_ob = candle['close'] < candle['open'] and impulse['close'] > candle['high']
                 if is_ob:
                     ob_low = float(candle['low'])
                     ob_high = float(candle['high'])
                     age = total_bars - i
-
-                    subsequent_df = df.iloc[i + 2:]
-                    mitigation_status = 'VALID'
-                    if len(subsequent_df) > 0:
-                        if subsequent_df['low'].min() < ob_low:
-                            closes_below = subsequent_df[subsequent_df['close'] < ob_low]
-                            if len(closes_below) > 0:
-                                mitigation_status = 'FULL_MITIGATION'
-                            else:
-                                mitigation_status = 'PARTIAL_MITIGATION'
-
-                    if mitigation_status == 'FULL_MITIGATION':
-                        continue
-
                     dist = abs(current_price - ((ob_low + ob_high) / 2)) / current_price
-                    if dist <= 0.05:
+
+                    if dist <= 0.08 or (ob_low - (atr * 3) <= current_price <= ob_high + (atr * 3)):
                         return {
                             'type': 'BULLISH_OB',
                             'low': ob_low,
                             'high': ob_high,
                             'mid': (ob_low + ob_high) / 2,
                             'age': age,
-                            'mitigation': mitigation_status,
                             'inside_zone': ob_low <= current_price <= ob_high
                         }
             else:
-                is_ob = candle['close'] > candle['open'] and impulse['close'] < candle['low'] and impulse['body_ratio'] >= 0.5 and impulse['volume_ratio'] >= 1.1
+                is_ob = candle['close'] > candle['open'] and impulse['close'] < candle['low']
                 if is_ob:
                     ob_low = float(candle['low'])
                     ob_high = float(candle['high'])
                     age = total_bars - i
-
-                    subsequent_df = df.iloc[i + 2:]
-                    mitigation_status = 'VALID'
-                    if len(subsequent_df) > 0:
-                        if subsequent_df['high'].max() > ob_high:
-                            closes_above = subsequent_df[subsequent_df['close'] > ob_high]
-                            if len(closes_above) > 0:
-                                mitigation_status = 'FULL_MITIGATION'
-                            else:
-                                mitigation_status = 'PARTIAL_MITIGATION'
-
-                    if mitigation_status == 'FULL_MITIGATION':
-                        continue
-
                     dist = abs(current_price - ((ob_low + ob_high) / 2)) / current_price
-                    if dist <= 0.05:
+
+                    if dist <= 0.08 or (ob_low - (atr * 3) <= current_price <= ob_high + (atr * 3)):
                         return {
                             'type': 'BEARISH_OB',
                             'low': ob_low,
                             'high': ob_high,
                             'mid': (ob_low + ob_high) / 2,
                             'age': age,
-                            'mitigation': mitigation_status,
                             'inside_zone': ob_low <= current_price <= ob_high
                         }
 
@@ -589,9 +557,9 @@ class ExpertAnalystBot:
         dist_ema20 = (last['close'] - last['ema20']) / last['ema20']
         atr_multiple = abs(last['close'] - last['ema20']) / last['atr']
 
-        if direction == 'LONG' and (dist_ema20 > 0.045 or atr_multiple > 3.5):
+        if direction == 'LONG' and (dist_ema20 > 0.07 or atr_multiple > 5.0):
             return True
-        if direction == 'SHORT' and (dist_ema20 < -0.045 or atr_multiple > 3.5):
+        if direction == 'SHORT' and (dist_ema20 < -0.07 or atr_multiple > 5.0):
             return True
         return False
 
@@ -621,21 +589,16 @@ class ExpertAnalystBot:
             zone_high = fvg['high']
             entry_status = 'FVG_ZONE'
         else:
-            zone_low = current_close - (atr * 0.2)
+            zone_low = current_close - (atr * 0.5)
             zone_high = current_close
             entry_status = 'MARKET_ENTRY'
 
         entry_avg = (zone_low + zone_high) / 2
 
-        # التحقق من قرب السعر من منطقة الدخول
-        distance_to_zone_pct = abs(current_close - entry_avg) / current_close
-        if distance_to_zone_pct > 0.035 and entry_status != 'MARKET_ENTRY':
-            return None
-
         if direction == 'LONG':
-            sl = recent_swing_low - (atr * 0.4)
+            sl = recent_swing_low - (atr * 0.5)
             if ob:
-                sl = min(sl, ob['low'] - (atr * 0.2))
+                sl = min(sl, ob['low'] - (atr * 0.3))
             
             risk = entry_avg - sl
             if risk <= 0:
@@ -643,29 +606,21 @@ class ExpertAnalystBot:
                 risk = entry_avg - sl
 
             risk_pct = (risk / entry_avg) * 100
-            if risk_pct > 5.0 or risk_pct < 0.3:
+            if risk_pct > 6.0 or risk_pct < 0.2:
                 return None
 
-            # منع وضع الوقف داخل منطقة الدخول الحامية
-            if ob and sl >= ob['low']:
-                sl = ob['low'] - (atr * 0.3)
-                risk = entry_avg - sl
-                risk_pct = (risk / entry_avg) * 100
-                if risk_pct > 5.0 or risk_pct < 0.3:
-                    return None
-
-            tp1 = entry_avg + (risk * 1.8)
-            tp2 = recent_swing_high if recent_swing_high > tp1 else entry_avg + (risk * 3.0)
-            tp3 = entry_avg + (risk * 4.5)
+            tp1 = entry_avg + (risk * 1.6)
+            tp2 = recent_swing_high if recent_swing_high > tp1 else entry_avg + (risk * 2.8)
+            tp3 = entry_avg + (risk * 4.0)
 
             if not (entry_avg < tp1 < tp2 < tp3):
                 return None
         else:
             if market_type == 'spot':
                 return None
-            sl = recent_swing_high + (atr * 0.4)
+            sl = recent_swing_high + (atr * 0.5)
             if ob:
-                sl = max(sl, ob['high'] + (atr * 0.2))
+                sl = max(sl, ob['high'] + (atr * 0.3))
 
             risk = sl - entry_avg
             if risk <= 0:
@@ -673,19 +628,12 @@ class ExpertAnalystBot:
                 risk = sl - entry_avg
 
             risk_pct = (risk / entry_avg) * 100
-            if risk_pct > 5.0 or risk_pct < 0.3:
+            if risk_pct > 6.0 or risk_pct < 0.2:
                 return None
 
-            if ob and sl <= ob['high']:
-                sl = ob['high'] + (atr * 0.3)
-                risk = sl - entry_avg
-                risk_pct = (risk / entry_avg) * 100
-                if risk_pct > 5.0 or risk_pct < 0.3:
-                    return None
-
-            tp1 = entry_avg - (risk * 1.8)
-            tp2 = recent_swing_low if recent_swing_low < tp1 else entry_avg - (risk * 3.0)
-            tp3 = entry_avg - (risk * 4.5)
+            tp1 = entry_avg - (risk * 1.6)
+            tp2 = recent_swing_low if recent_swing_low < tp1 else entry_avg - (risk * 2.8)
+            tp3 = entry_avg - (risk * 4.0)
 
             if not (entry_avg > tp1 > tp2 > tp3):
                 return None
@@ -694,7 +642,7 @@ class ExpertAnalystBot:
         rr_tp2 = round((abs(tp2 - entry_avg) / risk), 2) if risk > 0 else 0.0
         rr_tp3 = round((abs(tp3 - entry_avg) / risk), 2) if risk > 0 else 0.0
 
-        if rr_tp1 < 1.5:
+        if rr_tp1 < 1.4:
             return None
 
         return {
@@ -712,7 +660,7 @@ class ExpertAnalystBot:
         }
 
     # =========================================================
-    # MAIN STRATEGY EVALUATION & HARD GATES
+    # MAIN STRATEGY EVALUATION & SCORING
     # =========================================================
 
     def evaluate_strategy(self, symbol, market_type='swap'):
@@ -731,148 +679,128 @@ class ExpertAnalystBot:
         structure, bos, mss, choch, structure_type = self.detect_market_structure(df)
         derivatives = self._fetch_derivatives_metrics(symbol, current_price)
 
-        # التصويت المبدئي للاتجاه
+        # تحديد الاتجاه المحتمل بناءً على بنية 15m و 1h
         long_score_vote = 0
         short_score_vote = 0
 
-        if trend_4h == 'BULLISH': long_score_vote += 2
-        elif trend_4h == 'BEARISH': short_score_vote += 2
-
-        if trend_1h == 'BULLISH': long_score_vote += 2
-        elif trend_1h == 'BEARISH': short_score_vote += 2
-
-        if structure == 'BULLISH': long_score_vote += 2
-        elif structure == 'BEARISH': short_score_vote += 2
-
-        if btc_context == 'BTC_BULLISH': long_score_vote += 1
-        elif btc_context == 'BTC_BEARISH': short_score_vote += 1
+        if trend_1h == 'BULLISH' or structure == 'BULLISH': long_score_vote += 2
+        if trend_1h == 'BEARISH' or structure == 'BEARISH': short_score_vote += 2
 
         if market_type == 'spot':
-            if long_score_vote >= short_score_vote and trend_4h != 'BEARISH':
-                decision = 'LONG'
-            else:
-                return self._empty_response(symbol, market_type, 'SPOT_SHORT_RESTRICTED')
+            decision = 'LONG'
         else:
-            if long_score_vote > short_score_vote:
-                decision = 'LONG'
-            elif short_score_vote > long_score_vote:
-                decision = 'SHORT'
-            else:
-                return self._empty_response(symbol, market_type, 'NO_CLEAR_DIRECTION')
+            decision = 'LONG' if long_score_vote >= short_score_vote else 'SHORT'
 
-        # =========================================================
-        # HARD GATES الصارمة قبل حساب النقاط
-        # =========================================================
-        if not (bos or mss):
-            return self._empty_response(symbol, market_type, 'NO_STRUCTURE_BREAK')
-
-        if decision == 'LONG':
-            if trend_4h == 'BEARISH' or trend_1h == 'BEARISH' or structure == 'BEARISH':
-                return self._empty_response(symbol, market_type, 'HARD_GATE_FAILED')
-            if btc_context == 'BTC_BEARISH':
-                return self._empty_response(symbol, market_type, 'BTC_CONFLICT')
+        # فحص الانعكاس المحتمل (Reversal Detection)
+        liquidity_sweep = self.detect_advanced_liquidity_sweep(df, decision)
+        if liquidity_sweep['passed']:
+            trade_style = 'REVERSAL'
         else:
-            if trend_4h == 'BULLISH' or trend_1h == 'BULLISH' or structure == 'BULLISH':
-                return self._empty_response(symbol, market_type, 'HARD_GATE_FAILED')
-            if btc_context == 'BTC_BULLISH':
-                return self._empty_response(symbol, market_type, 'BTC_CONFLICT')
+            trade_style = 'TREND_CONTINUATION'
 
         if self._check_overextension(df, decision):
             return self._empty_response(symbol, market_type, 'OVEREXTENDED')
 
         fvg = self.detect_valid_fvg(df, current_price, decision)
         ob = self.detect_valid_order_block(df, current_price, decision)
-        liquidity_sweep = self.detect_advanced_liquidity_sweep(df, decision)
-
-        if not (fvg or ob or liquidity_sweep['passed']):
-            return self._empty_response(symbol, market_type, 'NO_VALID_ENTRY_TOOL')
 
         trade = self._build_advanced_trade(df, decision, ob, fvg, market_type)
         if trade is None:
             return self._empty_response(symbol, market_type, 'POOR_RR_OR_INVALID_SL')
 
         # =========================================================
-        # حساب الـ Score الدقيق (مجموعه 100 بالضبط - بدون قاعدة مجانية)
+        # نظام النقاط الجديد (مجموعه 100)
         # =========================================================
         score = 0
 
-        # 1. Trend 4H (10 pts)
+        # 1. 4H Trend = 10 pts
         if trend_4h == self._decision_to_trend(decision):
             score += 10
+        elif trend_4h == 'NEUTRAL':
+            score += 5
 
-        # 2. Trend 1H (10 pts)
+        # 2. 1H Trend = 10 pts
         if trend_1h == self._decision_to_trend(decision):
             score += 10
+        elif trend_1h == 'NEUTRAL':
+            score += 5
 
-        # 3. Structure (15 pts)
+        # 3. 15M Momentum = 10 pts
+        last_row = df.iloc[-1]
+        rsi_val = last_row['rsi']
+        if decision == 'LONG' and rsi_val >= 45:
+            score += 10
+        elif decision == 'SHORT' and rsi_val <= 55:
+            score += 10
+        else:
+            score += 5
+
+        # 4. Structure = 15 pts
         if structure == self._decision_to_trend(decision):
             score += 15
+        else:
+            score += 7
 
-        # 4. BOS/MSS (10 pts)
-        if bos or mss:
+        # 5. BOS / MSS / CHoCH = 10 pts
+        if bos or mss or choch:
             score += 10
 
-        # 5. Liquidity (10 pts)
+        # 6. Liquidity = 15 pts
         if liquidity_sweep['passed']:
-            score += 10
+            score += 15
 
-        # 6. OB/FVG Confluence (10 pts)
+        # 7. OB / FVG = 10 pts
         if ob and fvg:
             score += 10
         elif ob or fvg:
             score += 7
 
-        # 7. Volume + Displacement (10 pts)
-        last_row = df.iloc[-1]
-        if last_row['volume_ratio'] >= 1.2 and last_row['body_ratio'] >= 0.5:
-            score += 10
-
-        # 8. Momentum (5 pts)
-        rsi_val = last_row['rsi']
-        rsi_slope = last_row['rsi_slope']
-        ema20_slope = last_row['ema20_slope']
-        if decision == 'LONG':
-            if rsi_slope > 0 and ema20_slope > 0 and rsi_val >= 45:
-                score += 5
-        else:
-            if rsi_slope < 0 and ema20_slope < 0 and rsi_val <= 55:
-                score += 5
-
-        # 9. BTC Context (10 pts)
-        if (decision == 'LONG' and btc_context == 'BTC_BULLISH') or (decision == 'SHORT' and btc_context == 'BTC_BEARISH'):
-            score += 10
-        elif btc_context == 'BTC_NEUTRAL':
+        # 8. Volume = 5 pts
+        if last_row['volume_ratio'] >= 1.05:
             score += 5
 
-        # 10. Derivatives (5 pts)
+        # 9. BTC Context = 5 pts
+        if (decision == 'LONG' and btc_context == 'BTC_BULLISH') or (decision == 'SHORT' and btc_context == 'BTC_BEARISH'):
+            score += 5
+        elif btc_context == 'BTC_NEUTRAL':
+            score += 3
+
+        # 10. Derivatives = 5 pts
         dbias = derivatives['derivatives_bias']
         if decision == 'LONG' and dbias in ['LONG_BUILDUP', 'SHORT_COVERING']:
             score += 5
         elif decision == 'SHORT' and dbias in ['SHORT_BUILDUP', 'LONG_LIQUIDATION']:
             score += 5
 
-        # 11. Risk/RR (5 pts)
-        if trade['rr_tp1'] >= 1.8:
+        # 11. Risk / RR = 5 pts
+        if trade['rr_tp1'] >= 1.4:
             score += 5
 
         score = int(max(0, min(score, 100)))
 
+        # تجميع المؤكدات (Confirmations)
         confirmations = []
         if trend_4h == self._decision_to_trend(decision): confirmations.append('Trend4H')
         if trend_1h == self._decision_to_trend(decision): confirmations.append('Trend1H')
         if structure == self._decision_to_trend(decision): confirmations.append('Structure')
         if bos: confirmations.append('BOS')
         if mss: confirmations.append('MSS')
+        if choch: confirmations.append('CHoCH')
         if liquidity_sweep['passed']: confirmations.append('LiquiditySweep')
         if ob: confirmations.append('OrderBlock')
         if fvg: confirmations.append('FVG')
-        if last_row['volume_ratio'] >= 1.2: confirmations.append('Volume')
+        if last_row['volume_ratio'] >= 1.05: confirmations.append('Volume')
 
-        # الحد الأدنى الصارم للتأكيدات (Structural + Entry + Momentum/Volume)
-        if score < 75 or len(confirmations) < 4:
+        # اشتراط 3 تأكيدات قوية على الأقل ونقاط أكبر من أو تساوي 68
+        if score < 68 or len(confirmations) < 3:
             return self._empty_response(symbol, market_type, 'CONFLUENCE_INSUFFICIENT')
 
-        quality = 'HIGH QUALITY' if score >= 85 else 'GOOD'
+        if score >= 85:
+            quality = 'HIGH QUALITY'
+        elif score >= 75:
+            quality = 'STRONG'
+        else:
+            quality = 'VALID SETUP'
 
         return {
             'symbol': symbol,
@@ -909,7 +837,8 @@ class ExpertAnalystBot:
             'structure_confirmation': structure,
             'rejection_reason': 'NONE',
             'digital_data': {'near_digital_level': False},
-            'candlestick': 'CONFIRMED'
+            'candlestick': 'CONFIRMED',
+            'trade_style': trade_style
         }
 
     def _empty_response(self, symbol, market_type, reason='NO_TRADE'):
@@ -946,5 +875,6 @@ class ExpertAnalystBot:
             'risk_pct': 0.0,
             'risk_filter': 'FAILED',
             'structure_confirmation': 'NEUTRAL',
-            'rejection_reason': reason
+            'rejection_reason': reason,
+            'trade_style': 'NONE'
         }
