@@ -33,6 +33,13 @@ class ExpertAnalystBot:
         self.cache = {}
         self.cache_seconds = 20
 
+    def _decision_to_trend(self, decision):
+        if decision == 'LONG':
+            return 'BULLISH'
+        if decision == 'SHORT':
+            return 'BEARISH'
+        return 'NEUTRAL'
+
     # =========================================================
     # DATA
     # =========================================================
@@ -143,6 +150,48 @@ class ExpertAnalystBot:
         return df.replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
 
     # =========================================================
+    # DIGITAL ANALYSIS (التحليل الرقمي وفيبوناتشي)
+    # =========================================================
+
+    def detect_digital_levels(self, df):
+        if df is None or len(df) < 30:
+            return None
+
+        recent = df.tail(50)
+        high_val = float(recent['high'].max())
+        low_val = float(recent['low'].min())
+        diff = high_val - low_val
+        current_price = float(df['close'].iloc[-1])
+
+        if diff <= 0:
+            return None
+
+        # حساب مستويات فيبوناتشي التصحيحية
+        fib_levels = {
+            'fib_382': high_val - (diff * 0.382),
+            'fib_500': high_val - (diff * 0.5),
+            'fib_618': high_val - (diff * 0.618),
+            'fib_786': high_val - (diff * 0.786)
+        }
+
+        # فحص هل السعر الحالي قريب من أي مستوى رقمي/فيبوناتشي بنسبة أقل من 0.8%
+        near_level = False
+        active_fib = None
+        for name, level in fib_levels.items():
+            if abs(current_price - level) / current_price <= 0.008:
+                near_level = True
+                active_fib = name
+                break
+
+        return {
+            'high': high_val,
+            'low': low_val,
+            'levels': fib_levels,
+            'near_digital_level': near_level,
+            'active_fib': active_fib
+        }
+
+    # =========================================================
     # MARKET STRUCTURE
     # =========================================================
 
@@ -174,7 +223,6 @@ class ExpertAnalystBot:
         if bearish_break:
             return 'BEARISH', False, True
 
-        # Secondary structure using EMA alignment + recent slope
         ema20_slope = x['ema20'].iloc[-1] - x['ema20'].iloc[-5]
         ema50_slope = x['ema50'].iloc[-1] - x['ema50'].iloc[-5]
 
@@ -273,7 +321,7 @@ class ExpertAnalystBot:
         return None
 
     # =========================================================
-    # LIQUIDITY SWEEP / INDUCEMENT
+    # LIQUIDITY SWEEP
     # =========================================================
 
     def detect_inducement_filter(self, df, direction):
@@ -568,7 +616,6 @@ class ExpertAnalystBot:
                 )
 
             sl = structural_sl
-
             risk = entry - sl
 
             if risk <= 0:
@@ -576,7 +623,6 @@ class ExpertAnalystBot:
 
             risk_pct = risk / entry * 100
 
-            # Reject abnormally wide stops.
             if risk_pct > 5.0:
                 sl = entry - atr * 2.0
                 risk = entry - sl
@@ -596,7 +642,6 @@ class ExpertAnalystBot:
                 )
 
             sl = structural_sl
-
             risk = sl - entry
 
             if risk <= 0:
@@ -661,6 +706,7 @@ class ExpertAnalystBot:
         btc_context = self._btc_context()
 
         structure, bullish_bos, bearish_bos = self._structure(df)
+        digital_data = self.detect_digital_levels(df)
 
         long_votes = 0
         short_votes = 0
@@ -728,21 +774,18 @@ class ExpertAnalystBot:
 
         confirmations = []
 
-        # Trend confirmation
         if (
             (decision == 'LONG' and trend_4h == 'BULLISH' and trend_1h == 'BULLISH') or
             (decision == 'SHORT' and trend_4h == 'BEARISH' and trend_1h == 'BEARISH')
         ):
             confirmations.append('Trend')
 
-        # Structure
         if (
             (decision == 'LONG' and structure == 'BULLISH') or
             (decision == 'SHORT' and structure == 'BEARISH')
         ):
             confirmations.append('Structure')
 
-        # Momentum
         if decision == 'LONG':
             if 52 <= rsi <= 70:
                 confirmations.append('Momentum')
@@ -750,25 +793,20 @@ class ExpertAnalystBot:
             if 30 <= rsi <= 48:
                 confirmations.append('Momentum')
 
-        # Volume
         if volume_ratio >= 1.10:
             confirmations.append('Volume')
 
-        # BOS
         if (decision == 'LONG' and bullish_bos) or (
             decision == 'SHORT' and bearish_bos
         ):
             confirmations.append('BOS')
 
-        # Liquidity sweep
         if inducement['passed']:
             confirmations.append('LiquiditySweep')
 
-        # OB only counts as confirmation when it is relevant.
         if ob:
             confirmations.append('OrderBlock')
 
-        # FVG only counts when aligned with direction.
         if fvg:
             if (
                 decision == 'LONG' and fvg['type'] == 'BULLISH_FVG'
@@ -777,7 +815,6 @@ class ExpertAnalystBot:
             ):
                 confirmations.append('FVG')
 
-        # Candle
         if candle:
             if (
                 decision == 'LONG' and candle.startswith('BULLISH')
@@ -785,6 +822,10 @@ class ExpertAnalystBot:
                 decision == 'SHORT' and candle.startswith('BEARISH')
             ):
                 confirmations.append('CandlePattern')
+
+        # إضافة تأكيد التحليل الرقمي إذا كان السعر عند مستوى فيبوناتشي
+        if digital_data and digital_data['near_digital_level']:
+            confirmations.append('DigitalLevel')
 
         entry_score, entry_reasons = self._entry_quality(
             decision,
@@ -826,26 +867,20 @@ class ExpertAnalystBot:
 
         risk_pct = trade['risk_pct']
 
-        # BTC conflict is a penalty, not an automatic rejection.
         btc_conflict = (
             (decision == 'LONG' and btc_context == 'BEARISH') or
             (decision == 'SHORT' and btc_context == 'BULLISH')
         )
 
-        # =====================================================
-        # REAL SCORE: starts neutral, not 92
-        # Maximum 100
-        # =====================================================
-
         score = 30
 
-        if trend_4h == decision_to_trend(decision):
+        if trend_4h == self._decision_to_trend(decision):
             score += 12
 
-        if trend_1h == decision_to_trend(decision):
+        if trend_1h == self._decision_to_trend(decision):
             score += 12
 
-        if structure == decision_to_trend(decision):
+        if structure == self._decision_to_trend(decision):
             score += 12
 
         if (
@@ -879,18 +914,21 @@ class ExpertAnalystBot:
         ):
             score += 3
 
+        # منح نقاط إضافية إذا احترم السعر مستويات التحليل الرقمي (فيبوناتشي)
+        if digital_data and digital_data['near_digital_level']:
+            score += 5
+
         if entry_score >= 5:
             score += 4
         elif entry_score >= 3:
             score += 2
 
-        if btc_context == decision_to_trend(decision):
+        if btc_context == self._decision_to_trend(decision):
             score += 5
 
         if btc_conflict:
             score -= 8
 
-        # Risk quality
         if 0.5 <= risk_pct <= 3.5:
             score += 7
         elif 3.5 < risk_pct <= 5.0:
@@ -898,7 +936,6 @@ class ExpertAnalystBot:
         else:
             score -= 8
 
-        # Overextended entry protection
         if decision == 'LONG' and rsi >= 75:
             score -= 8
         if decision == 'SHORT' and rsi <= 25:
@@ -906,17 +943,13 @@ class ExpertAnalystBot:
 
         score = int(max(0, min(score, 100)))
 
-        # =====================================================
-        # HARD QUALITY GATES
-        # =====================================================
-
         risk_pass = (
             0.5 <= risk_pct <= 5.0
         )
 
         trend_pass = (
-            trend_4h == decision_to_trend(decision) and
-            trend_1h == decision_to_trend(decision)
+            trend_4h == self._decision_to_trend(decision) and
+            trend_1h == self._decision_to_trend(decision)
         )
 
         confirmation_pass = len(confirmations) >= 4
@@ -926,7 +959,6 @@ class ExpertAnalystBot:
             (decision == 'SHORT' and 28 <= rsi <= 55)
         )
 
-        # 86+ requires real independent confluence.
         elite_pass = (
             score >= 86 and
             risk_pass and
@@ -993,13 +1025,6 @@ class ExpertAnalystBot:
             'inducement_status': inducement,
             'entry_reasons': entry_reasons,
             'fvg_data': fvg,
-            'order_block_data': ob
+            'order_block_data': ob,
+            'digital_data': digital_data
         }
-
-
-def decision_to_trend(decision):
-    if decision == 'LONG':
-        return 'BULLISH'
-    if decision == 'SHORT':
-        return 'BEARISH'
-    return 'NEUTRAL'
