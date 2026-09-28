@@ -400,6 +400,13 @@ def build_signal_message(signal):
         'UNKNOWN'
     )
 
+    # استخراج بيانات التحليل الرقمي وفيبوناتشي لعرضها في الرسالة
+    digital_data = signal.get('digital_data', {})
+    digital_info = "NONE"
+    if digital_data and digital_data.get('near_digital_level'):
+        active_fib = digital_data.get('active_fib', 'LEVEL')
+        digital_info = f"Active ({active_fib})"
+
     btc_conflict = signal.get(
         'btc_conflict',
         False
@@ -455,7 +462,8 @@ def build_signal_message(signal):
         f"₿ BTC Context: {btc_label}\n\n"
 
         f"💪 RSI 15M: {rsi_text}\n"
-        f"🔊 Volume: {volume_text}\n\n"
+        f"🔊 Volume: {volume_text}\n"
+        f"📐 Digital/Fib: {digital_info}\n\n"  # تم إضافة سطر التحليل الرقمي هنا
 
         f"💰 Entry: {format_price(entry)}\n"
         f"🛑 SL: {format_price(sl)} "
@@ -571,7 +579,7 @@ def bot_worker():
         "🧠 Multi-Timeframe Analysis\n"
         "📊 4H + 1H + 15M\n"
         "🟢 LONG + 🔴 SHORT\n"
-        "💧 Liquidity / BOS / Momentum / Volume\n"
+        "💧 Liquidity / BOS / Momentum / Volume / Fibonacci\n"
         "🛡 Dynamic Risk Management"
     )
 
