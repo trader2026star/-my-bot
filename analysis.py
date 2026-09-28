@@ -61,7 +61,6 @@ class ExpertAnalystBot:
             return cached['data'].copy()
 
         try:
-            # ضبط نوع السوق مؤقتاً أثناء الجلب إذا كان Spot أو Swap
             if market_type == 'spot':
                 self.exchange.options['defaultType'] = 'spot'
             else:
@@ -173,7 +172,6 @@ class ExpertAnalystBot:
         if diff <= 0:
             return None
 
-        # مستويات فيبوناتشي التصحيحية
         fib_levels = {
             'fib_382': high_val - (diff * 0.382),
             'fib_500': high_val - (diff * 0.5),
@@ -346,7 +344,6 @@ class ExpertAnalystBot:
         upper = curr['high'] - max(curr['open'], curr['close'])
         lower = min(curr['open'], curr['close']) - curr['low']
 
-        # شمعة البين بار الصاعدة (Pinbar / Hammer)
         if (
             curr['close'] > curr['open'] and
             lower >= body * 2 and
@@ -354,7 +351,6 @@ class ExpertAnalystBot:
         ):
             return 'BULLISH_PINBAR'
 
-        # شمعة البين بار الهابطة (Shooting Star)
         if (
             curr['close'] < curr['open'] and
             upper >= body * 2 and
@@ -364,7 +360,6 @@ class ExpertAnalystBot:
 
         prev_body = abs(prev['close'] - prev['open'])
 
-        # شمعة الابتلاع الصاعد (Bullish Engulfing)
         if (
             prev['close'] < prev['open'] and
             curr['close'] > curr['open'] and
@@ -374,7 +369,6 @@ class ExpertAnalystBot:
         ):
             return 'BULLISH_ENGULFING'
 
-        # شمعة الابتلاع الهابط (Bearish Engulfing)
         if (
             prev['close'] > prev['open'] and
             curr['close'] < curr['open'] and
@@ -487,7 +481,7 @@ class ExpertAnalystBot:
             return 'NEUTRAL'
 
     # =========================================================
-    # RISK & TRADE BUILDER (يفرق بين Spot و Futures)
+    # RISK & TRADE BUILDER
     # =========================================================
 
     def _build_trade(self, df, direction, ob, market_type='swap'):
@@ -517,13 +511,11 @@ class ExpertAnalystBot:
                 risk = entry - sl
                 risk_pct = risk / entry * 100
 
-            # أهداف التداول الفوري أو الفيوتشر
             tp1 = entry + risk * 2.0
             tp2 = entry + risk * 3.5
             tp3 = entry + risk * 5.0
 
         else:
-            # صفقات SHORT مخصصة للـ Futures فقط
             if market_type == 'spot':
                 return None
 
@@ -599,7 +591,6 @@ class ExpertAnalystBot:
         elif btc_context == 'BEARISH':
             short_votes += 1
 
-        # إذا كان السوق Spot، لا نقبل إلا صفقات LONG فقط منعاً للعشوائية
         if market_type == 'spot':
             if long_votes >= short_votes and (trend_4h != 'BEARISH'):
                 decision = 'LONG'
@@ -652,11 +643,9 @@ class ExpertAnalystBot:
         if fvg and ((decision == 'LONG' and fvg['type'] == 'BULLISH_FVG') or (decision == 'SHORT' and fvg['type'] == 'BEARISH_FVG')):
             confirmations.append('FVG')
 
-        # التحقق من الشموع اليابانية وتأكيدها
         if candle and ((decision == 'LONG' and candle.startswith('BULLISH')) or (decision == 'SHORT' and candle.startswith('BEARISH'))):
             confirmations.append(f'Candle({candle})')
 
-        # التحقق من التحليل الرقمي وفيبوناتشي وتأكيدها
         if digital_data and digital_data['near_digital_level']:
             confirmations.append(f"Fib({digital_data['active_fib']})")
 
@@ -667,7 +656,6 @@ class ExpertAnalystBot:
         risk_pct = trade['risk_pct']
         btc_conflict = (decision == 'LONG' and btc_context == 'BEARISH') or (decision == 'SHORT' and btc_context == 'BULLISH')
 
-        # حساب النقاط (Score) بدقة عالية لمنع أي إشارات عشوائية
         score = 30
 
         if trend_4h == self._decision_to_trend(decision):
@@ -684,8 +672,6 @@ class ExpertAnalystBot:
             score += 6
         if fvg:
             score += 5
-        
-        # منح نقاط قوية للشموع اليابانية والتحليل الرقمي
         if candle:
             score += 8
         if digital_data and digital_data['near_digital_level']:
@@ -696,9 +682,8 @@ class ExpertAnalystBot:
 
         score = int(max(0, min(score, 100)))
 
-        # شروط صارمة لاعتماد الصفقة
         risk_pass = 0.5 <= risk_pct <= 5.0
-        confirmation_pass = len(confirmations) >= 3  # تشترط 3 توافقات تحليلية على الأقل
+        confirmation_pass = len(confirmations) >= 3
 
         if not risk_pass or not confirmation_pass or score < 75:
             return self._empty_response(symbol, market_type)
