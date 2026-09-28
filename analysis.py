@@ -44,7 +44,7 @@ class ExpertAnalystBot:
     # DATA
     # =========================================================
 
-    def _fetch_ohlcv(self, symbol, timeframe, limit=220):
+    def _fetch_ohlcv(self, symbol, timeframe, limit=220, market_type='swap'):
         unwanted_tokens = [
             'EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF',
             'NZD', 'NCFX', 'USDCUSD'
@@ -53,7 +53,7 @@ class ExpertAnalystBot:
         if any(token in symbol.upper() for token in unwanted_tokens):
             return None
 
-        key = f"{symbol}:{timeframe}:{limit}"
+        key = f"{symbol}:{market_type}:{timeframe}:{limit}"
         now = time.time()
         cached = self.cache.get(key)
 
@@ -61,6 +61,12 @@ class ExpertAnalystBot:
             return cached['data'].copy()
 
         try:
+            # ضبط نوع السوق مؤقتاً أثناء الجلب إذا كان Spot أو Swap
+            if market_type == 'spot':
+                self.exchange.options['defaultType'] = 'spot'
+            else:
+                self.exchange.options['defaultType'] = 'swap'
+
             data = self.exchange.fetch_ohlcv(
                 symbol,
                 timeframe=timeframe,
@@ -99,8 +105,9 @@ class ExpertAnalystBot:
 
         except Exception as e:
             logger.warning(
-                "OHLCV error %s %s: %s",
+                "OHLCV error %s (%s) %s: %s",
                 symbol,
+                market_type,
                 timeframe,
                 e
             )
@@ -153,7 +160,7 @@ class ExpertAnalystBot:
     # DIGITAL ANALYSIS (التحليل الرقمي وفيبوناتشي)
     # =========================================================
 
-    def detect_digital_levels(self, df):
+    def detect_digital_levels(self, df, direction='LONG'):
         if df is None or len(df) < 30:
             return None
 
@@ -166,7 +173,7 @@ class ExpertAnalystBot:
         if diff <= 0:
             return None
 
-        # حساب مستويات فيبوناتشي التصحيحية
+        # مستويات فيبوناتشي التصحيحية
         fib_levels = {
             'fib_382': high_val - (diff * 0.382),
             'fib_500': high_val - (diff * 0.5),
@@ -174,11 +181,10 @@ class ExpertAnalystBot:
             'fib_786': high_val - (diff * 0.786)
         }
 
-        # فحص هل السعر الحالي قريب من أي مستوى رقمي/فيبوناتشي بنسبة أقل من 0.8%
         near_level = False
         active_fib = None
         for name, level in fib_levels.items():
-            if abs(current_price - level) / current_price <= 0.008:
+            if abs(current_price - level) / current_price <= 0.009:
                 near_level = True
                 active_fib = name
                 break
@@ -321,6 +327,66 @@ class ExpertAnalystBot:
         return None
 
     # =========================================================
+    # CANDLESTICK PATTERNS (الشموع اليابانية)
+    # =========================================================
+
+    def detect_candlestick_patterns(self, df):
+        if df is None or len(df) < 3:
+            return None
+
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        body = abs(curr['close'] - curr['open'])
+        range_val = curr['high'] - curr['low']
+
+        if range_val <= 0:
+            return None
+
+        upper = curr['high'] - max(curr['open'], curr['close'])
+        lower = min(curr['open'], curr['close']) - curr['low']
+
+        # شمعة البين بار الصاعدة (Pinbar / Hammer)
+        if (
+            curr['close'] > curr['open'] and
+            lower >= body * 2 and
+            upper <= max(body * 0.7, range_val * 0.08)
+        ):
+            return 'BULLISH_PINBAR'
+
+        # شمعة البين بار الهابطة (Shooting Star)
+        if (
+            curr['close'] < curr['open'] and
+            upper >= body * 2 and
+            lower <= max(body * 0.7, range_val * 0.08)
+        ):
+            return 'BEARISH_PINBAR'
+
+        prev_body = abs(prev['close'] - prev['open'])
+
+        # شمعة الابتلاع الصاعد (Bullish Engulfing)
+        if (
+            prev['close'] < prev['open'] and
+            curr['close'] > curr['open'] and
+            curr['close'] >= prev['open'] and
+            curr['open'] <= prev['close'] and
+            body > prev_body
+        ):
+            return 'BULLISH_ENGULFING'
+
+        # شمعة الابتلاع الهابط (Bearish Engulfing)
+        if (
+            prev['close'] > prev['open'] and
+            curr['close'] < curr['open'] and
+            curr['open'] >= prev['close'] and
+            curr['close'] <= prev['open'] and
+            body > prev_body
+        ):
+            return 'BEARISH_ENGULFING'
+
+        return None
+
+    # =========================================================
     # LIQUIDITY SWEEP
     # =========================================================
 
@@ -363,102 +429,11 @@ class ExpertAnalystBot:
         }
 
     # =========================================================
-    # CANDLE
-    # =========================================================
-
-    def detect_candlestick_patterns(self, df):
-        if df is None or len(df) < 3:
-            return None
-
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        body = abs(curr['close'] - curr['open'])
-        range_val = curr['high'] - curr['low']
-
-        if range_val <= 0:
-            return None
-
-        upper = curr['high'] - max(curr['open'], curr['close'])
-        lower = min(curr['open'], curr['close']) - curr['low']
-
-        if (
-            curr['close'] > curr['open'] and
-            lower >= body * 2 and
-            upper <= max(body * 0.7, range_val * 0.08)
-        ):
-            return 'BULLISH_PINBAR'
-
-        if (
-            curr['close'] < curr['open'] and
-            upper >= body * 2 and
-            lower <= max(body * 0.7, range_val * 0.08)
-        ):
-            return 'BEARISH_PINBAR'
-
-        prev_body = abs(prev['close'] - prev['open'])
-
-        if (
-            prev['close'] < prev['open'] and
-            curr['close'] > curr['open'] and
-            curr['close'] >= prev['open'] and
-            curr['open'] <= prev['close'] and
-            body > prev_body
-        ):
-            return 'BULLISH_ENGULFING'
-
-        if (
-            prev['close'] > prev['open'] and
-            curr['close'] < curr['open'] and
-            curr['open'] >= prev['close'] and
-            curr['close'] <= prev['open'] and
-            body > prev_body
-        ):
-            return 'BEARISH_ENGULFING'
-
-        return None
-
-    # =========================================================
-    # LIQUIDITY TARGETS
-    # =========================================================
-
-    def analyze_liquidation_heatmap(self, df, direction):
-        if df is None or len(df) < 20:
-            return {
-                'cluster_detected': False,
-                'level': 0.0,
-                'bias': 'NEUTRAL'
-            }
-
-        x = df.tail(30)
-
-        recent_high = float(x['high'].iloc[:-2].max())
-        recent_low = float(x['low'].iloc[:-2].min())
-        price = float(df['close'].iloc[-1])
-
-        if direction == 'LONG':
-            distance = (recent_high - price) / price if price else 999
-
-            return {
-                'cluster_detected': distance > 0 and distance <= 0.04,
-                'level': recent_high,
-                'bias': 'BULLISH_LIQUIDITY_MAGNET'
-            }
-
-        distance = (price - recent_low) / price if price else 999
-
-        return {
-            'cluster_detected': distance > 0 and distance <= 0.04,
-            'level': recent_low,
-            'bias': 'BEARISH_LIQUIDITY_MAGNET'
-        }
-
-    # =========================================================
     # MULTI TIMEFRAME TREND
     # =========================================================
 
-    def _get_trend(self, symbol, timeframe):
-        df = self._fetch_ohlcv(symbol, timeframe, 180)
+    def _get_trend(self, symbol, timeframe, market_type='swap'):
+        df = self._fetch_ohlcv(symbol, timeframe, 180, market_type)
 
         if df is None or len(df) < 60:
             return 'NEUTRAL', None
@@ -489,11 +464,10 @@ class ExpertAnalystBot:
     # BTC CONTEXT
     # =========================================================
 
-    def _btc_context(self):
+    def _btc_context(self, market_type='swap'):
         try:
-            symbol = 'BTC/USDT:USDT'
-
-            trend_1h, df = self._get_trend(symbol, '1h')
+            symbol = 'BTC/USDT' if market_type == 'spot' else 'BTC/USDT:USDT'
+            trend_1h, df = self._get_trend(symbol, '1h', market_type)
 
             if df is None:
                 return 'NEUTRAL'
@@ -513,91 +487,10 @@ class ExpertAnalystBot:
             return 'NEUTRAL'
 
     # =========================================================
-    # ENTRY QUALITY
+    # RISK & TRADE BUILDER (يفرق بين Spot و Futures)
     # =========================================================
 
-    def _entry_quality(
-        self,
-        direction,
-        price,
-        ema20,
-        rsi,
-        volume_ratio,
-        atr,
-        ob,
-        fvg
-    ):
-        score = 0
-        reasons = []
-
-        if direction == 'LONG':
-            if price > ema20:
-                score += 1
-                reasons.append('PRICE_ABOVE_EMA20')
-
-            if 50 <= rsi <= 68:
-                score += 1
-                reasons.append('RSI_HEALTHY_LONG')
-
-            if rsi > 76:
-                score -= 2
-                reasons.append('OVERBOUGHT')
-
-        else:
-            if price < ema20:
-                score += 1
-                reasons.append('PRICE_BELOW_EMA20')
-
-            if 32 <= rsi <= 50:
-                score += 1
-                reasons.append('RSI_HEALTHY_SHORT')
-
-            if rsi < 24:
-                score -= 2
-                reasons.append('OVERSOLD')
-
-        if volume_ratio >= 1.15:
-            score += 1
-            reasons.append('VOLUME_CONFIRMATION')
-
-        if ob:
-            ob_low = ob['low']
-            ob_high = ob['high']
-
-            if ob_low <= price <= ob_high:
-                score += 2
-                reasons.append('PRICE_IN_ORDER_BLOCK')
-            else:
-                distance = min(
-                    abs(price - ob_low),
-                    abs(price - ob_high)
-                ) / price
-
-                if distance <= 0.012:
-                    score += 1
-                    reasons.append('NEAR_ORDER_BLOCK')
-
-        if fvg:
-            if fvg['low'] <= price <= fvg['high']:
-                score += 2
-                reasons.append('PRICE_IN_FVG')
-            else:
-                distance = min(
-                    abs(price - fvg['low']),
-                    abs(price - fvg['high'])
-                ) / price
-
-                if distance <= 0.012:
-                    score += 1
-                    reasons.append('NEAR_FVG')
-
-        return score, reasons
-
-    # =========================================================
-    # RISK ENGINE
-    # =========================================================
-
-    def _build_trade(self, df, direction, ob):
+    def _build_trade(self, df, direction, ob, market_type='swap'):
         row = df.iloc[-1]
         entry = float(row['close'])
         atr = float(row['atr'])
@@ -608,12 +501,8 @@ class ExpertAnalystBot:
 
         if direction == 'LONG':
             structural_sl = swing_low - atr * 0.25
-
             if ob:
-                structural_sl = min(
-                    structural_sl,
-                    ob['low'] - atr * 0.15
-                )
+                structural_sl = min(structural_sl, ob['low'] - atr * 0.15)
 
             sl = structural_sl
             risk = entry - sl
@@ -623,23 +512,24 @@ class ExpertAnalystBot:
 
             risk_pct = risk / entry * 100
 
-            if risk_pct > 5.0:
+            if risk_pct > 6.0:
                 sl = entry - atr * 2.0
                 risk = entry - sl
                 risk_pct = risk / entry * 100
 
+            # أهداف التداول الفوري أو الفيوتشر
             tp1 = entry + risk * 2.0
             tp2 = entry + risk * 3.5
             tp3 = entry + risk * 5.0
 
         else:
-            structural_sl = swing_high + atr * 0.25
+            # صفقات SHORT مخصصة للـ Futures فقط
+            if market_type == 'spot':
+                return None
 
+            structural_sl = swing_high + atr * 0.25
             if ob:
-                structural_sl = max(
-                    structural_sl,
-                    ob['high'] + atr * 0.15
-                )
+                structural_sl = max(structural_sl, ob['high'] + atr * 0.15)
 
             sl = structural_sl
             risk = sl - entry
@@ -649,7 +539,7 @@ class ExpertAnalystBot:
 
             risk_pct = risk / entry * 100
 
-            if risk_pct > 5.0:
+            if risk_pct > 6.0:
                 sl = entry + atr * 2.0
                 risk = sl - entry
                 risk_pct = risk / entry * 100
@@ -671,39 +561,17 @@ class ExpertAnalystBot:
     # MAIN ANALYSIS
     # =========================================================
 
-    def evaluate_strategy(self, symbol):
-        df_15m_raw = self._fetch_ohlcv(symbol, '15m', 220)
+    def evaluate_strategy(self, symbol, market_type='swap'):
+        df_15m_raw = self._fetch_ohlcv(symbol, '15m', 220, market_type)
 
         if df_15m_raw is None or len(df_15m_raw) < 80:
-            return {
-                'symbol': symbol,
-                'decision': 'NO TRADE',
-                'score': 0,
-                'quality': 'INSUFFICIENT DATA',
-                'confirmation_count': 0,
-                'confirmations': [],
-                'trend_4h': 'NEUTRAL',
-                'trend_1h': 'NEUTRAL',
-                'btc_context': 'NEUTRAL',
-                'rsi_15m': 50.0,
-                'volume_ratio': 1.0,
-                'entry': 0.0,
-                'sl': 0.0,
-                'tp1': 0.0,
-                'tp2': 0.0,
-                'tp3': 0.0,
-                'risk_pct': 0.0,
-                'risk_filter': 'FAILED',
-                'structure_confirmation': 'NEUTRAL',
-                'btc_conflict': False,
-                'entry_quality': 'INVALID'
-            }
+            return self._empty_response(symbol, market_type)
 
         df = self._prepare(df_15m_raw)
 
-        trend_4h, _ = self._get_trend(symbol, '4h')
-        trend_1h, _ = self._get_trend(symbol, '1h')
-        btc_context = self._btc_context()
+        trend_4h, _ = self._get_trend(symbol, '4h', market_type)
+        trend_1h, _ = self._get_trend(symbol, '1h', market_type)
+        btc_context = self._btc_context(market_type)
 
         structure, bullish_bos, bearish_bos = self._structure(df)
         digital_data = self.detect_digital_levels(df)
@@ -731,34 +599,19 @@ class ExpertAnalystBot:
         elif btc_context == 'BEARISH':
             short_votes += 1
 
-        if long_votes > short_votes:
-            decision = 'LONG'
-        elif short_votes > long_votes:
-            decision = 'SHORT'
+        # إذا كان السوق Spot، لا نقبل إلا صفقات LONG فقط منعاً للعشوائية
+        if market_type == 'spot':
+            if long_votes >= short_votes and (trend_4h != 'BEARISH'):
+                decision = 'LONG'
+            else:
+                return self._empty_response(symbol, market_type)
         else:
-            return {
-                'symbol': symbol,
-                'decision': 'NO TRADE',
-                'score': 35,
-                'quality': 'WEAK',
-                'confirmation_count': 0,
-                'confirmations': [],
-                'trend_4h': trend_4h,
-                'trend_1h': trend_1h,
-                'btc_context': btc_context,
-                'rsi_15m': round(float(df['rsi'].iloc[-1]), 1),
-                'volume_ratio': round(float(df['volume_ratio'].iloc[-1]), 2),
-                'entry': float(df['close'].iloc[-1]),
-                'sl': 0.0,
-                'tp1': 0.0,
-                'tp2': 0.0,
-                'tp3': 0.0,
-                'risk_pct': 0.0,
-                'risk_filter': 'FAILED',
-                'structure_confirmation': structure,
-                'btc_conflict': False,
-                'entry_quality': 'CONFLICT'
-            }
+            if long_votes > short_votes:
+                decision = 'LONG'
+            elif short_votes > long_votes:
+                decision = 'SHORT'
+            else:
+                return self._empty_response(symbol, market_type)
 
         row = df.iloc[-1]
         entry = float(row['close'])
@@ -770,35 +623,24 @@ class ExpertAnalystBot:
         ob = self.detect_order_block(df, decision)
         candle = self.detect_candlestick_patterns(df)
         inducement = self.detect_inducement_filter(df, decision)
-        liquidity = self.analyze_liquidation_heatmap(df, decision)
 
         confirmations = []
 
-        if (
-            (decision == 'LONG' and trend_4h == 'BULLISH' and trend_1h == 'BULLISH') or
-            (decision == 'SHORT' and trend_4h == 'BEARISH' and trend_1h == 'BEARISH')
-        ):
+        if trend_4h == self._decision_to_trend(decision) and trend_1h == self._decision_to_trend(decision):
             confirmations.append('Trend')
 
-        if (
-            (decision == 'LONG' and structure == 'BULLISH') or
-            (decision == 'SHORT' and structure == 'BEARISH')
-        ):
+        if structure == self._decision_to_trend(decision):
             confirmations.append('Structure')
 
-        if decision == 'LONG':
-            if 52 <= rsi <= 70:
-                confirmations.append('Momentum')
-        else:
-            if 30 <= rsi <= 48:
-                confirmations.append('Momentum')
+        if decision == 'LONG' and 50 <= rsi <= 72:
+            confirmations.append('Momentum')
+        elif decision == 'SHORT' and 30 <= rsi <= 48:
+            confirmations.append('Momentum')
 
         if volume_ratio >= 1.10:
             confirmations.append('Volume')
 
-        if (decision == 'LONG' and bullish_bos) or (
-            decision == 'SHORT' and bearish_bos
-        ):
+        if (decision == 'LONG' and bullish_bos) or (decision == 'SHORT' and bearish_bos):
             confirmations.append('BOS')
 
         if inducement['passed']:
@@ -807,201 +649,66 @@ class ExpertAnalystBot:
         if ob:
             confirmations.append('OrderBlock')
 
-        if fvg:
-            if (
-                decision == 'LONG' and fvg['type'] == 'BULLISH_FVG'
-            ) or (
-                decision == 'SHORT' and fvg['type'] == 'BEARISH_FVG'
-            ):
-                confirmations.append('FVG')
+        if fvg and ((decision == 'LONG' and fvg['type'] == 'BULLISH_FVG') or (decision == 'SHORT' and fvg['type'] == 'BEARISH_FVG')):
+            confirmations.append('FVG')
 
-        if candle:
-            if (
-                decision == 'LONG' and candle.startswith('BULLISH')
-            ) or (
-                decision == 'SHORT' and candle.startswith('BEARISH')
-            ):
-                confirmations.append('CandlePattern')
+        # التحقق من الشموع اليابانية وتأكيدها
+        if candle and ((decision == 'LONG' and candle.startswith('BULLISH')) or (decision == 'SHORT' and candle.startswith('BEARISH'))):
+            confirmations.append(f'Candle({candle})')
 
-        # إضافة تأكيد التحليل الرقمي إذا كان السعر عند مستوى فيبوناتشي
+        # التحقق من التحليل الرقمي وفيبوناتشي وتأكيدها
         if digital_data and digital_data['near_digital_level']:
-            confirmations.append('DigitalLevel')
+            confirmations.append(f"Fib({digital_data['active_fib']})")
 
-        entry_score, entry_reasons = self._entry_quality(
-            decision,
-            entry,
-            float(row['ema20']),
-            rsi,
-            volume_ratio,
-            atr,
-            ob,
-            fvg
-        )
-
-        trade = self._build_trade(df, decision, ob)
-
+        trade = self._build_trade(df, decision, ob, market_type)
         if trade is None:
-            return {
-                'symbol': symbol,
-                'decision': 'NO TRADE',
-                'score': 30,
-                'quality': 'WEAK',
-                'confirmation_count': len(confirmations),
-                'confirmations': confirmations,
-                'trend_4h': trend_4h,
-                'trend_1h': trend_1h,
-                'btc_context': btc_context,
-                'rsi_15m': round(rsi, 1),
-                'volume_ratio': round(volume_ratio, 2),
-                'entry': entry,
-                'sl': 0.0,
-                'tp1': 0.0,
-                'tp2': 0.0,
-                'tp3': 0.0,
-                'risk_pct': 0.0,
-                'risk_filter': 'FAILED',
-                'structure_confirmation': structure,
-                'btc_conflict': False,
-                'entry_quality': 'INVALID'
-            }
+            return self._empty_response(symbol, market_type)
 
         risk_pct = trade['risk_pct']
+        btc_conflict = (decision == 'LONG' and btc_context == 'BEARISH') or (decision == 'SHORT' and btc_context == 'BULLISH')
 
-        btc_conflict = (
-            (decision == 'LONG' and btc_context == 'BEARISH') or
-            (decision == 'SHORT' and btc_context == 'BULLISH')
-        )
-
+        # حساب النقاط (Score) بدقة عالية لمنع أي إشارات عشوائية
         score = 30
 
         if trend_4h == self._decision_to_trend(decision):
-            score += 12
-
+            score += 10
         if trend_1h == self._decision_to_trend(decision):
-            score += 12
-
+            score += 10
         if structure == self._decision_to_trend(decision):
-            score += 12
-
-        if (
-            decision == 'LONG' and 52 <= rsi <= 70
-        ) or (
-            decision == 'SHORT' and 30 <= rsi <= 48
-        ):
-            score += 7
-
-        if volume_ratio >= 1.10:
-            score += 6
-
-        if volume_ratio >= 1.50:
-            score += 3
-
+            score += 10
+        if volume_ratio >= 1.15:
+            score += 5
         if inducement['passed']:
-            score += 7
-
+            score += 6
         if ob:
+            score += 6
+        if fvg:
             score += 5
-
-        if fvg and (
-            (decision == 'LONG' and fvg['type'] == 'BULLISH_FVG') or
-            (decision == 'SHORT' and fvg['type'] == 'BEARISH_FVG')
-        ):
-            score += 5
-
-        if candle and (
-            (decision == 'LONG' and candle.startswith('BULLISH')) or
-            (decision == 'SHORT' and candle.startswith('BEARISH'))
-        ):
-            score += 3
-
-        # منح نقاط إضافية إذا احترم السعر مستويات التحليل الرقمي (فيبوناتشي)
+        
+        # منح نقاط قوية للشموع اليابانية والتحليل الرقمي
+        if candle:
+            score += 8
         if digital_data and digital_data['near_digital_level']:
-            score += 5
-
-        if entry_score >= 5:
-            score += 4
-        elif entry_score >= 3:
-            score += 2
-
-        if btc_context == self._decision_to_trend(decision):
-            score += 5
+            score += 8
 
         if btc_conflict:
-            score -= 8
-
-        if 0.5 <= risk_pct <= 3.5:
-            score += 7
-        elif 3.5 < risk_pct <= 5.0:
-            score += 2
-        else:
-            score -= 8
-
-        if decision == 'LONG' and rsi >= 75:
-            score -= 8
-        if decision == 'SHORT' and rsi <= 25:
-            score -= 8
+            score -= 10
 
         score = int(max(0, min(score, 100)))
 
-        risk_pass = (
-            0.5 <= risk_pct <= 5.0
-        )
+        # شروط صارمة لاعتماد الصفقة
+        risk_pass = 0.5 <= risk_pct <= 5.0
+        confirmation_pass = len(confirmations) >= 3  # تشترط 3 توافقات تحليلية على الأقل
 
-        trend_pass = (
-            trend_4h == self._decision_to_trend(decision) and
-            trend_1h == self._decision_to_trend(decision)
-        )
+        if not risk_pass or not confirmation_pass or score < 75:
+            return self._empty_response(symbol, market_type)
 
-        confirmation_pass = len(confirmations) >= 4
-
-        momentum_pass = (
-            (decision == 'LONG' and 45 <= rsi <= 72) or
-            (decision == 'SHORT' and 28 <= rsi <= 55)
-        )
-
-        elite_pass = (
-            score >= 86 and
-            risk_pass and
-            trend_pass and
-            confirmation_pass and
-            momentum_pass and
-            (
-                inducement['passed'] or
-                ob is not None or
-                fvg is not None
-            )
-        )
-
-        if not risk_pass or not trend_pass or not confirmation_pass:
-            final_decision = 'NO TRADE'
-        elif score >= 86 and elite_pass:
-            final_decision = decision
-        elif score >= 72 and momentum_pass:
-            final_decision = decision
-        else:
-            final_decision = 'NO TRADE'
-
-        if final_decision == 'NO TRADE':
-            quality = 'WEAK' if score < 60 else 'MODERATE'
-            entry_status = 'REJECTED'
-            risk_filter = 'FAILED' if not risk_pass else 'PASSED'
-        else:
-            if score >= 90:
-                quality = 'HIGH'
-            elif score >= 80:
-                quality = 'GOOD'
-            else:
-                quality = 'MODERATE'
-
-            entry_status = (
-                'OPTIMAL' if entry_score >= 5 and
-                risk_pct <= 3.5 else 'VALID'
-            )
-            risk_filter = 'PASSED'
+        quality = 'HIGH' if score >= 85 else 'GOOD'
 
         return {
             'symbol': symbol,
-            'decision': final_decision,
+            'market_type': market_type.upper(),
+            'decision': decision,
             'score': score,
             'quality': quality,
             'confirmation_count': len(confirmations),
@@ -1017,14 +724,36 @@ class ExpertAnalystBot:
             'tp2': trade['tp2'],
             'tp3': trade['tp3'],
             'risk_pct': trade['risk_pct'],
-            'risk_filter': risk_filter,
+            'risk_filter': 'PASSED',
             'structure_confirmation': structure,
             'btc_conflict': btc_conflict,
-            'entry_quality': entry_status,
-            'liquidation_data': liquidity,
-            'inducement_status': inducement,
-            'entry_reasons': entry_reasons,
-            'fvg_data': fvg,
-            'order_block_data': ob,
-            'digital_data': digital_data
+            'entry_quality': 'OPTIMAL',
+            'digital_data': digital_data,
+            'candlestick': candle
+        }
+
+    def _empty_response(self, symbol, market_type):
+        return {
+            'symbol': symbol,
+            'market_type': market_type.upper(),
+            'decision': 'NO TRADE',
+            'score': 0,
+            'quality': 'WEAK',
+            'confirmation_count': 0,
+            'confirmations': [],
+            'trend_4h': 'NEUTRAL',
+            'trend_1h': 'NEUTRAL',
+            'btc_context': 'NEUTRAL',
+            'rsi_15m': 50.0,
+            'volume_ratio': 1.0,
+            'entry': 0.0,
+            'sl': 0.0,
+            'tp1': 0.0,
+            'tp2': 0.0,
+            'tp3': 0.0,
+            'risk_pct': 0.0,
+            'risk_filter': 'FAILED',
+            'structure_confirmation': 'NEUTRAL',
+            'btc_conflict': False,
+            'entry_quality': 'INVALID'
         }
