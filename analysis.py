@@ -22,7 +22,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 app = Flask(__name__)
 
 # =========================================================
-# EXPERT ANALYST BOT CORE (LONG ONLY - SPOT & FUTURES)
+# EXPERT ANALYST BOT CORE (LONG ONLY - DUAL SPOT & FUTURES)
 # =========================================================
 class ExpertAnalystBot:
     def __init__(
@@ -30,21 +30,18 @@ class ExpertAnalystBot:
         exchange_id='bingx',
         api_key='',
         secret_key='',
-        timeframe='15m',
-        market_type='swap'  # 'swap' للفيوتشر أو 'spot' للفوري
+        timeframe='15m'
     ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
-        self.market_type = market_type
 
         exchange_class = getattr(ccxt, exchange_id)
+        # تهيئة البوت للفيوتشر افتراضياً كأصل رئيسي لجلب الأزواج
         self.exchange = exchange_class({
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
-            'options': {
-                'defaultType': self.market_type
-            }
+            'options': {'defaultType': 'swap'}
         })
 
         self.cache = {}
@@ -61,11 +58,11 @@ class ExpertAnalystBot:
             return False
         return True
 
-    def _fetch_ohlcv(self, symbol, timeframe, limit=220):
+    def _fetch_ohlcv(self, symbol, timeframe, limit=220, market_type='swap'):
         if not self._is_valid_symbol(symbol):
             return None
 
-        key = f"{symbol}:{timeframe}:{limit}:{self.market_type}"
+        key = f"{symbol}:{timeframe}:{limit}:{market_type}"
         now = time.time()
 
         cached = self.cache.get(key)
@@ -73,6 +70,8 @@ class ExpertAnalystBot:
             return cached['data'].copy()
 
         try:
+            # مؤقتاً نغير نوع السوق في المنصة لجلب البيانات حسب الطلب (سبوت أو فيوتشر)
+            self.exchange.options['defaultType'] = market_type
             data = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             if not data or len(data) < 30:
                 return None
@@ -86,7 +85,7 @@ class ExpertAnalystBot:
             return df.copy()
 
         except Exception as e:
-            logger.warning("OHLCV error %s %s: %s", symbol, timeframe, e)
+            logger.warning("OHLCV error %s %s (%s): %s", symbol, timeframe, market_type, e)
             return None
 
     def _calculate_rsi(self, series, period=14):
@@ -158,24 +157,24 @@ class ExpertAnalystBot:
         
         return df.dropna().reset_index(drop=True)
 
-    def get_market_context(self, symbol):
+    def get_market_context(self, symbol, market_type):
         trend_4h = "UNKNOWN"
         trend_1h = "UNKNOWN"
         btc_context = "UNKNOWN"
 
         try:
-            df_4h = self._fetch_ohlcv(symbol, '4h', 50)
+            df_4h = self._fetch_ohlcv(symbol, '4h', 50, market_type)
             if df_4h is not None and len(df_4h) > 10:
                 _, st_dir_4h = self._calculate_supertrend(df_4h)
                 trend_4h = "BULLISH" if st_dir_4h.iloc[-1] == 1 else "BEARISH"
 
-            df_1h = self._fetch_ohlcv(symbol, '1h', 50)
+            df_1h = self._fetch_ohlcv(symbol, '1h', 50, market_type)
             if df_1h is not None and len(df_1h) > 10:
                 _, st_dir_1h = self._calculate_supertrend(df_1h)
                 trend_1h = "BULLISH" if st_dir_1h.iloc[-1] == 1 else "BEARISH"
 
-            btc_symbol = "BTC/USDT" if self.market_type == 'spot' else "BTC/USDT:USDT"
-            df_btc = self._fetch_ohlcv(btc_symbol, '1h', 50)
+            btc_symbol = "BTC/USDT"
+            df_btc = self._fetch_ohlcv(btc_symbol, '1h', 50, market_type)
             if df_btc is not None and len(df_btc) > 10:
                 _, st_dir_btc = self._calculate_supertrend(df_btc)
                 btc_context = "BULLISH" if st_dir_btc.iloc[-1] == 1 else "BEARISH"
@@ -190,19 +189,16 @@ class ExpertAnalystBot:
         i = len(df) - 1
         if df.loc[i, 'low'] > df.loc[i - 2, 'high']:
             return 'BULLISH_FVG'
-        elif df.loc[i, 'high'] < df.loc[i - 2, 'low']:
-            return 'BEARISH_FVG'
         return None
 
-    def detect_order_block(self, df, direction):
+    def detect_order_block(self, df):
         if df is None or len(df) < 5:
             return None
         for i in range(len(df) - 2, 2, -1):
-            if direction == 'LONG':
-                if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
-                    df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
-                    df.loc[i+1, 'close'] > df.loc[i, 'high']):
-                    return {'type': 'BULLISH_OB', 'level': float(df.loc[i, 'low'])}
+            if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
+                df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
+                df.loc[i+1, 'close'] > df.loc[i, 'high']):
+                return {'type': 'BULLISH_OB', 'level': float(df.loc[i, 'low'])}
         return None
 
     def detect_candlestick_patterns(self, df):
@@ -228,11 +224,11 @@ class ExpertAnalystBot:
 
         return None
 
-    def evaluate_strategy(self, symbol):
+    def evaluate_strategy(self, symbol, market_type='swap'):
         if not self._is_valid_symbol(symbol):
             return None
 
-        df_15m = self._fetch_ohlcv(symbol, '15m', 100)
+        df_15m = self._fetch_ohlcv(symbol, '15m', 100, market_type)
         if df_15m is None or len(df_15m) < 30:
             return None
 
@@ -241,12 +237,10 @@ class ExpertAnalystBot:
             return None
             
         row = df_15m.iloc[-1]
-
-        # 🟢 تثبيت القرار حصرياً على الشراء (LONG ONLY) في كل الأسواق
-        decision = 'LONG'
+        decision = 'LONG'  # شراء فقط لكل الأسواق
 
         fvg = self.detect_fvg(df_15m)
-        ob = self.detect_order_block(df_15m, decision)
+        ob = self.detect_order_block(df_15m)
         candle_pattern = self.detect_candlestick_patterns(df_15m)
         
         confirmations = ['Structure', 'Trend']
@@ -273,16 +267,12 @@ class ExpertAnalystBot:
         if len(confirmations) < 3:
             return None
 
-        trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
+        trend_4h, trend_1h, btc_context = self.get_market_context(symbol, market_type)
 
-        # 🛡️ فلتر اتجاه 4 ساعات (منع الشراء إذا كان الاتجاه العام هابطاً بقوة)
         if trend_4h == 'BEARISH':
             return None
-
-        # 🛡️ فلتر التشبع للـ LONG
         if row['rsi'] > 75:
             return None
-
         if row['volume_ratio'] < 0.7:
             return None
 
@@ -296,12 +286,12 @@ class ExpertAnalystBot:
         tp1 = entry + (risk_distance * 1.5)
         tp2 = entry + (risk_distance * 2.5)
         tp3 = entry + (risk_distance * 4.0)
-        struct_conf = 'BULLISH'
 
         score_val = 82 + (len(confirmations) * 3)
 
         return {
             'symbol': symbol,
+            'market_type': market_type.upper(),
             'decision': decision,
             'score': min(score_val, 99),
             'quality': 'HIGH',
@@ -317,11 +307,10 @@ class ExpertAnalystBot:
             'tp2': tp2,
             'tp3': tp3,
             'risk_pct': round((abs(entry - sl) / entry) * 100, 2),
-            'structure_confirmation': struct_conf
+            'structure_confirmation': 'BULLISH'
         }
 
-# البوت يعمل الآن بنظام الشراء فقط (LONG ONLY)
-bot = ExpertAnalystBot(exchange_id='bingx', market_type='swap')
+bot = ExpertAnalystBot(exchange_id='bingx')
 
 # =========================================================
 # TELEGRAM SENDER
@@ -331,11 +320,13 @@ def send_telegram_alert(signal):
         logger.info("Telegram token not set. Skipping message dispatch.")
         return
 
+    market_label = "🟢 [SPOT - فوري]" if signal['market_type'] == 'SPOT' else "🚀 [FUTURES - فيوتشر]"
+
     msg = f"""
-🟢 EXPERT LONG-ONLY SIGNAL 🚀
+{market_label} LONG-ONLY SIGNAL 📈
 
 📊 Symbol: {signal['symbol']}
-🎯 Decision: {signal['decision']} (LONG)
+🎯 Decision: LONG
 ⭐ Score: {signal['score']}
 🏷 Quality: HIGH
 
@@ -356,7 +347,7 @@ def send_telegram_alert(signal):
 🎯 TP2: {signal['tp2']:.7f} | R:R 1:2.5
 🎯 TP3: {signal['tp3']:.7f} | R:R 1:4
 
-🛡 Mode: LONG ONLY (No Shorting)
+🛡 Strategy: LONG ONLY (No Shorting)
 ⚡ Entry Status: DIRECT
 
 ⚠️ Setup signal — not a guaranteed result.
@@ -382,9 +373,12 @@ def webhook():
         return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
     symbol = data['symbol']
-    logger.info("Analyzing symbol from webhook: %s", symbol)
+    # يستقبل الطلب ويحدد هل هو سبوت أو فيوتشر بناءً على مرسل البيانات (افتراضياً swap أو يحدد من الـ payload)
+    market_type = data.get('market_type', 'swap') 
+    
+    logger.info("Analyzing symbol: %s in market: %s", symbol, market_type)
 
-    signal = bot.evaluate_strategy(symbol)
+    signal = bot.evaluate_strategy(symbol, market_type)
     if signal:
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
@@ -393,7 +387,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return f"Expert Analyst Bot is running in [LONG ONLY - {bot.market_type.upper()}] mode!", 200
+    return "Expert Dual-Market LONG-ONLY Analyst Bot is running!", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
