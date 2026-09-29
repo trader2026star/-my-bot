@@ -32,7 +32,7 @@ class ExpertAnalystBot:
         api_key='',
         secret_key='',
         timeframe='15m',
-        market_type='spot'  # 'spot' للفوري أو 'swap' للفيوتشر
+        market_type='spot'
     ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
@@ -52,18 +52,14 @@ class ExpertAnalystBot:
         self.cache_seconds = 20
 
     def _is_valid_symbol(self, symbol):
-        # تصفية العملات الغريبة والعملات غير المرغوبة بدقة تامة
         unwanted_tokens = [
             'EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 
             'USDCUSD', 'BULL', 'BEAR', 'UP', 'DOWN', '3S', '3L', 'HEDGE'
         ]
-        
         if 'USDT' not in symbol:
             return False
-            
         if any(token in symbol for token in unwanted_tokens):
             return False
-            
         return True
 
     def _fetch_ohlcv(self, symbol, timeframe, limit=220):
@@ -74,40 +70,32 @@ class ExpertAnalystBot:
         now = time.time()
 
         cached = self.cache.get(key)
-        if cached:
-            if now - cached['time'] < self.cache_seconds:
-                return cached['data'].copy()
+        if cached and (now - cached['time'] < self.cache_seconds):
+            return cached['data'].copy()
 
         try:
-            data = self.exchange.fetch_ohlcv(
-                symbol,
-                timeframe=timeframe,
-                limit=limit
-            )
-
+            data = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             if not data or len(data) < 30:
                 return None
 
-            df = pd.DataFrame(
-                data,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            )
-
+            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
             df = df.dropna().reset_index(drop=True)
-
-            self.cache[key] = {
-                'time': now,
-                'data': df
-            }
-
+            self.cache[key] = {'time': now, 'data': df}
             return df.copy()
 
         except Exception as e:
             logger.warning("OHLCV error %s %s: %s", symbol, timeframe, e)
             return None
+
+    def _calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
 
     def _calculate_bollinger_bands(self, series, period=20, std_dev=2):
         middle = series.rolling(window=period).mean()
@@ -152,6 +140,10 @@ class ExpertAnalystBot:
     def _prepare(self, df):
         df = df.copy()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['rsi'] = self._calculate_rsi(df['close'], 14)
+        
+        vol_ma = df['volume'].rolling(window=20).mean()
+        df['volume_ratio'] = np.where(vol_ma > 0, df['volume'] / vol_ma, 1.0)
         
         upper, middle, lower = self._calculate_bollinger_bands(df['close'])
         df['bb_upper'] = upper
@@ -166,6 +158,32 @@ class ExpertAnalystBot:
         df['atr'] = (df['high'] - df['low']).rolling(14).mean().fillna(df['close'] * 0.01)
         
         return df.dropna().reset_index(drop=True)
+
+    def get_market_context(self, symbol):
+        trend_4h = "UNKNOWN"
+        trend_1h = "UNKNOWN"
+        btc_context = "UNKNOWN"
+
+        try:
+            df_4h = self._fetch_ohlcv(symbol, '4h', 50)
+            if df_4h is not None and len(df_4h) > 10:
+                _, st_dir_4h = self._calculate_supertrend(df_4h)
+                trend_4h = "BULLISH" if st_dir_4h.iloc[-1] == 1 else "BEARISH"
+
+            df_1h = self._fetch_ohlcv(symbol, '1h', 50)
+            if df_1h is not None and len(df_1h) > 10:
+                _, st_dir_1h = self._calculate_supertrend(df_1h)
+                trend_1h = "BULLISH" if st_dir_1h.iloc[-1] == 1 else "BEARISH"
+
+            btc_symbol = "BTC/USDT:USDT" if self.market_type == 'swap' else "BTC/USDT"
+            df_btc = self._fetch_ohlcv(btc_symbol, '1h', 50)
+            if df_btc is not None and len(df_btc) > 10:
+                _, st_dir_btc = self._calculate_supertrend(df_btc)
+                btc_context = "BULLISH" if st_dir_btc.iloc[-1] == 1 else "BEARISH"
+        except Exception as e:
+            logger.error("Error fetching market context: %s", e)
+
+        return trend_4h, trend_1h, btc_context
 
     def detect_fvg(self, df):
         if df is None or len(df) < 3:
@@ -230,7 +248,6 @@ class ExpertAnalystBot:
             
         row = df_15m.iloc[-1]
 
-        # للسوق الفوري الصفقات دايماً LONG للشراء، وللابوالات الأخرى حسب الاتجاه
         decision = 'LONG' if self.market_type == 'spot' else ('LONG' if row['supertrend_dir'] == 1 else 'SHORT')
 
         fvg = self.detect_fvg(df_15m)
@@ -239,6 +256,7 @@ class ExpertAnalystBot:
         
         confirmations = ['Structure', 'Trend']
         
+        # تفعيل فحص المؤشرات المتقدمة وإضافتها للتأكيدات
         if row['supertrend_dir'] == 1:
             confirmations.append('SuperTrend_Bullish')
         elif self.market_type != 'spot' and row['supertrend_dir'] == -1:
@@ -247,6 +265,14 @@ class ExpertAnalystBot:
         if row['sar_bullish']:
             confirmations.append('ParabolicSAR_Buy')
 
+        # استراتيجية حدود بولنجر (ارتداد من الحد السفلي أو اختراق صعودي)
+        if row['close'] <= row['bb_lower'] * 1.01:
+            confirmations.append('Bollinger_Lower_Bounce')
+
+        # استراتيجية مؤشر القوة النسبية RSI (دعم الزخم)
+        if row['rsi'] > 45 and row['rsi'] < 70:
+            confirmations.append('RSI_Momentum_OK')
+
         if fvg:
             confirmations.append(fvg)
         if ob:
@@ -254,7 +280,7 @@ class ExpertAnalystBot:
         if candle_pattern:
             confirmations.append(candle_pattern)
 
-        if len(confirmations) < 2:
+        if len(confirmations) < 3:
             return None
 
         entry = float(row['close'])
@@ -273,14 +299,20 @@ class ExpertAnalystBot:
             tp3 = entry - (atr * 6.0)
             struct_conf = 'BEARISH'
 
+        trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
         score_val = 82 + (len(confirmations) * 3)
 
         return {
             'symbol': symbol,
             'decision': decision,
-            'score': min(score_val, 98),
+            'score': min(score_val, 99),
             'quality': 'HIGH',
             'confirmations': confirmations,
+            'trend_4h': trend_4h,
+            'trend_1h': trend_1h,
+            'btc_context': btc_context,
+            'rsi_15m': float(row['rsi']),
+            'volume_ratio': float(row['volume_ratio']),
             'entry': entry,
             'sl': sl,
             'tp1': tp1,
@@ -291,7 +323,6 @@ class ExpertAnalystBot:
         }
 
 
-# تهيئة البوت لسوق الفوري (يمكنك تعديل market_type إلى 'swap' لو أردت الفيوتشر)
 bot = ExpertAnalystBot(exchange_id='bingx', market_type='spot')
 
 # =========================================================
@@ -302,10 +333,7 @@ def send_telegram_alert(signal):
         logger.info("Telegram token not set. Skipping message dispatch.")
         return
 
-    if bot.market_type == 'spot':
-        market_label = "🟢 EXPERT SPOT SIGNAL (صفقة فوري - شراء)"
-    else:
-        market_label = "🚨 EXPERT FUTURES SIGNAL 🚨"
+    market_label = "🟢 EXPERT SPOT SIGNAL (صفقة فوري)" if bot.market_type == 'spot' else "🚨 EXPERT FUTURES SIGNAL 🚨"
     
     msg = f"""
 {market_label}
@@ -315,10 +343,16 @@ def send_telegram_alert(signal):
 ⭐ Score: {signal['score']}
 🏷 Quality: HIGH
 
-📌 Confirmations: {len(signal['confirmations'])}/2+
+📌 Confirmations: {len(signal['confirmations'])}/3+
 🧠 {', '.join(signal['confirmations'])}
 
-📈 Trend: {signal['structure_confirmation']}
+📈 4H Trend: {signal['trend_4h']}
+📊 1H Trend: {signal['trend_1h']}
+₿ BTC Context: {signal['btc_context']}
+
+💪 RSI 15M: {signal['rsi_15m']:.1f}
+🔊 Volume: {signal['volume_ratio']:.2f}x
+📐 Digital/Fib: NONE
 
 💰 Entry: {signal['entry']:.7f}
 🛑 SL: {signal['sl']:.7f} ({signal['risk_pct']}%)
@@ -328,7 +362,9 @@ def send_telegram_alert(signal):
 🎯 TP3: {signal['tp3']:.7f} | R:R 1:6
 
 🛡 Risk Filter: PASSED
-⚡ Entry Status: OPTIMAL
+📋 Structure Confirmation: {signal['structure_confirmation']}
+⚡ Entry Status: DIRECT
+
 ⚠️ Setup signal — not a guaranteed result.
 """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -365,7 +401,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Analyst Bot is running successfully!", 200
+    return "Expert Analyst Bot is running successfully with Advanced Indicators!", 200
 
 
 if __name__ == '__main__':
