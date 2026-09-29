@@ -22,7 +22,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 app = Flask(__name__)
 
 # =========================================================
-# EXPERT ANALYST BOT CORE (SPOT & FUTURES DUAL MODE)
+# EXPERT ANALYST BOT CORE (LONG ONLY - SPOT & FUTURES)
 # =========================================================
 class ExpertAnalystBot:
     def __init__(
@@ -31,7 +31,7 @@ class ExpertAnalystBot:
         api_key='',
         secret_key='',
         timeframe='15m',
-        market_type='spot'  # يمكنك تغييرها إلى 'swap' للفيوتشر أو 'spot' للفوري
+        market_type='swap'  # 'swap' للفيوتشر أو 'spot' للفوري
     ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
@@ -203,11 +203,6 @@ class ExpertAnalystBot:
                     df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
                     df.loc[i+1, 'close'] > df.loc[i, 'high']):
                     return {'type': 'BULLISH_OB', 'level': float(df.loc[i, 'low'])}
-            else:
-                if (df.loc[i, 'close'] > df.loc[i, 'open'] and 
-                    df.loc[i+1, 'close'] < df.loc[i+1, 'open'] and 
-                    df.loc[i+1, 'close'] < df.loc[i, 'low']):
-                    return {'type': 'BEARISH_OB', 'level': float(df.loc[i, 'high'])}
         return None
 
     def detect_candlestick_patterns(self, df):
@@ -247,11 +242,8 @@ class ExpertAnalystBot:
             
         row = df_15m.iloc[-1]
 
-        # 🟢 إذا كان السوق SPOT، فالقرار حصرياً LONG (شراء فقط)
-        if self.market_type == 'spot':
-            decision = 'LONG'
-        else:
-            decision = 'LONG' if row['supertrend_dir'] == 1 else 'SHORT'
+        # 🟢 تثبيت القرار حصرياً على الشراء (LONG ONLY) في كل الأسواق
+        decision = 'LONG'
 
         fvg = self.detect_fvg(df_15m)
         ob = self.detect_order_block(df_15m, decision)
@@ -261,8 +253,6 @@ class ExpertAnalystBot:
         
         if row['supertrend_dir'] == 1:
             confirmations.append('SuperTrend_Bullish')
-        elif self.market_type != 'spot' and row['supertrend_dir'] == -1:
-            confirmations.append('SuperTrend_Bearish')
             
         if row['sar_bullish']:
             confirmations.append('ParabolicSAR_Buy')
@@ -270,7 +260,7 @@ class ExpertAnalystBot:
         if row['close'] <= row['bb_lower'] * 1.01:
             confirmations.append('Bollinger_Lower_Bounce')
 
-        if row['rsi'] > 40 and row['rsi'] < 70:
+        if row['rsi'] > 30 and row['rsi'] < 70:
             confirmations.append('RSI_Momentum_OK')
 
         if fvg:
@@ -285,39 +275,28 @@ class ExpertAnalystBot:
 
         trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
 
-        # 🛡️ فلتر اتجاه 4 ساعات
-        if decision == 'LONG' and trend_4h == 'BEARISH':
-            return None
-        if self.market_type != 'spot' and decision == 'SHORT' and trend_4h == 'BULLISH':
+        # 🛡️ فلتر اتجاه 4 ساعات (منع الشراء إذا كان الاتجاه العام هابطاً بقوة)
+        if trend_4h == 'BEARISH':
             return None
 
         # 🛡️ فلتر التشبع للـ LONG
-        if decision == 'LONG' and row['rsi'] > 75:
+        if row['rsi'] > 75:
             return None
 
-        if self.market_type == 'spot' and row['volume_ratio'] < 0.7:
+        if row['volume_ratio'] < 0.7:
             return None
 
         entry = float(row['close'])
         atr = float(row['atr']) if 'atr' in row and row['atr'] > 0 else entry * 0.01
 
         recent_low = float(df_15m['low'].iloc[-5:].min())
-        recent_high = float(df_15m['high'].iloc[-5:].max())
 
-        if decision == 'LONG':
-            sl = min(entry - (atr * 2.2), recent_low - (atr * 0.5))
-            risk_distance = entry - sl
-            tp1 = entry + (risk_distance * 1.5)
-            tp2 = entry + (risk_distance * 2.5)
-            tp3 = entry + (risk_distance * 4.0)
-            struct_conf = 'BULLISH'
-        else:
-            sl = max(entry + (atr * 2.2), recent_high + (atr * 0.5))
-            risk_distance = sl - entry
-            tp1 = entry - (risk_distance * 1.5)
-            tp2 = entry - (risk_distance * 2.5)
-            tp3 = entry - (risk_distance * 4.0)
-            struct_conf = 'BEARISH'
+        sl = min(entry - (atr * 2.2), recent_low - (atr * 0.5))
+        risk_distance = entry - sl
+        tp1 = entry + (risk_distance * 1.5)
+        tp2 = entry + (risk_distance * 2.5)
+        tp3 = entry + (risk_distance * 4.0)
+        struct_conf = 'BULLISH'
 
         score_val = 82 + (len(confirmations) * 3)
 
@@ -341,8 +320,8 @@ class ExpertAnalystBot:
             'structure_confirmation': struct_conf
         }
 
-# يمكنك التبديل هنا بكل سهولة: market_type='spot' أو market_type='swap'
-bot = ExpertAnalystBot(exchange_id='bingx', market_type='spot')
+# البوت يعمل الآن بنظام الشراء فقط (LONG ONLY)
+bot = ExpertAnalystBot(exchange_id='bingx', market_type='swap')
 
 # =========================================================
 # TELEGRAM SENDER
@@ -352,13 +331,11 @@ def send_telegram_alert(signal):
         logger.info("Telegram token not set. Skipping message dispatch.")
         return
 
-    market_title = "🟢 EXPERT SPOT SIGNAL (صفقة فوري - شراء)" if bot.market_type == 'spot' else "🚨 EXPERT FUTURES SIGNAL 🚨"
-
     msg = f"""
-{market_title}
+🟢 EXPERT LONG-ONLY SIGNAL 🚀
 
 📊 Symbol: {signal['symbol']}
-🎯 Decision: {signal['decision']}
+🎯 Decision: {signal['decision']} (LONG)
 ⭐ Score: {signal['score']}
 🏷 Quality: HIGH
 
@@ -379,7 +356,7 @@ def send_telegram_alert(signal):
 🎯 TP2: {signal['tp2']:.7f} | R:R 1:2.5
 🎯 TP3: {signal['tp3']:.7f} | R:R 1:4
 
-🛡 Mode: {'SPOT (LONG ONLY)' if bot.market_type == 'spot' else 'FUTURES'}
+🛡 Mode: LONG ONLY (No Shorting)
 ⚡ Entry Status: DIRECT
 
 ⚠️ Setup signal — not a guaranteed result.
@@ -416,7 +393,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return f"Expert Analyst Bot is running in [{bot.market_type.upper()}] mode!", 200
+    return f"Expert Analyst Bot is running in [LONG ONLY - {bot.market_type.upper()}] mode!", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
