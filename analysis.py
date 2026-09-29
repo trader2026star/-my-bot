@@ -256,7 +256,6 @@ class ExpertAnalystBot:
         
         confirmations = ['Structure', 'Trend']
         
-        # تفعيل فحص المؤشرات المتقدمة وإضافتها للتأكيدات
         if row['supertrend_dir'] == 1:
             confirmations.append('SuperTrend_Bullish')
         elif self.market_type != 'spot' and row['supertrend_dir'] == -1:
@@ -265,11 +264,9 @@ class ExpertAnalystBot:
         if row['sar_bullish']:
             confirmations.append('ParabolicSAR_Buy')
 
-        # استراتيجية حدود بولنجر (ارتداد من الحد السفلي أو اختراق صعودي)
         if row['close'] <= row['bb_lower'] * 1.01:
             confirmations.append('Bollinger_Lower_Bounce')
 
-        # استراتيجية مؤشر القوة النسبية RSI (دعم الزخم)
         if row['rsi'] > 45 and row['rsi'] < 70:
             confirmations.append('RSI_Momentum_OK')
 
@@ -281,6 +278,14 @@ class ExpertAnalystBot:
             confirmations.append(candle_pattern)
 
         if len(confirmations) < 3:
+            return None
+
+        # جلب اتجاه الفريمات الكبرى أولاً لتطبيق فلتر الأمان
+        trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
+
+        # 🛡️ فلتر الأمان: منع إرسال صفقة LONG إذا كان الفريم الكبير 4H و 1H هابطين معاً
+        if decision == 'LONG' and trend_4h == 'BEARISH' and trend_1h == 'BEARISH':
+            logger.info("Filtered out %s: LONG signal rejected because 4H and 1H trends are BEARISH.", symbol)
             return None
 
         entry = float(row['close'])
@@ -299,7 +304,6 @@ class ExpertAnalystBot:
             tp3 = entry - (atr * 6.0)
             struct_conf = 'BEARISH'
 
-        trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
         score_val = 82 + (len(confirmations) * 3)
 
         return {
@@ -361,7 +365,7 @@ def send_telegram_alert(signal):
 🎯 TP2: {signal['tp2']:.7f} | R:R 1:4
 🎯 TP3: {signal['tp3']:.7f} | R:R 1:6
 
-🛡 Risk Filter: PASSED
+🛡 Risk Filter: PASSED (Trend Verified)
 📋 Structure Confirmation: {signal['structure_confirmation']}
 ⚡ Entry Status: DIRECT
 
@@ -396,12 +400,12 @@ def webhook():
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
     else:
-        return jsonify({"status": "filtered", "message": "No strong signal or filtered out"}), 200
+        return jsonify({"status": "filtered", "message": "No strong signal or filtered out by trend protection"}), 200
 
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Analyst Bot is running successfully with Advanced Indicators!", 200
+    return "Expert Analyst Bot is running successfully with Trend Protection Filter!", 200
 
 
 if __name__ == '__main__':
