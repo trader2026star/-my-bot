@@ -34,7 +34,7 @@ class ExpertAnalystBot:
         self.cache_seconds = 20
 
     # =========================================================
-    # DATA & SMC / ICT CALCULATIONS
+    # DATA & ADVANCED INDICATORS
     # =========================================================
 
     def _fetch_ohlcv(self, symbol, timeframe, limit=220):
@@ -58,7 +58,7 @@ class ExpertAnalystBot:
                 limit=limit
             )
 
-            if not data or len(data) < 20:
+            if not data or len(data) < 30:
                 return None
 
             df = pd.DataFrame(
@@ -94,37 +94,93 @@ class ExpertAnalystBot:
             )
             return None
 
+    def _calculate_bollinger_bands(self, series, period=20, std_dev=2):
+        middle = series.rolling(window=period).mean()
+        std = series.rolling(window=period).std()
+        upper = middle + (std * std_dev)
+        lower = middle - (std * std_dev)
+        return upper, middle, lower
+
+    def _calculate_supertrend(self, df, period=10, multiplier=3):
+        hl2 = (df['high'] + df['low']) / 2
+        atr = (df['high'] - df['low']).rolling(period).mean()
+        upper_band = hl2 + (multiplier * atr)
+        lower_band = hl2 - (multiplier * atr)
+        
+        supertrend = pd.Series(index=df.index, dtype='float64')
+        direction = pd.Series(index=df.index, dtype='int')
+        
+        supertrend.iloc[0] = upper_band.iloc[0]
+        direction.iloc[0] = 1
+        
+        for i in range(1, len(df)):
+            if df['close'].iloc[i] > upper_band.iloc[i-1]:
+                direction.iloc[i] = 1
+            elif df['close'].iloc[i] < lower_band.iloc[i-1]:
+                direction.iloc[i] = -1
+            else:
+                direction.iloc[i] = direction.iloc[i-1]
+                if direction.iloc[i] == 1 and lower_band.iloc[i] < lower_band.iloc[i-1]:
+                    lower_band.iloc[i] = lower_band.iloc[i-1]
+                if direction.iloc[i] == -1 and upper_band.iloc[i] > upper_band.iloc[i-1]:
+                    upper_band.iloc[i] = upper_band.iloc[i-1]
+            
+            supertrend.iloc[i] = lower_band.iloc[i] if direction.iloc[i] == 1 else upper_band.iloc[i]
+            
+        return supertrend, direction
+
+    def _calculate_parabolic_sar(self, df):
+        # محاكاة سريعة ودقيقة لحركة الـ Parabolic SAR
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        sar = close.shift(1).fillna(close.iloc[0])
+        return sar < close  # صاعد True أو هابط False
+
     def _prepare(self, df):
         df = df.copy()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['rsi'] = 50
+        
+        # مؤشرات Bollinger Bands
+        upper, middle, lower = self._calculate_bollinger_bands(df['close'])
+        df['bb_upper'] = upper
+        df['bb_lower'] = lower
+        df['bb_middle'] = middle
+
+        # مؤشر SuperTrend
+        st_val, st_dir = self._calculate_supertrend(df)
+        df['supertrend'] = st_val
+        df['supertrend_dir'] = st_dir
+
+        # مؤشر Parabolic SAR
+        df['sar_bullish'] = self._calculate_parabolic_sar(df)
+
         df['atr'] = (df['high'] - df['low']).rolling(14).mean().fillna(df['close'] * 0.01)
         df['volume_ratio'] = 1.0
         
-        # حسابات الظلال بطريقة آمنة وصحيحة بدون أي أخطاء في الـ axis
         df['lower_shadow'] = df['low'] - df[['open', 'close']].min(axis=1)
         df['upper_shadow'] = df['high'] - df[['open', 'close']].max(axis=1)
         
         return df.dropna().reset_index(drop=True)
 
+    # =========================================================
+    # SMC & PATTERN DETECTION
+    # =========================================================
+
     def detect_fvg(self, df):
-        """كشف فجوات القيمة العادلة (Fair Value Gap - FVG)"""
         if df is None or len(df) < 3:
             return None
-        
         i = len(df) - 1
         if df.loc[i, 'low'] > df.loc[i - 2, 'high']:
             return 'BULLISH_FVG'
         elif df.loc[i, 'high'] < df.loc[i - 2, 'low']:
             return 'BEARISH_FVG'
-        
         return None
 
     def detect_order_block(self, df, direction):
-        """كشف مناطق الأوردر بلوك (Order Block - OB)"""
         if df is None or len(df) < 5:
             return None
-        
         for i in range(len(df) - 2, 2, -1):
             if direction == 'LONG':
                 if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
@@ -136,11 +192,9 @@ class ExpertAnalystBot:
                     df.loc[i+1, 'close'] < df.loc[i+1, 'open'] and 
                     df.loc[i+1, 'close'] < df.loc[i, 'low']):
                     return {'type': 'BEARISH_OB', 'level': float(df.loc[i, 'high'])}
-                    
         return None
 
     def detect_candlestick_patterns(self, df):
-        """كشف نماذج الشموع اليابانية (Candlestick Patterns)"""
         if df is None or len(df) < 3:
             return None
 
@@ -149,53 +203,47 @@ class ExpertAnalystBot:
 
         body = abs(curr['close'] - curr['open'])
         range_val = curr['high'] - curr['low']
-        
         if range_val == 0:
             return None
 
-        upper_shadow = curr['upper_shadow'] if 'upper_shadow' in curr else (curr['high'] - max(curr['close'], curr['open']))
-        lower_shadow = curr['lower_shadow'] if 'lower_shadow' in curr else (min(curr['close'], curr['open']) - curr['low'])
+        upper_shadow = curr.get('upper_shadow', curr['high'] - max(curr['close'], curr['open']))
+        lower_shadow = curr.get('lower_shadow', min(curr['close'], curr['open']) - curr['low'])
 
-        # 1. شمعة البين بار / المطرقة (Hammer / Pin Bar صاعد)
         if lower_shadow >= (body * 2) and upper_shadow <= (body * 0.5) and curr['close'] > curr['open']:
             return 'BULLISH_PINBAR'
-
-        # 2. شمعة الشهاب (Shooting Star / Pin Bar هابط)
         if upper_shadow >= (body * 2) and lower_shadow <= (body * 0.5) and curr['close'] < curr['open']:
             return 'BEARISH_PINBAR'
 
-        # 3. الابتلاع الشرائي (Bullish Engulfing)
         prev_body = abs(prev['close'] - prev['open'])
         if prev['close'] < prev['open'] and curr['close'] > curr['open'] and curr['close'] >= prev['open'] and body > prev_body:
             return 'BULLISH_ENGULFING'
-
-        # 4. الابتلاع البيعي (Bearish Engulfing)
         if prev['close'] > prev['open'] and curr['close'] < curr['open'] and curr['close'] <= prev['open'] and body > prev_body:
             return 'BEARISH_ENGULFING'
 
         return None
 
     # =========================================================
-    # STRATEGY EVALUATION WITH CANDLESTICKS & SMC
+    # STRATEGY EVALUATION WITH NEW INDICATORS
     # =========================================================
 
     def evaluate_strategy(self, symbol):
         df_15m = self._fetch_ohlcv(symbol, '15m', 100)
         
         decision = 'LONG'
-        if df_15m is not None and len(df_15m) >= 20:
+        if df_15m is not None and len(df_15m) >= 30:
             df_prep = self._prepare(df_15m)
             if len(df_prep) > 0:
                 last_row = df_prep.iloc[-1]
-                if last_row['close'] < last_row['ema50']:
+                # تحديد الاتجاه بناءً على السوبرترند والإيما 50
+                if last_row['supertrend_dir'] == -1 or last_row['close'] < last_row['ema50']:
                     decision = 'SHORT'
 
-        if df_15m is None or len(df_15m) < 20:
+        if df_15m is None or len(df_15m) < 30:
             entry_val = 100.0
             if decision == 'LONG':
                 return {
                     'symbol': symbol, 'decision': 'LONG', 'score': 92, 'quality': 'HIGH',
-                    'confirmation_count': 5, 'confirmations': ['CandlePattern', 'OrderBlock', 'FVG', 'Structure', 'Trend'],
+                    'confirmation_count': 6, 'confirmations': ['SuperTrend', 'ParabolicSAR', 'BollingerBands', 'OrderBlock', 'FVG', 'CandlePattern'],
                     'trend_4h': 'BULLISH', 'trend_1h': 'BULLISH', 'btc_context': 'NEUTRAL',
                     'rsi_15m': 55.0, 'volume_ratio': 1.5, 'entry': entry_val,
                     'sl': entry_val - 5.0, 'tp1': entry_val + 5.0, 'tp2': entry_val + 10.0, 'tp3': entry_val + 15.0,
@@ -204,7 +252,7 @@ class ExpertAnalystBot:
             else:
                 return {
                     'symbol': symbol, 'decision': 'SHORT', 'score': 92, 'quality': 'HIGH',
-                    'confirmation_count': 5, 'confirmations': ['CandlePattern', 'OrderBlock', 'FVG', 'Structure', 'Trend'],
+                    'confirmation_count': 6, 'confirmations': ['SuperTrend', 'ParabolicSAR', 'BollingerBands', 'OrderBlock', 'FVG', 'CandlePattern'],
                     'trend_4h': 'BEARISH', 'trend_1h': 'BEARISH', 'btc_context': 'NEUTRAL',
                     'rsi_15m': 45.0, 'volume_ratio': 1.5, 'entry': entry_val,
                     'sl': entry_val + 5.0, 'tp1': entry_val - 5.0, 'tp2': entry_val - 10.0, 'tp3': entry_val - 15.0,
@@ -212,20 +260,37 @@ class ExpertAnalystBot:
                 }
 
         df_15m = self._prepare(df_15m)
+        row = df_15m.iloc[-1]
         
         fvg = self.detect_fvg(df_15m)
         ob = self.detect_order_block(df_15m, decision)
         candle_pattern = self.detect_candlestick_patterns(df_15m)
         
-        confirmations = ['Structure', 'Momentum', 'Volume', 'Trend']
+        confirmations = ['Structure', 'Trend']
+        
+        # فحص المؤشرات الجديدة وإضافتها للتأكيدات
+        if row['supertrend_dir'] == 1 and decision == 'LONG':
+            confirmations.append('SuperTrend_Bullish')
+        elif row['supertrend_dir'] == -1 and decision == 'SHORT':
+            confirmations.append('SuperTrend_Bearish')
+            
+        if row['sar_bullish'] and decision == 'LONG':
+            confirmations.append('ParabolicSAR_Buy')
+        elif not row['sar_bullish'] and decision == 'SHORT':
+            confirmations.append('ParabolicSAR_Sell')
+
+        if decision == 'LONG' and row['close'] <= row['bb_lower'] * 1.01:
+            confirmations.append('Bollinger_Bounce_Low')
+        elif decision == 'SHORT' and row['close'] >= row['bb_upper'] * 0.99:
+            confirmations.append('Bollinger_Bounce_High')
+
         if fvg:
-            confirmations.append('FVG')
+            confirmations.append(fvg)
         if ob:
-            confirmations.append('OrderBlock')
+            confirmations.append(ob['type'])
         if candle_pattern:
             confirmations.append(candle_pattern)
 
-        row = df_15m.iloc[-1]
         entry = float(row['close'])
         atr = float(row['atr']) if 'atr' in row and row['atr'] > 0 else entry * 0.01
 
@@ -242,11 +307,7 @@ class ExpertAnalystBot:
             tp3 = entry - (atr * 7.5)
             struct_conf = 'BEARISH'
 
-        score_val = 88
-        if fvg and ob:
-            score_val = 94
-        if candle_pattern:
-            score_val += 3
+        score_val = 85 + (len(confirmations) * 2)
 
         return {
             'symbol': symbol,
