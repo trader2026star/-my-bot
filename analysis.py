@@ -16,14 +16,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# إعدادات التليجرام
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
 app = Flask(__name__)
 
 # =========================================================
-# EXPERT ANALYST BOT CORE (MASTER TRADER EDITION - OPTIMIZED)
+# EXPERT ANALYST BOT CORE (SPOT & FUTURES DUAL MODE)
 # =========================================================
 class ExpertAnalystBot:
     def __init__(
@@ -32,7 +31,7 @@ class ExpertAnalystBot:
         api_key='',
         secret_key='',
         timeframe='15m',
-        market_type='swap'
+        market_type='spot'  # يمكنك تغييرها إلى 'swap' للفيوتشر أو 'spot' للفوري
     ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
@@ -175,7 +174,7 @@ class ExpertAnalystBot:
                 _, st_dir_1h = self._calculate_supertrend(df_1h)
                 trend_1h = "BULLISH" if st_dir_1h.iloc[-1] == 1 else "BEARISH"
 
-            btc_symbol = "BTC/USDT:USDT" if self.market_type == 'swap' else "BTC/USDT"
+            btc_symbol = "BTC/USDT" if self.market_type == 'spot' else "BTC/USDT:USDT"
             df_btc = self._fetch_ohlcv(btc_symbol, '1h', 50)
             if df_btc is not None and len(df_btc) > 10:
                 _, st_dir_btc = self._calculate_supertrend(df_btc)
@@ -248,7 +247,11 @@ class ExpertAnalystBot:
             
         row = df_15m.iloc[-1]
 
-        decision = 'LONG' if row['supertrend_dir'] == 1 else 'SHORT'
+        # 🟢 إذا كان السوق SPOT، فالقرار حصرياً LONG (شراء فقط)
+        if self.market_type == 'spot':
+            decision = 'LONG'
+        else:
+            decision = 'LONG' if row['supertrend_dir'] == 1 else 'SHORT'
 
         fvg = self.detect_fvg(df_15m)
         ob = self.detect_order_block(df_15m, decision)
@@ -258,7 +261,7 @@ class ExpertAnalystBot:
         
         if row['supertrend_dir'] == 1:
             confirmations.append('SuperTrend_Bullish')
-        elif row['supertrend_dir'] == -1:
+        elif self.market_type != 'spot' and row['supertrend_dir'] == -1:
             confirmations.append('SuperTrend_Bearish')
             
         if row['sar_bullish']:
@@ -282,32 +285,17 @@ class ExpertAnalystBot:
 
         trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
 
-        # 🛡️ حماية ضد الاتجاه العام المعاكس في الـ 4 ساعات
+        # 🛡️ فلتر اتجاه 4 ساعات
         if decision == 'LONG' and trend_4h == 'BEARISH':
             return None
-        if decision == 'SHORT' and trend_4h == 'BULLISH':
+        if self.market_type != 'spot' and decision == 'SHORT' and trend_4h == 'BULLISH':
             return None
 
-        # 🛡️ فلتر تشبع المؤشرات الأساسية
+        # 🛡️ فلتر التشبع للـ LONG
         if decision == 'LONG' and row['rsi'] > 75:
             return None
-        if decision == 'SHORT' and row['rsi'] < 25:
-            return None
 
-        # 🛡️ فلاتر حماية قوية جديدة لمنع الصفقات الخاطئة والبيع في القيعان:
-        # 1. منع صفقات SHORT إذا كان مؤشر RSI أقل من 35 (تشبع بيعي وقرب ارتداد)
-        if decision == 'SHORT' and row['rsi'] < 35:
-            logger.info("Filtered out %s: SHORT rejected because RSI is oversold (%.1f).", symbol, row['rsi'])
-            return None
-
-        # 2. منع صفقات SHORT إذا ظهرت إشارات ارتداد صاعد بالقرب من الدعم
-        if decision == 'SHORT' and ('Bollinger_Lower_Bounce' in confirmations or 'BULLISH_ENGULFING' in confirmations or 'BULLISH_PINBAR' in confirmations):
-            logger.info("Filtered out %s: SHORT rejected due to bullish reversal patterns at support.", symbol)
-            return None
-
-        # 3. منع التداول إذا كان فوليوم السيولة ضعيفاً جداً (أقل من 0.7)
-        if row['volume_ratio'] < 0.7:
-            logger.info("Filtered out %s: Rejected due to low volume ratio (%.2f).", symbol, row['volume_ratio'])
+        if self.market_type == 'spot' and row['volume_ratio'] < 0.7:
             return None
 
         entry = float(row['close'])
@@ -353,8 +341,8 @@ class ExpertAnalystBot:
             'structure_confirmation': struct_conf
         }
 
-
-bot = ExpertAnalystBot(exchange_id='bingx', market_type='swap')
+# يمكنك التبديل هنا بكل سهولة: market_type='spot' أو market_type='swap'
+bot = ExpertAnalystBot(exchange_id='bingx', market_type='spot')
 
 # =========================================================
 # TELEGRAM SENDER
@@ -364,8 +352,10 @@ def send_telegram_alert(signal):
         logger.info("Telegram token not set. Skipping message dispatch.")
         return
 
+    market_title = "🟢 EXPERT SPOT SIGNAL (صفقة فوري - شراء)" if bot.market_type == 'spot' else "🚨 EXPERT FUTURES SIGNAL 🚨"
+
     msg = f"""
-🚨 EXPERT FUTURES SIGNAL 🚨
+{market_title}
 
 📊 Symbol: {signal['symbol']}
 🎯 Decision: {signal['decision']}
@@ -381,7 +371,6 @@ def send_telegram_alert(signal):
 
 💪 RSI 15M: {signal['rsi_15m']:.1f}
 🔊 Volume: {signal['volume_ratio']:.2f}x
-📐 Digital/Fib: NONE
 
 💰 Entry: {signal['entry']:.7f}
 🛑 SL: {signal['sl']:.7f} ({signal['risk_pct']}%)
@@ -390,8 +379,7 @@ def send_telegram_alert(signal):
 🎯 TP2: {signal['tp2']:.7f} | R:R 1:2.5
 🎯 TP3: {signal['tp3']:.7f} | R:R 1:4
 
-🛡 Risk Filter: OPTIMIZED STOP LOSS & ANTI-OVERSOLD PASSED
-📋 Structure Confirmation: {signal['structure_confirmation']}
+🛡 Mode: {'SPOT (LONG ONLY)' if bot.market_type == 'spot' else 'FUTURES'}
 ⚡ Entry Status: DIRECT
 
 ⚠️ Setup signal — not a guaranteed result.
@@ -406,7 +394,6 @@ def send_telegram_alert(signal):
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
         logger.error("Failed to send Telegram alert: %s", e)
-
 
 # =========================================================
 # FLASK WEBHOOK ENDPOINT
@@ -425,13 +412,11 @@ def webhook():
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
     else:
-        return jsonify({"status": "filtered", "message": "Filtered out by Anti-Oversold, Volume or Master Trend Guard"}), 200
-
+        return jsonify({"status": "filtered", "message": "Filtered out by market filters"}), 200
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Futures Analyst Bot is running with Advanced Anti-Oversold & Volume Filters!", 200
-
+    return f"Expert Analyst Bot is running in [{bot.market_type.upper()}] mode!", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
