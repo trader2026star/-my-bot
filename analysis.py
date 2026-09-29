@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import requests
 from flask import Flask, request, jsonify
+from threading import Thread
 
 # =========================================================
 # CONFIGURATION & LOGGING
@@ -22,26 +23,22 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 app = Flask(__name__)
 
 # =========================================================
-# EXPERT ANALYST BOT CORE (LONG ONLY - DUAL SPOT & FUTURES)
+# EXPERT DUAL-MARKET ANALYST BOT CORE (SPOT & FUTURES - LONG ONLY)
 # =========================================================
-class ExpertAnalystBot:
+class ExpertDualAnalystBot:
     def __init__(
         self,
         exchange_id='bingx',
         api_key='',
-        secret_key='',
-        timeframe='15m'
+        secret_key=''
     ):
         self.exchange_id = exchange_id
-        self.timeframe = timeframe
-
         exchange_class = getattr(ccxt, exchange_id)
-        # تهيئة البوت للفيوتشر افتراضياً كأصل رئيسي لجلب الأزواج
+        
         self.exchange = exchange_class({
             'apiKey': api_key,
             'secret': secret_key,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'swap'}
+            'enableRateLimit': True
         })
 
         self.cache = {}
@@ -70,7 +67,6 @@ class ExpertAnalystBot:
             return cached['data'].copy()
 
         try:
-            # مؤقتاً نغير نوع السوق في المنصة لجلب البيانات حسب الطلب (سبوت أو فيوتشر)
             self.exchange.options['defaultType'] = market_type
             data = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             if not data or len(data) < 30:
@@ -173,7 +169,7 @@ class ExpertAnalystBot:
                 _, st_dir_1h = self._calculate_supertrend(df_1h)
                 trend_1h = "BULLISH" if st_dir_1h.iloc[-1] == 1 else "BEARISH"
 
-            btc_symbol = "BTC/USDT"
+            btc_symbol = "BTC/USDT" if market_type == 'spot' else "BTC/USDT:USDT"
             df_btc = self._fetch_ohlcv(btc_symbol, '1h', 50, market_type)
             if df_btc is not None and len(df_btc) > 10:
                 _, st_dir_btc = self._calculate_supertrend(df_btc)
@@ -237,7 +233,7 @@ class ExpertAnalystBot:
             return None
             
         row = df_15m.iloc[-1]
-        decision = 'LONG'  # شراء فقط لكل الأسواق
+        decision = 'LONG'  # شراء فقط (LONG ONLY) لكلا السوقين
 
         fvg = self.detect_fvg(df_15m)
         ob = self.detect_order_block(df_15m)
@@ -310,7 +306,7 @@ class ExpertAnalystBot:
             'structure_confirmation': 'BULLISH'
         }
 
-bot = ExpertAnalystBot(exchange_id='bingx')
+bot = ExpertDualAnalystBot(exchange_id='bingx')
 
 # =========================================================
 # TELEGRAM SENDER
@@ -373,10 +369,9 @@ def webhook():
         return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
     symbol = data['symbol']
-    # يستقبل الطلب ويحدد هل هو سبوت أو فيوتشر بناءً على مرسل البيانات (افتراضياً swap أو يحدد من الـ payload)
-    market_type = data.get('market_type', 'swap') 
+    market_type = data.get('market_type', 'swap') # يفحص السواب أو السبوت حسب الإرسال
     
-    logger.info("Analyzing symbol: %s in market: %s", symbol, market_type)
+    logger.info("Analyzing symbol via webhook: %s in market: %s", symbol, market_type)
 
     signal = bot.evaluate_strategy(symbol, market_type)
     if signal:
@@ -387,7 +382,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Dual-Market LONG-ONLY Analyst Bot is running!", 200
+    return "Expert Dual-Market LONG-ONLY Analyst Bot is running successfully!", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
