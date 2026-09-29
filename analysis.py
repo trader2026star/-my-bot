@@ -162,10 +162,6 @@ class ExpertAnalystBot:
 
             now = time.time()
 
-            # -------------------------------------------------
-            # FUNDING
-            # -------------------------------------------------
-
             try:
                 funding = self.exchange.fetch_funding_rate(
                     swap_symbol
@@ -182,17 +178,12 @@ class ExpertAnalystBot:
             except Exception:
                 pass
 
-            # -------------------------------------------------
-            # OPEN INTEREST
-            # -------------------------------------------------
-
             try:
                 oi_data = self.exchange.fetch_open_interest(
                     swap_symbol
                 )
 
                 if oi_data:
-                    # التعامل مع اختلاف مفاتيح الـ Open Interest بين منصات CCXT
                     current_oi = float(
                         oi_data.get('openInterestAmount') or
                         oi_data.get('openInterest') or
@@ -271,40 +262,25 @@ class ExpertAnalystBot:
             except Exception:
                 pass
 
-            # -------------------------------------------------
-            # DERIVATIVES BIAS
-            # -------------------------------------------------
-
             bias = 'NEUTRAL'
 
-            if oi_change_pct > 0.20:
-
+            if oi_change_pct > 0.15:
                 if price_change_pct >= 0:
                     bias = 'LONG_BUILDUP'
                 else:
                     bias = 'SHORT_BUILDUP'
 
-            elif oi_change_pct < -0.20:
-
+            elif oi_change_pct < -0.15:
                 if price_change_pct >= 0:
                     bias = 'SHORT_COVERING'
                 else:
                     bias = 'LONG_LIQUIDATION'
 
             return {
-                'funding_rate': round(
-                    funding_rate,
-                    6
-                ),
+                'funding_rate': round(funding_rate, 6),
                 'oi_current': current_oi,
-                'oi_change_pct': round(
-                    oi_change_pct,
-                    2
-                ),
-                'price_change_pct': round(
-                    price_change_pct,
-                    2
-                ),
+                'oi_change_pct': round(oi_change_pct, 2),
+                'price_change_pct': round(price_change_pct, 2),
                 'derivatives_bias': bias
             }
 
@@ -345,45 +321,19 @@ class ExpertAnalystBot:
         df['ema20_slope'] = df['ema20'].diff(3)
         df['ema50_slope'] = df['ema50'].diff(3)
 
-        # -----------------------------------------------------
-        # RSI
-        # -----------------------------------------------------
-
         delta = df['close'].diff()
-
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
 
-        avg_gain = gain.ewm(
-            alpha=1 / 14,
-            adjust=False
-        ).mean()
+        avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
 
-        avg_loss = loss.ewm(
-            alpha=1 / 14,
-            adjust=False
-        ).mean()
-
-        rs = (
-            avg_gain /
-            avg_loss.replace(0, np.nan)
-        )
-
-        df['rsi'] = (
-            100 -
-            (100 / (1 + rs))
-        )
-
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df['rsi'] = 100 - (100 / (1 + rs))
         df['rsi'] = df['rsi'].fillna(50)
-
         df['rsi_slope'] = df['rsi'].diff(3)
 
-        # -----------------------------------------------------
-        # ATR
-        # -----------------------------------------------------
-
         prev_close = df['close'].shift(1)
-
         tr = pd.concat(
             [
                 df['high'] - df['low'],
@@ -393,66 +343,28 @@ class ExpertAnalystBot:
             axis=1
         ).max(axis=1)
 
-        df['atr'] = (
-            tr
-            .ewm(span=14, adjust=False)
-            .mean()
-        )
+        df['atr'] = tr.ewm(span=14, adjust=False).mean()
 
-        # -----------------------------------------------------
-        # VOLUME
-        # -----------------------------------------------------
-
-        df['volume_ma'] = (
-            df['volume']
-            .rolling(20)
-            .mean()
-        )
-
+        df['volume_ma'] = df['volume'].rolling(20).mean()
         df['volume_ratio'] = (
-            df['volume'] /
-            df['volume_ma'].replace(0, np.nan)
+            df['volume'] / df['volume_ma'].replace(0, np.nan)
         )
-
         df['volume_ratio'] = (
             df['volume_ratio']
             .replace([np.inf, -np.inf], np.nan)
             .fillna(1.0)
         )
 
-        # -----------------------------------------------------
-        # CANDLE
-        # -----------------------------------------------------
-
-        df['body'] = (
-            df['close'] -
-            df['open']
-        ).abs()
-
-        df['range'] = (
-            df['high'] -
-            df['low']
-        ).replace(0, np.nan)
-
-        df['body_ratio'] = (
-            df['body'] /
-            df['range']
-        ).fillna(0)
-
+        df['body'] = (df['close'] - df['open']).abs()
+        df['range'] = (df['high'] - df['low']).replace(0, np.nan)
+        df['body_ratio'] = (df['body'] / df['range']).fillna(0)
         df['close_location'] = (
-            (df['close'] - df['low']) /
-            df['range']
-        ).replace(
-            [np.inf, -np.inf],
-            np.nan
-        ).fillna(0.5)
+            (df['close'] - df['low']) / df['range']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.5)
 
         return (
             df
-            .replace(
-                [np.inf, -np.inf],
-                np.nan
-            )
+            .replace([np.inf, -np.inf], np.nan)
             .dropna()
             .reset_index(drop=True)
         )
@@ -462,7 +374,6 @@ class ExpertAnalystBot:
     # =========================================================
 
     def _get_btc_context(self, market_type='swap'):
-
         try:
             btc_symbol = (
                 'BTC/USDT:USDT'
@@ -470,66 +381,31 @@ class ExpertAnalystBot:
                 else 'BTC/USDT'
             )
 
-            df_4h = self._fetch_ohlcv(
-                btc_symbol,
-                '4h',
-                80,
-                market_type
-            )
-
-            df_1h = self._fetch_ohlcv(
-                btc_symbol,
-                '1h',
-                80,
-                market_type
-            )
+            df_4h = self._fetch_ohlcv(btc_symbol, '4h', 80, market_type)
+            df_1h = self._fetch_ohlcv(btc_symbol, '1h', 80, market_type)
 
             score = 0
 
             if df_4h is not None and len(df_4h) > 30:
-
                 df_4h = self._prepare(df_4h)
-
                 last = df_4h.iloc[-1]
-
-                if (
-                    last['close'] > last['ema20']
-                    and last['ema20'] > last['ema50']
-                    and last['ema20_slope'] > 0
-                ):
-                    score += 3
-
-                elif (
-                    last['close'] < last['ema20']
-                    and last['ema20'] < last['ema50']
-                    and last['ema20_slope'] < 0
-                ):
-                    score -= 3
-
-            if df_1h is not None and len(df_1h) > 30:
-
-                df_1h = self._prepare(df_1h)
-
-                last = df_1h.iloc[-1]
-
-                if (
-                    last['close'] > last['ema20']
-                    and last['rsi'] >= 50
-                ):
+                if last['close'] > last['ema20']:
                     score += 2
-
-                elif (
-                    last['close'] < last['ema20']
-                    and last['rsi'] <= 50
-                ):
+                elif last['close'] < last['ema20']:
                     score -= 2
 
-            if score >= 3:
+            if df_1h is not None and len(df_1h) > 30:
+                df_1h = self._prepare(df_1h)
+                last = df_1h.iloc[-1]
+                if last['close'] > last['ema20']:
+                    score += 1
+                elif last['close'] < last['ema20']:
+                    score -= 1
+
+            if score >= 2:
                 return 'BTC_BULLISH'
-
-            if score <= -3:
+            if score <= -2:
                 return 'BTC_BEARISH'
-
             return 'BTC_NEUTRAL'
 
         except Exception:
@@ -540,42 +416,22 @@ class ExpertAnalystBot:
     # =========================================================
 
     def _detect_market_regime(self, df):
-
         if df is None or len(df) < 30:
             return 'NEUTRAL'
 
         last = df.iloc[-1]
-
         if last['close'] <= 0:
             return 'NEUTRAL'
 
-        atr_pct = (
-            last['atr'] /
-            last['close']
-        ) * 100
-
-        if atr_pct > 2.8:
+        atr_pct = (last['atr'] / last['close']) * 100
+        if atr_pct > 3.0:
             return 'HIGH_VOLATILITY'
-
-        if atr_pct < 0.4:
+        if atr_pct < 0.3:
             return 'LOW_VOLATILITY'
 
-        if (
-            last['close'] >
-            last['ema20'] >
-            last['ema50']
-            and
-            last['ema20_slope'] > 0
-        ):
+        if last['close'] > last['ema20'] > last['ema50']:
             return 'TRENDING_BULLISH'
-
-        if (
-            last['close'] <
-            last['ema20'] <
-            last['ema50']
-            and
-            last['ema20_slope'] < 0
-        ):
+        if last['close'] < last['ema20'] < last['ema50']:
             return 'TRENDING_BEARISH'
 
         return 'RANGING'
@@ -584,47 +440,17 @@ class ExpertAnalystBot:
     # EXTERNAL TREND
     # =========================================================
 
-    def _get_trend_external(
-        self,
-        symbol,
-        timeframe,
-        market_type
-    ):
-
-        df = self._fetch_ohlcv(
-            symbol,
-            timeframe,
-            150,
-            market_type
-        )
-
+    def _get_trend_external(self, symbol, timeframe, market_type):
+        df = self._fetch_ohlcv(symbol, timeframe, 150, market_type)
         if df is None or len(df) < 50:
             return 'NEUTRAL', None
 
         df = self._prepare(df)
-
         last = df.iloc[-1]
 
-        bullish_cond = (
-            last['close'] > last['ema20']
-            and
-            last['ema20'] > last['ema50']
-            and
-            last['ema20_slope'] >= 0
-        )
-
-        bearish_cond = (
-            last['close'] < last['ema20']
-            and
-            last['ema20'] < last['ema50']
-            and
-            last['ema20_slope'] <= 0
-        )
-
-        if bullish_cond:
+        if last['close'] > last['ema20']:
             return 'BULLISH', df
-
-        if bearish_cond:
+        if last['close'] < last['ema20']:
             return 'BEARISH', df
 
         return 'NEUTRAL', df
@@ -633,435 +459,207 @@ class ExpertAnalystBot:
     # SWING POINTS
     # =========================================================
 
-    def _find_swing_points(self, df, window=4):
-
+    def _find_swing_points(self, df, window=3):
         highs = []
         lows = []
 
-        if df is None or len(df) < (
-            window * 2 + 5
-        ):
+        if df is None or len(df) < (window * 2 + 3):
             return highs, lows
 
-        for i in range(
-            window,
-            len(df) - window
-        ):
-
+        for i in range(window, len(df) - window):
             curr_h = df['high'].iloc[i]
-
-            if curr_h == df[
-                'high'
-            ].iloc[
-                i - window:i + window + 1
-            ].max():
-
-                highs.append(
-                    (i, curr_h)
-                )
+            if curr_h == df['high'].iloc[i - window:i + window + 1].max():
+                highs.append((i, curr_h))
 
             curr_l = df['low'].iloc[i]
-
-            if curr_l == df[
-                'low'
-            ].iloc[
-                i - window:i + window + 1
-            ].min():
-
-                lows.append(
-                    (i, curr_l)
-                )
+            if curr_l == df['low'].iloc[i - window:i + window + 1].min():
+                lows.append((i, curr_l))
 
         return highs, lows
+
+    # =========================================================
+    # TRENDLINES DETECTION (مؤشر خطوط الاتجاه الجديد)
+    # =========================================================
+
+    def detect_trendlines(self, df, current_price, direction):
+        """
+        يقوم بالكشف عن خطوط الاتجاه (Trendlines) الصاعدة والهابطة
+        ويتحقق مما إذا كان السعر يختبر خط الاتجاه حالياً.
+        """
+        if df is None or len(df) < 30:
+            return {'passed': False, 'type': 'NO_TRENDLINE'}
+
+        highs, lows = self._find_swing_points(df, window=3)
+
+        if direction == 'LONG' and len(lows) >= 2:
+            # خط اتجاه صاعد يعتمد على القعور الصاعدة
+            p1 = lows[-2]
+            p2 = lows[-1]
+            
+            # معادلة الخط المستقيم y = mx + c
+            x1, y1 = p1[0], p1[1]
+            x2, y2 = p2[0], p2[1]
+            
+            if x2 == x1:
+                return {'passed': False, 'type': 'NO_TRENDLINE'}
+            
+            slope = (y2 - y1) / (x2 - x1)
+            current_x = len(df) - 1
+            expected_trendline_price = y2 + slope * (current_x - x2)
+            
+            # السماح بنطاق تذبذب بسيط حول خط الاتجاه (مثلاً 1.5% أو بحدود الـ ATR)
+            atr = float(df.iloc[-1]['atr'])
+            if abs(current_price - expected_trendline_price) <= (atr * 1.8):
+                return {
+                    'passed': True,
+                    'type': 'BULLISH_TRENDLINE_BOUNCE',
+                    'line_price': round(expected_trendline_price, 4)
+                }
+
+        elif direction == 'SHORT' and len(highs) >= 2:
+            # خط اتجاه هابط يعتمد على القمم الهابطة
+            p1 = highs[-2]
+            p2 = highs[-1]
+            
+            x1, y1 = p1[0], p1[1]
+            x2, y2 = p2[0], p2[1]
+            
+            if x2 == x1:
+                return {'passed': False, 'type': 'NO_TRENDLINE'}
+            
+            slope = (y2 - y1) / (x2 - x1)
+            current_x = len(df) - 1
+            expected_trendline_price = y2 + slope * (current_x - x2)
+            
+            atr = float(df.iloc[-1]['atr'])
+            if abs(current_price - expected_trendline_price) <= (atr * 1.8):
+                return {
+                    'passed': True,
+                    'type': 'BEARISH_TRENDLINE_BOUNCE',
+                    'line_price': round(expected_trendline_price, 4)
+                }
+
+        return {'passed': False, 'type': 'NO_TRENDLINE'}
 
     # =========================================================
     # MARKET STRUCTURE
     # =========================================================
 
     def detect_market_structure(self, df):
+        if df is None or len(df) < 30:
+            return ('NEUTRAL', False, False, False, 'NORMAL_STRUCTURE')
 
-        if df is None or len(df) < 40:
-            return (
-                'NEUTRAL',
-                False,
-                False,
-                False,
-                'NORMAL_STRUCTURE'
-            )
-
-        highs, lows = self._find_swing_points(
-            df,
-            window=4
-        )
-
+        highs, lows = self._find_swing_points(df, window=3)
         if not highs or not lows:
-            return (
-                'NEUTRAL',
-                False,
-                False,
-                False,
-                'NORMAL_STRUCTURE'
-            )
+            return ('NEUTRAL', False, False, False, 'NORMAL_STRUCTURE')
 
         last_high = highs[-1][1]
         last_low = lows[-1][1]
+        recent_df = df.tail(5)
 
-        recent_df = df.tail(6)
-
-        bullish_break = (
-            recent_df['close'] > last_high
-        ).any()
-
-        bearish_break = (
-            recent_df['close'] < last_low
-        ).any()
+        bullish_break = (recent_df['close'] > last_high).any()
+        bearish_break = (recent_df['close'] < last_low).any()
 
         bos = False
         mss = False
         choch = False
-
         last = df.iloc[-1]
 
-        if (
-            last['close'] >
-            last['ema20']
-            and
-            last['ema20'] >=
-            last['ema50']
-        ):
+        structure = 'NEUTRAL'
+        if last['close'] > last['ema20']:
             structure = 'BULLISH'
-
-        elif (
-            last['close'] <
-            last['ema20']
-            and
-            last['ema20'] <=
-            last['ema50']
-        ):
+        elif last['close'] < last['ema20']:
             structure = 'BEARISH'
-
-        else:
-            structure = 'NEUTRAL'
 
         structure_type = 'NORMAL_STRUCTURE'
 
         if bullish_break and not bearish_break:
-
             bos = True
             structure = 'BULLISH'
             structure_type = 'BULLISH_BOS'
-
-            old_ema20 = df['ema20'].iloc[-12]
-            old_ema50 = df['ema50'].iloc[-12]
-
-            if old_ema20 < old_ema50:
-                mss = True
-                choch = True
-                structure_type = 'BULLISH_MSS_CHoCH'
-
         elif bearish_break and not bullish_break:
-
             bos = True
             structure = 'BEARISH'
             structure_type = 'BEARISH_BOS'
 
-            old_ema20 = df['ema20'].iloc[-12]
-            old_ema50 = df['ema50'].iloc[-12]
-
-            if old_ema20 > old_ema50:
-                mss = True
-                choch = True
-                structure_type = 'BEARISH_MSS_CHoCH'
-
-        elif bullish_break and bearish_break:
-
-            structure = 'NEUTRAL'
-            structure_type = 'CONFLICTING_BREAKS'
-
-        return (
-            structure,
-            bos,
-            mss,
-            choch,
-            structure_type
-        )
+        return (structure, bos, mss, choch, structure_type)
 
     # =========================================================
     # LIQUIDITY SWEEP
     # =========================================================
 
-    def detect_advanced_liquidity_sweep(
-        self,
-        df,
-        direction
-    ):
+    def detect_advanced_liquidity_sweep(self, df, direction):
+        if df is None or len(df) < 20:
+            return {'passed': False, 'type': 'NO_SWEEP'}
 
-        if df is None or len(df) < 25:
-            return {
-                'passed': False,
-                'type': 'NO_SWEEP'
-            }
-
-        highs, lows = self._find_swing_points(
-            df,
-            window=3
-        )
-
+        highs, lows = self._find_swing_points(df, window=3)
         if not highs or not lows:
-            return {
-                'passed': False,
-                'type': 'NO_SWEEP'
-            }
+            return {'passed': False, 'type': 'NO_SWEEP'}
 
         curr = df.iloc[-1]
-
         eq_high = highs[-1][1]
         eq_low = lows[-1][1]
-
-        recent = df.tail(6)
+        recent = df.tail(5)
 
         if direction == 'LONG':
-
-            swept = (
-                recent['low'] < eq_low
-            ).any()
-
-            reclaimed = (
-                curr['close'] > eq_low
-                and
-                curr['close'] >
-                curr['open']
-            )
-
-            if swept and reclaimed:
-                return {
-                    'passed': True,
-                    'type':
-                    'LIQUIDITY_SWEEP_LOW_RECLAIM'
-                }
-
+            swept = (recent['low'] < eq_low).any()
+            reclaimed = curr['close'] > eq_low
+            if swept or reclaimed:
+                return {'passed': True, 'type': 'LIQUIDITY_SWEEP_LOW_RECLAIM'}
         else:
+            swept = (recent['high'] > eq_high).any()
+            rejected = curr['close'] < eq_high
+            if swept or rejected:
+                return {'passed': True, 'type': 'LIQUIDITY_SWEEP_HIGH_REJECT'}
 
-            swept = (
-                recent['high'] > eq_high
-            ).any()
-
-            rejected = (
-                curr['close'] < eq_high
-                and
-                curr['close'] <
-                curr['open']
-            )
-
-            if swept and rejected:
-                return {
-                    'passed': True,
-                    'type':
-                    'LIQUIDITY_SWEEP_HIGH_REJECT'
-                }
-
-        return {
-            'passed': False,
-            'type': 'NO_SWEEP'
-        }
+        return {'passed': False, 'type': 'NO_SWEEP'}
 
     # =========================================================
     # FVG
     # =========================================================
 
-    def detect_valid_fvg(
-        self,
-        df,
-        current_price,
-        direction
-    ):
-
-        if df is None or len(df) < 20:
+    def detect_valid_fvg(self, df, current_price, direction):
+        if df is None or len(df) < 15:
             return None
 
         total_bars = len(df)
+        start_i = max(2, len(df) - 40)
 
-        start_i = max(
-            2,
-            len(df) - 35
-        )
-
-        for i in range(
-            len(df) - 3,
-            start_i - 1,
-            -1
-        ):
-
+        for i in range(len(df) - 3, start_i - 1, -1):
             a = df.iloc[i - 2]
             b = df.iloc[i - 1]
             c = df.iloc[i]
+            atr = max(float(df.iloc[-1]['atr']), current_price * 0.0005)
 
-            atr = max(
-                float(df.iloc[-1]['atr']),
-                current_price * 0.0005
-            )
-
-            if (
-                direction == 'LONG'
-                and
-                c['low'] > a['high']
-            ):
-
+            if direction == 'LONG' and c['low'] > a['high']:
                 fvg_low = float(a['high'])
                 fvg_high = float(c['low'])
-
-                fvg_range = (
-                    fvg_high -
-                    fvg_low
-                )
-
+                fvg_range = fvg_high - fvg_low
                 if fvg_range <= 0:
                     continue
 
-                if (
-                    current_price <
-                    fvg_low -
-                    (atr * 2.5)
-                ):
-                    continue
+                return {
+                    'type': 'BULLISH_FVG',
+                    'low': fvg_low,
+                    'high': fvg_high,
+                    'mid': (fvg_low + fvg_high) / 2,
+                    'is_active': True
+                }
 
-                filled_pct = 0.0
-
-                if current_price < fvg_high:
-                    filled_pct = min(
-                        100.0,
-                        max(
-                            0.0,
-                            (
-                                (fvg_high -
-                                 current_price)
-                                /
-                                fvg_range
-                            ) * 100.0
-                        )
-                    )
-
-                if filled_pct >= 90:
-                    continue
-
-                age = total_bars - i
-
-                if age > 35:
-                    continue
-
-                fvg_mid = (
-                    fvg_low +
-                    fvg_high
-                ) / 2
-
-                dist = (
-                    abs(
-                        current_price -
-                        fvg_mid
-                    )
-                    /
-                    current_price
-                )
-
-                if dist <= 0.06:
-
-                    return {
-                        'type': 'BULLISH_FVG',
-                        'low': fvg_low,
-                        'high': fvg_high,
-                        'mid': fvg_mid,
-                        'age': age,
-                        'filled_pct': round(
-                            filled_pct,
-                            1
-                        ),
-                        'is_active': True,
-                        'inside_zone':
-                        fvg_low <=
-                        current_price <=
-                        fvg_high
-                    }
-
-            elif (
-                direction == 'SHORT'
-                and
-                c['high'] < a['low']
-            ):
-
+            elif direction == 'SHORT' and c['high'] < a['low']:
                 fvg_low = float(c['high'])
                 fvg_high = float(a['low'])
-
-                fvg_range = (
-                    fvg_high -
-                    fvg_low
-                )
-
+                fvg_range = fvg_high - fvg_low
                 if fvg_range <= 0:
                     continue
 
-                if (
-                    current_price >
-                    fvg_high +
-                    (atr * 2.5)
-                ):
-                    continue
-
-                filled_pct = 0.0
-
-                if current_price > fvg_low:
-                    filled_pct = min(
-                        100.0,
-                        max(
-                            0.0,
-                            (
-                                (current_price -
-                                 fvg_low)
-                                /
-                                fvg_range
-                            ) * 100.0
-                        )
-                    )
-
-                if filled_pct >= 90:
-                    continue
-
-                age = total_bars - i
-
-                if age > 35:
-                    continue
-
-                fvg_mid = (
-                    fvg_low +
-                    fvg_high
-                ) / 2
-
-                dist = (
-                    abs(
-                        current_price -
-                        fvg_mid
-                    )
-                    /
-                    current_price
-                )
-
-                if dist <= 0.06:
-
-                    return {
-                        'type': 'BEARISH_FVG',
-                        'low': fvg_low,
-                        'high': fvg_high,
-                        'mid': fvg_mid,
-                        'age': age,
-                        'filled_pct': round(
-                            filled_pct,
-                            1
-                        ),
-                        'is_active': True,
-                        'inside_zone':
-                        fvg_low <=
-                        current_price <=
-                        fvg_high
-                    }
+                return {
+                    'type': 'BEARISH_FVG',
+                    'low': fvg_low,
+                    'high': fvg_high,
+                    'mid': (fvg_low + fvg_high) / 2,
+                    'is_active': True
+                }
 
         return None
 
@@ -1069,194 +667,37 @@ class ExpertAnalystBot:
     # ORDER BLOCK
     # =========================================================
 
-    def detect_valid_order_block(
-        self,
-        df,
-        current_price,
-        direction
-    ):
-
-        if df is None or len(df) < 25:
+    def detect_valid_order_block(self, df, current_price, direction):
+        if df is None or len(df) < 20:
             return None
 
         total_bars = len(df)
+        start = max(2, len(df) - 50)
+        atr = float(df.iloc[-1]['atr'])
 
-        start = max(
-            2,
-            len(df) - 45
-        )
-
-        atr = float(
-            df.iloc[-1]['atr']
-        )
-
-        for i in range(
-            len(df) - 3,
-            start - 1,
-            -1
-        ):
-
+        for i in range(len(df) - 3, start - 1, -1):
             candle = df.iloc[i]
             impulse = df.iloc[i + 1]
 
-            # -------------------------------------------------
-            # Bullish OB
-            # -------------------------------------------------
-
             if direction == 'LONG':
-
-                is_ob = (
-                    candle['close'] <
-                    candle['open']
-                    and
-                    impulse['close'] >
-                    candle['high']
-                    and
-                    impulse['body_ratio'] >= 0.45
-                )
-
+                is_ob = candle['close'] < candle['open'] and impulse['close'] > candle['high']
                 if is_ob:
-
-                    ob_low = float(
-                        candle['low']
-                    )
-
-                    ob_high = float(
-                        candle['high']
-                    )
-
-                    age = (
-                        total_bars -
-                        i
-                    )
-
-                    if age > 45:
-                        continue
-
-                    dist = (
-                        abs(
-                            current_price -
-                            (
-                                (
-                                    ob_low +
-                                    ob_high
-                                ) / 2
-                            )
-                        )
-                        /
-                        current_price
-                    )
-
-                    near_zone = (
-                        ob_low -
-                        atr * 2.0
-                        <=
-                        current_price
-                        <=
-                        ob_high +
-                        atr * 2.0
-                    )
-
-                    if dist <= 0.06 or near_zone:
-
-                        return {
-                            'type':
-                            'BULLISH_OB',
-                            'low':
-                            ob_low,
-                            'high':
-                            ob_high,
-                            'mid':
-                            (
-                                ob_low +
-                                ob_high
-                            ) / 2,
-                            'age':
-                            age,
-                            'inside_zone':
-                            ob_low <=
-                            current_price <=
-                            ob_high
-                        }
-
-            # -------------------------------------------------
-            # Bearish OB (تمت إكمال وتصحيح الكود هنا)
-            # -------------------------------------------------
-
+                    return {
+                        'type': 'BULLISH_OB',
+                        'low': float(candle['low']),
+                        'high': float(candle['high']),
+                        'mid': (float(candle['low']) + float(candle['high'])) / 2,
+                        'inside_zone': True
+                    }
             else:
-
-                is_ob = (
-                    candle['close'] >
-                    candle['open']
-                    and
-                    impulse['close'] <
-                    candle['low']
-                    and
-                    impulse['body_ratio'] >= 0.45
-                )
-
+                is_ob = candle['close'] > candle['open'] and impulse['close'] < candle['low']
                 if is_ob:
-
-                    ob_low = float(
-                        candle['low']
-                    )
-
-                    ob_high = float(
-                        candle['high']
-                    )
-
-                    age = (
-                        total_bars -
-                        i
-                    )
-
-                    if age > 45:
-                        continue
-
-                    dist = (
-                        abs(
-                            current_price -
-                            (
-                                (
-                                    ob_low +
-                                    ob_high
-                                ) / 2
-                            )
-                        )
-                        /
-                        current_price
-                    )
-
-                    near_zone = (
-                        ob_low -
-                        atr * 2.0
-                        <=
-                        current_price
-                        <=
-                        ob_high +
-                        atr * 2.0
-                    )
-
-                    if dist <= 0.06 or near_zone:
-
-                        return {
-                            'type':
-                            'BEARISH_OB',
-                            'low':
-                            ob_low,
-                            'high':
-                            ob_high,
-                            'mid':
-                            (
-                                ob_low +
-                                ob_high
-                            ) / 2,
-                            'age':
-                            age,
-                            'inside_zone':
-                            ob_low <=
-                            current_price <=
-                            ob_high
-                        }
+                    return {
+                        'type': 'BEARISH_OB',
+                        'low': float(candle['low']),
+                        'high': float(candle['high']),
+                        'mid': (float(candle['low']) + float(candle['high'])) / 2,
+                        'inside_zone': True
+                    }
 
         return None
