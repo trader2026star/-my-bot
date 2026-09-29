@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import threading
 import ccxt
 import pandas as pd
 import numpy as np
@@ -286,7 +287,7 @@ class ExpertDualAnalystBot:
 
         return {
             'symbol': symbol,
-            'market_type': market_type.upper(),
+            'market_type': 'SPOT' if market_type == 'spot' else 'FUTURES',
             'decision': decision,
             'score': min(score_val, 99),
             'quality': 'HIGH',
@@ -359,6 +360,50 @@ def send_telegram_alert(signal):
         logger.error("Failed to send Telegram alert: %s", e)
 
 # =========================================================
+# BACKGROUND MARKET SCANNER LOOP
+# =========================================================
+def background_scanner():
+    # قائمة العملات التي سيتم فحصها بشكل دوري (Spot و Futures)
+    symbols_to_scan = [
+        ("BTC/USDT", "spot"), ("ETH/USDT", "spot"), ("SOL/USDT", "spot"),
+        ("BNB/USDT", "spot"), ("XRP/USDT", "spot"), ("ADA/USDT", "spot"),
+        ("BTC/USDT:USDT", "swap"), ("ETH/USDT:USDT", "swap"), ("SOL/USDT:USDT", "swap"),
+        ("XRP/USDT:USDT", "swap"), ("DOGE/USDT:USDT", "swap"), ("AVAX/USDT:USDT", "swap")
+    ]
+    
+    # منع إرسال نفس التنبيه بشكل متكرر في فترة قصيرة
+    sent_signals_cooldown = {}
+
+    logger.info("Background scanner thread started successfully.")
+    
+    while True:
+        try:
+            logger.info("Starting scheduled market scan...")
+            for symbol, m_type in symbols_to_scan:
+                signal = bot.evaluate_strategy(symbol, m_type)
+                if signal:
+                    cooldown_key = f"{symbol}_{signal['market_type']}"
+                    last_time = sent_signals_cooldown.get(cooldown_key, 0)
+                    
+                    # إرسال التنبيه إذا مر أكثر من ساعتين على آخر تنبيه لنفس العملة
+                    if time.time() - last_time > 7200:
+                        send_telegram_alert(signal)
+                        sent_signals_cooldown[cooldown_key] = time.time()
+                        logger.info("Signal found and sent for %s (%s)", symbol, signal['market_type'])
+                
+                time.sleep(3) # فاصل زمني بسيط بين كل عملة وأخرى لتجنب حظر الحرارة (Rate Limit)
+                
+        except Exception as e:
+            logger.error("Error in background scanner: %s", e)
+            
+        # الانتظار 5 دقائق قبل دورة الفحص التالية
+        time.sleep(300)
+
+# تشغيل البوت في الخلفية عند بدء تشغيل السيرفر
+scanner_thread = threading.Thread(target=background_scanner, daemon=True)
+scanner_thread.start()
+
+# =========================================================
 # FLASK WEBHOOK ENDPOINT
 # =========================================================
 @app.route('/webhook', methods=['POST'])
@@ -381,7 +426,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Dual-Market LONG-ONLY Analyst Bot is running successfully!", 200
+    return "Expert Dual-Market LONG-ONLY Analyst Bot with Auto-Scanner is running successfully!", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
