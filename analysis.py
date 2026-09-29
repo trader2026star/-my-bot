@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# إعدادات التليجرام (قم بوضع التوكن وآيدي الجروب الخاص بك هنا أو عبر متغيرات البيئة)
+# إعدادات التليجرام
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
@@ -230,7 +230,7 @@ class ExpertAnalystBot:
             
         row = df_15m.iloc[-1]
 
-        # للسوق الفوري الصفقات دايماً LONG، وللابوالات الأخرى حسب الاتجاه
+        # للسوق الفوري الصفقات دايماً LONG للشراء، وللابوالات الأخرى حسب الاتجاه
         decision = 'LONG' if self.market_type == 'spot' else ('LONG' if row['supertrend_dir'] == 1 else 'SHORT')
 
         fvg = self.detect_fvg(df_15m)
@@ -291,6 +291,9 @@ class ExpertAnalystBot:
         }
 
 
+# تهيئة البوت لسوق الفوري (يمكنك تعديل market_type إلى 'swap' لو أردت الفيوتشر)
+bot = ExpertAnalystBot(exchange_id='bingx', market_type='spot')
+
 # =========================================================
 # TELEGRAM SENDER
 # =========================================================
@@ -299,7 +302,10 @@ def send_telegram_alert(signal):
         logger.info("Telegram token not set. Skipping message dispatch.")
         return
 
-    market_label = "🟢 EXPERT SPOT SIGNAL (فوري)" if bot.market_type == 'spot' else "🚨 EXPERT FUTURES SIGNAL 🚨"
+    if bot.market_type == 'spot':
+        market_label = "🟢 EXPERT SPOT SIGNAL (صفقة فوري - شراء)"
+    else:
+        market_label = "🚨 EXPERT FUTURES SIGNAL 🚨"
     
     msg = f"""
 {market_label}
@@ -336,9 +342,6 @@ def send_telegram_alert(signal):
     except Exception as e:
         logger.error("Failed to send Telegram alert: %s", e)
 
-
-# تهيئة البوت (اختر market_type='spot' للفوري أو 'swap' للفيوتشر)
-bot = ExpertAnalystBot(exchange_id='bingx', market_type='spot')
 
 # =========================================================
 # FLASK WEBHOOK ENDPOINT
