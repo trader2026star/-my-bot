@@ -32,7 +32,7 @@ class ExpertAnalystBot:
         api_key='',
         secret_key='',
         timeframe='15m',
-        market_type='swap'  # تم تعديلها لتتناسب مع الفيوتشرز
+        market_type='swap'
     ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
@@ -248,7 +248,6 @@ class ExpertAnalystBot:
             
         row = df_15m.iloc[-1]
 
-        # تحديد الاتجاه بناءً على السوبرترند للفيوتشرز
         decision = 'LONG' if row['supertrend_dir'] == 1 else 'SHORT'
 
         fvg = self.detect_fvg(df_15m)
@@ -283,28 +282,41 @@ class ExpertAnalystBot:
 
         trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
 
-        # 🛡️ حماية قوية ضد الاتجاه العام المعاكس في الـ 4 ساعات
+        # 🛡️ حماية ضد الاتجاه العام المعاكس في الـ 4 ساعات
         if decision == 'LONG' and trend_4h == 'BEARISH':
             return None
         if decision == 'SHORT' and trend_4h == 'BULLISH':
             return None
 
-        # 🛡️ فلتر تجنب التشبع
+        # 🛡️ فلتر تشبع المؤشرات الأساسية
         if decision == 'LONG' and row['rsi'] > 75:
             return None
         if decision == 'SHORT' and row['rsi'] < 25:
             return None
 
+        # 🛡️ فلاتر حماية قوية جديدة لمنع الصفقات الخاطئة والبيع في القيعان:
+        # 1. منع صفقات SHORT إذا كان مؤشر RSI أقل من 35 (تشبع بيعي وقرب ارتداد)
+        if decision == 'SHORT' and row['rsi'] < 35:
+            logger.info("Filtered out %s: SHORT rejected because RSI is oversold (%.1f).", symbol, row['rsi'])
+            return None
+
+        # 2. منع صفقات SHORT إذا ظهرت إشارات ارتداد صاعد بالقرب من الدعم
+        if decision == 'SHORT' and ('Bollinger_Lower_Bounce' in confirmations or 'BULLISH_ENGULFING' in confirmations or 'BULLISH_PINBAR' in confirmations):
+            logger.info("Filtered out %s: SHORT rejected due to bullish reversal patterns at support.", symbol)
+            return None
+
+        # 3. منع التداول إذا كان فوليوم السيولة ضعيفاً جداً (أقل من 0.7)
+        if row['volume_ratio'] < 0.7:
+            logger.info("Filtered out %s: Rejected due to low volume ratio (%.2f).", symbol, row['volume_ratio'])
+            return None
+
         entry = float(row['close'])
         atr = float(row['atr']) if 'atr' in row and row['atr'] > 0 else entry * 0.01
 
-        # 🛡️ تحسين حساب وقف الخسارة (Stop Loss) ليكون أعمق وأكثر أماناً ضد صيد السيولة
-        # نعتمد على أدنى قاع أو أقصى قمة سابقة مع هامش ATR آمن (2.2 بدلاً من 1.5)
         recent_low = float(df_15m['low'].iloc[-5:].min())
         recent_high = float(df_15m['high'].iloc[-5:].max())
 
         if decision == 'LONG':
-            # الوقف يكون أسفل أدنى قاع حديث أو بمسافة ATR آمنة 2.2
             sl = min(entry - (atr * 2.2), recent_low - (atr * 0.5))
             risk_distance = entry - sl
             tp1 = entry + (risk_distance * 1.5)
@@ -312,7 +324,6 @@ class ExpertAnalystBot:
             tp3 = entry + (risk_distance * 4.0)
             struct_conf = 'BULLISH'
         else:
-            # الوقف يكون أعلى أقصى قمة حديثة
             sl = max(entry + (atr * 2.2), recent_high + (atr * 0.5))
             risk_distance = sl - entry
             tp1 = entry - (risk_distance * 1.5)
@@ -379,7 +390,7 @@ def send_telegram_alert(signal):
 🎯 TP2: {signal['tp2']:.7f} | R:R 1:2.5
 🎯 TP3: {signal['tp3']:.7f} | R:R 1:4
 
-🛡 Risk Filter: OPTIMIZED STOP LOSS PASSED
+🛡 Risk Filter: OPTIMIZED STOP LOSS & ANTI-OVERSOLD PASSED
 📋 Structure Confirmation: {signal['structure_confirmation']}
 ⚡ Entry Status: DIRECT
 
@@ -414,12 +425,12 @@ def webhook():
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
     else:
-        return jsonify({"status": "filtered", "message": "Filtered out by Master Trend or RSI Guard"}), 200
+        return jsonify({"status": "filtered", "message": "Filtered out by Anti-Oversold, Volume or Master Trend Guard"}), 200
 
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Futures Analyst Bot is running with Optimized Stop Loss Protection!", 200
+    return "Expert Futures Analyst Bot is running with Advanced Anti-Oversold & Volume Filters!", 200
 
 
 if __name__ == '__main__':
