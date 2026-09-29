@@ -22,23 +22,28 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 app = Flask(__name__)
 
 # =========================================================
-# HYBRID EXPERT ANALYST BOT (SPOT & FUTURES)
+# EXPERT SPOT ANALYST BOT CORE
 # =========================================================
-class HybridExpertBot:
+class ExpertSpotBot:
     def __init__(
         self,
         exchange_id='bingx',
         api_key='',
-        secret_key=''
+        secret_key='',
+        timeframe='15m'
     ):
         self.exchange_id = exchange_id
+        self.timeframe = timeframe
+        self.market_type = 'spot'  # تثبيت السوق على الفوري حصرياً
+
         exchange_class = getattr(ccxt, exchange_id)
-        
-        # تهيئة الاتصال بالمنصة لدعم كلا السوقين
         self.exchange = exchange_class({
             'apiKey': api_key,
             'secret': secret_key,
-            'enableRateLimit': True
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'spot'
+            }
         })
 
         self.cache = {}
@@ -46,28 +51,35 @@ class HybridExpertBot:
 
     def _is_valid_symbol(self, symbol):
         """
-        فلترة صارمة جداً لمنع أي عملات غريبة أو مشبوهة والتركيز على الأزواج الحقيقية مقابل USDT.
+        فلترة صارمة جداً لمنع أي عملات غريبة، أو مشبوهة، أو أزواج فيوتشر، 
+        والتركيز فقط على عملات الفوري الحقيقية مقابل USDT.
         """
         if not symbol or 'USDT' not in symbol:
             return None
 
+        # منع أي رموز تخص العقود أو العملات الممنوعة
         unwanted_tokens = [
             'EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 
             'USDCUSD', 'BULL', 'BEAR', 'UP', 'DOWN', '3S', '3L', 'HEDGE',
-            'PERP', 'TEST', 'USD/'
+            'PERP', 'TEST', 'USD/', 'BTC/', 'ETH/', ':USDT'
         ]
         
         if any(token in symbol for token in unwanted_tokens):
             return None
 
-        return symbol.strip()
+        # التأكد من تنسيق الفوري النظيف (مثال: BTC/USDT)
+        clean_symbol = symbol.strip().upper()
+        if ':' in clean_symbol:
+            clean_symbol = clean_symbol.split(':')[0]
 
-    def _fetch_ohlcv(self, symbol, timeframe='15m', market_type='spot', limit=220):
+        return clean_symbol
+
+    def _fetch_ohlcv(self, symbol, timeframe, limit=220):
         valid_symbol = self._is_valid_symbol(symbol)
         if not valid_symbol:
             return None
 
-        key = f"{valid_symbol}:{timeframe}:{limit}:{market_type}"
+        key = f"{valid_symbol}:{timeframe}:{limit}:spot"
         now = time.time()
 
         cached = self.cache.get(key)
@@ -76,8 +88,6 @@ class HybridExpertBot:
                 return cached['data'].copy()
 
         try:
-            # ضبط نوع السوق مؤقتاً أثناء جلب البيانات
-            self.exchange.options['defaultType'] = market_type
             data = self.exchange.fetch_ohlcv(
                 valid_symbol,
                 timeframe=timeframe,
@@ -105,7 +115,7 @@ class HybridExpertBot:
             return df.copy()
 
         except Exception as e:
-            logger.warning("OHLCV error [%s] %s %s: %s", market_type, valid_symbol, timeframe, e)
+            logger.warning("OHLCV error %s %s: %s", valid_symbol, timeframe, e)
             return None
 
     def _calculate_bollinger_bands(self, series, period=20, std_dev=2):
@@ -172,24 +182,16 @@ class HybridExpertBot:
         i = len(df) - 1
         if df.loc[i, 'low'] > df.loc[i - 2, 'high']:
             return 'BULLISH_FVG'
-        elif df.loc[i, 'high'] < df.loc[i - 2, 'low']:
-            return 'BEARISH_FVG'
         return None
 
-    def detect_order_block(self, df, direction):
+    def detect_order_block(self, df):
         if df is None or len(df) < 5:
             return None
         for i in range(len(df) - 2, 2, -1):
-            if direction == 'LONG':
-                if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
-                    df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
-                    df.loc[i+1, 'close'] > df.loc[i, 'high']):
-                    return {'type': 'BULLISH_OB', 'level': float(df.loc[i, 'low'])}
-            else:
-                if (df.loc[i, 'close'] > df.loc[i, 'open'] and 
-                    df.loc[i+1, 'close'] < df.loc[i+1, 'open'] and 
-                    df.loc[i+1, 'close'] < df.loc[i, 'low']):
-                    return {'type': 'BEARISH_OB', 'level': float(df.loc[i, 'high'])}
+            if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
+                df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
+                df.loc[i+1, 'close'] > df.loc[i, 'high']):
+                return {'type': 'BULLISH_OB', 'level': float(df.loc[i, 'low'])}
         return None
 
     def detect_candlestick_patterns(self, df):
@@ -215,12 +217,12 @@ class HybridExpertBot:
 
         return None
 
-    def evaluate_strategy(self, symbol, market_type='spot'):
+    def evaluate_strategy(self, symbol):
         valid_symbol = self._is_valid_symbol(symbol)
         if not valid_symbol:
             return None
 
-        df_15m = self._fetch_ohlcv(valid_symbol, '15m', market_type, 100)
+        df_15m = self._fetch_ohlcv(valid_symbol, '15m', 100)
         if df_15m is None or len(df_15m) < 30:
             return None
 
@@ -230,27 +232,20 @@ class HybridExpertBot:
             
         row = df_15m.iloc[-1]
 
-        # في الفوري الصفقة LONG فقط، في الفيوتشر حسب اتجاه السوبرترند
-        if market_type == 'spot':
-            decision = 'LONG'
-        else:
-            decision = 'LONG' if row['supertrend_dir'] == 1 else 'SHORT'
+        # صفقات الفوري دائماً تعتمد على الاتجاه الصاعد (LONG - شراء)
+        decision = 'LONG'
 
         fvg = self.detect_fvg(df_15m)
-        ob = self.detect_order_block(df_15m, decision)
+        ob = self.detect_order_block(df_15m)
         candle_pattern = self.detect_candlestick_patterns(df_15m)
         
         confirmations = ['Structure', 'Trend']
         
-        if row['supertrend_dir'] == 1 and decision == 'LONG':
+        if row['supertrend_dir'] == 1:
             confirmations.append('SuperTrend_Bullish')
-        elif row['supertrend_dir'] == -1 and decision == 'SHORT':
-            confirmations.append('SuperTrend_Bearish')
             
-        if row['sar_bullish'] and decision == 'LONG':
+        if row['sar_bullish']:
             confirmations.append('ParabolicSAR_Buy')
-        elif not row['sar_bullish'] and decision == 'SHORT':
-            confirmations.append('ParabolicSAR_Sell')
 
         if fvg:
             confirmations.append(fvg)
@@ -259,30 +254,23 @@ class HybridExpertBot:
         if candle_pattern:
             confirmations.append(candle_pattern)
 
+        # شروط صارمة للتأكد من جودة صفقات الفوري
         if len(confirmations) < 2:
             return None
 
         entry = float(row['close'])
         atr = float(row['atr']) if 'atr' in row and row['atr'] > 0 else entry * 0.01
 
-        if decision == 'LONG':
-            sl = entry - (atr * 1.5)
-            tp1 = entry + (atr * 2.5)
-            tp2 = entry + (atr * 4.0)
-            tp3 = entry + (atr * 6.0)
-            struct_conf = 'BULLISH'
-        else:
-            sl = entry + (atr * 1.5)
-            tp1 = entry - (atr * 2.5)
-            tp2 = entry - (atr * 4.0)
-            tp3 = entry - (atr * 6.0)
-            struct_conf = 'BEARISH'
+        sl = entry - (atr * 1.5)
+        tp1 = entry + (atr * 2.5)
+        tp2 = entry + (atr * 4.0)
+        tp3 = entry + (atr * 6.0)
+        struct_conf = 'BULLISH'
 
         score_val = 82 + (len(confirmations) * 3)
 
         return {
             'symbol': valid_symbol,
-            'market_type': market_type.upper(),
             'decision': decision,
             'score': min(score_val, 98),
             'quality': 'HIGH',
@@ -297,26 +285,24 @@ class HybridExpertBot:
         }
 
 
-bot = HybridExpertBot(exchange_id='bingx')
+# تشغيل بوت الفوري حصرياً
+bot = ExpertSpotBot(exchange_id='bingx')
 
 # =========================================================
-# TELEGRAM SENDER (Hybrid)
+# TELEGRAM SENDER (Spot Specific)
 # =========================================================
 def send_telegram_alert(signal):
     if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
         logger.info("Telegram token not set. Skipping message dispatch.")
         return
 
-    if signal['market_type'] == 'SPOT':
-        market_label = "🟢 EXPERT SPOT SIGNAL (فوري - شراء آمن)"
-    else:
-        market_label = "🚨 EXPERT FUTURES SIGNAL (عقود أجلة)"
+    market_label = "🟢 EXPERT SPOT SIGNAL (صفقة فوري - شراء آمن)"
     
     msg = f"""
 {market_label}
 
 📊 Symbol: {signal['symbol']}
-🎯 Decision: {signal['decision']}
+🎯 Decision: {signal['decision']} (BUY)
 ⭐ Score: {signal['score']}
 🏷 Quality: HIGH
 
@@ -325,8 +311,8 @@ def send_telegram_alert(signal):
 
 📈 Trend: {signal['structure_confirmation']}
 
-💰 Entry: {signal['entry']:.7f}
-🛑 SL: {signal['sl']:.7f} ({signal['risk_pct']}%)
+💰 Entry Price: {signal['entry']:.7f}
+🛑 Stop Loss: {signal['sl']:.7f} ({signal['risk_pct']}%)
 
 🎯 TP1: {signal['tp1']:.7f} | R:R 1:2.5
 🎯 TP2: {signal['tp2']:.7f} | R:R 1:4
@@ -334,7 +320,7 @@ def send_telegram_alert(signal):
 
 🛡 Risk Filter: PASSED
 ⚡ Entry Status: OPTIMAL
-⚠️ Setup signal — not a guaranteed result.
+⚠️ Spot Trading — Accumulation & Holding.
 """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -358,22 +344,19 @@ def webhook():
         return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
     symbol = data['symbol']
-    # يمكنك إرسال market_type في الـ Webhook ('spot' أو 'swap')، وإذا لم يُرسل يُعتبر 'spot' افتراضياً
-    market_type = data.get('market_type', 'spot').lower()
-    
-    logger.info("Analyzing %s symbol from webhook: %s", market_type, symbol)
+    logger.info("Analyzing spot symbol from webhook: %s", symbol)
 
-    signal = bot.evaluate_strategy(symbol, market_type)
+    signal = bot.evaluate_strategy(symbol)
     if signal:
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
     else:
-        return jsonify({"status": "filtered", "message": "Filtered out or invalid coin"}), 200
+        return jsonify({"status": "filtered", "message": "Filtered out or not a valid spot coin"}), 200
 
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Hybrid Expert Analyst Bot (Spot & Futures) is running successfully!", 200
+    return "Expert Spot Analyst Bot is running successfully!", 200
 
 
 if __name__ == '__main__':
