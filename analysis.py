@@ -23,7 +23,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 app = Flask(__name__)
 
 # =========================================================
-# EXPERT ANALYST BOT CORE
+# EXPERT ANALYST BOT CORE (MASTER TRADER EDITION)
 # =========================================================
 class ExpertAnalystBot:
     def __init__(
@@ -280,12 +280,17 @@ class ExpertAnalystBot:
         if len(confirmations) < 3:
             return None
 
-        # جلب اتجاه الفريمات الكبرى أولاً لتطبيق فلتر الأمان
+        # جلب سياق الفريمات الكبرى أولاً
         trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
 
-        # 🛡️ فلتر الأمان: منع إرسال صفقة LONG إذا كان الفريم الكبير 4H و 1H هابطين معاً
-        if decision == 'LONG' and trend_4h == 'BEARISH' and trend_1h == 'BEARISH':
-            logger.info("Filtered out %s: LONG signal rejected because 4H and 1H trends are BEARISH.", symbol)
+        # 🛡️ فلتر الأمان الخبير 1: منع الـ LONG إذا كان فريم الـ 4 ساعات هابطاً قطعياً
+        if decision == 'LONG' and trend_4h == 'BEARISH':
+            logger.info("Filtered out %s: LONG rejected because 4H Master Trend is BEARISH.", symbol)
+            return None
+
+        # 🛡️ فلتر الأمان الخبير 2: منع الدخول في التشبع الشرائي القوي (إذا كان RSI فوق 75)
+        if decision == 'LONG' and row['rsi'] > 75:
+            logger.info("Filtered out %s: LONG rejected due to extreme RSI overbought (%.1f).", symbol, row['rsi'])
             return None
 
         entry = float(row['close'])
@@ -365,7 +370,7 @@ def send_telegram_alert(signal):
 🎯 TP2: {signal['tp2']:.7f} | R:R 1:4
 🎯 TP3: {signal['tp3']:.7f} | R:R 1:6
 
-🛡 Risk Filter: PASSED (Trend Verified)
+🛡 Risk Filter: MASTER PASSED (4H Bullish & Safe RSI)
 📋 Structure Confirmation: {signal['structure_confirmation']}
 ⚡ Entry Status: DIRECT
 
@@ -400,12 +405,12 @@ def webhook():
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
     else:
-        return jsonify({"status": "filtered", "message": "No strong signal or filtered out by trend protection"}), 200
+        return jsonify({"status": "filtered", "message": "Filtered out by Master 4H Trend or RSI Guard"}), 200
 
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Analyst Bot is running successfully with Trend Protection Filter!", 200
+    return "Expert Analyst Bot is running with Master Trend & RSI Protection Filters!", 200
 
 
 if __name__ == '__main__':
