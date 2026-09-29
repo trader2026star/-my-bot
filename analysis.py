@@ -16,7 +16,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# إعدادات التليجرام
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
@@ -52,25 +51,35 @@ class ExpertAnalystBot:
         self.cache_seconds = 20
 
     def _is_valid_symbol(self, symbol):
-        # تصفية العملات الغريبة والعملات غير المرغوبة بدقة تامة
+        """
+        فلترة صارمة جداً لمنع أي عملات غريبة، أو مشبوهة، أو أزواج عملات تقليدية (فوركس)، 
+        والتركيز فقط على عملات الكريپتو الحقيقية مقابل USDT.
+        """
+        # قائمة الكلمات والعملات الممنوعة تماماً
         unwanted_tokens = [
             'EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 
-            'USDCUSD', 'BULL', 'BEAR', 'UP', 'DOWN', '3S', '3L', 'HEDGE'
+            'USDCUSD', 'BULL', 'BEAR', 'UP', 'DOWN', '3S', '3L', 'HEDGE',
+            'PERP', 'TEST', 'USD/', 'BTC/', 'ETH/'
         ]
         
-        if 'USDT' not in symbol:
-            return False
-            
-        if any(token in symbol for token in unwanted_tokens):
-            return False
-            
-        return True
-
-    def _fetch_ohlcv(self, symbol, timeframe, limit=220):
-        if not self._is_valid_symbol(symbol):
+        # التأكد أن الرمز ينتهي بـ USDT أو يتضمنه بالشكل الصحيح
+        if not symbol or 'USDT' not in symbol:
             return None
 
-        key = f"{symbol}:{timeframe}:{limit}:{self.market_type}"
+        # منع أي عملة تحتوي على كلمات محظورة
+        if any(token in symbol for token in unwanted_tokens):
+            return None
+
+        # تنظيف الرمز وإزالة الزوائد لو وجدت لتتوافق مع المنصة
+        clean_symbol = symbol.strip()
+        return clean_symbol
+
+    def _fetch_ohlcv(self, symbol, timeframe, limit=220):
+        valid_symbol = self._is_valid_symbol(symbol)
+        if not valid_symbol:
+            return None
+
+        key = f"{valid_symbol}:{timeframe}:{limit}:{self.market_type}"
         now = time.time()
 
         cached = self.cache.get(key)
@@ -80,7 +89,7 @@ class ExpertAnalystBot:
 
         try:
             data = self.exchange.fetch_ohlcv(
-                symbol,
+                valid_symbol,
                 timeframe=timeframe,
                 limit=limit
             )
@@ -106,7 +115,7 @@ class ExpertAnalystBot:
             return df.copy()
 
         except Exception as e:
-            logger.warning("OHLCV error %s %s: %s", symbol, timeframe, e)
+            logger.warning("OHLCV error %s %s: %s", valid_symbol, timeframe, e)
             return None
 
     def _calculate_bollinger_bands(self, series, period=20, std_dev=2):
@@ -217,10 +226,11 @@ class ExpertAnalystBot:
         return None
 
     def evaluate_strategy(self, symbol):
-        if not self._is_valid_symbol(symbol):
+        valid_symbol = self._is_valid_symbol(symbol)
+        if not valid_symbol:
             return None
 
-        df_15m = self._fetch_ohlcv(symbol, '15m', 100)
+        df_15m = self._fetch_ohlcv(valid_symbol, '15m', 100)
         if df_15m is None or len(df_15m) < 30:
             return None
 
@@ -230,7 +240,7 @@ class ExpertAnalystBot:
             
         row = df_15m.iloc[-1]
 
-        # للسوق الفوري الصفقات دايماً LONG للشراء، وللابوالات الأخرى حسب الاتجاه
+        # للسوق الفوري الصفقات دايماً LONG للاستثمار أو المضاربة الصاعدة
         decision = 'LONG' if self.market_type == 'spot' else ('LONG' if row['supertrend_dir'] == 1 else 'SHORT')
 
         fvg = self.detect_fvg(df_15m)
@@ -276,7 +286,7 @@ class ExpertAnalystBot:
         score_val = 82 + (len(confirmations) * 3)
 
         return {
-            'symbol': symbol,
+            'symbol': valid_symbol,
             'decision': decision,
             'score': min(score_val, 98),
             'quality': 'HIGH',
@@ -291,7 +301,7 @@ class ExpertAnalystBot:
         }
 
 
-# تهيئة البوت لسوق الفوري (يمكنك تعديل market_type إلى 'swap' لو أردت الفيوتشر)
+# تهيئة البوت لسوق الفوري (يمكنك تغييرها إلى 'swap' للفيوتشر)
 bot = ExpertAnalystBot(exchange_id='bingx', market_type='spot')
 
 # =========================================================
@@ -360,7 +370,7 @@ def webhook():
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
     else:
-        return jsonify({"status": "filtered", "message": "No strong signal or filtered out"}), 200
+        return jsonify({"status": "filtered", "message": "No strong signal or filtered out / Unwanted coin"}), 200
 
 
 @app.route('/', methods=['GET'])
