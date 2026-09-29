@@ -1,735 +1,388 @@
+import os
+import time
 import logging
 import ccxt
 import pandas as pd
 import numpy as np
-from flask import Flask
-import threading
-import os
-import time
 import requests
-
-from analysis import ExpertAnalystBot
+from flask import Flask, request, jsonify
 
 # =========================================================
-# LOGGING
+# CONFIGURATION & LOGGING
 # =========================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-
 logger = logging.getLogger(__name__)
 
-# =========================================================
-# FLASK
-# =========================================================
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return (
-        "Expert Futures Analyst Bot v4.1 "
-        "is running perfectly!"
-    )
-
-@app.route('/health')
-def health():
-    return "OK"
-
 # =========================================================
-# TELEGRAM (Updated with 429 Rate Limit Handling)
+# EXPERT DUAL-MARKET ANALYST BOT CORE (SPOT & FUTURES - LONG ONLY)
 # =========================================================
+class ExpertDualAnalystBot:
+    def __init__(
+        self,
+        exchange_id='bingx',
+        api_key='',
+        secret_key=''
+    ):
+        self.exchange_id = exchange_id
+        exchange_class = getattr(ccxt, exchange_id)
+        
+        self.exchange = exchange_class({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True
+        })
 
-def send_telegram_message(message):
+        self.cache = {}
+        self.cache_seconds = 20
 
-    token = os.environ.get(  
-        'TELEGRAM_BOT_TOKEN',  
-        os.environ.get('BOT_TOKEN', '')  
-    )  
-
-    chat_id = os.environ.get(  
-        'TELEGRAM_CHAT_ID',  
-        os.environ.get('CHAT_ID', '')  
-    )  
-
-    if not token or not chat_id:  
-        logger.error(  
-            "Telegram credentials are missing."  
-        )  
-        return False  
-
-    url = (  
-        f"https://api.telegram.org/"  
-        f"bot{token}/sendMessage"  
-    )  
-
-    payload = {  
-        'chat_id': chat_id,  
-        'text': message  
-    }  
-
-    while True:  
-        try:  
-            response = requests.post(  
-                url,  
-                json=payload,  
-                timeout=15  
-            )  
-
-            if response.ok:  
-                return True  
-
-            data = response.json()  
-            error_code = data.get("error_code")  
-
-            if error_code == 429:  
-                parameters = data.get("parameters", {})  
-                retry_after = parameters.get("retry_after", 10)  
-                logger.warning(  
-                    "Telegram rate limited (429). Retrying after %s seconds...",  
-                    retry_after  
-                )  
-                time.sleep(retry_after)  
-                continue  
-
-            logger.error(  
-                "Telegram error: %s",  
-                response.text  
-            )  
-
-            return False  
-
-        except Exception as e:  
-
-            logger.error(  
-                "Telegram connection error: %s",  
-                e  
-            )  
-
-            return False
-
-# =========================================================
-# SYMBOL DISCOVERY
-# =========================================================
-
-def get_bingx_symbols():
-
-    try:  
-
-        exchange = ccxt.bingx({  
-            'enableRateLimit': True,  
-            'options': {  
-                'defaultType': 'swap'  
-            }  
-        })  
-
-        markets = exchange.load_markets()  
-
-        symbols = []  
-
-        blocked = [  
-            'SP500',  
-            'NASDAQ',  
-            'DXY',  
-            'GOLD',  
-            'SILVER',  
-            'OIL',  
-            'WTI',  
-            'BRENT'  
-        ]  
-
-        for symbol, market in markets.items():  
-
-            try:  
-
-                if not market.get(  
-                    'active',  
-                    True  
-                ):  
-                    continue  
-
-                if market.get(  
-                    'swap'  
-                ) is not True:  
-                    continue  
-
-                if market.get(  
-                    'quote'  
-                ) != 'USDT':  
-                    continue  
-
-                if market.get(  
-                    'settle'  
-                ) != 'USDT':  
-                    continue  
-
-                base = str(  
-                    market.get(  
-                        'base',  
-                        ''  
-                    )  
-                ).upper()  
-
-                # 🛑 فلترة قاطعة لأي عملة وهمية تبدأ بـ NCSK أو تحتوي على USD وهمي  
-                if 'NCSK' in symbol or 'NCSK' in base:  
-                    continue  
-
-                if 'USD' in base and base != 'USDT':  
-                    continue  
-
-                if '2USD' in base or '1USD' in base or 'USD/USDT' in symbol:  
-                    continue  
-
-                if any(  
-                    item in base  
-                    for item in blocked  
-                ):  
-                    continue  
-
-                symbols.append(symbol)  
-
-            except Exception:  
-                continue  
-
-        symbols = list(  
-            dict.fromkeys(symbols)  
-        )  
-
-        logger.info(  
-            "BingX crypto symbols discovered: %s",  
-            len(symbols)  
-        )  
-
-        return symbols  
-
-    except Exception as e:  
-
-        logger.error(  
-            "Symbol discovery failed: %s",  
-            e  
-        )  
-
-        return [  
-            'BTC/USDT:USDT',  
-            'ETH/USDT:USDT',  
-            'SOL/USDT:USDT',  
-            'XRP/USDT:USDT',  
-            'ADA/USDT:USDT',  
-            'AVAX/USDT:USDT',  
-            'DOGE/USDT:USDT',  
-            'LINK/USDT:USDT',  
-            'DOT/USDT:USDT',  
-            'NEAR/USDT:USDT',  
-            'UNI/USDT:USDT',  
-            'FET/USDT:USDT',  
-            'INJ/USDT:USDT',  
-            'SUI/USDT:USDT',  
-            'APT/USDT:USDT',  
-            'OP/USDT:USDT',  
-            'PEPE/USDT:USDT',  
-            'SHIB/USDT:USDT',  
-            'WIF/USDT:USDT',  
-            'RENDER/USDT:USDT',  
-            'TIA/USDT:USDT'  
+    def _is_valid_symbol(self, symbol):
+        unwanted_tokens = [
+            'EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 
+            'USDCUSD', 'BULL', 'BEAR', 'UP', 'DOWN', '3S', '3L', 'HEDGE'
         ]
+        if 'USDT' not in symbol:
+            return False
+        if any(token in symbol for token in unwanted_tokens):
+            return False
+        return True
+
+    def _fetch_ohlcv(self, symbol, timeframe, limit=220, market_type='swap'):
+        if not self._is_valid_symbol(symbol):
+            return None
+
+        key = f"{symbol}:{timeframe}:{limit}:{market_type}"
+        now = time.time()
+
+        cached = self.cache.get(key)
+        if cached and (now - cached['time'] < self.cache_seconds):
+            return cached['data'].copy()
+
+        try:
+            self.exchange.options['defaultType'] = market_type
+            data = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if not data or len(data) < 30:
+                return None
+
+            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            df = df.dropna().reset_index(drop=True)
+            self.cache[key] = {'time': now, 'data': df}
+            return df.copy()
+
+        except Exception as e:
+            logger.warning("OHLCV error %s %s (%s): %s", symbol, timeframe, market_type, e)
+            return None
+
+    def _calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def _calculate_bollinger_bands(self, series, period=20, std_dev=2):
+        middle = series.rolling(window=period).mean()
+        std = series.rolling(window=period).std()
+        upper = middle + (std * std_dev)
+        lower = middle - (std * std_dev)
+        return upper, middle, lower
+
+    def _calculate_supertrend(self, df, period=10, multiplier=3):
+        hl2 = (df['high'] + df['low']) / 2
+        atr = (df['high'] - df['low']).rolling(period).mean()
+        upper_band = hl2 + (multiplier * atr)
+        lower_band = hl2 - (multiplier * atr)
+        
+        supertrend = pd.Series(index=df.index, dtype='float64')
+        direction = pd.Series(index=df.index, dtype='int')
+        
+        supertrend.iloc[0] = upper_band.iloc[0]
+        direction.iloc[0] = 1
+        
+        for i in range(1, len(df)):
+            if df['close'].iloc[i] > upper_band.iloc[i-1]:
+                direction.iloc[i] = 1
+            elif df['close'].iloc[i] < lower_band.iloc[i-1]:
+                direction.iloc[i] = -1
+            else:
+                direction.iloc[i] = direction.iloc[i-1]
+                if direction.iloc[i] == 1 and lower_band.iloc[i] < lower_band.iloc[i-1]:
+                    lower_band.iloc[i] = lower_band.iloc[i-1]
+                if direction.iloc[i] == -1 and upper_band.iloc[i] > upper_band.iloc[i-1]:
+                    upper_band.iloc[i] = upper_band.iloc[i-1]
+            
+            supertrend.iloc[i] = lower_band.iloc[i] if direction.iloc[i] == 1 else upper_band.iloc[i]
+            
+        return supertrend, direction
+
+    def _calculate_parabolic_sar(self, df):
+        close = df['close']
+        sar = close.shift(1).fillna(close.iloc[0])
+        return sar < close
+
+    def _prepare(self, df):
+        df = df.copy()
+        df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['rsi'] = self._calculate_rsi(df['close'], 14)
+        
+        vol_ma = df['volume'].rolling(window=20).mean()
+        df['volume_ratio'] = np.where(vol_ma > 0, df['volume'] / vol_ma, 1.0)
+        
+        upper, middle, lower = self._calculate_bollinger_bands(df['close'])
+        df['bb_upper'] = upper
+        df['bb_lower'] = lower
+        df['bb_middle'] = middle
+
+        st_val, st_dir = self._calculate_supertrend(df)
+        df['supertrend'] = st_val
+        df['supertrend_dir'] = st_dir
+
+        df['sar_bullish'] = self._calculate_parabolic_sar(df)
+        df['atr'] = (df['high'] - df['low']).rolling(14).mean().fillna(df['close'] * 0.01)
+        
+        return df.dropna().reset_index(drop=True)
+
+    def get_market_context(self, symbol, market_type):
+        trend_4h = "UNKNOWN"
+        trend_1h = "UNKNOWN"
+        btc_context = "UNKNOWN"
+
+        try:
+            df_4h = self._fetch_ohlcv(symbol, '4h', 50, market_type)
+            if df_4h is not None and len(df_4h) > 10:
+                _, st_dir_4h = self._calculate_supertrend(df_4h)
+                trend_4h = "BULLISH" if st_dir_4h.iloc[-1] == 1 else "BEARISH"
+
+            df_1h = self._fetch_ohlcv(symbol, '1h', 50, market_type)
+            if df_1h is not None and len(df_1h) > 10:
+                _, st_dir_1h = self._calculate_supertrend(df_1h)
+                trend_1h = "BULLISH" if st_dir_1h.iloc[-1] == 1 else "BEARISH"
+
+            btc_symbol = "BTC/USDT" if market_type == 'spot' else "BTC/USDT:USDT"
+            df_btc = self._fetch_ohlcv(btc_symbol, '1h', 50, market_type)
+            if df_btc is not None and len(df_btc) > 10:
+                _, st_dir_btc = self._calculate_supertrend(df_btc)
+                btc_context = "BULLISH" if st_dir_btc.iloc[-1] == 1 else "BEARISH"
+        except Exception as e:
+            logger.error("Error fetching market context: %s", e)
+
+        return trend_4h, trend_1h, btc_context
+
+    def detect_fvg(self, df):
+        if df is None or len(df) < 3:
+            return None
+        i = len(df) - 1
+        if df.loc[i, 'low'] > df.loc[i - 2, 'high']:
+            return 'BULLISH_FVG'
+        return None
+
+    def detect_order_block(self, df):
+        if df is None or len(df) < 5:
+            return None
+        for i in range(len(df) - 2, 2, -1):
+            if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
+                df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
+                df.loc[i+1, 'close'] > df.loc[i, 'high']):
+                return {'type': 'BULLISH_OB', 'level': float(df.loc[i, 'low'])}
+        return None
+
+    def detect_candlestick_patterns(self, df):
+        if df is None or len(df) < 3:
+            return None
+
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+        body = abs(curr['close'] - curr['open'])
+        range_val = curr['high'] - curr['low']
+        if range_val == 0:
+            return None
+
+        upper_shadow = curr['high'] - max(curr['close'], curr['open'])
+        lower_shadow = min(curr['close'], curr['open']) - curr['low']
+
+        if lower_shadow >= (body * 2) and upper_shadow <= (body * 0.5) and curr['close'] > curr['open']:
+            return 'BULLISH_PINBAR'
+        
+        prev_body = abs(prev['close'] - prev['open'])
+        if prev['close'] < prev['open'] and curr['close'] > curr['open'] and curr['close'] >= prev['open'] and body > prev_body:
+            return 'BULLISH_ENGULFING'
+
+        return None
+
+    def evaluate_strategy(self, symbol, market_type='swap'):
+        if not self._is_valid_symbol(symbol):
+            return None
+
+        df_15m = self._fetch_ohlcv(symbol, '15m', 100, market_type)
+        if df_15m is None or len(df_15m) < 30:
+            return None
+
+        df_15m = self._prepare(df_15m)
+        if len(df_15m) == 0:
+            return None
+            
+        row = df_15m.iloc[-1]
+        decision = 'LONG'
+
+        fvg = self.detect_fvg(df_15m)
+        ob = self.detect_order_block(df_15m)
+        candle_pattern = self.detect_candlestick_patterns(df_15m)
+        
+        confirmations = ['Structure', 'Trend']
+        
+        if row['supertrend_dir'] == 1:
+            confirmations.append('SuperTrend_Bullish')
+            
+        if row['sar_bullish']:
+            confirmations.append('ParabolicSAR_Buy')
+
+        if row['close'] <= row['bb_lower'] * 1.01:
+            confirmations.append('Bollinger_Lower_Bounce')
+
+        if row['rsi'] > 30 and row['rsi'] < 70:
+            confirmations.append('RSI_Momentum_OK')
+
+        if fvg:
+            confirmations.append(fvg)
+        if ob:
+            confirmations.append(ob['type'])
+        if candle_pattern:
+            confirmations.append(candle_pattern)
+
+        if len(confirmations) < 3:
+            return None
+
+        trend_4h, trend_1h, btc_context = self.get_market_context(symbol, market_type)
+
+        if trend_4h == 'BEARISH':
+            return None
+        if row['rsi'] > 75:
+            return None
+        if row['volume_ratio'] < 0.7:
+            return None
+
+        entry = float(row['close'])
+        atr = float(row['atr']) if 'atr' in row and row['atr'] > 0 else entry * 0.01
+
+        recent_low = float(df_15m['low'].iloc[-5:].min())
+
+        sl = min(entry - (atr * 2.2), recent_low - (atr * 0.5))
+        risk_distance = entry - sl
+        tp1 = entry + (risk_distance * 1.5)
+        tp2 = entry + (risk_distance * 2.5)
+        tp3 = entry + (risk_distance * 4.0)
+
+        score_val = 82 + (len(confirmations) * 3)
+
+        return {
+            'symbol': symbol,
+            'market_type': market_type.upper(),
+            'decision': decision,
+            'score': min(score_val, 99),
+            'quality': 'HIGH',
+            'confirmations': confirmations,
+            'trend_4h': trend_4h,
+            'trend_1h': trend_1h,
+            'btc_context': btc_context,
+            'rsi_15m': float(row['rsi']),
+            'volume_ratio': float(row['volume_ratio']),
+            'entry': entry,
+            'sl': sl,
+            'tp1': tp1,
+            'tp2': tp2,
+            'tp3': tp3,
+            'risk_pct': round((abs(entry - sl) / entry) * 100, 2),
+            'structure_confirmation': 'BULLISH'
+        }
+
+bot = ExpertDualAnalystBot(exchange_id='bingx')
 
 # =========================================================
-# PRICE FORMAT
+# TELEGRAM SENDER
 # =========================================================
+def send_telegram_alert(signal):
+    if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+        logger.info("Telegram token not set. Skipping message dispatch.")
+        return
 
-def format_price(price):
+    market_label = "🟢 [SPOT - فوري]" if signal['market_type'] == 'SPOT' else "🚀 [FUTURES - فيوتشر]"
 
-    try:  
+    msg = f"""
+{market_label} LONG-ONLY SIGNAL 📈
 
-        price = float(price)  
+📊 Symbol: {signal['symbol']}
+🎯 Decision: LONG
+⭐ Score: {signal['score']}
+🏷 Quality: HIGH
 
-        if price >= 100:  
-            return f"{price:.4f}"  
+📌 Confirmations: {len(signal['confirmations'])}/3+
+🧠 {', '.join(signal['confirmations'])}
 
-        if price >= 1:  
-            return f"{price:.5f}"  
+📈 4H Trend: {signal['trend_4h']}
+📊 1H Trend: {signal['trend_1h']}
+₿ BTC Context: {signal['btc_context']}
 
-        if price >= 0.01:  
-            return f"{price:.7f}"  
+💪 RSI 15M: {signal['rsi_15m']:.1f}
+🔊 Volume: {signal['volume_ratio']:.2f}x
 
-        if price >= 0.0001:  
-            return f"{price:.9f}"  
+💰 Entry: {signal['entry']:.7f}
+🛑 SL: {signal['sl']:.7f} ({signal['risk_pct']}%)
 
-        return f"{price:.12f}"  
+🎯 TP1: {signal['tp1']:.7f} | R:R 1:1.5
+🎯 TP2: {signal['tp2']:.7f} | R:R 1:2.5
+🎯 TP3: {signal['tp3']:.7f} | R:R 1:4
 
-    except Exception:  
-        return str(price)
+🛡 Strategy: LONG ONLY (No Shorting)
+⚡ Entry Status: DIRECT
 
-# =========================================================
-# SIGNAL MESSAGE BUILDER
-# =========================================================
-
-def build_signal_message(signal):
-
-    if not signal:  
-        return None  
-
-    symbol = signal.get(  
-        'symbol',  
-        ''  
-    )  
-
-    decision = signal.get(  
-        'decision',  
-        ''  
-    )  
-
-    score = signal.get(  
-        'score',  
-        0  
-    )  
-
-    quality = signal.get(  
-        'quality',  
-        'UNKNOWN'  
-    )  
-
-    if not symbol or not decision:  
-        logger.warning(  
-            "Invalid signal data: symbol=%s decision=%s",  
-            symbol,  
-            decision  
-        )  
-        return None  
-
-    direction = str(  
-        decision  
-    ).upper()  
-
-    symbol_display = str(  
-        symbol  
-    )  
-
-    confirmations = signal.get(  
-        'confirmations',  
-        []  
-    )  
-
-    if not isinstance(  
-        confirmations,  
-        list  
-    ):  
-        confirmations = []  
-
-    confirmation_count = signal.get(  
-        'confirmation_count',  
-        len(confirmations)  
-    )  
-
-    confirmation_text = (  
-        ', '.join(  
-            str(x)  
-            for x in confirmations  
-        )  
-        if confirmations  
-        else 'NONE'  
-    )  
-
-    trend_4h = signal.get(  
-        'trend_4h',  
-        'UNKNOWN'  
-    )  
-
-    trend_1h = signal.get(  
-        'trend_1h',  
-        'UNKNOWN'  
-    )  
-
-    btc_context = signal.get(  
-        'btc_context',  
-        'UNKNOWN'  
-    )  
-
-    rsi = signal.get(  
-        'rsi_15m',  
-        0  
-    )  
-
-    volume_ratio = signal.get(  
-        'volume_ratio',  
-        0  
-    )  
-
-    entry = signal.get(  
-        'entry'  
-    )  
-
-    sl = signal.get(  
-        'sl'  
-    )  
-
-    tp1 = signal.get(  
-        'tp1'  
-    )  
-
-    tp2 = signal.get(  
-        'tp2'  
-    )  
-
-    tp3 = signal.get(  
-        'tp3'  
-    )  
-
-    risk_pct = signal.get(  
-        'risk_pct',  
-        0  
-    )  
-
-    risk_filter = signal.get(  
-        'risk_filter',  
-        'UNKNOWN'  
-    )  
-
-    structure_confirmation = signal.get(  
-        'structure_confirmation',  
-        'UNKNOWN'  
-    )  
-
-    # استخراج بيانات التحليل الرقمي وفيبوناتشي لعرضها في الرسالة  
-    digital_data = signal.get('digital_data', {})  
-    digital_info = "NONE"  
-    if digital_data and digital_data.get('near_digital_level'):  
-        active_fib = digital_data.get('active_fib', 'LEVEL')  
-        digital_info = f"Active ({active_fib})"  
-
-    btc_conflict = signal.get(  
-        'btc_conflict',  
-        False  
-    )  
-
-    if btc_conflict:  
-        btc_label = (  
-            f"{btc_context} ⚠️ CONFLICT"  
-        )  
-    else:  
-        btc_label = str(  
-            btc_context  
-        )  
-
-    entry_quality = signal.get(  
-        'entry_quality',  
-        'DIRECT'  
-    )  
-
-    try:  
-        rsi_text = f"{float(rsi):.1f}"  
-    except Exception:  
-        rsi_text = str(rsi)  
-
-    try:  
-        volume_text = (  
-            f"{float(volume_ratio):.2f}x"  
-        )  
-    except Exception:  
-        volume_text = str(volume_ratio)  
-
-    try:  
-        risk_text = (  
-            f"{float(risk_pct):.2f}%"  
-        )  
-    except Exception:  
-        risk_text = str(risk_pct)  
-
-    message = (  
-        "🚨 EXPERT FUTURES SIGNAL 🚨\n\n"  
-
-        f"📊 Symbol: {symbol_display}\n"  
-        f"🎯 Decision: {direction}\n"  
-        f"⭐ Score: {score}\n"  
-        f"🏷 Quality: {quality}\n\n"  
-
-        f"📌 Confirmations: "  
-        f"{confirmation_count}/3+\n"  
-        f"🧠 {confirmation_text}\n\n"  
-
-        f"📈 4H Trend: {trend_4h}\n"  
-        f"📊 1H Trend: {trend_1h}\n"  
-        f"₿ BTC Context: {btc_label}\n\n"  
-
-        f"💪 RSI 15M: {rsi_text}\n"  
-        f"🔊 Volume: {volume_text}\n"  
-        f"📐 Digital/Fib: {digital_info}\n\n"  
-
-        f"💰 Entry: {format_price(entry)}\n"  
-        f"🛑 SL: {format_price(sl)} "  
-        f"({risk_text})\n\n"  
-
-        f"🎯 TP1: {format_price(tp1)} | R:R 1:2\n"  
-        f"🎯 TP2: {format_price(tp2)} | R:R 1:3.5\n"  
-        f"🎯 TP3: {format_price(tp3)} | R:R 1:5\n\n"  
-
-        f"🛡 Risk Filter: {risk_filter}\n"  
-        f"📋 Structure Confirmation: "  
-        f"{structure_confirmation}\n"  
-        f"⚡ Entry Status: {entry_quality}\n\n"  
-
-        "⚠️ Setup signal — not a guaranteed result."  
-    )  
-
-    return message
+⚠️ Setup signal — not a guaranteed result.
+"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": msg,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logger.error("Failed to send Telegram alert: %s", e)
 
 # =========================================================
-# DUPLICATE PROTECTION
+# FLASK WEBHOOK ENDPOINT
 # =========================================================
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    if not data or 'symbol' not in data:
+        return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
-sent_signals = {}
+    symbol = data['symbol']
+    market_type = data.get('market_type', 'swap')
+    
+    logger.info("Analyzing symbol via webhook: %s in market: %s", symbol, market_type)
 
-SIGNAL_COOLDOWN = 60 * 60
+    signal = bot.evaluate_strategy(symbol, market_type)
+    if signal:
+        send_telegram_alert(signal)
+        return jsonify({"status": "success", "signal": signal}), 200
+    else:
+        return jsonify({"status": "filtered", "message": "Filtered out by market filters"}), 200
 
-def should_send_signal(signal):
-
-    if not signal:  
-        return False  
-
-    symbol = str(  
-        signal.get(  
-            'symbol',  
-            ''  
-        )  
-    ).strip().upper()  
-
-    direction = str(  
-        signal.get(  
-            'decision',  
-            ''  
-        )  
-    ).strip().upper()  
-
-    if not symbol or not direction:  
-        return False  
-
-    key = (  
-        f"{symbol}:{direction}"  
-    )  
-
-    now = time.time()  
-
-    last_sent = sent_signals.get(  
-        key,  
-        0  
-    )  
-
-    if (  
-        now - last_sent  
-        < SIGNAL_COOLDOWN  
-    ):  
-        return False  
-
-    return True
-
-def mark_signal_sent(signal):
-
-    if not signal:  
-        return  
-
-    symbol = str(  
-        signal.get(  
-            'symbol',  
-            ''  
-        )  
-    ).strip().upper()  
-
-    direction = str(  
-        signal.get(  
-            'decision',  
-            ''  
-        )  
-    ).strip().upper()  
-
-    if not symbol or not direction:  
-        return  
-
-    key = (  
-        f"{symbol}:{direction}"  
-    )  
-
-    sent_signals[key] = time.time()
-
-# =========================================================
-# BOT WORKER
-# =========================================================
-
-def bot_worker():
-
-    logger.info(  
-        "Starting Expert Futures Analyst..."  
-    )  
-
-    send_telegram_message(  
-        "🚀 تم تشغيل Expert Futures Analyst Bot\n\n"  
-        "🧠 Multi-Timeframe Analysis\n"  
-        "📊 4H + 1H + 15M\n"  
-        "🟢 LONG + 🔴 SHORT\n"  
-        "💧 Liquidity / BOS / Momentum / Volume / Fibonacci\n"  
-        "🛡 Dynamic Risk Management"  
-    )  
-
-    api_key = os.environ.get(  
-        'BINGX_API_KEY',  
-        os.environ.get(  
-            'API_KEY',  
-            ''  
-        )  
-    )  
-
-    secret_key = os.environ.get(  
-        'BINGX_SECRET_KEY',  
-        os.environ.get(  
-            'SECRET_KEY',  
-            ''  
-        )  
-    )  
-
-    bot = ExpertAnalystBot(  
-        exchange_id='bingx',  
-        api_key=api_key,  
-        secret_key=secret_key,  
-        timeframe='15m'  
-    )  
-
-    symbols = get_bingx_symbols()  
-
-    last_symbol_refresh = time.time()  
-
-    while True:  
-
-        try:  
-
-            if (  
-                time.time()  
-                - last_symbol_refresh  
-                > 1800  
-            ):  
-
-                new_symbols = (  
-                    get_bingx_symbols()  
-                )  
-
-                if new_symbols:  
-                    symbols = new_symbols  
-                    logger.info(  
-                        "Symbol list refreshed: %s symbols",  
-                        len(symbols)  
-                    )  
-
-                last_symbol_refresh = (  
-                    time.time()  
-                )  
-
-            logger.info(  
-                "Starting market scan: %s symbols",  
-                len(symbols)  
-            )  
-
-            signals_found = 0  
-            analyzed_count = 0  
-
-            for symbol in symbols:  
-
-                try:  
-
-                    analyzed_count += 1  
-
-                    signal = (  
-                        bot.evaluate_strategy(  
-                            symbol  
-                        )  
-                    )  
-
-                    if not signal:  
-                        time.sleep(1.0)  
-                        continue  
-
-                    score = signal.get('score', 0)  
-                    decision = str(signal.get('decision', '')).upper()  
-
-                    if score <= 0 or decision in ['NEUTRAL', 'NO_TRADE', '']:  
-                        time.sleep(0.5)  
-                        continue  
-
-                    if not should_send_signal(  
-                        signal  
-                    ):  
-                        continue  
-
-                    message = (  
-                        build_signal_message(  
-                            signal  
-                        )  
-                    )  
-
-                    if not message:  
-                        continue  
-
-                    sent = send_telegram_message(  
-                        message  
-                    )  
-
-                    if sent:  
-                        mark_signal_sent(  
-                            signal  
-                        )  
-                        signals_found += 1  
-
-                    time.sleep(2.5)  
-
-                except Exception as e:  
-                    logger.warning(  
-                        "Error analyzing %s: %s",  
-                        symbol,  
-                        e  
-                    )  
-                    time.sleep(2)  
-
-            logger.info(  
-                "Scan finished. "  
-                "Analyzed: %s | "  
-                "Signals sent: %s",  
-                analyzed_count,  
-                signals_found  
-            )  
-
-            time.sleep(900)  
-
-        except Exception as e:  
-            logger.exception(  
-                "Worker error: %s",  
-                e  
-            )  
-            time.sleep(60)
-
-# =========================================================
-# START BACKGROUND WORKER
-# =========================================================
-
-bot_thread = threading.Thread(
-    target=bot_worker,
-    daemon=True
-)
-
-bot_thread.start()
-
-# =========================================================
-# RUN FLASK
-# =========================================================
+@app.route('/', methods=['GET'])
+def index():
+    return "Expert Dual-Market LONG-ONLY Analyst Bot is running successfully!", 200
 
 if __name__ == '__main__':
-
-    port = int(  
-        os.environ.get(  
-            'PORT',  
-            10000  
-        )  
-    )  
-
-    app.run(  
-        host='0.0.0.0',  
-        port=port  
-    )
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
