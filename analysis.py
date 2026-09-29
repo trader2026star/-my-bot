@@ -4,6 +4,11 @@ import ccxt
 import pandas as pd
 import numpy as np
 
+# إعداد السجلات (Logs)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +139,7 @@ class ExpertAnalystBot:
             return None
 
     # =========================================================
-    # INDICATORS & SUPERTREND (أفضل مؤشر لتأكيد الاتجاه)
+    # INDICATORS & SUPERTREND (مؤشر تأكيد الاتجاه)
     # =========================================================
 
     def _prepare(self, df):
@@ -143,7 +148,6 @@ class ExpertAnalystBot:
         df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
-        df['ema20_slope'] = df['ema20'].diff(3)
 
         # حساب الـ ATR
         prev_close = df['close'].shift(1)
@@ -158,18 +162,14 @@ class ExpertAnalystBot:
 
         df['atr'] = tr.ewm(span=14, adjust=False).mean()
 
-        # حساب مؤشر الـ Supertrend (المماثل للموجود في المنصة)
-        period = 10
+        # حساب مؤشر الـ Supertrend
         multiplier = 3.0
-        
         hl2 = (df['high'] + df['low']) / 2
         df['basic_upper'] = hl2 + (multiplier * df['atr'])
         df['basic_lower'] = hl2 - (multiplier * df['atr'])
         
         df['final_upper'] = df['basic_upper']
         df['final_lower'] = df['basic_lower']
-        
-        supertrend = [True] * len(df)
         
         for i in range(1, len(df)):
             curr_close = df['close'].iloc[i]
@@ -185,7 +185,6 @@ class ExpertAnalystBot:
             else:
                 df.loc[df.index[i], 'final_lower'] = df['final_lower'].iloc[i - 1]
 
-        # تحديد اتجاه الـ Supertrend
         df['supertrend_bullish'] = df['close'] > df['final_lower']
 
         df['volume_ma'] = df['volume'].rolling(20).mean()
@@ -220,7 +219,7 @@ class ExpertAnalystBot:
         return highs, lows
 
     # =========================================================
-    # TRENDLINES DETECTION (مشابه لـ Trendlines with Breaks)
+    # TRENDLINES DETECTION (كشف خطوط الاتجاه والارتدادات)
     # =========================================================
 
     def detect_trendlines(self, df, current_price, direction):
@@ -242,7 +241,6 @@ class ExpertAnalystBot:
             expected_price = y2 + slope * (current_x - x2)
             atr = float(df.iloc[-1]['atr'])
             
-            # السماح بالارتداد من خط الاتجاه أو قربه
             if abs(current_price - expected_price) <= (atr * 2.5) or current_price >= expected_price:
                 return {'passed': True, 'type': 'TRENDLINE_BULLISH_BOUNCE'}
 
@@ -282,7 +280,6 @@ class ExpertAnalystBot:
         if df is None or len(df) < 20:
             return None
         
-        # اختيار Order Block بسيط وفعال
         candle = df.iloc[-3]
         impulse = df.iloc[-2]
         
@@ -294,7 +291,7 @@ class ExpertAnalystBot:
         return None
 
     # =========================================================
-    # الدالة الرئيسية لتوليد الصفقات (تأكد من استدعائها في البوت لديك)
+    # ANALYZE SYMBOL
     # =========================================================
 
     def analyze_symbol(self, symbol):
@@ -306,16 +303,13 @@ class ExpertAnalystBot:
             df = self._prepare(df)
             current_price = float(df.iloc[-1]['close'])
             
-            # تحديد الاتجاه بناءً على الهيكل ومؤشر الـ Supertrend
             direction = self.detect_market_structure(df)
             if direction not in ['LONG', 'SHORT']:
                 return None
 
-            # فحص خطوط الاتجاه (Trendlines) والـ Order Block
             trendline_check = self.detect_trendlines(df, current_price, direction)
             ob_check = self.detect_valid_order_block(df, current_price, direction)
 
-            # إذا توفرت أدوات الدعم (خط اتجاه أو أوردر بلوك مع اتجاه السوبرتريند)
             if trendline_check['passed'] or ob_check:
                 atr = float(df.iloc[-1]['atr'])
 
@@ -342,3 +336,47 @@ class ExpertAnalystBot:
             logger.error(f"Error in analyze_symbol for {symbol}: {e}")
 
         return None
+
+
+# =========================================================
+# التشغيل التلقائي وحلقة الفحص (Main Runner Loop)
+# =========================================================
+
+if __name__ == "__main__":
+    bot = ExpertAnalystBot(exchange_id='bingx', api_key='', secret_key='', timeframe='15m')
+    
+    symbols_to_scan = [
+        'BTC/USDT:USDT',
+        'ETH/USDT:USDT',
+        'SOL/USDT:USDT',
+        'XRP/USDT:USDT',
+        'BNB/USDT:USDT',
+        'ADA/USDT:USDT',
+        'DOGE/USDT:USDT',
+        'AVAX/USDT:USDT'
+    ]
+    
+    print("🚀 تم تشغيل Expert Futures Analyst Bot بنجاح!")
+    print("🧠 جاري فحص السوق باستخدام مؤشرات Supertrend و Trendlines...\n")
+    
+    while True:
+        for symbol in symbols_to_scan:
+            signal = bot.analyze_symbol(symbol)
+            
+            if signal:
+                print(f"\n🚀 صفقة جديدة اكتشفت!")
+                print(f"📌 العملة: {signal['symbol']}")
+                print(f"🟢 الاتجاه: {signal['direction']}")
+                print(f"💵 سعر الدخول: {signal['entry']}")
+                print(f"🛡 وقف الخسارة: {signal['stop_loss']}")
+                print(f"🎯 الهدف الأول: {signal['tp1']}")
+                print(f"🎯 الهدف الثاني: {signal['tp2']}")
+                print(f"📊 الاستراتيجية: {signal['strategy']}")
+                print("-" * 40)
+            else:
+                print(f"⏳ جاري فحص {symbol} ... لا توجد فرصة مطابقة حالياً.")
+                
+            time.sleep(2)
+            
+        print("\n🔄 جاري تحديث السوق وإعادة الفحص بعد دقيقتين...\n")
+        time.sleep(120)
