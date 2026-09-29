@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://my-bot-zag6.onrender.com")
 
 app = Flask(__name__)
 
@@ -360,10 +361,19 @@ def send_telegram_alert(signal):
         logger.error("Failed to send Telegram alert: %s", e)
 
 # =========================================================
-# BACKGROUND MARKET SCANNER LOOP
+# BACKGROUND MARKET SCANNER LOOP & SELF PING
 # =========================================================
+def self_ping():
+    """يقوم بإرسال طلب دوري كل 4 دقائق لمنع سيرفر Render من النوم"""
+    while True:
+        try:
+            time.sleep(240)
+            requests.get(RENDER_EXTERNAL_URL, timeout=10)
+            logger.info("Self-ping sent successfully to keep service awake.")
+        except Exception as e:
+            logger.warning("Self-ping failed: %s", e)
+
 def background_scanner():
-    # قائمة العملات التي سيتم فحصها بشكل دوري (Spot و Futures)
     symbols_to_scan = [
         ("BTC/USDT", "spot"), ("ETH/USDT", "spot"), ("SOL/USDT", "spot"),
         ("BNB/USDT", "spot"), ("XRP/USDT", "spot"), ("ADA/USDT", "spot"),
@@ -371,10 +381,8 @@ def background_scanner():
         ("XRP/USDT:USDT", "swap"), ("DOGE/USDT:USDT", "swap"), ("AVAX/USDT:USDT", "swap")
     ]
     
-    # منع إرسال نفس التنبيه بشكل متكرر في فترة قصيرة
     sent_signals_cooldown = {}
-
-    logger.info("Background scanner thread started successfully.")
+    logger.info("Background market scanner thread started successfully.")
     
     while True:
         try:
@@ -385,23 +393,24 @@ def background_scanner():
                     cooldown_key = f"{symbol}_{signal['market_type']}"
                     last_time = sent_signals_cooldown.get(cooldown_key, 0)
                     
-                    # إرسال التنبيه إذا مر أكثر من ساعتين على آخر تنبيه لنفس العملة
                     if time.time() - last_time > 7200:
                         send_telegram_alert(signal)
                         sent_signals_cooldown[cooldown_key] = time.time()
                         logger.info("Signal found and sent for %s (%s)", symbol, signal['market_type'])
                 
-                time.sleep(3) # فاصل زمني بسيط بين كل عملة وأخرى لتجنب حظر الحرارة (Rate Limit)
+                time.sleep(3)
                 
         except Exception as e:
             logger.error("Error in background scanner: %s", e)
             
-        # الانتظار 5 دقائق قبل دورة الفحص التالية
         time.sleep(300)
 
-# تشغيل البوت في الخلفية عند بدء تشغيل السيرفر
+# تشغيل خيوط العمل في الخلفية (الفحص والتنشيط الذاتي)
 scanner_thread = threading.Thread(target=background_scanner, daemon=True)
 scanner_thread.start()
+
+ping_thread = threading.Thread(target=self_ping, daemon=True)
+ping_thread.start()
 
 # =========================================================
 # FLASK WEBHOOK ENDPOINT
@@ -426,7 +435,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Dual-Market LONG-ONLY Analyst Bot with Auto-Scanner is running successfully!", 200
+    return "Expert Dual-Market LONG-ONLY Analyst Bot with Auto-Scanner & Self-Ping is running successfully!", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
