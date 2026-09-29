@@ -23,7 +23,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 app = Flask(__name__)
 
 # =========================================================
-# EXPERT ANALYST BOT CORE (MASTER TRADER EDITION)
+# EXPERT ANALYST BOT CORE (MASTER TRADER EDITION - OPTIMIZED)
 # =========================================================
 class ExpertAnalystBot:
     def __init__(
@@ -32,7 +32,7 @@ class ExpertAnalystBot:
         api_key='',
         secret_key='',
         timeframe='15m',
-        market_type='spot'
+        market_type='swap'  # تم تعديلها لتتناسب مع الفيوتشرز
     ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
@@ -248,7 +248,8 @@ class ExpertAnalystBot:
             
         row = df_15m.iloc[-1]
 
-        decision = 'LONG' if self.market_type == 'spot' else ('LONG' if row['supertrend_dir'] == 1 else 'SHORT')
+        # تحديد الاتجاه بناءً على السوبرترند للفيوتشرز
+        decision = 'LONG' if row['supertrend_dir'] == 1 else 'SHORT'
 
         fvg = self.detect_fvg(df_15m)
         ob = self.detect_order_block(df_15m, decision)
@@ -258,7 +259,7 @@ class ExpertAnalystBot:
         
         if row['supertrend_dir'] == 1:
             confirmations.append('SuperTrend_Bullish')
-        elif self.market_type != 'spot' and row['supertrend_dir'] == -1:
+        elif row['supertrend_dir'] == -1:
             confirmations.append('SuperTrend_Bearish')
             
         if row['sar_bullish']:
@@ -267,7 +268,7 @@ class ExpertAnalystBot:
         if row['close'] <= row['bb_lower'] * 1.01:
             confirmations.append('Bollinger_Lower_Bounce')
 
-        if row['rsi'] > 45 and row['rsi'] < 70:
+        if row['rsi'] > 40 and row['rsi'] < 70:
             confirmations.append('RSI_Momentum_OK')
 
         if fvg:
@@ -280,33 +281,43 @@ class ExpertAnalystBot:
         if len(confirmations) < 3:
             return None
 
-        # جلب سياق الفريمات الكبرى أولاً
         trend_4h, trend_1h, btc_context = self.get_market_context(symbol)
 
-        # 🛡️ فلتر الأمان الخبير 1: منع الـ LONG إذا كان فريم الـ 4 ساعات هابطاً قطعياً
+        # 🛡️ حماية قوية ضد الاتجاه العام المعاكس في الـ 4 ساعات
         if decision == 'LONG' and trend_4h == 'BEARISH':
-            logger.info("Filtered out %s: LONG rejected because 4H Master Trend is BEARISH.", symbol)
+            return None
+        if decision == 'SHORT' and trend_4h == 'BULLISH':
             return None
 
-        # 🛡️ فلتر الأمان الخبير 2: منع الدخول في التشبع الشرائي القوي (إذا كان RSI فوق 75)
+        # 🛡️ فلتر تجنب التشبع
         if decision == 'LONG' and row['rsi'] > 75:
-            logger.info("Filtered out %s: LONG rejected due to extreme RSI overbought (%.1f).", symbol, row['rsi'])
+            return None
+        if decision == 'SHORT' and row['rsi'] < 25:
             return None
 
         entry = float(row['close'])
         atr = float(row['atr']) if 'atr' in row and row['atr'] > 0 else entry * 0.01
 
+        # 🛡️ تحسين حساب وقف الخسارة (Stop Loss) ليكون أعمق وأكثر أماناً ضد صيد السيولة
+        # نعتمد على أدنى قاع أو أقصى قمة سابقة مع هامش ATR آمن (2.2 بدلاً من 1.5)
+        recent_low = float(df_15m['low'].iloc[-5:].min())
+        recent_high = float(df_15m['high'].iloc[-5:].max())
+
         if decision == 'LONG':
-            sl = entry - (atr * 1.5)
-            tp1 = entry + (atr * 2.5)
-            tp2 = entry + (atr * 4.0)
-            tp3 = entry + (atr * 6.0)
+            # الوقف يكون أسفل أدنى قاع حديث أو بمسافة ATR آمنة 2.2
+            sl = min(entry - (atr * 2.2), recent_low - (atr * 0.5))
+            risk_distance = entry - sl
+            tp1 = entry + (risk_distance * 1.5)
+            tp2 = entry + (risk_distance * 2.5)
+            tp3 = entry + (risk_distance * 4.0)
             struct_conf = 'BULLISH'
         else:
-            sl = entry + (atr * 1.5)
-            tp1 = entry - (atr * 2.5)
-            tp2 = entry - (atr * 4.0)
-            tp3 = entry - (atr * 6.0)
+            # الوقف يكون أعلى أقصى قمة حديثة
+            sl = max(entry + (atr * 2.2), recent_high + (atr * 0.5))
+            risk_distance = sl - entry
+            tp1 = entry - (risk_distance * 1.5)
+            tp2 = entry - (risk_distance * 2.5)
+            tp3 = entry - (risk_distance * 4.0)
             struct_conf = 'BEARISH'
 
         score_val = 82 + (len(confirmations) * 3)
@@ -332,7 +343,7 @@ class ExpertAnalystBot:
         }
 
 
-bot = ExpertAnalystBot(exchange_id='bingx', market_type='spot')
+bot = ExpertAnalystBot(exchange_id='bingx', market_type='swap')
 
 # =========================================================
 # TELEGRAM SENDER
@@ -342,10 +353,8 @@ def send_telegram_alert(signal):
         logger.info("Telegram token not set. Skipping message dispatch.")
         return
 
-    market_label = "🟢 EXPERT SPOT SIGNAL (صفقة فوري)" if bot.market_type == 'spot' else "🚨 EXPERT FUTURES SIGNAL 🚨"
-    
     msg = f"""
-{market_label}
+🚨 EXPERT FUTURES SIGNAL 🚨
 
 📊 Symbol: {signal['symbol']}
 🎯 Decision: {signal['decision']}
@@ -366,11 +375,11 @@ def send_telegram_alert(signal):
 💰 Entry: {signal['entry']:.7f}
 🛑 SL: {signal['sl']:.7f} ({signal['risk_pct']}%)
 
-🎯 TP1: {signal['tp1']:.7f} | R:R 1:2.5
-🎯 TP2: {signal['tp2']:.7f} | R:R 1:4
-🎯 TP3: {signal['tp3']:.7f} | R:R 1:6
+🎯 TP1: {signal['tp1']:.7f} | R:R 1:1.5
+🎯 TP2: {signal['tp2']:.7f} | R:R 1:2.5
+🎯 TP3: {signal['tp3']:.7f} | R:R 1:4
 
-🛡 Risk Filter: MASTER PASSED (4H Bullish & Safe RSI)
+🛡 Risk Filter: OPTIMIZED STOP LOSS PASSED
 📋 Structure Confirmation: {signal['structure_confirmation']}
 ⚡ Entry Status: DIRECT
 
@@ -405,12 +414,12 @@ def webhook():
         send_telegram_alert(signal)
         return jsonify({"status": "success", "signal": signal}), 200
     else:
-        return jsonify({"status": "filtered", "message": "Filtered out by Master 4H Trend or RSI Guard"}), 200
+        return jsonify({"status": "filtered", "message": "Filtered out by Master Trend or RSI Guard"}), 200
 
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Analyst Bot is running with Master Trend & RSI Protection Filters!", 200
+    return "Expert Futures Analyst Bot is running with Optimized Stop Loss Protection!", 200
 
 
 if __name__ == '__main__':
