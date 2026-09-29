@@ -14,10 +14,12 @@ class ExpertAnalystBot:
         exchange_id='bingx',
         api_key='',
         secret_key='',
-        timeframe='15m'
+        timeframe='15m',
+        market_type='swap'  # يمكنك تغييرها إلى 'spot' لو عايز صفقات فوري
     ):
         self.exchange_id = exchange_id
         self.timeframe = timeframe
+        self.market_type = market_type
 
         exchange_class = getattr(ccxt, exchange_id)
 
@@ -26,7 +28,7 @@ class ExpertAnalystBot:
             'secret': secret_key,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap'
+                'defaultType': self.market_type
             }
         })
 
@@ -34,19 +36,32 @@ class ExpertAnalystBot:
         self.cache_seconds = 20
 
     # =========================================================
-    # DATA & ADVANCED INDICATORS
+    # DATA, FILTERING & ADVANCED INDICATORS
     # =========================================================
 
-    def _fetch_ohlcv(self, symbol, timeframe, limit=220):
-        unwanted_tokens = ['EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 'USDCUSD']
+    def _is_valid_symbol(self, symbol):
+        # تصفية العملات الغريبة والعملات غير المرغوبة بدقة شديدة
+        unwanted_tokens = [
+            'EUR', 'JPY', 'GBP', 'CAD', 'AUD', 'CHF', 'NZD', 'NCFX', 
+            'USDCUSD', 'BULL', 'BEAR', 'UP', 'DOWN', '3S', '3L', 'HEDGE'
+        ]
+        
+        if not symbol.endswith('/USDT:USDT') and not symbol.endswith('/USDT'):
+            return False
+            
         if any(token in symbol for token in unwanted_tokens):
+            return False
+            
+        return True
+
+    def _fetch_ohlcv(self, symbol, timeframe, limit=220):
+        if not self._is_valid_symbol(symbol):
             return None
 
-        key = f"{symbol}:{timeframe}:{limit}"
+        key = f"{symbol}:{timeframe}:{limit}:{self.market_type}"
         now = time.time()
 
         cached = self.cache.get(key)
-
         if cached:
             if now - cached['time'] < self.cache_seconds:
                 return cached['data'].copy()
@@ -130,30 +145,23 @@ class ExpertAnalystBot:
         return supertrend, direction
 
     def _calculate_parabolic_sar(self, df):
-        # محاكاة سريعة ودقيقة لحركة الـ Parabolic SAR
-        high = df['high']
-        low = df['low']
         close = df['close']
-        
         sar = close.shift(1).fillna(close.iloc[0])
-        return sar < close  # صاعد True أو هابط False
+        return sar < close
 
     def _prepare(self, df):
         df = df.copy()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         
-        # مؤشرات Bollinger Bands
         upper, middle, lower = self._calculate_bollinger_bands(df['close'])
         df['bb_upper'] = upper
         df['bb_lower'] = lower
         df['bb_middle'] = middle
 
-        # مؤشر SuperTrend
         st_val, st_dir = self._calculate_supertrend(df)
         df['supertrend'] = st_val
         df['supertrend_dir'] = st_dir
 
-        # مؤشر Parabolic SAR
         df['sar_bullish'] = self._calculate_parabolic_sar(df)
 
         df['atr'] = (df['high'] - df['low']).rolling(14).mean().fillna(df['close'] * 0.01)
@@ -223,10 +231,13 @@ class ExpertAnalystBot:
         return None
 
     # =========================================================
-    # STRATEGY EVALUATION WITH NEW INDICATORS
+    # STRATEGY EVALUATION
     # =========================================================
 
     def evaluate_strategy(self, symbol):
+        if not self._is_valid_symbol(symbol):
+            return None
+
         df_15m = self._fetch_ohlcv(symbol, '15m', 100)
         
         decision = 'LONG'
@@ -234,30 +245,15 @@ class ExpertAnalystBot:
             df_prep = self._prepare(df_15m)
             if len(df_prep) > 0:
                 last_row = df_prep.iloc[-1]
-                # تحديد الاتجاه بناءً على السوبرترند والإيما 50
                 if last_row['supertrend_dir'] == -1 or last_row['close'] < last_row['ema50']:
                     decision = 'SHORT'
+        
+        # في حالة السوق الفوري (Spot)، عادة الصفقات تكون LONG فقط (شراء)، يمكنك تفعيل SHORT لو منصة BingX تدعم الاقتراض أو ترغب في تركها للنوعين
+        if self.market_type == 'spot':
+            decision = 'LONG'
 
         if df_15m is None or len(df_15m) < 30:
-            entry_val = 100.0
-            if decision == 'LONG':
-                return {
-                    'symbol': symbol, 'decision': 'LONG', 'score': 92, 'quality': 'HIGH',
-                    'confirmation_count': 6, 'confirmations': ['SuperTrend', 'ParabolicSAR', 'BollingerBands', 'OrderBlock', 'FVG', 'CandlePattern'],
-                    'trend_4h': 'BULLISH', 'trend_1h': 'BULLISH', 'btc_context': 'NEUTRAL',
-                    'rsi_15m': 55.0, 'volume_ratio': 1.5, 'entry': entry_val,
-                    'sl': entry_val - 5.0, 'tp1': entry_val + 5.0, 'tp2': entry_val + 10.0, 'tp3': entry_val + 15.0,
-                    'risk_pct': 5.0, 'risk_filter': 'PASSED', 'structure_confirmation': 'BULLISH', 'btc_conflict': False, 'entry_quality': 'OPTIMAL'
-                }
-            else:
-                return {
-                    'symbol': symbol, 'decision': 'SHORT', 'score': 92, 'quality': 'HIGH',
-                    'confirmation_count': 6, 'confirmations': ['SuperTrend', 'ParabolicSAR', 'BollingerBands', 'OrderBlock', 'FVG', 'CandlePattern'],
-                    'trend_4h': 'BEARISH', 'trend_1h': 'BEARISH', 'btc_context': 'NEUTRAL',
-                    'rsi_15m': 45.0, 'volume_ratio': 1.5, 'entry': entry_val,
-                    'sl': entry_val + 5.0, 'tp1': entry_val - 5.0, 'tp2': entry_val - 10.0, 'tp3': entry_val - 15.0,
-                    'risk_pct': 5.0, 'risk_filter': 'PASSED', 'structure_confirmation': 'BEARISH', 'btc_conflict': False, 'entry_quality': 'OPTIMAL'
-                }
+            return None
 
         df_15m = self._prepare(df_15m)
         row = df_15m.iloc[-1]
@@ -268,7 +264,6 @@ class ExpertAnalystBot:
         
         confirmations = ['Structure', 'Trend']
         
-        # فحص المؤشرات الجديدة وإضافتها للتأكيدات
         if row['supertrend_dir'] == 1 and decision == 'LONG':
             confirmations.append('SuperTrend_Bullish')
         elif row['supertrend_dir'] == -1 and decision == 'SHORT':
@@ -279,17 +274,16 @@ class ExpertAnalystBot:
         elif not row['sar_bullish'] and decision == 'SHORT':
             confirmations.append('ParabolicSAR_Sell')
 
-        if decision == 'LONG' and row['close'] <= row['bb_lower'] * 1.01:
-            confirmations.append('Bollinger_Bounce_Low')
-        elif decision == 'SHORT' and row['close'] >= row['bb_upper'] * 0.99:
-            confirmations.append('Bollinger_Bounce_High')
-
         if fvg:
             confirmations.append(fvg)
         if ob:
             confirmations.append(ob['type'])
         if candle_pattern:
             confirmations.append(candle_pattern)
+
+        # شرط جودة إضافي لتنقية العملات الضعيفة (لازم يكون فيه تأكيدات كافية وقوية)
+        if len(confirmations) < 3:
+            return None
 
         entry = float(row['close'])
         atr = float(row['atr']) if 'atr' in row and row['atr'] > 0 else entry * 0.01
@@ -307,7 +301,7 @@ class ExpertAnalystBot:
             tp3 = entry - (atr * 7.5)
             struct_conf = 'BEARISH'
 
-        score_val = 85 + (len(confirmations) * 2)
+        score_val = 80 + (len(confirmations) * 3)
 
         return {
             'symbol': symbol,
