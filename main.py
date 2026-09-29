@@ -251,7 +251,7 @@ class ExpertDualAnalystBot:
         if row['close'] <= row['bb_lower'] * 1.01:
             confirmations.append('Bollinger_Lower_Bounce')
 
-        if row['rsi'] > 30 and row['rsi'] < 70:
+        if row['rsi'] > 20 and row['rsi'] < 75:
             confirmations.append('RSI_Momentum_OK')
 
         if fvg:
@@ -268,9 +268,9 @@ class ExpertDualAnalystBot:
 
         if trend_4h == 'BEARISH':
             return None
-        if row['rsi'] > 75:
+        if row['rsi'] > 80:
             return None
-        if row['volume_ratio'] < 0.7:
+        if row['volume_ratio'] < 0.6:
             return None
 
         entry = float(row['close'])
@@ -364,7 +364,6 @@ def send_telegram_alert(signal):
 # BACKGROUND MARKET SCANNER LOOP & SELF PING
 # =========================================================
 def self_ping():
-    """يقوم بإرسال طلب دوري كل 4 دقائق لمنع سيرفر Render من النوم"""
     while True:
         try:
             time.sleep(240)
@@ -374,43 +373,49 @@ def self_ping():
             logger.warning("Self-ping failed: %s", e)
 
 def background_scanner():
-    symbols_to_scan = [
-        ("BTC/USDT", "spot"), ("ETH/USDT", "spot"), ("SOL/USDT", "spot"),
-        ("BNB/USDT", "spot"), ("XRP/USDT", "spot"), ("ADA/USDT", "spot"),
-        ("BTC/USDT:USDT", "swap"), ("ETH/USDT:USDT", "swap"), ("SOL/USDT:USDT", "swap"),
-        ("XRP/USDT:USDT", "swap"), ("DOGE/USDT:USDT", "swap"), ("AVAX/USDT:USDT", "swap")
+    # قائمة عملات موسعة تشمل أشهر وأنشط العملات الرقمية
+    spot_symbols = [
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
+        "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "MATIC/USDT",
+        "SUI/USDT", "NEAR/USDT", "PEPE/USDT", "RENDER/USDT", "FET/USDT"
     ]
     
+    futures_symbols = [
+        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", 
+        "DOGE/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT", "LINK/USDT:USDT", 
+        "SUI/USDT:USDT", "NEAR/USDT:USDT", "PEPE/USDT:USDT", "DYM/USDT:USDT",
+        "RENDER/USDT:USDT", "FET/USDT:USDT", "INJ/USDT:USDT", "ARBUSDT:USDT" if "ARBUSDT:USDT" in "ARB/USDT:USDT" else "ARB/USDT:USDT"
+    ]
+    
+    symbols_to_scan = []
+    for s in spot_symbols:
+        symbols_to_scan.append((s, "spot"))
+    for s in futures_symbols:
+        symbols_to_scan.append((s, "swap"))
+    
     sent_signals_cooldown = {}
-    logger.info("Background market scanner thread started successfully.")
+    logger.info("Expanded background market scanner thread started successfully with %d symbols.", len(symbols_to_scan))
     
     while True:
         try:
-            logger.info("Starting scheduled market scan...")
+            logger.info("Starting scheduled expanded market scan...")
             for symbol, m_type in symbols_to_scan:
                 signal = bot.evaluate_strategy(symbol, m_type)
                 if signal:
                     cooldown_key = f"{symbol}_{signal['market_type']}"
                     last_time = sent_signals_cooldown.get(cooldown_key, 0)
                     
-                    if time.time() - last_time > 7200:
+                    if time.time() - last_time > 7200: # عدم تكرار نفس العملة إلا بعد ساعتين
                         send_telegram_alert(signal)
                         sent_signals_cooldown[cooldown_key] = time.time()
                         logger.info("Signal found and sent for %s (%s)", symbol, signal['market_type'])
                 
-                time.sleep(3)
+                time.sleep(2) # فاصل زمني بسيط بين كل عملة لتفادي حظر الطلبات
                 
         except Exception as e:
             logger.error("Error in background scanner: %s", e)
             
-        time.sleep(300)
-
-# تشغيل خيوط العمل في الخلفية (الفحص والتنشيط الذاتي)
-scanner_thread = threading.Thread(target=background_scanner, daemon=True)
-scanner_thread.start()
-
-ping_thread = threading.Thread(target=self_ping, daemon=True)
-ping_thread.start()
+        time.sleep(180) # الانتظار 3 دقائق قبل بدء دورة فحص جديدة بالكامل
 
 # =========================================================
 # FLASK WEBHOOK ENDPOINT
@@ -435,8 +440,15 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Dual-Market LONG-ONLY Analyst Bot with Auto-Scanner & Self-Ping is running successfully!", 200
+    return "Expert Expanded Dual-Market LONG-ONLY Analyst Bot with Auto-Scanner & Self-Ping is running successfully!", 200
 
 if __name__ == '__main__':
+    # تشغيل خيوط الفحص والتنشيط الذاتي قبل تشغيل السيرفر
+    scanner_thread = threading.Thread(target=background_scanner, daemon=True)
+    scanner_thread.start()
+
+    ping_thread = threading.Thread(target=self_ping, daemon=True)
+    ping_thread.start()
+
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
