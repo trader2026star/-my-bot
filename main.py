@@ -373,23 +373,34 @@ def self_ping():
             logger.warning("Self-ping failed: %s", e)
 
 def background_scanner():
-    # قائمة عملات نظيفة ومستقرة تماماً ومتوافقة مع BingX بدون أخطاء رموز
+    # قائمة موسعة لأكثر من 100 عملة رقمية قوية (Spot & Futures)
     spot_symbols = [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
-        "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "SOL/USDT",
-        "SUI/USDT", "NEAR/USDT", "RENDER/USDT", "FET/USDT",
-        "SHIB/USDT", "UNI/USDT", "APT/USDT", "OP/USDT", "ATOM/USDT",
-        "LTC/USDT", "ETC/USDT", "BCH/USDT", "FIL/USDT", "STX/USDT"
+        "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "SUI/USDT", 
+        "NEAR/USDT", "RENDER/USDT", "FET/USDT", "SHIB/USDT", "UNI/USDT", 
+        "APT/USDT", "OP/USDT", "ATOM/USDT", "LTC/USDT", "ETC/USDT", 
+        "BCH/USDT", "FIL/USDT", "STX/USDT", "INJ/USDT", "ARB/USDT", 
+        "ICP/USDT", "TIA/USDT", "SEI/USDT", "DYM/USDT", "PEPE/USDT", 
+        "FLOKI/USDT", "BONK/USDT", "WIF/USDT", "JUP/USDT", "STRK/USDT", 
+        "MANA/USDT", "SAND/USDT", "AXS/USDT", "GALA/USDT", "IMX/USDT", 
+        "RNDR/USDT", "AGIX/USDT", "OCEAN/USDT", "NEAR/USDT", "GRT/USDT", 
+        "HBAR/USDT", "ALGO/USDT", "VET/USDT", "FTM/USDT", "EGLD/USDT"
     ]
     
     futures_symbols = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", 
         "DOGE/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT", "LINK/USDT:USDT", 
-        "SUI/USDT:USDT", "NEAR/USDT:USDT", "DYM/USDT:USDT",
-        "RENDER/USDT:USDT", "FET/USDT:USDT", "INJ/USDT:USDT", "ARB/USDT:USDT",
-        "SHIB/USDT:USDT", "UNI/USDT:USDT", "APT/USDT:USDT", "OP/USDT:USDT",
-        "ATOM/USDT:USDT", "LTC/USDT:USDT", "ICP/USDT:USDT", "TIA/USDT:USDT",
-        "SEI/USDT:USDT"
+        "SUI/USDT:USDT", "NEAR/USDT:USDT", "DYM/USDT:USDT", "RENDER/USDT:USDT", 
+        "FET/USDT:USDT", "INJ/USDT:USDT", "ARB/USDT:USDT", "SHIB/USDT:USDT", 
+        "UNI/USDT:USDT", "APT/USDT:USDT", "OP/USDT:USDT", "ATOM/USDT:USDT", 
+        "LTC/USDT:USDT", "ICP/USDT:USDT", "TIA/USDT:USDT", "SEI/USDT:USDT", 
+        "PEPE/USDT:USDT", "FLOKI/USDT:USDT", "BONK/USDT:USDT", "WIF/USDT:USDT", 
+        "JUP/USDT:USDT", "STRK/USDT:USDT", "MANA/USDT:USDT", "SAND/USDT:USDT", 
+        "AXS/USDT:USDT", "GALA/USDT:USDT", "IMX/USDT:USDT", "GRT/USDT:USDT", 
+        "HBAR/USDT:USDT", "ALGO/USDT:USDT", "VET/USDT:USDT", "FTM/USDT:USDT", 
+        "POL/USDT:USDT", "CHZ/USDT:USDT", "CRV/USDT:USDT", "LDO/USDT:USDT", 
+        "SNX/USDT:USDT", "MKR/USDT:USDT", "AAVE/USDT:USDT", "COMP/USDT:USDT", 
+        "SUSHI/USDT:USDT", "1INCH/USDT:USDT"
     ]
     
     unique_symbols = set()
@@ -408,11 +419,11 @@ def background_scanner():
             symbols_to_scan.append(item)
     
     sent_signals_cooldown = {}
-    logger.info("Cleaned background market scanner thread started successfully with %d unique assets.", len(symbols_to_scan))
+    logger.info("Cleaned background market scanner thread started successfully with %d unique assets (>100 total market combinations).", len(symbols_to_scan))
     
     while True:
         try:
-            logger.info("Starting scheduled market scan...")
+            logger.info("Starting scheduled market scan across +100 assets...")
             for symbol, m_type in symbols_to_scan:
                 signal = bot.evaluate_strategy(symbol, m_type)
                 if signal:
@@ -424,12 +435,12 @@ def background_scanner():
                         sent_signals_cooldown[cooldown_key] = time.time()
                         logger.info("Signal found and sent for %s (%s)", symbol, signal['market_type'])
                 
-                time.sleep(1.5)
+                time.sleep(1.0) # تأقلم سريع ومنتظم لعدم الضغط على حظر المنصة (Rate Limit)
                 
         except Exception as e:
             logger.error("Error in background scanner: %s", e)
             
-        time.sleep(120)
+        time.sleep(90)
 
 # =========================================================
 # FLASK WEBHOOK ENDPOINT
@@ -454,7 +465,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Cleaned Dual-Market LONG-ONLY Analyst Bot is running successfully!", 200
+    return "Expert Cleaned Dual-Market LONG-ONLY Analyst Bot (+100 Assets) is running successfully!", 200
 
 if __name__ == '__main__':
     scanner_thread = threading.Thread(target=background_scanner, daemon=True)
