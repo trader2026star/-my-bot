@@ -373,11 +373,11 @@ def self_ping():
             logger.warning("Self-ping failed: %s", e)
 
 def background_scanner():
-    # قائمة عملات موسعة ومحدثة بـ 51 عملة (إضافة 20 عملة جديدة قوية)
+    # قائمة عملات نظيفة ومستقرة تماماً ومتوافقة مع BingX بدون أخطاء رموز
     spot_symbols = [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
-        "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "MATIC/USDT",
-        "SUI/USDT", "NEAR/USDT", "PEPE/USDT", "RENDER/USDT", "FET/USDT",
+        "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "SOL/USDT",
+        "SUI/USDT", "NEAR/USDT", "RENDER/USDT", "FET/USDT",
         "SHIB/USDT", "UNI/USDT", "APT/USDT", "OP/USDT", "ATOM/USDT",
         "LTC/USDT", "ETC/USDT", "BCH/USDT", "FIL/USDT", "STX/USDT"
     ]
@@ -385,14 +385,13 @@ def background_scanner():
     futures_symbols = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", 
         "DOGE/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT", "LINK/USDT:USDT", 
-        "SUI/USDT:USDT", "NEAR/USDT:USDT", "PEPE/USDT:USDT", "DYM/USDT:USDT",
+        "SUI/USDT:USDT", "NEAR/USDT:USDT", "DYM/USDT:USDT",
         "RENDER/USDT:USDT", "FET/USDT:USDT", "INJ/USDT:USDT", "ARB/USDT:USDT",
         "SHIB/USDT:USDT", "UNI/USDT:USDT", "APT/USDT:USDT", "OP/USDT:USDT",
         "ATOM/USDT:USDT", "LTC/USDT:USDT", "ICP/USDT:USDT", "TIA/USDT:USDT",
-        "SEI/USDT:USDT", "NEAR/USDT:USDT"
+        "SEI/USDT:USDT"
     ]
     
-    # إزالة التكرار إن وجد
     unique_symbols = set()
     symbols_to_scan = []
     
@@ -409,11 +408,11 @@ def background_scanner():
             symbols_to_scan.append(item)
     
     sent_signals_cooldown = {}
-    logger.info("Massively expanded background market scanner thread started successfully with %d unique assets.", len(symbols_to_scan))
+    logger.info("Cleaned background market scanner thread started successfully with %d unique assets.", len(symbols_to_scan))
     
     while True:
         try:
-            logger.info("Starting scheduled massive market scan...")
+            logger.info("Starting scheduled market scan...")
             for symbol, m_type in symbols_to_scan:
                 signal = bot.evaluate_strategy(symbol, m_type)
                 if signal:
@@ -439,7 +438,7 @@ def background_scanner():
 def webhook():
     data = request.json
     if not data or 'symbol' not in data:
-        return jsonify({"status": "error", "message": "Invalid payload"}}, 400
+        return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
     symbol = data['symbol']
     market_type = data.get('market_type', 'swap')
@@ -455,7 +454,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Massively Expanded Dual-Market LONG-ONLY Analyst Bot is running successfully!", 200
+    return "Expert Cleaned Dual-Market LONG-ONLY Analyst Bot is running successfully!", 200
 
 if __name__ == '__main__':
     scanner_thread = threading.Thread(target=background_scanner, daemon=True)
