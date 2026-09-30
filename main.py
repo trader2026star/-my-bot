@@ -112,34 +112,20 @@ class ExpertCISDBot:
         return supertrend, direction
 
     def detect_cisd_and_fvg(self, df):
-        """
-        تطبيق استراتيجية تسليم السعر المطورة (Change in the State of Delivery - CISD):
-        1. سحب السيولة (Stop Hunt): كسر أو ملامسة قاع سابق مع ارتداد سريع.
-        2. الاندفاع (Displacement): شمعة قوية تخترق الهيكل وتغير اتجاه السعر (MSS).
-        3. FVG (Fair Value Gap): ترك فجوة سعرية حقيقية تؤكد دخول صانع السوق.
-        """
         if df is None or len(df) < 20:
             return False, 0.0, False
 
-        # قاع السويفت الأخير (مدى أوسع قليلاً لضمان التقاط الفرص)
         recent_low = df['low'].iloc[-20:-3].min()
-        
         curr = df.iloc[-1]
         prev = df.iloc[-2]
         prev_2 = df.iloc[-3]
 
-        # 1. سحب السيولة
         swept_liquidity = (prev['low'] <= recent_low or prev_2['low'] <= recent_low or curr['low'] <= recent_low)
-
-        # 2. الاندفاع (Displacement): جسم الشمعة أكبر بـ 1.2 مرة على الأقل من المتوسط لزيادة المرونة
         body_curr = abs(curr['close'] - curr['open'])
         avg_body = abs(df['close'] - df['open']).rolling(12).mean().iloc[-1]
         is_displacement = body_curr > (avg_body * 1.2) and curr['close'] > curr['open']
-
-        # 3. الفجوة السعرية (Fair Value Gap - FVG) الصاعدة
         has_fvg = curr['low'] > prev_2['high']
 
-        # شروط مرنة ومحدثة لـ CISD
         if swept_liquidity and (is_displacement or has_fvg):
             return True, float(recent_low), has_fvg
 
@@ -160,17 +146,14 @@ class ExpertCISDBot:
         _, st_dir_4h = self._calculate_supertrend(df_4h)
         _, st_dir_1h = self._calculate_supertrend(df_1h)
 
-        # فلترة اتجاه 4 ساعات
         if st_dir_4h.iloc[-1] == -1:
             return None
 
         row_15m = df_15m.iloc[-1]
-
-        # فحص استراتيجية CISD المحدثة
         is_cisd, sweep_level, has_fvg = self.detect_cisd_and_fvg(df_15m)
 
         if not is_cisd:
-            return None  # رفض العملة إذا لم تحقق نموذج الـ CISD
+            return None
 
         confirmations = ['Smart_Money_Concept', 'CISD_Delivery_Confirmed']
         if has_fvg:
@@ -178,7 +161,6 @@ class ExpertCISDBot:
         if st_dir_1h.iloc[-1] == 1:
             confirmations.append('1H_Trend_Aligned')
 
-        # فلترة الزخم (منطقة RSI آمنة)
         vol_ma = df_15m['volume'].rolling(window=20).mean().iloc[-1]
         volume_ratio = row_15m['volume'] / vol_ma if vol_ma > 0 else 1.0
         if row_15m['rsi'] > 82 or row_15m['rsi'] < 20:
@@ -201,8 +183,7 @@ class ExpertCISDBot:
         tp3 = max(entry + (risk_distance * 6.0), recent_high)
 
         score_val = 90 + (len(confirmations) * 2)
-
-        logger.info(f"✅ تم العثور على فرصة مطابقة للقواعد بنجاح للعملة: {symbol}")
+        logger.info(f"✅ فرصة ناجحة مطابقة للقواعد: {symbol}")
 
         return {
             'symbol': symbol,
@@ -264,7 +245,7 @@ def send_telegram_alert(signal):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=10)
-        logger.info(f"تم إرسال تنبيه الصفقة بنجاح عبر تيليجرام للعملة: {signal['symbol']}")
+        logger.info(f"تم إرسال التنبيه عبر تيليجرام للعملة: {signal['symbol']}")
     except Exception as e:
         logger.error("Telegram error: %s", e)
 
@@ -286,7 +267,7 @@ def background_scanner():
     symbols_to_scan = [(s, "spot") for s in spot_symbols] + [(s, "swap") for s in futures_symbols]
     sent_cooldown = {}
 
-    logger.info("CISD Elite Scanner started with %d assets.", len(symbols_to_scan))
+    logger.info("🚀 CISD Elite Scanner started successfully with %d assets.", len(symbols_to_scan))
     
     while True:
         try:
@@ -294,13 +275,32 @@ def background_scanner():
                 signal = bot.evaluate_strategy(symbol, m_type)
                 if signal:
                     cooldown_key = f"{symbol}_{signal['market_type']}"
-                    if time.time() - sent_cooldown.get(cooldown_key, 0) > 10800: # تقليل فترة التهدئة إلى 3 ساعات لزيادة استمرارية الفرص
+                    if time.time() - sent_cooldown.get(cooldown_key, 0) > 10800:
                         send_telegram_alert(signal)
                         sent_cooldown[cooldown_key] = time.time()
                 time.sleep(1.0)
         except Exception as e:
             logger.error("Scanner loop error: %s", e)
-        time.sleep(90)
+        time.sleep(60)
+
+# =========================================================
+# تشغيل خيوط الخلفية فور إقلاع السيرفر بطريقة مضمونة 100%
+# =========================================================
+scanner_thread_started = False
+
+def start_background_threads():
+    global scanner_thread_started
+    if not scanner_thread_started:
+        try:
+            threading.Thread(target=background_scanner, daemon=True).start()
+            threading.Thread(target=self_ping, daemon=True).start()
+            logger.info("🚀 تم بدء تشغيل خيوط الخلفية (المسح والـ Ping) بنجاح تامة!")
+            scanner_thread_started = True
+        except Exception as e:
+            logger.error(f"فشل تشغيل خيوط الخلفية: {e}")
+
+# استدعاء دالة التشغيل فور تحميل وقراءة الملف
+start_background_threads()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -315,10 +315,9 @@ def webhook():
 
 @app.route('/')
 def index():
+    start_background_threads()
     return "CISD Elite Sniper Bot is running and hunting for life-changing setups!", 200
 
 if __name__ == '__main__':
-    threading.Thread(target=background_scanner, daemon=True).start()
-    threading.Thread(target=self_ping, daemon=True).start()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
