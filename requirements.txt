@@ -2,4 +2,4 @@ ccxt
 pandas
 numpy
 flask
-gunicorn
+requests
