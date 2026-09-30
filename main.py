@@ -207,10 +207,10 @@ class ExpertCISDBot:
 bot = ExpertCISDBot(exchange_id='bingx')
 
 # =========================================================
-# TELEGRAM SENDER
+# TELEGRAM SENDER & TEST
 # =========================================================
 def send_telegram_alert(signal):
-    if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+    if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN" or not TELEGRAM_BOT_TOKEN:
         logger.info("Telegram token not set.")
         return
 
@@ -249,6 +249,22 @@ def send_telegram_alert(signal):
     except Exception as e:
         logger.error("Telegram error: %s", e)
 
+def send_test_startup_message():
+    if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN" or not TELEGRAM_BOT_TOKEN:
+        logger.warning("⚠️ التوكن غير مُعرّف، لن يتم إرسال رسالة تيليجرام.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    msg = "🟢 **تم إقلاع بوت CISD Elite بنجاح تام!**\nالسيرفر يعمل الآن ويبحث عن الصفقات الحوتية 🚀"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
+            logger.info("✅ تم إرسال رسالة الاختبار بنجاح إلى تيليجرام!")
+        else:
+            logger.error(f"❌ فشل إرسال التيليجرام، الرد: {res.text}")
+    except Exception as e:
+        logger.error(f"Telegram test error: {e}")
+
 # =========================================================
 # BACKGROUND SCANNER LOOP & WEBHOOK
 # =========================================================
@@ -284,7 +300,7 @@ def background_scanner():
         time.sleep(60)
 
 # =========================================================
-# تشغيل خيوط الخلفية فور إقلاع السيرفر بطريقة مضمونة 100%
+# تشغيل خيوط الخلفية فور إقلاع السيرفر
 # =========================================================
 scanner_thread_started = False
 
@@ -294,12 +310,14 @@ def start_background_threads():
         try:
             threading.Thread(target=background_scanner, daemon=True).start()
             threading.Thread(target=self_ping, daemon=True).start()
-            logger.info("🚀 تم بدء تشغيل خيوط الخلفية (المسح والـ Ping) بنجاح تامة!")
+            # إرسال رسالة اختبار فورية للتيليجرام للتأكد من الربط
+            threading.Thread(target=send_test_startup_message, daemon=True).start()
+            
+            logger.info("🚀 تم بدء تشغيل خيوط الخلفية ورسالة الاختبار بنجاح تام!")
             scanner_thread_started = True
         except Exception as e:
             logger.error(f"فشل تشغيل خيوط الخلفية: {e}")
 
-# استدعاء دالة التشغيل فور تحميل وقراءة الملف
 start_background_threads()
 
 @app.route('/webhook', methods=['POST'])
