@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Elite Sniper Bot is Running Safely!"
+    return "Elite Sniper Bot on BingX is Running Safely!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -21,7 +21,7 @@ def keep_alive():
     t = Thread(target=run_flask)
     t.start()
 
-# إعداد توكن تليجرام والـ Chat ID من متغيرات البيئة في Render لضمان الأمان وعدم توقف البوت
+# إعداد توكن تليجرام والـ Chat ID من متغيرات البيئة في Render
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 
@@ -36,9 +36,10 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-exchange = ccxt.binance({
+# الاتصال بمنصة BingX بدلاً من باينناس لتجنب الحظر الجغرافي وسيرفرات الاستضافة
+exchange = ccxt.bingx({
     'enableRateLimit': True,
-    'options': {'defaultType': 'future'}
+    'options': {'defaultType': 'swap'}  # عقود السواب / الآجلة في BingX
 })
 
 def fetch_data(symbol, timeframe, limit=100):
@@ -51,8 +52,9 @@ def fetch_data(symbol, timeframe, limit=100):
         return pd.DataFrame()
 
 def job():
-    symbols = ['BRUSDT.P', 'ESPORTSUSDT', 'XPL/USDT']
-    print("--- Scanning Market with Strict Rules ---")
+    # رموز العملات بصيغة العقود الآجلة المعتمدة في BingX
+    symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+    print("--- Scanning Market on BingX with Strict Rules ---")
     
     for symbol in symbols:
         try:
@@ -67,7 +69,7 @@ def job():
             
             if result.get("signal") == "LONG":
                 msg = (
-                    f"🎯 *فرصة قنص نموذجية مؤكدة!*\n\n"
+                    f"🎯 *فرصة قنص نموذجية على BingX!*\n\n"
                     f"🔹 العملة: `{symbol}`\n"
                     f"🟢 الإشارة: **LONG**\n"
                     f"📍 الدخول: `{result['entry']}`\n"
@@ -83,7 +85,7 @@ def job():
 
 if __name__ == "__main__":
     keep_alive()
-    send_telegram_message("🚀 تم تشغيل النسخة الاحترافية الصارمة للبوت بنجاح.")
+    send_telegram_message("🚀 تم تشغيل النسخة الاحترافية على منصة BingX بنجاح.")
     
     while True:
         job()
