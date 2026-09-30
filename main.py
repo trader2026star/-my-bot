@@ -24,9 +24,9 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://my-bot-zag6.onre
 app = Flask(__name__)
 
 # =========================================================
-# EXPERT SNIPER BOT CORE (SMART MONEY & LIQUIDITY SWEEP)
+# EXPERT CISD & SMARTER MONEY BOT CORE
 # =========================================================
-class ExpertSniperBot:
+class ExpertCISDBot:
     def __init__(self, exchange_id='bingx', api_key='', secret_key=''):
         self.exchange_id = exchange_id
         exchange_class = getattr(ccxt, exchange_id)
@@ -111,48 +111,44 @@ class ExpertSniperBot:
             
         return supertrend, direction
 
-    def detect_liquidity_sweep_and_mss(self, df):
+    def detect_cisd_and_fvg(self, df):
         """
-        يكتشف ما إذا كان السعر قد كسر قاعاً سابقاً (سحب سيولة Stop Hunting) 
-        ثم أغلق بشمعة قوية صاعدة (Market Structure Shift)
+        تطبيق استراتيجية تسليم السعر (Change in the State of Delivery - CISD):
+        1. سحب السيولة: كسر قاع سابق (Stop Hunt).
+        2. الاندفاع (Displacement): شمعة صاعدة قوية جداً بحجم جسم يكسر الهيكل (MSS).
+        3. FVG: ترك فجوة سعرية تدل على ضخ سيولة حقيقية من الحيتان.
         """
-        if df is None or len(df) < 10:
-            return False, 0.0
+        if df is None or len(df) < 15:
+            return False, 0.0, False
 
-        # قاع السويفت الأخير خلال الشموع السابقة
-        recent_low = df['low'].iloc[-10:-2].min()
-        prev_low_idx = df['low'].iloc[-10:-2].idxmin()
+        # قاع السويفت الأخير
+        recent_low = df['low'].iloc[-15:-3].min()
         
-        current_candle = df.iloc[-1]
-        prev_candle = df.iloc[-2]
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+        prev_2 = df.iloc[-3]
 
-        # شرط سحب السيولة: الشمعة السابقة أو الحالية كسرت القاع ثم ارتدت
-        swept_liquidity = (prev_candle['low'] < recent_low or current_candle['low'] < recent_low)
-        
-        # شرط تغير الهيكل (MSS): إغلاق صعودي قوي فوق جسم الشمعة السابقة مع حجم تداول عالي
-        is_bullish_mss = (current_candle['close'] > current_candle['open']) and \
-                         (current_candle['close'] > prev_candle['high'])
+        # 1. سحب السيولة (شمعة سابقة كسرت القاع أو مسّته ثم ارتدت)
+        swept_liquidity = (prev['low'] < recent_low or prev_2['low'] < recent_low or curr['low'] < recent_low)
 
-        if swept_liquidity and is_bullish_mss:
-            return True, float(recent_low)
-            
-        return False, 0.0
+        # 2. الاندفاع (Displacement): شمعة الحالية أو السابقة جسمها أضعاف المتوسط ولونها أخضر قوي
+        body_curr = abs(curr['close'] - curr['open'])
+        avg_body = abs(df['close'] - df['open']).rolling(10).mean().iloc[-1]
+        is_displacement = body_curr > (avg_body * 1.5) and curr['close'] > curr['open']
 
-    def detect_order_block(self, df):
-        if df is None or len(df) < 5:
-            return None
-        for i in range(len(df) - 2, 2, -1):
-            if (df.loc[i, 'close'] < df.loc[i, 'open'] and 
-                df.loc[i+1, 'close'] > df.loc[i+1, 'open'] and 
-                df.loc[i+1, 'close'] > df.loc[i, 'high']):
-                return float(df.loc[i, 'low'])
-        return None
+        # 3. فحص الفجوة السعرية (Fair Value Gap - FVG) الصاعدة
+        # الفجوة تحدث عندما يكون قاع الشمعة الحالية أعلى من قمة الشمعة التي قبلها بمرتين
+        has_fvg = curr['low'] > prev_2['high']
+
+        if swept_liquidity and is_displacement and has_fvg:
+            return True, float(recent_low), True
+
+        return False, 0.0, False
 
     def evaluate_strategy(self, symbol, market_type='swap'):
         if not self._is_valid_symbol(symbol):
             return None
 
-        # فريمات متعددة لاقتناص الصفقات العالية الدقة
         df_15m = self._fetch_ohlcv(symbol, '15m', 120, market_type)
         df_1h = self._fetch_ohlcv(symbol, '1h', 50, market_type)
         df_4h = self._fetch_ohlcv(symbol, '4h', 50, market_type)
@@ -160,37 +156,35 @@ class ExpertSniperBot:
         if df_15m is None or len(df_15m) < 40 or df_1h is None or df_4h is None:
             return None
 
-        # حساب المؤشرات
         df_15m['rsi'] = self._calculate_rsi(df_15m['close'], 14)
         _, st_dir_4h = self._calculate_supertrend(df_4h)
         _, st_dir_1h = self._calculate_supertrend(df_1h)
 
-        # 1. فلترة الاتجاه العام: يجب ألا يكون الاتجاه هابطاً بقوة على الأربع ساعات
+        # عدم الشراء إذا كان الاتجاه العام على 4 ساعات هابطاً بقوة
         if st_dir_4h.iloc[-1] == -1:
             return None
 
         row_15m = df_15m.iloc[-1]
-        
-        # 2. فحص سحب السيولة وهيكل السوق (مفاهيم الذكاء المؤسسي)
-        has_sweep_mss, sweep_level = self.detect_liquidity_sweep_and_mss(df_15m)
-        ob_level = self.detect_order_block(df_15m)
 
-        confirmations = ['Smart_Money_Structure']
-        if has_sweep_mss:
-            confirmations.append('Liquidity_Sweep_MSS')
-        if ob_level:
-            confirmations.append('Order_Block_Support')
+        # تطبيق استراتيجية تسليم السعر CISD
+        is_cisd, sweep_level, has_fvg = self.detect_cisd_and_fvg(df_15m)
+
+        confirmations = ['Smart_Money_Concept']
+        if is_cisd:
+            confirmations.append('CISD_Delivery_Confirmed')
+        if has_fvg:
+            confirmations.append('Fair_Value_Gap_FVG')
         if st_dir_1h.iloc[-1] == 1:
             confirmations.append('1H_Trend_Aligned')
 
-        # شرط صارم جداً لضمان جودة صفقة العمر (يجب أن توجد مؤشرات مؤسسية واضحة)
-        if len(confirmations) < 3:
+        # شرط صارم جداً: يجب أن تتحقق شروط الـ CISD والفلترة بالكامل
+        if not is_cisd or len(confirmations) < 3:
             return None
 
-        # فلترة الزخم والحجم
+        # فلترة الزخم
         vol_ma = df_15m['volume'].rolling(window=20).mean().iloc[-1]
         volume_ratio = row_15m['volume'] / vol_ma if vol_ma > 0 else 1.0
-        if volume_ratio < 0.8 or row_15m['rsi'] > 75 or row_15m['rsi'] < 25:
+        if volume_ratio < 0.9 or row_15m['rsi'] > 78 or row_15m['rsi'] < 25:
             return None
 
         entry = float(row_15m['close'])
@@ -198,27 +192,27 @@ class ExpertSniperBot:
         if not atr or atr <= 0:
             atr = entry * 0.01
 
-        # تحديد وقف الخسارة أسفل منطقة السيولة المسحوبة بقليل للحماية من الضرب الوهمي
-        sl = min(entry - (atr * 2.5), sweep_level - (atr * 0.5)) if sweep_level > 0 else entry - (atr * 2.5)
+        # وقف الخسارة أسفل نقطة سحب السيولة (تأمين كامل ضد الضرب الوهمي)
+        sl = sweep_level - (atr * 0.4) if sweep_level > 0 else entry - (atr * 2.5)
         risk_distance = entry - sl
 
         if risk_distance <= 0:
             return None
 
-        # صفقات العمر تعتمد على أهداف بعيدة بناءً على قمم السوق السابقة
-        recent_high = float(df_1h['high'].iloc[-30:].max())
+        # أهداف صفقات العمر تعتمد على قمم فريم الساعة والأربع ساعات السابقة
+        recent_high = float(df_1h['high'].iloc[-35:].max())
         tp1 = entry + (risk_distance * 2.0)
-        tp2 = entry + (risk_distance * 3.5)
-        tp3 = max(entry + (risk_distance * 6.0), recent_high) # الهدف الثالث يطارد القمة ليعطيك عائد تاريخي
+        tp2 = entry + (risk_distance * 3.8)
+        tp3 = max(entry + (risk_distance * 6.5), recent_high)
 
-        score_val = 88 + (len(confirmations) * 3)
+        score_val = 92 + (len(confirmations) * 2)
 
         return {
             'symbol': symbol,
             'market_type': 'SPOT' if market_type == 'spot' else 'FUTURES',
-            'decision': 'LONG (SNIPER)',
+            'decision': 'LONG (CISD SNIPER)',
             'score': min(score_val, 99),
-            'quality': 'ELITE VIP',
+            'quality': 'ELITE CISD VIP',
             'confirmations': confirmations,
             'trend_4h': 'BULLISH' if st_dir_4h.iloc[-1] == 1 else 'NEUTRAL',
             'trend_1h': 'BULLISH' if st_dir_1h.iloc[-1] == 1 else 'NEUTRAL',
@@ -232,7 +226,7 @@ class ExpertSniperBot:
             'risk_pct': round((abs(entry - sl) / entry) * 100, 2)
         }
 
-bot = ExpertSniperBot(exchange_id='bingx')
+bot = ExpertCISDBot(exchange_id='bingx')
 
 # =========================================================
 # TELEGRAM SENDER
@@ -242,7 +236,7 @@ def send_telegram_alert(signal):
         logger.info("Telegram token not set.")
         return
 
-    market_label = "🟢 [SPOT - صفقات العمر]" if signal['market_type'] == 'SPOT' else "🚀 [FUTURES - صفقات العمر الحوتية]"
+    market_label = "🟢 [SPOT - CISD صفقة العمر]" if signal['market_type'] == 'SPOT' else "🚀 [FUTURES - CISD تسليم السعر الحوتي]"
 
     msg = f"""
 {market_label} 💎
@@ -257,17 +251,17 @@ def send_telegram_alert(signal):
 📈 4H Trend: {signal['trend_4h']}
 📊 1H Trend: {signal['trend_1h']}
 💪 RSI 15M: {signal['rsi_15m']:.1f}
-🔊 Volume Spike: {signal['volume_ratio']:.2f}x
+🔊 Volume Surge: {signal['volume_ratio']:.2f}x
 
 💰 Entry Price: {signal['entry']:.7f}
 🛑 Stop Loss: {signal['sl']:.7f} ({signal['risk_pct']}%)
 
 🎯 TP1 (1:2): {signal['tp1']:.7f}
-🎯 TP2 (1:3.5): {signal['tp2']:.7f}
+🎯 TP2 (1:3.8): {signal['tp2']:.7f}
 🎯 TP3 (Elite Target): {signal['tp3']:.7f}
 
-⚡ Strategy: Smart Money / Liquidity Sweep
-⚠️ إدارة رأس المال هي سر النجاح والأمان.
+⚡ Strategy: CISD (Change in the State of Delivery) + FVG
+⚠️ إدارة رأس المال هي الأساس للوصول للهدف المنشود.
 """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
@@ -294,7 +288,7 @@ def background_scanner():
     symbols_to_scan = [(s, "spot") for s in spot_symbols] + [(s, "swap") for s in futures_symbols]
     sent_cooldown = {}
 
-    logger.info("Elite Sniper Scanner started with %d assets.", len(symbols_to_scan))
+    logger.info("CISD Elite Scanner started with %d assets.", len(symbols_to_scan))
     
     while True:
         try:
@@ -302,7 +296,7 @@ def background_scanner():
                 signal = bot.evaluate_strategy(symbol, m_type)
                 if signal:
                     cooldown_key = f"{symbol}_{signal['market_type']}"
-                    if time.time() - sent_cooldown.get(cooldown_key, 0) > 14400: # حظر تكرار التنبيه لنفس العملة لمدة 4 ساعات لضمان الجودة
+                    if time.time() - sent_cooldown.get(cooldown_key, 0) > 18000: # فترة تهدئة 5 ساعات لعدم تكرار التنبيه والتأكد من قوة الفرصة
                         send_telegram_alert(signal)
                         sent_cooldown[cooldown_key] = time.time()
                 time.sleep(1.5)
@@ -323,7 +317,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Elite Sniper Bot is running and hunting for life-changing trades!", 200
+    return "CISD Elite Sniper Bot is running and hunting for life-changing setups!", 200
 
 if __name__ == '__main__':
     threading.Thread(target=background_scanner, daemon=True).start()
