@@ -373,49 +373,64 @@ def self_ping():
             logger.warning("Self-ping failed: %s", e)
 
 def background_scanner():
-    # قائمة عملات موسعة تشمل أشهر وأنشط العملات الرقمية
+    # قائمة عملات موسعة ومحدثة بـ 51 عملة (إضافة 20 عملة جديدة قوية)
     spot_symbols = [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
         "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "MATIC/USDT",
-        "SUI/USDT", "NEAR/USDT", "PEPE/USDT", "RENDER/USDT", "FET/USDT"
+        "SUI/USDT", "NEAR/USDT", "PEPE/USDT", "RENDER/USDT", "FET/USDT",
+        "SHIB/USDT", "UNI/USDT", "APT/USDT", "OP/USDT", "ATOM/USDT",
+        "LTC/USDT", "ETC/USDT", "BCH/USDT", "FIL/USDT", "STX/USDT"
     ]
     
     futures_symbols = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", 
         "DOGE/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT", "LINK/USDT:USDT", 
         "SUI/USDT:USDT", "NEAR/USDT:USDT", "PEPE/USDT:USDT", "DYM/USDT:USDT",
-        "RENDER/USDT:USDT", "FET/USDT:USDT", "INJ/USDT:USDT", "ARBUSDT:USDT" if "ARBUSDT:USDT" in "ARB/USDT:USDT" else "ARB/USDT:USDT"
+        "RENDER/USDT:USDT", "FET/USDT:USDT", "INJ/USDT:USDT", "ARB/USDT:USDT",
+        "SHIB/USDT:USDT", "UNI/USDT:USDT", "APT/USDT:USDT", "OP/USDT:USDT",
+        "ATOM/USDT:USDT", "LTC/USDT:USDT", "ICP/USDT:USDT", "TIA/USDT:USDT",
+        "SEI/USDT:USDT", "NEAR/USDT:USDT"
     ]
     
+    # إزالة التكرار إن وجد
+    unique_symbols = set()
     symbols_to_scan = []
+    
     for s in spot_symbols:
-        symbols_to_scan.append((s, "spot"))
+        item = (s, "spot")
+        if item not in unique_symbols:
+            unique_symbols.add(item)
+            symbols_to_scan.append(item)
+            
     for s in futures_symbols:
-        symbols_to_scan.append((s, "swap"))
+        item = (s, "swap")
+        if item not in unique_symbols:
+            unique_symbols.add(item)
+            symbols_to_scan.append(item)
     
     sent_signals_cooldown = {}
-    logger.info("Expanded background market scanner thread started successfully with %d symbols.", len(symbols_to_scan))
+    logger.info("Massively expanded background market scanner thread started successfully with %d unique assets.", len(symbols_to_scan))
     
     while True:
         try:
-            logger.info("Starting scheduled expanded market scan...")
+            logger.info("Starting scheduled massive market scan...")
             for symbol, m_type in symbols_to_scan:
                 signal = bot.evaluate_strategy(symbol, m_type)
                 if signal:
                     cooldown_key = f"{symbol}_{signal['market_type']}"
                     last_time = sent_signals_cooldown.get(cooldown_key, 0)
                     
-                    if time.time() - last_time > 7200: # عدم تكرار نفس العملة إلا بعد ساعتين
+                    if time.time() - last_time > 7200:
                         send_telegram_alert(signal)
                         sent_signals_cooldown[cooldown_key] = time.time()
                         logger.info("Signal found and sent for %s (%s)", symbol, signal['market_type'])
                 
-                time.sleep(2) # فاصل زمني بسيط بين كل عملة لتفادي حظر الطلبات
+                time.sleep(1.5)
                 
         except Exception as e:
             logger.error("Error in background scanner: %s", e)
             
-        time.sleep(180) # الانتظار 3 دقائق قبل بدء دورة فحص جديدة بالكامل
+        time.sleep(120)
 
 # =========================================================
 # FLASK WEBHOOK ENDPOINT
@@ -424,7 +439,7 @@ def background_scanner():
 def webhook():
     data = request.json
     if not data or 'symbol' not in data:
-        return jsonify({"status": "error", "message": "Invalid payload"}), 400
+        return jsonify({"status": "error", "message": "Invalid payload"}}, 400
 
     symbol = data['symbol']
     market_type = data.get('market_type', 'swap')
@@ -440,10 +455,9 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Expert Expanded Dual-Market LONG-ONLY Analyst Bot with Auto-Scanner & Self-Ping is running successfully!", 200
+    return "Expert Massively Expanded Dual-Market LONG-ONLY Analyst Bot is running successfully!", 200
 
 if __name__ == '__main__':
-    # تشغيل خيوط الفحص والتنشيط الذاتي قبل تشغيل السيرفر
     scanner_thread = threading.Thread(target=background_scanner, daemon=True)
     scanner_thread.start()
 
