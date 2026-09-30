@@ -113,35 +113,35 @@ class ExpertCISDBot:
 
     def detect_cisd_and_fvg(self, df):
         """
-        تطبيق استراتيجية تسليم السعر (Change in the State of Delivery - CISD):
-        1. سحب السيولة: كسر قاع سابق (Stop Hunt).
-        2. الاندفاع (Displacement): شمعة صاعدة قوية جداً بحجم جسم يكسر الهيكل (MSS).
-        3. FVG: ترك فجوة سعرية تدل على ضخ سيولة حقيقية من الحيتان.
+        تطبيق استراتيجية تسليم السعر المطورة (Change in the State of Delivery - CISD):
+        1. سحب السيولة (Stop Hunt): كسر أو ملامسة قاع سابق مع ارتداد سريع.
+        2. الاندفاع (Displacement): شمعة قوية تخترق الهيكل وتغير اتجاه السعر (MSS).
+        3. FVG (Fair Value Gap): ترك فجوة سعرية حقيقية تؤكد دخول صانع السوق.
         """
-        if df is None or len(df) < 15:
+        if df is None or len(df) < 20:
             return False, 0.0, False
 
-        # قاع السويفت الأخير
-        recent_low = df['low'].iloc[-15:-3].min()
+        # قاع السويفت الأخير (مدى أوسع قليلاً لضمان التقاط الفرص)
+        recent_low = df['low'].iloc[-20:-3].min()
         
         curr = df.iloc[-1]
         prev = df.iloc[-2]
         prev_2 = df.iloc[-3]
 
-        # 1. سحب السيولة (شمعة سابقة كسرت القاع أو مسّته ثم ارتدت)
-        swept_liquidity = (prev['low'] < recent_low or prev_2['low'] < recent_low or curr['low'] < recent_low)
+        # 1. سحب السيولة
+        swept_liquidity = (prev['low'] <= recent_low or prev_2['low'] <= recent_low or curr['low'] <= recent_low)
 
-        # 2. الاندفاع (Displacement): شمعة الحالية أو السابقة جسمها أضعاف المتوسط ولونها أخضر قوي
+        # 2. الاندفاع (Displacement): جسم الشمعة أكبر بـ 1.2 مرة على الأقل من المتوسط لزيادة المرونة
         body_curr = abs(curr['close'] - curr['open'])
-        avg_body = abs(df['close'] - df['open']).rolling(10).mean().iloc[-1]
-        is_displacement = body_curr > (avg_body * 1.5) and curr['close'] > curr['open']
+        avg_body = abs(df['close'] - df['open']).rolling(12).mean().iloc[-1]
+        is_displacement = body_curr > (avg_body * 1.2) and curr['close'] > curr['open']
 
-        # 3. فحص الفجوة السعرية (Fair Value Gap - FVG) الصاعدة
-        # الفجوة تحدث عندما يكون قاع الشمعة الحالية أعلى من قمة الشمعة التي قبلها بمرتين
+        # 3. الفجوة السعرية (Fair Value Gap - FVG) الصاعدة
         has_fvg = curr['low'] > prev_2['high']
 
-        if swept_liquidity and is_displacement and has_fvg:
-            return True, float(recent_low), True
+        # شروط مرنة ومحدثة لـ CISD
+        if swept_liquidity and (is_displacement or has_fvg):
+            return True, float(recent_low), has_fvg
 
         return False, 0.0, False
 
@@ -160,31 +160,28 @@ class ExpertCISDBot:
         _, st_dir_4h = self._calculate_supertrend(df_4h)
         _, st_dir_1h = self._calculate_supertrend(df_1h)
 
-        # عدم الشراء إذا كان الاتجاه العام على 4 ساعات هابطاً بقوة
+        # فلترة اتجاه 4 ساعات
         if st_dir_4h.iloc[-1] == -1:
             return None
 
         row_15m = df_15m.iloc[-1]
 
-        # تطبيق استراتيجية تسليم السعر CISD
+        # فحص استراتيجية CISD المحدثة
         is_cisd, sweep_level, has_fvg = self.detect_cisd_and_fvg(df_15m)
 
-        confirmations = ['Smart_Money_Concept']
-        if is_cisd:
-            confirmations.append('CISD_Delivery_Confirmed')
+        if not is_cisd:
+            return None  # رفض العملة إذا لم تحقق نموذج الـ CISD
+
+        confirmations = ['Smart_Money_Concept', 'CISD_Delivery_Confirmed']
         if has_fvg:
             confirmations.append('Fair_Value_Gap_FVG')
         if st_dir_1h.iloc[-1] == 1:
             confirmations.append('1H_Trend_Aligned')
 
-        # شرط صارم جداً: يجب أن تتحقق شروط الـ CISD والفلترة بالكامل
-        if not is_cisd or len(confirmations) < 3:
-            return None
-
-        # فلترة الزخم
+        # فلترة الزخم (منطقة RSI آمنة)
         vol_ma = df_15m['volume'].rolling(window=20).mean().iloc[-1]
         volume_ratio = row_15m['volume'] / vol_ma if vol_ma > 0 else 1.0
-        if volume_ratio < 0.9 or row_15m['rsi'] > 78 or row_15m['rsi'] < 25:
+        if row_15m['rsi'] > 82 or row_15m['rsi'] < 20:
             return None
 
         entry = float(row_15m['close'])
@@ -192,20 +189,20 @@ class ExpertCISDBot:
         if not atr or atr <= 0:
             atr = entry * 0.01
 
-        # وقف الخسارة أسفل نقطة سحب السيولة (تأمين كامل ضد الضرب الوهمي)
-        sl = sweep_level - (atr * 0.4) if sweep_level > 0 else entry - (atr * 2.5)
+        sl = sweep_level - (atr * 0.3) if sweep_level > 0 else entry - (atr * 2.0)
         risk_distance = entry - sl
 
         if risk_distance <= 0:
             return None
 
-        # أهداف صفقات العمر تعتمد على قمم فريم الساعة والأربع ساعات السابقة
         recent_high = float(df_1h['high'].iloc[-35:].max())
         tp1 = entry + (risk_distance * 2.0)
-        tp2 = entry + (risk_distance * 3.8)
-        tp3 = max(entry + (risk_distance * 6.5), recent_high)
+        tp2 = entry + (risk_distance * 3.5)
+        tp3 = max(entry + (risk_distance * 6.0), recent_high)
 
-        score_val = 92 + (len(confirmations) * 2)
+        score_val = 90 + (len(confirmations) * 2)
+
+        logger.info(f"✅ تم العثور على فرصة مطابقة للقواعد بنجاح للعملة: {symbol}")
 
         return {
             'symbol': symbol,
@@ -257,7 +254,7 @@ def send_telegram_alert(signal):
 🛑 Stop Loss: {signal['sl']:.7f} ({signal['risk_pct']}%)
 
 🎯 TP1 (1:2): {signal['tp1']:.7f}
-🎯 TP2 (1:3.8): {signal['tp2']:.7f}
+🎯 TP2 (1:3.5): {signal['tp2']:.7f}
 🎯 TP3 (Elite Target): {signal['tp3']:.7f}
 
 ⚡ Strategy: CISD (Change in the State of Delivery) + FVG
@@ -267,6 +264,7 @@ def send_telegram_alert(signal):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=10)
+        logger.info(f"تم إرسال تنبيه الصفقة بنجاح عبر تيليجرام للعملة: {signal['symbol']}")
     except Exception as e:
         logger.error("Telegram error: %s", e)
 
@@ -296,13 +294,13 @@ def background_scanner():
                 signal = bot.evaluate_strategy(symbol, m_type)
                 if signal:
                     cooldown_key = f"{symbol}_{signal['market_type']}"
-                    if time.time() - sent_cooldown.get(cooldown_key, 0) > 18000: # فترة تهدئة 5 ساعات لعدم تكرار التنبيه والتأكد من قوة الفرصة
+                    if time.time() - sent_cooldown.get(cooldown_key, 0) > 10800: # تقليل فترة التهدئة إلى 3 ساعات لزيادة استمرارية الفرص
                         send_telegram_alert(signal)
                         sent_cooldown[cooldown_key] = time.time()
-                time.sleep(1.5)
+                time.sleep(1.0)
         except Exception as e:
             logger.error("Scanner loop error: %s", e)
-        time.sleep(120)
+        time.sleep(90)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
