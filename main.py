@@ -36,10 +36,10 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-# الاتصال بمنصة BingX بدلاً من باينناس لتجنب الحظر الجغرافي وسيرفرات الاستضافة
+# الاتصال بمنصة BingX للعقود الآجلة (Swap)
 exchange = ccxt.bingx({
     'enableRateLimit': True,
-    'options': {'defaultType': 'swap'}  # عقود السواب / الآجلة في BingX
+    'options': {'defaultType': 'swap'}
 })
 
 def fetch_data(symbol, timeframe, limit=100):
@@ -52,9 +52,19 @@ def fetch_data(symbol, timeframe, limit=100):
         return pd.DataFrame()
 
 def job():
-    # رموز العملات بصيغة العقود الآجلة المعتمدة في BingX
-    symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
-    print("--- Scanning Market on BingX with Strict Rules ---")
+    # قائمة موسعة تضم أشهر العملات وأعلاها سيولة وحركة على BingX
+    symbols = [
+        'BTC/USDT:USDT', 
+        'ETH/USDT:USDT', 
+        'SOL/USDT:USDT', 
+        'XRP/USDT:USDT', 
+        'ADA/USDT:USDT', 
+        'DOGE/USDT:USDT', 
+        'LINK/USDT:USDT', 
+        'AVAX/USDT:USDT'
+    ]
+    
+    print("--- Scanning Expanded Market on BingX with Strict Rules ---")
     
     for symbol in symbols:
         try:
@@ -85,7 +95,7 @@ def job():
 
 if __name__ == "__main__":
     keep_alive()
-    send_telegram_message("🚀 تم تشغيل النسخة الاحترافية على منصة BingX بنجاح.")
+    send_telegram_message("🚀 تم تحديث وتشغيل بوت القنص بالقائمة الموسعة على BingX بنجاح.")
     
     while True:
         job()
