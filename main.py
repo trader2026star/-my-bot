@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Elite Sniper Bot on BingX is Running Safely!"
+    return "Elite Sniper Bot on BingX (Auto-Scan) is Running Safely!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -48,23 +48,26 @@ def fetch_data(symbol, timeframe, limit=100):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         return df
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
         return pd.DataFrame()
 
+def get_active_symbols():
+    try:
+        # تحميل أسواق المنصة وتصفية أزواج العقود الآجلة التي تنتهي بـ USDT
+        exchange.load_markets()
+        symbols = [
+            symbol for symbol, market in exchange.markets.items() 
+            if market.get('swap', False) and market.get('quote', '') == 'USDT' and market.get('active', True)
+        ]
+        return symbols
+    except Exception as e:
+        print(f"Error loading markets: {e}")
+        # قائمة احتياطية في حال حدث أي ضغط على الـ API
+        return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 'ADA/USDT:USDT', 'DOGE/USDT:USDT', 'LINK/USDT:USDT', 'AVAX/USDT:USDT']
+
 def job():
-    # قائمة موسعة تضم أشهر العملات وأعلاها سيولة وحركة على BingX
-    symbols = [
-        'BTC/USDT:USDT', 
-        'ETH/USDT:USDT', 
-        'SOL/USDT:USDT', 
-        'XRP/USDT:USDT', 
-        'ADA/USDT:USDT', 
-        'DOGE/USDT:USDT', 
-        'LINK/USDT:USDT', 
-        'AVAX/USDT:USDT'
-    ]
-    
-    print("--- Scanning Expanded Market on BingX with Strict Rules ---")
+    print("--- Loading All BingX Markets for Auto-Scan ---")
+    symbols = get_active_symbols()
+    print(f"Total symbols to scan: {len(symbols)}")
     
     for symbol in symbols:
         try:
@@ -89,14 +92,19 @@ def job():
                 )
                 send_telegram_message(msg)
             else:
-                print(f"Skipped {symbol}: {result.get('reason')}")
+                # لتجنب طباعة مئات الأسطر في السجلات، يكتفي بفحص الصامت
+                pass
         except Exception as e:
-            print(f"Error processing {symbol}: {e}")
+            continue
+            
+        # فاصل صغير جداً بين كل عملة وأخرى لتجنب حظر الـ Rate Limit من المنصة
+        time.sleep(0.5)
 
 if __name__ == "__main__":
     keep_alive()
-    send_telegram_message("🚀 تم تحديث وتشغيل بوت القنص بالقائمة الموسعة على BingX بنجاح.")
+    send_telegram_message("🚀 تم تفعيل الفحص التلقائي الشامل لجميع عملات BingX بنجاح.")
     
     while True:
         job()
+        # الانتظار قبل الدورة التالية
         time.sleep(900)
