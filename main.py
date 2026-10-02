@@ -72,7 +72,6 @@ def job():
             df_15m = fetch_data(symbol, '15m')
             df_1h = fetch_data(symbol, '1h')
             df_4h = fetch_data(symbol, '4h')
-            # جلب فريم اليوم (1d) لزيادة دقة فلتر الاتجاه
             df_1d = fetch_data(symbol, '1d', limit=5)
             
             if df_15m.empty or df_1h.empty or df_4h.empty:
