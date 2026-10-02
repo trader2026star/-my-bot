@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Elite Sniper Bot on BingX (Auto-Scan) is Running Safely!"
+    return "Elite Sniper Bot on BingX (Auto-Scan - Long & Short) is Running Safely!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -52,7 +52,6 @@ def fetch_data(symbol, timeframe, limit=100):
 
 def get_active_symbols():
     try:
-        # تحميل أسواق المنصة وتصفية أزواج العقود الآجلة التي تنتهي بـ USDT
         exchange.load_markets()
         symbols = [
             symbol for symbol, market in exchange.markets.items() 
@@ -61,11 +60,10 @@ def get_active_symbols():
         return symbols
     except Exception as e:
         print(f"Error loading markets: {e}")
-        # قائمة احتياطية في حال حدث أي ضغط على الـ API
         return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 'ADA/USDT:USDT', 'DOGE/USDT:USDT', 'LINK/USDT:USDT', 'AVAX/USDT:USDT']
 
 def job():
-    print("--- Loading All BingX Markets for Auto-Scan ---")
+    print("--- Loading All BingX Markets for Auto-Scan (Long & Short) ---")
     symbols = get_active_symbols()
     print(f"Total symbols to scan: {len(symbols)}")
     
@@ -74,37 +72,36 @@ def job():
             df_15m = fetch_data(symbol, '15m')
             df_1h = fetch_data(symbol, '1h')
             df_4h = fetch_data(symbol, '4h')
+            # جلب فريم اليوم (1d) لزيادة دقة فلتر الاتجاه
+            df_1d = fetch_data(symbol, '1d', limit=5)
             
             if df_15m.empty or df_1h.empty or df_4h.empty:
                 continue
                 
-            result = analyze_market_conditions(df_15m, df_1h, df_4h)
+            result = analyze_market_conditions(df_15m, df_1h, df_4h, df_1d)
+            signal = result.get("signal")
             
-            if result.get("signal") == "LONG":
+            if signal in ["LONG", "SHORT"]:
+                emoji_signal = "🟢 **LONG**" if signal == "LONG" else "🔴 **SHORT**"
                 msg = (
                     f"🎯 *فرصة قنص نموذجية على BingX!*\n\n"
                     f"🔹 العملة: `{symbol}`\n"
-                    f"🟢 الإشارة: **LONG**\n"
+                    f"⚡ الإشارة: {emoji_signal}\n"
                     f"📍 الدخول: `{result['entry']}`\n"
                     f"🛑 الوقف: `{result['stop_loss']}`\n"
                     f"🎯 الهدف: `{result['take_profit']}`\n"
                     f"💡 السبب: {result['reason']}"
                 )
                 send_telegram_message(msg)
-            else:
-                # لتجنب طباعة مئات الأسطر في السجلات، يكتفي بفحص الصامت
-                pass
         except Exception as e:
             continue
             
-        # فاصل صغير جداً بين كل عملة وأخرى لتجنب حظر الـ Rate Limit من المنصة
         time.sleep(0.5)
 
 if __name__ == "__main__":
     keep_alive()
-    send_telegram_message("🚀 تم تفعيل الفحص التلقائي الشامل لجميع عملات BingX بنجاح.")
+    send_telegram_message("🚀 تم تفعيل الفحص التلقائي الشامل لجميع عملات BingX (Long & Short + فلتر الاتجاه اليومي) بنجاح.")
     
     while True:
         job()
-        # الانتظار قبل الدورة التالية
         time.sleep(900)
