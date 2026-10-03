@@ -47,9 +47,14 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
                 body_size = abs(last_candle['close'] - last_candle['open'])
                 avg_body = (abs(df_15m['close'] - df_15m['open'])).rolling(window=15).mean().iloc[-1]
                 
+                # شرط الاندفاع القوي
                 is_strong_displacement = (last_candle['close'] > last_candle['open']) and (body_size >= (avg_body * 1.5))
                 
-                if is_strong_displacement:
+                # فحص فلتر الفوليوم الجديد (يجب أن يكون فوليوم شمعة الاندفاع أعلى من المتوسط بنسبة 30% على الأقل)
+                avg_volume = df_15m['volume'].rolling(window=15).mean().iloc[-1]
+                has_good_volume = last_candle['volume'] >= (avg_volume * 1.3)
+
+                if is_strong_displacement and has_good_volume:
                     fvg_valid = False
                     if len(df_15m) >= 3:
                         c1_high = df_15m.iloc[-3]['high']
@@ -68,7 +73,7 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
                             "entry": entry_price,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
-                            "reason": f"SMC Long Sniper | Bias: {day_bias}"
+                            "reason": f"SMC Long Sniper + Volume | Bias: {day_bias}"
                         }
 
     # ==========================================
@@ -96,9 +101,14 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
                 body_size = abs(last_candle['close'] - last_candle['open'])
                 avg_body = (abs(df_15m['close'] - df_15m['open'])).rolling(window=15).mean().iloc[-1]
                 
+                # شرط الاندفاع الهابط القوي
                 is_strong_displacement_down = (last_candle['close'] < last_candle['open']) and (body_size >= (avg_body * 1.5))
                 
-                if is_strong_displacement_down:
+                # فحص فلتر الفوليوم للشورت
+                avg_volume = df_15m['volume'].rolling(window=15).mean().iloc[-1]
+                has_good_volume = last_candle['volume'] >= (avg_volume * 1.3)
+
+                if is_strong_displacement_down and has_good_volume:
                     fvg_valid_shorts = False
                     if len(df_15m) >= 3:
                         c1_low = df_15m.iloc[-3]['low']
@@ -117,7 +127,7 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
                             "entry": entry_price,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
-                            "reason": f"SMC Short Sniper | Bias: {day_bias}"
+                            "reason": f"SMC Short Sniper + Volume | Bias: {day_bias}"
                         }
 
-    return {"signal": None, "reason": f"No Setup | Bias: {day_bias}"}
+    return {"signal": None, "reason": f"No Setup / Low Volume | Bias: {day_bias}"}
