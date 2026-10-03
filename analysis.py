@@ -47,12 +47,11 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
                 body_size = abs(last_candle['close'] - last_candle['open'])
                 avg_body = (abs(df_15m['close'] - df_15m['open'])).rolling(window=15).mean().iloc[-1]
                 
-                # شرط الاندفاع القوي
-                is_strong_displacement = (last_candle['close'] > last_candle['open']) and (body_size >= (avg_body * 1.5))
+                is_strong_displacement = (last_candle['close'] > last_candle['open']) and (body_size >= (avg_body * 1.3))
                 
-                # فحص فلتر الفوليوم الجديد (يجب أن يكون فوليوم شمعة الاندفاع أعلى من المتوسط بنسبة 30% على الأقل)
+                # تخفيف فلتر الفوليوم إلى 1.1 بدل 1.3 لضمان التقاط الفرص
                 avg_volume = df_15m['volume'].rolling(window=15).mean().iloc[-1]
-                has_good_volume = last_candle['volume'] >= (avg_volume * 1.3)
+                has_good_volume = last_candle['volume'] >= (avg_volume * 1.1)
 
                 if is_strong_displacement and has_good_volume:
                     fvg_valid = False
@@ -101,12 +100,10 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
                 body_size = abs(last_candle['close'] - last_candle['open'])
                 avg_body = (abs(df_15m['close'] - df_15m['open'])).rolling(window=15).mean().iloc[-1]
                 
-                # شرط الاندفاع الهابط القوي
-                is_strong_displacement_down = (last_candle['close'] < last_candle['open']) and (body_size >= (avg_body * 1.5))
+                is_strong_displacement_down = (last_candle['close'] < last_candle['open']) and (body_size >= (avg_body * 1.3))
                 
-                # فحص فلتر الفوليوم للشورت
                 avg_volume = df_15m['volume'].rolling(window=15).mean().iloc[-1]
-                has_good_volume = last_candle['volume'] >= (avg_volume * 1.3)
+                has_good_volume = last_candle['volume'] >= (avg_volume * 1.1)
 
                 if is_strong_displacement_down and has_good_volume:
                     fvg_valid_shorts = False
@@ -130,4 +127,4 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
                             "reason": f"SMC Short Sniper + Volume | Bias: {day_bias}"
                         }
 
-    return {"signal": None, "reason": f"No Setup / Low Volume | Bias: {day_bias}"}
+    return {"signal": None, "reason": f"No Setup / Filter Unmet | Bias: {day_bias}"}
