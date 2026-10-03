@@ -1,130 +1,101 @@
 import pandas as pd
 import numpy as np
 
-def analyze_market_conditions(df_15m, df_1h, df_4h, df_1d=None):
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def analyze_market_conditions(df_15m, df_1h, df_4h):
     if df_15m.empty or df_1h.empty or df_4h.empty:
         return {"signal": None, "reason": "Dataframes are empty"}
 
-    # ==========================================
-    # 1. فلتر اتجاه اليوم (Daily Market Bias Filter)
-    # ==========================================
-    current_close_4h = df_4h['close'].iloc[-1]
+    # 1. فحص الصعود خلال 24 ساعة (فريم 1 ساعة)
+    change_24h = 0.0
+    if len(df_1h) >= 24:
+        price_now = df_1h['close'].iloc[-1]
+        price_24h_ago = df_1h['close'].iloc[-24]
+        change_24h = ((price_now - price_24h_ago) / price_24h_ago) * 100
+
+    # شرط المعيار: صعود إيجابي في 24 ساعة
+    if change_24h <= 1.5:
+        return {"signal": None, "reason": "24h change too low"}
+
+    close = df_15m['close'].iloc[-1]
     
-    if df_1d is not None and not df_1d.empty:
-        daily_open = df_1d['open'].iloc[-1]
-    else:
-        daily_open = df_4h['open'].iloc[-6] if len(df_4h) >= 6 else df_4h['open'].iloc[0]
+    # أدوات التحليل الفني المتقدمة (متوسطات + RSI + ATR)
+    sma_20 = df_15m['close'].rolling(window=20).mean().iloc[-1]
+    sma_50 = df_15m['close'].rolling(window=50).mean().iloc[-1]
+    
+    rsi_series = calculate_rsi(df_15m['close'])
+    current_rsi = rsi_series.iloc[-1] if not rsi_series.empty else 50
 
-    is_day_bullish = current_close_4h >= daily_open
-    day_bias = "BULLISH 🟢" if is_day_bullish else "BEARISH 🔴"
+    # فحص الفوليوم (Volume Analysis)
+    avg_volume = df_15m['volume'].rolling(window=20).mean().iloc[-1]
+    current_volume = df_15m['volume'].iloc[-1]
+    v_ratio = (current_volume / avg_volume) if avg_volume > 0 and not pd.isna(avg_volume) else 1.0
 
-    ema_50_4h = df_4h['close'].ewm(span=50).mean().iloc[-1]
-    ema_200_4h = df_4h['close'].ewm(span=200).mean().iloc[-1]
-    ema_50_1h = df_1h['close'].ewm(span=50).mean().iloc[-1]
+    # حساب الـ ATR لحساب الأهداف ووقف الخسارة بدقة
+    high_low = df_15m['high'] - df_15m['low']
+    atr = high_low.rolling(window=14).mean().iloc[-1]
+    if pd.isna(atr) or atr == 0:
+        atr = close * 0.01
 
-    # ==========================================
-    # 2. فحص صفقات الشراء (LONG CONDITIONS)
-    # ==========================================
-    long_market_approved = (
-        is_day_bullish and 
-        (current_close_4h > ema_50_4h) and 
-        (ema_50_4h >= ema_200_4h)
-    )
+    # حساب مؤشرات العوامل (M, V, T) نفس نظام البوتات المدفوعة
+    # M: الزخم (Momentum & RSI)
+    m_score = int(min(max((current_rsi / 100) * 80 + 30, 50), 95))
+    
+    # V: فوليوم التداول (Volume Strength)
+    v_score = int(min(max(v_ratio * 45 + 30, 50), 98))
+    
+    # T: قوة الاتجاه (Trend & Moving Averages)
+    t_score = 70
+    if close > sma_20 and sma_20 > sma_50:
+        t_score = 90
+    elif close > sma_20:
+        t_score = 80
+    elif close < sma_20:
+        t_score = 55
 
-    if long_market_approved:
-        if df_1h['close'].iloc[-1] >= ema_50_1h:
-            recent_lows = df_15m['low'].tail(15)
-            absolute_low = recent_lows.min()
-            
-            sweep_detected = False
-            for i in range(-5, -1):
-                if df_15m['low'].iloc[i] <= recent_lows.iloc[:-1].min():
-                    sweep_detected = True
-                    break
-                    
-            if sweep_detected:
-                last_candle = df_15m.iloc[-1]
-                body_size = abs(last_candle['close'] - last_candle['open'])
-                avg_body = (abs(df_15m['close'] - df_15m['open'])).rolling(window=15).mean().iloc[-1]
-                
-                is_strong_displacement = (last_candle['close'] > last_candle['open']) and (body_size >= (avg_body * 1.3))
-                
-                # تخفيف فلتر الفوليوم إلى 1.1 بدل 1.3 لضمان التقاط الفرص
-                avg_volume = df_15m['volume'].rolling(window=15).mean().iloc[-1]
-                has_good_volume = last_candle['volume'] >= (avg_volume * 1.1)
+    # التقييم الشامل (Rating & Confidence)
+    overall_rating = round((m_score * 0.4) + (v_score * 0.3) + (t_score * 0.3), 1)
+    confidence = round((overall_rating + t_score) / 2, 1)
 
-                if is_strong_displacement and has_good_volume:
-                    fvg_valid = False
-                    if len(df_15m) >= 3:
-                        c1_high = df_15m.iloc[-3]['high']
-                        c3_low = df_15m.iloc[-1]['low']
-                        if c3_low > c1_high:
-                            fvg_valid = True
+    # معيار: تقييم شامل أعلى من 70%
+    if overall_rating < 70.0:
+        return {"signal": None, "reason": f"Rating {overall_rating} below 70% threshold"}
 
-                    if fvg_valid:
-                        entry_price = last_candle['close']
-                        stop_loss = absolute_low * 0.992  
-                        risk_amount = entry_price - stop_loss
-                        take_profit = entry_price + (risk_amount * 3.0)
+    strength = "صفقة قوية جداً 🚀" if overall_rating >= 80 else "صفقة قوية 📈"
 
-                        return {
-                            "signal": "LONG",
-                            "entry": entry_price,
-                            "stop_loss": stop_loss,
-                            "take_profit": take_profit,
-                            "reason": f"SMC Long Sniper + Volume | Bias: {day_bias}"
-                        }
+    # حساب مستويات الأسعار ودقة الأهداف بناءً على أداة الـ ATR والتقلب
+    entry_price = close
+    stop_loss = entry_price - (atr * 1.5)
+    risk = entry_price - stop_loss
+    
+    # الأهداف الثلاثة بنسب متدرجة واحترافية
+    tp1 = entry_price + (risk * 1.6)
+    tp2 = entry_price + (risk * 2.8)
+    tp3 = entry_price + (risk * 4.2)
 
-    # ==========================================
-    # 3. فحص صفقات البيع (SHORT CONDITIONS)
-    # ==========================================
-    short_market_approved = (
-        not is_day_bullish and 
-        (current_close_4h < ema_50_4h) and 
-        (ema_50_4h <= ema_200_4h)
-    )
+    risk_reward = f"1:{(round(risk * 3 / risk, 1) if risk > 0 else 1.8)}"
 
-    if short_market_approved:
-        if df_1h['close'].iloc[-1] <= ema_50_1h:
-            recent_highs = df_15m['high'].tail(15)
-            absolute_high = recent_highs.max()
-            
-            sweep_detected_shorts = False
-            for i in range(-5, -1):
-                if df_15m['high'].iloc[i] >= recent_highs.iloc[:-1].max():
-                    sweep_detected_shorts = True
-                    break
-                    
-            if sweep_detected_shorts:
-                last_candle = df_15m.iloc[-1]
-                body_size = abs(last_candle['close'] - last_candle['open'])
-                avg_body = (abs(df_15m['close'] - df_15m['open'])).rolling(window=15).mean().iloc[-1]
-                
-                is_strong_displacement_down = (last_candle['close'] < last_candle['open']) and (body_size >= (avg_body * 1.3))
-                
-                avg_volume = df_15m['volume'].rolling(window=15).mean().iloc[-1]
-                has_good_volume = last_candle['volume'] >= (avg_volume * 1.1)
-
-                if is_strong_displacement_down and has_good_volume:
-                    fvg_valid_shorts = False
-                    if len(df_15m) >= 3:
-                        c1_low = df_15m.iloc[-3]['low']
-                        c3_high = df_15m.iloc[-1]['high']
-                        if c3_high < c1_low: 
-                            fvg_valid_shorts = True
-
-                    if fvg_valid_shorts:
-                        entry_price = last_candle['close']
-                        stop_loss = absolute_high * 1.008  
-                        risk_amount = stop_loss - entry_price
-                        take_profit = entry_price - (risk_amount * 3.0)
-
-                        return {
-                            "signal": "SHORT",
-                            "entry": entry_price,
-                            "stop_loss": stop_loss,
-                            "take_profit": take_profit,
-                            "reason": f"SMC Short Sniper + Volume | Bias: {day_bias}"
-                        }
-
-    return {"signal": None, "reason": f"No Setup / Filter Unmet | Bias: {day_bias}"}
+    return {
+        "signal": "LONG",
+        "strength": strength,
+        "change_24h": round(change_24h, 2),
+        "rating": overall_rating,
+        "confidence": confidence,
+        "entry": round(entry_price, 5),
+        "stop_loss": round(stop_loss, 5),
+        "tp1": round(tp1, 5),
+        "tp2": round(tp2, 5),
+        "tp3": round(tp3, 5),
+        "risk_reward": "1:2.4",
+        "timeframe": "1-2 ساعة",
+        "m_factor": m_score,
+        "v_factor": v_score,
+        "t_factor": t_score,
+        "reason": "Passed Advanced Multi-Tool Criteria"
+    }
