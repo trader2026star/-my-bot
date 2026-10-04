@@ -7,11 +7,8 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
 
     confirmations = []
 
-    # ==========================================
-    ساعدة 1: هيكل الأسعار على الـ 4 ساعات (4H Market Structure)
-    # ==========================================
+    # 1. 4H Market Structure Check
     df_4h['sma_20'] = df_4h['close'].rolling(window=20).mean()
-    # حساب القمم والقيعان البسيطة على الـ 4 ساعات لتحديد الاتجاه (HH/HL vs LH/LL)
     highs_4h = df_4h['high'].rolling(window=5).max()
     lows_4h = df_4h['low'].rolling(window=5).min()
     
@@ -26,24 +23,18 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
     else:
         confirmations.append("4H NEUTRAL STRUCTURE")
 
-    # ==========================================
-    # ثانياً: هيكل الساعة (1H Structure Confirmation & BOS)
-    # ==========================================
-    # تحديد آخر Swing High و Swing Low على الإطار الزمني 1 ساعة
+    # 2. 1H Structure Confirmation & BOS
     df_1h['swing_high'] = df_1h['high'].rolling(window=5).max()
     df_1h['swing_low'] = df_1h['low'].rolling(window=5).min()
     
     prev_1h_high = df_1h['swing_high'].iloc[-2]
     current_1h_close = df_1h['close'].iloc[-1]
     
-    # كسر حقيقي لقمة سابقة (BOS)
     is_1h_bos = current_1h_close > prev_1h_high
     if is_1h_bos:
         confirmations.append("1H BOS (Break of Structure)")
 
-    # ==========================================
-    # ثالثاً: 15M First Ignition & Compression
-    # ==========================================
+    # 3. 15M First Ignition & Compression
     current_volume = df_15m['volume'].iloc[-1]
     avg_volume = df_15m['volume'].rolling(window=20).mean().iloc[-1]
     
@@ -63,7 +54,6 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
     if total_range == 0 or body_size <= 0:
         return {"signal": None, "reason": "Candle is not bullish"}
 
-    # الإغلاق قريب من الهايت، وعدم وجود ذيل علوي ضخم
     upper_wick = current_high - max(current_close, current_open)
     if upper_wick > body_size * 0.8:
         return {"signal": None, "reason": "Large upper wick rejection"}
@@ -73,7 +63,6 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
 
     confirmations.append("15M FIRST IGNITION")
 
-    # التحقق من عدم وجود عدة شموع صاعدة متتالية قبل شمعة الانفجار (تجنب المطاردة)
     consecutive_green = 0
     for i in range(2, 6):
         if df_15m['close'].iloc[-i] > df_15m['open'].iloc[-i]:
@@ -84,25 +73,20 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
     if consecutive_green >= 3:
         return {"signal": None, "reason": "Too many prior consecutive green candles (Late entry)"}
 
-    # البحث عن تجميع أو ضغط (Compression) في الشموع السابقة (شموع ذات مدى ضيق)
     prev_ranges = [df_15m['high'].iloc[-i] - df_15m['low'].iloc[-i] for i in range(2, 5)]
     avg_prev_range = np.mean(prev_ranges)
     has_compression = avg_prev_range < (total_range * 0.8)
     if has_compression:
         confirmations.append("COMPRESSION BEFORE BREAKOUT")
 
-    # ==========================================
-    # رابعاً: رصد السيولة والسحب (Liquidity & Sweep)
-    # ==========================================
+    # 4. Liquidity & Sweep Check
     recent_lows = df_15m['low'].iloc[-6:-1]
     lowest_recent = recent_lows.min()
     has_liquidity_sweep = current_low < lowest_recent and current_close > lowest_recent
     if has_liquidity_sweep:
         confirmations.append("LIQUIDITY SWEEP")
 
-    # ==========================================
-    # خامساً: فحص موقع المقاومة القريبة (Resistance Location)
-    # ==========================================
+    # 5. Resistance Location Check
     recent_resistance = df_15m['high'].rolling(window=15).max().iloc[-2]
     distance_to_resistance_pct = ((recent_resistance - current_close) / current_close) * 100
     
@@ -111,9 +95,7 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
     
     confirmations.append("GOOD RISK/REWARD")
 
-    # ==========================================
-    * سادساً: التحقق الذكي لتغير 24 ساعة (24H Change Logic)
-    # ==========================================
+    # 6. 24H Change Smart Logic
     change_24h = ((current_close - df_1h['close'].iloc[-24]) / df_1h['close'].iloc[-24]) * 100
     
     if change_24h > 15.0:
@@ -122,9 +104,7 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
     if change_24h > 3.5 and not has_compression:
         return {"signal": None, "reason": "24h gain is high without proper accumulation structure"}
 
-    # ==========================================
-    # سابعاً: دعم اتجاه البيتكوين (BTC Confirmation)
-    # ==========================================
+    # 7. BTC Trend Support
     btc_supportive = True
     if df_btc is not None and not df_btc.empty:
         btc_sma = df_btc['close'].rolling(window=20).mean().iloc[-1]
@@ -136,21 +116,19 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
         if btc_supportive:
             confirmations.append("BTC SUPPORTIVE")
 
-    # ==========================================
-    # ثامناً وتاسعاً: حساب السكور الديناميكي والثقة (Dynamic Score & Confidence)
-    # ==========================================
+    # 8 & 9. Dynamic Score & Confidence Calculation
     score = 0
     if is_4h_bullish: score += 15
     elif not is_4h_bearish: score += 10
     
     if is_1h_bos: score += 20
-    score += 15 # للـ Ignition الحالي
-    score += 15 # لتمدد الفوليوم
+    score += 15 
+    score += 15 
     if has_liquidity_sweep: score += 10
     if has_compression: score += 10
-    score += 5  # موقع المقاومة المناسب
+    score += 5  
     if btc_supportive: score += 5
-    score += 5  # جودة المخاطر
+    score += 5  
 
     if score < 70:
         return {"signal": None, "reason": f"Score too low for execution ({score})"}
@@ -164,14 +142,11 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
 
     confidence = min(round(float(score), 1), 99.0)
 
-    # ==========================================
-    # عاشرًا: حساب وقف الخسارة الذكي (Smart Stop Loss with ATR Buffer)
-    # ==========================================
+    # 10. Smart Stop Loss with ATR Buffer
     recent_swing_low = df_15m['low'].iloc[-6:].min()
     if has_liquidity_sweep:
         stop_loss = current_low - ((current_high - current_low) * 0.2)
     else:
-        # حساب ATR تقريبي بسيط (متوسط المدى للشموع الأخيرة)
         ranges = df_15m['high'] - df_15m['low']
         atr_approx = ranges.rolling(window=14).mean().iloc[-1] if len(ranges) >= 14 else (current_high - current_low)
         stop_loss = recent_swing_low - (atr_approx * 0.5)
@@ -182,16 +157,11 @@ def analyze_market_conditions(df_15m, df_1h, df_4h, df_btc=None):
 
     risk = entry_price - stop_loss
 
-    # ==========================================
-    # حادي عشر: الأهداف الربحية ونسبة العائد للمخاطرة (TP & Risk/Reward)
-    # ==========================================
+    # 11. Targets & Risk/Reward
     tp1 = entry_price + (risk * 1.5)
     tp2 = entry_price + (risk * 3.0)
     tp3 = entry_price + (risk * 4.5)
 
-    # ==========================================
-    # رابع عشر: تجميع الأسباب والكونفلوشنز للتقرير
-    # ==========================================
     strength_desc = f"Structure + Volume Confirmation ({quality_label}) 🚀"
 
     return {
