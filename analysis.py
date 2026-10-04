@@ -12,38 +12,38 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
     if df_15m.empty or df_1h.empty or df_4h.empty:
         return {"signal": None, "reason": "Dataframes are empty"}
 
-    # 1. فحص الصعود القوي خلال 24 ساعة (فريم 1 ساعة)
+    # 1. فحص الصعود خلال 24 ساعة ضمن نطاق آمن ومتزن
     change_24h = 0.0
     if len(df_1h) >= 24:
         price_now = df_1h['close'].iloc[-1]
         price_24h_ago = df_1h['close'].iloc[-24]
         change_24h = ((price_now - price_24h_ago) / price_24h_ago) * 100
 
-    # استبعاد العملات ذات الحركة الضعيفة
-    if change_24h <= 1.5:
-        return {"signal": None, "reason": "24h change too low"}
+    # استبعاد العملات الضعيفة أو العملات المجنونة فوق 35% لتجنب الانهيارات المفاجئة
+    if change_24h <= 2.0 or change_24h > 35.0:
+        return {"signal": None, "reason": "24h change out of safe bounds"}
 
     close = df_15m['close'].iloc[-1]
     
-    # 2. مؤشرات التحليل الفني المتقدمة (متوسطات + RSI)
+    # المؤشرات الفنية الأساسية
     sma_20 = df_15m['close'].rolling(window=20).mean().iloc[-1]
     sma_50 = df_15m['close'].rolling(window=50).mean().iloc[-1]
     
     rsi_series = calculate_rsi(df_15m['close'])
     current_rsi = rsi_series.iloc[-1] if not rsi_series.empty else 50
 
-    # 3. فحص الفوليوم وحجم التداول
+    # فحص الفوليوم والسيولة الحقيقية
     avg_volume = df_15m['volume'].rolling(window=20).mean().iloc[-1]
     current_volume = df_15m['volume'].iloc[-1]
     v_ratio = (current_volume / avg_volume) if avg_volume > 0 and not pd.isna(avg_volume) else 1.0
 
-    # 4. حساب الـ ATR (نطاق الحركة الحقيقي للتقلبات)
+    # حساب نطاق التقلب الحقيقي (ATR)
     high_low = df_15m['high'] - df_15m['low']
     atr = high_low.rolling(window=14).mean().iloc[-1]
     if pd.isna(atr) or atr == 0:
         atr = close * 0.01
 
-    # 5. حساب عوامل التقييم (M, V, T) نفس نظام البوت الأصلي
+    # تقييم العوامل الفنية
     m_score = int(min(max((current_rsi / 100) * 80 + 30, 50), 98))
     v_score = int(min(max(v_ratio * 45 + 30, 50), 98))
     
@@ -52,33 +52,31 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
         t_score = 92
     elif close > sma_20:
         t_score = 82
-    elif close < sma_20:
-        t_score = 55
+    else:
+        return {"signal": None, "reason": "Trend is not strictly bullish"}
 
-    # التقييم الشامل والثقة
     overall_rating = round((m_score * 0.4) + (v_score * 0.3) + (t_score * 0.3), 1)
     confidence = round((overall_rating + t_score) / 2, 1)
 
-    # معيار الحد الأدنى للتقييم (أعلى من 70%)
-    if overall_rating < 70.0:
-        return {"signal": None, "reason": f"Rating {overall_rating} below 70% threshold"}
+    # رفع معيار قبول الصفقات لتكون نقية وموثوقة بنسبة أعلى
+    if overall_rating < 75.0:
+        return {"signal": None, "reason": f"Rating {overall_rating} below strict 75% threshold"}
 
-    strength = "صفقة قوية جداً 🚀" if overall_rating >= 80 else "صفقة قوية 📈"
+    strength = "صفقة قوية جداً 🚀" if overall_rating >= 85 else "صفقة قوية 📈"
 
-    # 6. نقطة الدخول الذكية (Smart Pullback / Demand Entry) تماماً كالبوت الأصلي
+    # نقطة الدخول الذكية للارتداد
     current_market_price = close
-    # حساب تصحيح ذكي ومدروس تحت السعر الحالي لضمان أفضل نقطة دخول وعدم التعليق في القمة
-    entry_price = current_market_price - (atr * 0.5)
+    entry_price = current_market_price - (atr * 0.4)
     
-    # 7. إدارة المخاطر والأهداف بناءً على نقطة الدخول الذكية والـ ATR
-    stop_loss = entry_price - (atr * 1.5)
+    # [درع الحماية]: توسيع وقف الخسارة لمعامل 2.2 ATR لمنع الضرب السريع
+    stop_loss = entry_price - (atr * 2.2)
     risk = entry_price - stop_loss
     
-    tp1 = entry_price + (risk * 1.6)
-    tp2 = entry_price + (risk * 2.8)
-    tp3 = entry_price + (risk * 4.2)
+    tp1 = entry_price + (risk * 1.5)
+    tp2 = entry_price + (risk * 2.6)
+    tp3 = entry_price + (risk * 4.0)
 
-    risk_reward = "1:2.4"
+    risk_reward = "1:2.0"
 
     return {
         "signal": "LONG",
@@ -97,5 +95,5 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
         "m_factor": m_score,
         "v_factor": v_score,
         "t_factor": t_score,
-        "reason": "Passed Full Pro-Bot Criteria"
+        "reason": "Passed Strict Safe-Guard Criteria"
     }
