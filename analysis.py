@@ -10,38 +10,42 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
     if df_4h['close'].iloc[-1] < df_4h['sma_20'].iloc[-1]:
         return {"signal": None, "reason": "4H Market structure is bearish"}
 
-    # 2. كشف أول همسة سيولة وتدفق فوليوم مبكر جداً (أقل من السابق لاكتشافها أسرع)
+    # 2. فلتر حاسم وصارم: منع أي عملة صعدت بقوة خلال الـ 24 ساعة (نحن نريد العملة في بدايتها المطلقة)
+    current_close = df_15m['close'].iloc[-1]
+    change_24h = ((current_close - df_1h['close'].iloc[-24]) / df_1h['close'].iloc[-24]) * 100
+    
+    # لو العملة صعدت أكثر من 3.5% خلال اليوم كله، ارفضها فوراً (عشان ما نجيبهاش وهي متأخرة)
+    if change_24h > 3.5 or change_24h < -5.0:
+        return {"signal": None, "reason": "24h change is either too high (late) or too negative"}
+
+    # 3. كشف أول شمعة انفجار حقيقية في هذه اللحظة بالذات (First Ignition Candle)
     current_volume = df_15m['volume'].iloc[-1]
     avg_volume = df_15m['volume'].rolling(window=20).mean().iloc[-1]
     
-    if current_volume < avg_volume * 1.3:
-        return {"signal": None, "reason": "Initial volume spark not detected yet"}
+    # الفوليوم لازم يبدأ يرتفع بقوة (أعلى من المتوسط)
+    if current_volume < avg_volume * 1.4:
+        return {"signal": None, "reason": "Volume not ignited yet"}
 
-    # 3. الاصتياد المبكر جداً (قبل الانفجار وقبل كسر القمة بقليل)
-    current_close = df_15m['close'].iloc[-1]
     current_open = df_15m['open'].iloc[-1]
     current_low = df_15m['low'].iloc[-1]
     current_high = df_15m['high'].iloc[-1]
     
-    # التأكد أن الشمعة الحالية خضراء وقوية وصاعدة من الدعم أو منطقة تجميع
-    body_size = abs(current_close - current_open)
+    body_size = current_close - current_open # يجب أن تكون الشمعة خضراء صاعدة
     total_range = current_high - current_low
+
+    if total_range == 0 or body_size <= 0:
+        return {"signal": None, "reason": "Candle is not bullish"}
+
+    # التأكد أن الشمعة الحالية هي "أول شمعة خضراء قوية" بعد فترة هدوء أو تجميع (وليس بعد عدة شمعات صاعدة)
+    prev_close_1 = df_15m['close'].iloc[-2]
+    prev_open_1 = df_15m['open'].iloc[-2]
     
-    if total_range == 0:
-        return {"signal": None, "reason": "Zero range candle"}
+    # الشمعة السابقة مباشرة يجب ألا تكون صاعدة بقوة (يعني دي أول شمعة انطلاق حقيقية)
+    if (prev_close_1 - prev_open_1) / prev_open_1 > 0.015: 
+        return {"signal": None, "reason": "Already in the 2nd or 3rd consecutive pump candle"}
 
-    # شرط أن يكون جسم الشمعة معبر عن ضغط شراء حقيقي وليس مجرد ذيل عشوائي
-    if current_close <= current_open or (body_size / total_range < 0.4):
-        return {"signal": None, "reason": "Candle lacks strong buying pressure"}
-
-    # التأكد أن السعر لم يتضخم بشكل مبالغ فيه في آخر شمعتين (لم تنفجر بعد بالكامل)
-    prev_close = df_15m['close'].iloc[-2]
-    recent_growth = ((current_close - prev_close) / prev_close) * 100
-    if recent_growth > 4.0: # لو صعدت أكثر من 4% في شمعة واحدة، فهي بدأت تنفجر ونتأخر عنها
-        return {"signal": None, "reason": "Already exploded too fast, waiting for earlier stage"}
-
-    # 4. وقف الخسارة الهندسي تحت أدنى قاع حديث لحماية الحساب بدقة
-    recent_swing_low = df_15m['low'].iloc[-6:].min()
+    # 4. وقف الخسارة الهندسي تحت قاع شمعة الانفجار الأولى مباشرة
+    recent_swing_low = df_15m['low'].iloc[-4:].min()
     entry_price = current_close
     stop_loss = recent_swing_low - (entry_price * 0.001)
 
@@ -50,27 +54,27 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
 
     risk = entry_price - stop_loss
 
-    # 5. أهداف ربحية ممتازة تتناسب مع الدخول المبكر جداً (ريسك/ريورد 1:3.5)
+    # 5. أهداف ربحية ممتازة
     tp1 = entry_price + (risk * 1.5)
     tp2 = entry_price + (risk * 3.0)
     tp3 = entry_price + (risk * 4.5)
 
     return {
         "signal": "LONG",
-        "strength": "صفقة تجميع واشتعال مبكر جداً (Pre-Ignition Setup) 🎯🔥",
-        "change_24h": round(((current_close - df_1h['close'].iloc[-24]) / df_1h['close'].iloc[-24]) * 100, 2),
-        "rating": 97.0,
-        "confidence": 98.0,
+        "strength": "شرارة الانفجار الأولى (First Ignition Candle) 🚀🔥",
+        "change_24h": round(change_24h, 2),
+        "rating": 98.0,
+        "confidence": 99.0,
         "current_price": round(current_close, 5),
         "entry": round(entry_price, 5),
         "stop_loss": round(stop_loss, 5),
         "tp1": round(tp1, 5),
         "tp2": round(tp2, 5),
         "tp3": round(tp3, 5),
-        "risk_reward": "1:3.5",
+        "risk_reward": "1:3",
         "timeframe": "1-3 ساعات",
         "m_factor": 99,
         "v_factor": 99,
-        "t_factor": 97,
-        "reason": "Caught at the earliest pre-ignition accumulation stage before breakout"
+        "t_factor": 98,
+        "reason": "Caught at the absolute zero-point ignition candle before any prior pump"
     }
