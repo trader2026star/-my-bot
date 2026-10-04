@@ -10,20 +10,20 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
     if df_4h['close'].iloc[-1] < df_4h['sma_20'].iloc[-1]:
         return {"signal": None, "reason": "4H Market structure is bearish"}
 
-    # 2. كشف بدء انفجار الفوليوم (Early Volume Surge)
+    # 2. كشف بدء انفجار الفوليوم (Early Volume Surge) مبكراً
     current_volume = df_15m['volume'].iloc[-1]
     avg_volume = df_15m['volume'].rolling(window=20).mean().iloc[-1]
     
-    # خفضنا النسبة قليلاً من 1.8 إلى 1.5 عشان يلقط السيولة وهي لسه بتدخل في أولها
+    # شرط فوليوم مرن يلقط السيولة في أول هجوم لها
     if current_volume < avg_volume * 1.5:
         return {"signal": None, "reason": "Volume surge not started yet"}
 
-    # 3. الاختراق المبكر: السعر الحالي (أو الارتفاع اللحظي) كسر قمة السشن أو الشموع السابقة
+    # 3. الاختراق المبكر اللحظي (بدون انتظار إغلاق الشمعة)
     current_close = df_15m['close'].iloc[-1]
     current_high = df_15m['high'].iloc[-1]
     recent_high = df_15m['high'].iloc[-6:-1].max() # أعلى سعر في الـ 5 شمعات السابقة
     
-    # السماح بالدخول بمجرد ملامسة أو كسر السعر للقمة السابقة (بدون انتظار إغلاق الشمعة)
+    # السماح بالدخول بمجرد ملامسة أو كسر السعر للقمة السابقة لحظياً
     if current_high < recent_high:
         return {"signal": None, "reason": "Price hasn't reached breakout level yet"}
 
@@ -41,7 +41,7 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
 
     risk = entry_price - stop_loss
 
-    # 5. أهداف ربحية ممتازة
+    # 5. أهداف ربحية ممتازة بريسك/ريورد 1:3
     tp1 = entry_price + (risk * 1.5)
     tp2 = entry_price + (risk * 3.0)
     tp3 = entry_price + (risk * 4.5)
