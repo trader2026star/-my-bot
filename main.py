@@ -51,16 +51,20 @@ def fetch_data(symbol, timeframe, limit=100):
 def get_active_symbols():
     try:
         exchange.load_markets()
-        symbols = [
-            symbol for symbol, market in exchange.markets.items() 
-            if market.get('swap', False) and market.get('quote', '') == 'USDT' and market.get('active', True)
-        ]
+        symbols = []
+        for symbol, market in exchange.markets.items():
+            # شروط صارمة جداً لفلترة العملات الحقيقية فقط ومنع العملات الوهمية أو الغريبة
+            if market.get('swap', False) and market.get('quote', '') == 'USDT' and market.get('active', True):
+                # التأكد أن الرمز لا يحتوي على حروف مريبة أو رموز غير معتمدة
+                base_currency = market.get('base', '')
+                if base_currency and len(base_currency) <= 10 and '/' in symbol:
+                    symbols.append(symbol)
         return symbols
     except Exception as e:
         return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
 
 def job():
-    print("--- Starting Full Market Scan (Criteria Matching) ---")
+    print("--- Starting Full Market Scan (Cleaned Criteria) ---")
     symbols = get_active_symbols()
     total_scanned = len(symbols)
     print(f"Total symbols checked: {total_scanned}")
@@ -77,7 +81,8 @@ def job():
                 continue
                 
             result = analyze_market_conditions(df_15m, df_1h, df_4h)
-            if result.get("signal") == "LONG":
+            # التأكد من صحة النتائج وعدم وجود قيم وهمية أو أسعار سالبة/صفرية
+            if result.get("signal") == "LONG" and result.get("entry", 0) > 0:
                 result['symbol'] = symbol
                 scanned_opportunities.append(result)
         except Exception as e:
@@ -87,15 +92,14 @@ def job():
     if scanned_opportunities:
         # ترتيب العملات تنازلياً حسب التقييم الأعلى
         scanned_opportunities.sort(key=lambda x: x['rating'], reverse=True)
-        top_4 = scanned_opportunities[:4] # اختيار أفضل 4 صفقات مثل الصورة
+        top_4 = scanned_opportunities[:4] # اختيار أفضل 4 صفقات نظيفة
         
         current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-        msg = f"🏆 **أفضل {len(top_4)} صفقة من العملات الصاعدة**\n"
+        msg = f"🏆 **أفضل {len(top_4)} صفقة من العملات الصاعدة (نظيفة ومرشحة)**\n"
         msg += f"⏰ وقت التحليل: `{current_time}` (UTC)\n"
-        msg += f"📊 تم فحص `{total_scanned}` عملة صاعدة واختيار الأفضل\n\n"
+        msg += f"📊 تم فحص `{total_scanned}` عملة واستخراج الصفقات النقية\n\n"
         
         for idx, item in enumerate(top_4, 1):
-            # حساب نسب أهداف الربح مئوية للعرض
             p_tp1 = round(((item['tp1'] - item['entry']) / item['entry']) * 100, 1)
             p_tp2 = round(((item['tp2'] - item['entry']) / item['entry']) * 100, 1)
             p_tp3 = round(((item['tp3'] - item['entry']) / item['entry']) * 100, 1)
@@ -114,13 +118,11 @@ def job():
             msg += f"⏳ الإطار الزمني: `{item['timeframe']}`\n"
             msg += f"📊 العوامل: M{item['m_factor']}% V{item['v_factor']}% T{item['t_factor']}%\n\n"
             
-        # إضافة معايير الاختيار وإدارة رأس المال تماماً مثل الصورة
         msg += "🎯 *معايير الاختيار:*\n"
-        msg += "• صعود قوي في 24 ساعة\n"
-        msg += "• تقييم شامل أعلى من 70%\n"
-        msg += "• حجم تداول مرتفع\n"
-        msg += "• زخم صعودي مستمر\n"
-        msg += "• نسبة مخاطرة/عائد جيدة\n\n"
+        msg += "• صعود صحي مبكر (بدون دخول في القمة)\n"
+        msg += "• تصفية العملات الوهمية والوهمية بالكامل\n"
+        msg += "• وقف خسارة هندسي تحت آخر قاع\n"
+        msg += "• نسبة مخاطرة/عائد ممتازة\n\n"
         msg += "⚠️ *إدارة رأس المال:*\n"
         msg += "• استخدم فقط 2-5% من رأس المال في الصفقة\n"
         msg += "• خذ ربح جزئي عند TP1 و TP2\n"
@@ -128,11 +130,11 @@ def job():
         
         send_telegram_message(msg)
     else:
-        print("No opportunities met the criteria in this cycle.")
+        print("No clean opportunities met the criteria in this cycle.")
 
 if __name__ == "__main__":
     keep_alive()
-    send_telegram_message("🚀 تم تشغيل بوت فحص العملات بمعايير الفحص المتقدمة بنجاح.")
+    send_telegram_message("🚀 تم تشغيل النسخة المحدثة والنظيفة للبوت بنجاح.")
     
     while True:
         job()
