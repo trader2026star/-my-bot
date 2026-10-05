@@ -227,7 +227,6 @@ def _detect_liquidity_sweep(df):
     ):
         return False, "NONE"
 
-    # كسر القاع ثم الرجوع فوقه
     swept = low < previous_low and close > previous_low
 
     strong_rejection = lower_wick >= atr * 0.25
@@ -302,16 +301,13 @@ def _detect_breakout(df):
 
     breakout_distance = close - resistance
 
-    # السعر يجب أن يكون فوق المقاومة فعليًا
     real_breakout = breakout_distance > max(
         atr * 0.08,
         close * 0.0008
     )
 
-    # جسم الشمعة لازم يكون محترم
     healthy_body = body_ratio >= 0.45
 
-    # عدم وجود رفض علوي ضخم
     upper_wick_ratio = _safe_float(
         last["upper_wick_ratio"]
     )
@@ -410,11 +406,7 @@ def _detect_order_block(df):
 
 def _volume_quality(df):
     """
-    Volume ليس مجرد >= 1.8.
-    نحاول التفريق بين:
-    - volume ضعيف
-    - volume صحي
-    - volume انفجاري جدًا
+    تقييم حجم التداول.
     """
 
     if len(df) < 25:
@@ -492,10 +484,7 @@ def _distance_from_ema(df):
 def _calculate_stop_loss(df, entry):
     """
     Dynamic SL:
-    نعتمد على:
-    - آخر swing low
-    - ATR
-    ونأخذ الأكثر منطقية.
+    حساب وقف الخسارة بناءً على قاع سوينغ سابق و ATR دون وضعه فوق سعر الدخول.
     """
 
     last = df.iloc[-1]
@@ -526,7 +515,6 @@ def _calculate_stop_loss(df, entry):
     if not candidates:
         return None
 
-    # نختار الوقف الذي يحمي من wick لكن لا يكون بعيدًا جدًا
     stop = min(candidates)
 
     if stop >= entry:
@@ -545,7 +533,6 @@ def _calculate_targets(entry, stop, resistance=None):
     tp2 = entry + risk * 2.5
     tp3 = entry + risk * 4.0
 
-    # لو توجد مقاومة قريبة، لا نجعل TP1 أقل منها بشكل أعمى
     if resistance is not None and np.isfinite(resistance):
 
         if resistance > entry:
@@ -563,33 +550,6 @@ def analyze_market_conditions(
     df_4h,
     df_btc=None
 ):
-    """
-    ============================================================
-    EXPERT LONG ANALYZER
-    ============================================================
-
-    الإخراج متوافق مع الكود القديم:
-        signal
-        strength
-        change_24h
-        rating
-        confidence
-        current_price
-        entry
-        stop_loss
-        tp1
-        tp2
-        tp3
-        risk_reward
-        timeframe
-        reason
-
-    بالإضافة إلى معلومات التشخيص.
-    """
-
-    # =========================================================
-    # 1. Prepare data
-    # =========================================================
 
     df_15m = _prepare_df(df_15m)
     df_1h = _prepare_df(df_1h)
@@ -618,10 +578,6 @@ def analyze_market_conditions(
             "reason": "Not enough candles for reliable multi-timeframe analysis"
         }
 
-    # =========================================================
-    # 2. Indicators
-    # =========================================================
-
     df_15m = _add_indicators(df_15m)
     df_1h = _add_indicators(df_1h)
     df_4h = _add_indicators(df_4h)
@@ -629,10 +585,6 @@ def analyze_market_conditions(
     if df_btc is not None and not df_btc.empty:
         if len(df_btc) >= 60:
             df_btc = _add_indicators(df_btc)
-
-    # =========================================================
-    # 3. Current price
-    # =========================================================
 
     last15 = df_15m.iloc[-1]
 
@@ -644,15 +596,10 @@ def analyze_market_conditions(
             "reason": "Invalid current price"
         }
 
-    # =========================================================
-    # 4. Multi-Timeframe trend
-    # =========================================================
-
     trend_4h = _trend_state(df_4h)
     trend_1h = _trend_state(df_1h)
     trend_15m = _trend_state(df_15m)
 
-    # لا ندخل عكس 4H
     if trend_4h != "BULLISH":
         return {
             "signal": None,
@@ -662,7 +609,6 @@ def analyze_market_conditions(
             "trend_15m": trend_15m
         }
 
-    # 1H يجب أن يكون bullish أو على الأقل neutral قوي
     if trend_1h == "BEARISH":
         return {
             "signal": None,
@@ -672,20 +618,14 @@ def analyze_market_conditions(
             "trend_15m": trend_15m
         }
 
-    # =========================================================
-    # 5. Scoring engine
-    # =========================================================
-
     score = 0
     confirmations = []
     warnings = []
 
-    # 4H trend
     if trend_4h == "BULLISH":
         score += 18
         confirmations.append("4H_BULLISH")
 
-    # 1H trend
     if trend_1h == "BULLISH":
         score += 14
         confirmations.append("1H_BULLISH")
@@ -694,5 +634,594 @@ def analyze_market_conditions(
         score += 6
         confirmations.append("1H_NEUTRAL")
 
-    # 15M trend
-    if trend_15m == "
+    if trend_15m == "BULLISH":
+        score += 10
+        confirmations.append("15M_BULLISH")
+
+    sweep, sweep_type = _detect_liquidity_sweep(
+        df_15m
+    )
+
+    if sweep:
+        score += 15
+        confirmations.append("LIQUIDITY_SWEEP")
+
+    bos = _detect_bos(df_15m)
+
+    if bos:
+        score += 15
+        confirmations.append("BOS")
+
+    breakout, breakout_distance = _detect_breakout(
+        df_15m
+    )
+
+    if breakout:
+        score += 12
+        confirmations.append("REAL_BREAKOUT")
+    else:
+        warnings.append("NO_VALID_BREAKOUT")
+
+    volume_quality, volume_ratio = _volume_quality(
+        df_15m
+    )
+
+    if volume_quality == "STRONG":
+        score += 12
+        confirmations.append(
+            f"VOLUME_STRONG_{volume_ratio:.2f}X"
+        )
+
+    elif volume_quality == "NORMAL":
+        score += 5
+        confirmations.append(
+            f"VOLUME_NORMAL_{volume_ratio:.2f}X"
+        )
+
+    elif volume_quality == "EXTREME":
+        score += 3
+        warnings.append(
+            f"EXTREME_VOLUME_{volume_ratio:.2f}X"
+        )
+
+    else:
+        warnings.append("WEAK_VOLUME")
+
+    momentum_ok, rsi = _momentum_quality(
+        df_15m
+    )
+
+    if momentum_ok:
+        score += 8
+        confirmations.append(
+            f"MOMENTUM_RSI_{rsi:.1f}"
+        )
+
+    elif np.isfinite(rsi) and rsi > 78:
+        warnings.append(
+            f"RSI_OVERHEATED_{rsi:.1f}"
+        )
+
+    fvg, fvg_low, fvg_high = _detect_fvg(
+        df_15m
+    )
+
+    if fvg:
+        score += 5
+        confirmations.append("BULLISH_FVG")
+
+    ob, ob_low, ob_high = _detect_order_block(
+        df_15m
+    )
+
+    if ob:
+        score += 5
+        confirmations.append("BULLISH_ORDER_BLOCK")
+
+    btc_state = "UNKNOWN"
+
+    if (
+        df_btc is not None
+        and not df_btc.empty
+        and len(df_btc) >= 60
+    ):
+
+        btc_state = _trend_state(df_btc)
+
+        if btc_state == "BULLISH":
+            score += 8
+            confirmations.append("BTC_BULLISH")
+
+        elif btc_state == "NEUTRAL":
+            score += 3
+            confirmations.append("BTC_NEUTRAL")
+
+        elif btc_state == "BEARISH":
+            score -= 12
+            warnings.append("BTC_BEARISH")
+
+    ema_distance = _distance_from_ema(
+        df_15m
+    )
+
+    if ema_distance > 4.0:
+        score -= 12
+        warnings.append(
+            f"PRICE_TOO_FAR_FROM_EMA_{ema_distance:.1f}ATR"
+        )
+
+    elif ema_distance > 3.0:
+        score -= 6
+        warnings.append(
+            f"PRICE_EXTENDED_{ema_distance:.1f}ATR"
+        )
+
+    last_range = _safe_float(
+        last15["range"]
+    )
+
+    atr = _safe_float(
+        last15["atr"]
+    )
+
+    upper_wick_ratio = _safe_float(
+        last15["upper_wick_ratio"]
+    )
+
+    body_ratio = _safe_float(
+        last15["body_ratio"]
+    )
+
+    if (
+        np.isfinite(last_range)
+        and np.isfinite(atr)
+        and atr > 0
+        and last_range > atr * 3.5
+    ):
+        score -= 10
+        warnings.append("EXHAUSTION_CANDLE")
+
+    if (
+        np.isfinite(upper_wick_ratio)
+        and upper_wick_ratio > 0.50
+    ):
+        score -= 7
+        warnings.append("HEAVY_UPPER_WICK")
+
+    if (
+        np.isfinite(body_ratio)
+        and body_ratio < 0.35
+    ):
+        score -= 5
+        warnings.append("WEAK_CANDLE_BODY")
+
+    resistance = _safe_float(
+        df_15m["high"].iloc[-15:-2].max()
+    )
+
+    stop_loss = _calculate_stop_loss(
+        df_15m,
+        current_close
+    )
+
+    if stop_loss is None:
+        return {
+            "signal": None,
+            "reason": "Unable to calculate safe stop loss"
+        }
+
+    risk = current_close - stop_loss
+
+    if risk <= 0:
+        return {
+            "signal": None,
+            "reason": "Invalid risk calculation"
+        }
+
+    risk_percentage = (
+        risk / current_close
+    ) * 100
+
+    if risk_percentage > 6.0:
+        return {
+            "signal": None,
+            "reason": (
+                f"Stop too wide ({risk_percentage:.2f}%)"
+            ),
+            "score": round(max(0, min(100, score)), 1)
+        }
+
+    if risk_percentage < 0.30:
+        score -= 5
+        warnings.append(
+            "STOP_TOO_TIGHT"
+        )
+
+    tp1, tp2, tp3 = _calculate_targets(
+        current_close,
+        stop_loss,
+        resistance
+    )
+
+    if tp1 is None:
+        return {
+            "signal": None,
+            "reason": "Unable to calculate targets"
+        }
+
+    strong_structure = (
+        bos
+        or sweep
+    )
+
+    real_setup = (
+        trend_4h == "BULLISH"
+        and
+        trend_1h != "BEARISH"
+        and
+        breakout
+        and
+        volume_quality in ["STRONG", "NORMAL"]
+        and
+        strong_structure
+    )
+
+    if not real_setup:
+        missing = []
+
+        if trend_4h != "BULLISH":
+            missing.append("4H_TREND")
+
+        if trend_1h == "BEARISH":
+            missing.append("1H_TREND")
+
+        if not breakout:
+            missing.append("BREAKOUT")
+
+        if volume_quality == "WEAK":
+            missing.append("VOLUME")
+
+        if not strong_structure:
+            missing.append(
+                "BOS_OR_LIQUIDITY_SWEEP"
+            )
+
+        return {
+            "signal": None,
+            "reason": (
+                "Setup rejected: "
+                + ", ".join(missing)
+            ),
+            "score": round(
+                max(0, min(100, score)),
+                1
+            ),
+            "trend_4h": trend_4h,
+            "trend_1h": trend_1h,
+            "trend_15m": trend_15m,
+            "volume_ratio": round(
+                volume_ratio, 2
+            ),
+            "btc_state": btc_state,
+            "confirmations": confirmations,
+            "warnings": warnings
+        }
+
+    score = max(
+        0,
+        min(100, score)
+    )
+
+    if score >= 90:
+        quality = "10/10 ELITE"
+
+    elif score >= 82:
+        quality = "9/10 VERY STRONG"
+
+    elif score >= 74:
+        quality = "8/10 STRONG"
+
+    elif score >= 66:
+        quality = "7/10 VALID"
+
+    else:
+        quality = "REJECT"
+
+    if score >= 90:
+
+        minimum_elite_confirmations = sum([
+            trend_4h == "BULLISH",
+            trend_1h == "BULLISH",
+            trend_15m == "BULLISH",
+            bos,
+            sweep,
+            breakout,
+            volume_quality == "STRONG",
+            momentum_ok,
+            fvg,
+            ob,
+            btc_state == "BULLISH"
+        ])
+
+        if minimum_elite_confirmations < 7:
+            score = min(score, 89)
+            quality = "9/10 VERY STRONG"
+
+    rr1 = (
+        tp1 - current_close
+    ) / risk
+
+    rr2 = (
+        tp2 - current_close
+    ) / risk
+
+    rr3 = (
+        tp3 - current_close
+    ) / risk
+
+    change_24h = 0.0
+
+    if len(df_1h) >= 25:
+
+        old_close = _safe_float(
+            df_1h["close"].iloc[-25]
+        )
+
+        if (
+            np.isfinite(old_close)
+            and old_close > 0
+        ):
+            change_24h = (
+                (current_close - old_close)
+                / old_close
+            ) * 100
+
+    strength = (
+        "🚀 LONG — "
+        "Multi-Timeframe Breakout + "
+        "Liquidity + BOS + Volume Confirmation"
+    )
+
+    if sweep and bos:
+        strength += " 🔥 LIQUIDITY SWEEP + BOS"
+
+    if fvg:
+        strength += " ⚡ FVG"
+
+    if ob:
+        strength += " 🏦 ORDER BLOCK"
+
+    reason_parts = [
+        "4H bullish",
+        "1H confirmed",
+        "15M breakout",
+    ]
+
+    if sweep:
+        reason_parts.append(
+            "liquidity sweep"
+        )
+
+    if bos:
+        reason_parts.append(
+            "BOS"
+        )
+
+    if volume_quality in [
+        "STRONG",
+        "NORMAL"
+    ]:
+        reason_parts.append(
+            f"volume {volume_ratio:.2f}x"
+        )
+
+    if momentum_ok:
+        reason_parts.append(
+            f"RSI {rsi:.1f}"
+        )
+
+    if fvg:
+        reason_parts.append(
+            "bullish FVG"
+        )
+
+    if ob:
+        reason_parts.append(
+            "order block"
+        )
+
+    if btc_state == "BULLISH":
+        reason_parts.append(
+            "BTC confirmation"
+        )
+
+    reason = (
+        "Confirmed institutional-style LONG setup: "
+        + ", ".join(reason_parts)
+    )
+
+    return {
+
+        "signal": "LONG",
+
+        "strength": strength,
+
+        "quality": quality,
+
+        "change_24h": round(
+            change_24h,
+            2
+        ),
+
+        "rating": round(
+            score,
+            1
+        ),
+
+        "confidence": round(
+            score,
+            1
+        ),
+
+        "score": round(
+            score,
+            1
+        ),
+
+        "current_price": round(
+            current_close,
+            8
+        ),
+
+        "entry": round(
+            current_close,
+            8
+        ),
+
+        "stop_loss": round(
+            stop_loss,
+            8
+        ),
+
+        "tp1": round(
+            tp1,
+            8
+        ),
+
+        "tp2": round(
+            tp2,
+            8
+        ),
+
+        "tp3": round(
+            tp3,
+            8
+        ),
+
+        "risk_percentage": round(
+            risk_percentage,
+            2
+        ),
+
+        "risk_reward": (
+            f"1:{rr2:.1f}"
+        ),
+
+        "rr_tp1": round(
+            rr1,
+            2
+        ),
+
+        "rr_tp2": round(
+            rr2,
+            2
+        ),
+
+        "rr_tp3": round(
+            rr3,
+            2
+        ),
+
+        "timeframe": "15M entry / 1H + 4H trend",
+
+        "trend_4h": trend_4h,
+
+        "trend_1h": trend_1h,
+
+        "trend_15m": trend_15m,
+
+        "btc_state": btc_state,
+
+        "volume_ratio": round(
+            volume_ratio,
+            2
+        ),
+
+        "rsi": round(
+            rsi,
+            2
+        ) if np.isfinite(rsi) else None,
+
+        "liquidity_sweep": sweep,
+
+        "liquidity_type": sweep_type,
+
+        "bos": bos,
+
+        "breakout": breakout,
+
+        "breakout_distance": round(
+            breakout_distance,
+            8
+        ),
+
+        "fvg": fvg,
+
+        "order_block": ob,
+
+        "ob_low": (
+            round(ob_low, 8)
+            if ob_low is not None
+            else None
+        ),
+
+        "ob_high": (
+            round(ob_high, 8)
+            if ob_high is not None
+            else None
+        ),
+
+        "resistance": (
+            round(resistance, 8)
+            if np.isfinite(resistance)
+            else None
+        ),
+
+        "confirmations": confirmations,
+
+        "warnings": warnings,
+
+        "confirmation_count": len(
+            confirmations
+        ),
+
+        "m_factor": min(
+            100,
+            int(score + 2)
+        ),
+
+        "v_factor": min(
+            100,
+            int(
+                70
+                + min(
+                    volume_ratio * 8,
+                    30
+                )
+            )
+        ),
+
+        "t_factor": min(
+            100,
+            int(
+                (
+                    (
+                        trend_4h == "BULLISH"
+                    )
+                    * 40
+                    +
+                    (
+                        trend_1h == "BULLISH"
+                    )
+                    * 30
+                    +
+                    (
+                        trend_15m == "BULLISH"
+                    )
+                    * 30
+                )
+            )
+        ),
+
+        "reason": reason
+    }
