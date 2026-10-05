@@ -285,7 +285,6 @@ def get_active_symbols():
                     base
                 ).upper()
 
-                # رموز ليست مناسبة لفحص Crypto scanner
                 excluded_bases = {
 
                     "USD",
@@ -314,23 +313,11 @@ def get_active_symbols():
                 if base_upper in excluded_bases:
                     continue
 
-                # ------------------------------------------------
-                # اسم العملة يجب أن يكون معقول
-                # ------------------------------------------------
-
                 if len(base_upper) > 15:
                     continue
 
-                # ------------------------------------------------
-                # لازم يكون عقد USDT واضح
-                # ------------------------------------------------
-
                 if ":USDT" not in symbol:
                     continue
-
-                # ------------------------------------------------
-                # منع الرموز التي تحتوي على فراغات
-                # ------------------------------------------------
 
                 if " " in symbol:
                     continue
@@ -340,7 +327,6 @@ def get_active_symbols():
             except Exception:
                 continue
 
-        # إزالة التكرار
         symbols = sorted(
             list(set(symbols))
         )
@@ -396,7 +382,6 @@ def format_confirmations(item):
     if not confirmations:
         return "NONE"
 
-    # نعرض أهم العناصر فقط حتى لا تصبح رسالة Telegram ضخمة
     return ", ".join(
         str(x)
         for x in confirmations[:10]
@@ -649,7 +634,6 @@ def build_report(
 
         msg += "\n"
 
-        # فاصل
         if idx < len(top_results):
 
             msg += (
@@ -692,10 +676,6 @@ def job():
         "=================================================="
     )
 
-    # --------------------------------------------------------
-    # Load symbols
-    # --------------------------------------------------------
-
     symbols = get_active_symbols()
 
     total_scanned = len(
@@ -713,13 +693,6 @@ def job():
         )
 
         return
-
-    # --------------------------------------------------------
-    # BTC context
-    # مهم جدًا:
-    # يتم جلب BTC مرة واحدة فقط
-    # وليس لكل عملة
-    # --------------------------------------------------------
 
     print(
         "Loading BTC context..."
@@ -745,8 +718,6 @@ def job():
 
     btc_context = None
 
-    # التحليل الحالي يقبل DataFrame واحدًا لـBTC.
-    # نستخدم 1H لأنه أفضل كسياق عام من 15M فقط.
     if not btc_1h.empty:
 
         btc_context = btc_1h
@@ -755,4 +726,217 @@ def job():
 
     rejected_count = 0
 
-    errors
+    errors_count = 0
+
+    for index, symbol in enumerate(
+        symbols,
+        1
+    ):
+
+        try:
+
+            print(
+                f"[{index}/{total_scanned}] {symbol}"
+            )
+
+            df_15m = fetch_data(
+                symbol,
+                "15m",
+                100
+            )
+
+            if df_15m.empty:
+                continue
+
+            df_1h = fetch_data(
+                symbol,
+                "1h",
+                100
+            )
+
+            if df_1h.empty:
+                continue
+
+            df_4h = fetch_data(
+                symbol,
+                "4h",
+                100
+            )
+
+            if df_4h.empty:
+                continue
+
+            result = analyze_market_conditions(
+                df_15m,
+                df_1h,
+                df_4h,
+                btc_context
+            )
+
+            if not result:
+                continue
+
+            if result.get(
+                "signal"
+            ) != "LONG":
+
+                rejected_count += 1
+                continue
+
+            entry = result.get(
+                "entry",
+                0
+            )
+
+            rating = result.get(
+                "rating",
+                0
+            )
+
+            if entry is None or entry <= 0:
+                continue
+
+            try:
+                rating = float(
+                    rating
+                )
+            except Exception:
+                continue
+
+            if rating < MIN_SCORE_TO_SEND:
+
+                rejected_count += 1
+                continue
+
+            result["symbol"] = symbol
+
+            scanned_opportunities.append(
+                result
+            )
+
+        except Exception as e:
+
+            errors_count += 1
+
+            print(
+                f"Scan error {symbol}: {e}"
+            )
+
+        time.sleep(
+            SYMBOL_DELAY
+        )
+
+    scanned_opportunities.sort(
+        key=lambda x: (
+            float(
+                x.get(
+                    "rating",
+                    0
+                )
+            ),
+            int(
+                x.get(
+                    "confirmation_count",
+                    0
+                )
+            ),
+            float(
+                x.get(
+                    "volume_ratio",
+                    0
+                )
+            )
+        ),
+        reverse=True
+    )
+
+    top_results = (
+        scanned_opportunities[
+            :TOP_RESULTS
+        ]
+    )
+
+    print(
+        "\n"
+        "=================================================="
+    )
+
+    print(
+        f"SCAN COMPLETE | "
+        f"Scanned: {total_scanned} | "
+        f"Candidates: {len(scanned_opportunities)} | "
+        f"Errors: {errors_count}"
+    )
+
+    print(
+        "=================================================="
+    )
+
+    if top_results:
+
+        message = build_report(
+            top_results,
+            total_scanned,
+            len(scanned_opportunities)
+        )
+
+        send_telegram_message(
+            message
+        )
+
+    else:
+
+        print(
+            "No high-quality LONG opportunities."
+        )
+
+        print(
+            f"Rejected candidates: {rejected_count}"
+        )
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+if __name__ == "__main__":
+
+    print(
+        "🚀 Starting Expert Crypto Scanner..."
+    )
+
+    keep_alive()
+
+    send_telegram_message(
+        "🚀 *Expert Crypto Scanner Started*\n\n"
+        "🧠 Multi-Timeframe Analysis\n"
+        "📊 4H + 1H + 15M\n"
+        "💧 Liquidity Sweep\n"
+        "🧱 BOS / Structure\n"
+        "📦 FVG / Order Block\n"
+        "📈 Volume + RSI + Momentum\n"
+        "₿ BTC Context\n"
+        "🛡 Dynamic ATR Risk\n"
+        "🎯 LONG Quality Scanner\n\n"
+        "✅ BingX connection active."
+    )
+
+    while True:
+
+        try:
+
+            job()
+
+        except Exception as e:
+
+            print(
+                f"MAIN LOOP ERROR: {e}"
+            )
+
+        print(
+            f"Next scan in {SCAN_INTERVAL} seconds..."
+        )
+
+        time.sleep(
+            SCAN_INTERVAL
+        )
