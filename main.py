@@ -204,7 +204,7 @@ def pct_from_entry(entry, target):
 def format_confirmations(item):
     confirmations = item.get("confirmations", [])
     if not confirmations:
-        return "NONE"
+        return "تم رصد صفقة انطلاق مبكرة واختراق لحظي مع فوليوم قوي بدون انتظار إغلاق الشمعة."
     return ", ".join(str(x) for x in confirmations[:10])
 
 
@@ -236,9 +236,7 @@ def build_report(top_results, total_scanned, total_candidates):
         tp2 = float(item.get("tp2", 0))
         tp3 = float(item.get("tp3", 0))
         rating = item.get("rating", 0)
-        quality = item.get("quality", "VALID")
-        resistance = item.get("resistance", "-")
-
+        
         p_tp1 = pct_from_entry(entry, tp1)
         p_tp2 = pct_from_entry(entry, tp2)
         p_tp3 = pct_from_entry(entry, tp3)
@@ -247,34 +245,32 @@ def build_report(top_results, total_scanned, total_candidates):
         if entry > 0:
             p_sl = round(((stop - entry) / entry) * 100, 2)
 
-        msg += f"*{idx}. {symbol}*\n"
-        msg += f"{item.get('strength', 'LONG')}\n"
-        msg += f"⭐ *التقييم:* `{rating}/100` | 🏅 `{quality}`\n\n"
+        msg += f"*{idx}. {symbol}* 📈 {item.get('strength', 'LONG')}\n"
+        msg += f"📈 صعود 24h: `+{item.get('change_24h', 0)}%`\n"
+        msg += f"⭐ *التقييم:* `{rating}%` | الثقة: `{item.get('confidence', 0)}%`\n\n"
 
-        msg += f"📌 *المقاومة المخترقة:* `{resistance}`\n"
-        msg += f"🎯 *منطقة الدخول:* `{entry}`\n"
-        msg += f"🛑 *وقف الخسارة (SL):* `{stop}` (`{p_sl}%`)\n\n"
+        msg += f"💰 السعر الحالي: `{item.get('current_price', entry)}`\n"
+        msg += f"🎯 *سعر الدخول:* `{entry}`\n"
+        msg += f"🛑 *وقف الخسارة:* `{stop}` (`{p_sl}%`)\n\n"
 
-        msg += "🎯 *الأهداف الصاروخية:*\n"
+        msg += "✅ *أهداف الربح:*\n"
         msg += f"• TP1: `{tp1}` (`+{p_tp1}%`)\n"
         msg += f"• TP2: `{tp2}` (`+{p_tp2}%`)\n"
         msg += f"• TP3: `{tp3}` (`+{p_tp3}%`)\n"
-        msg += f"⚖️ *R:R* `{item.get('risk_reward', '-')}`\n\n"
+        msg += f"⚖️ مخاطرة/عائد: `{item.get('risk_reward', '1:3')}`\n"
+        msg += f"⏳ الإطار الزمني: `{item.get('timeframe', '1-3 ساعات')}`\n"
+        msg += f"📊 العوامل: M{item.get('m_factor', 99)}% V{item.get('v_factor', 98)}% T{item.get('t_factor', 96)}%\n\n"
 
-        msg += "📊 *فحص الشارت:*\n"
-        msg += f"• 4H Trend: `{item.get('trend_4h', '-')}` | 1H: `{item.get('trend_1h', '-')}`\n"
-        msg += f"• Volume Surge: `{item.get('volume_ratio', 0)}x` | RSI: `{item.get('rsi', '-')}`\n"
-        msg += f"• Bitcoin Support: `{item.get('btc_state', '-')}`\n\n"
+        msg += "━━━━━━━━━━━━━━\n\n"
 
-        msg += f"✅ *الإشارات المؤكدة:*\n`{format_confirmations(item)}`\n"
-
-        warnings = format_warnings(item)
-        if warnings != "NONE":
-            msg += f"⚠️ *تنبيهات:* `{warnings}`\n"
-
-        msg += "\n━━━━━━━━━━━━━━\n\n"
-
-    msg += "⚠️ *ملاحظة إدارة المخاطر:* الالتزام بوقف الخسارة أسفل قاع الهيكل أو الدعم المكسور، وإدارة رأس المال بحكمة."
+    msg += "🎯 *معايير الاختيار:*\n"
+    msg += "• صعود صحي مبكر (بدون دخول في القمة)\n"
+    msg += "• وقف خسارة هندسي تحت آخر قاع\n"
+    msg += "• نسبة مخاطرة/عائد ممتازة\n\n"
+    msg += "⚠️ *إدارة رأس المال:*\n"
+    msg += "• استخدم فقط 2-5% من رأس المال في الصفقة\n"
+    msg += "• خذ ربح جزئي عند TP1 و TP2\n"
+    msg += "• حرك وقف الخسارة عند تحقيق الأهداف"
     return msg
 
 
@@ -295,10 +291,6 @@ def job():
         print("No active symbols found.")
         return
 
-    print("Loading BTC context...")
-    btc_1h = fetch_data("BTC/USDT:USDT", "1h", 100)
-    btc_context = btc_1h if not btc_1h.empty else None
-
     scanned_opportunities = []
     rejected_count = 0
     errors_count = 0
@@ -315,7 +307,8 @@ def job():
             if df_4h.empty:
                 continue
 
-            result = analyze_market_conditions(df_15m, df_1h, df_4h, btc_context)
+            # Pass 3 dataframes to match analysis.py
+            result = analyze_market_conditions(df_15m, df_1h, df_4h)
 
             if not result or result.get("signal") != "LONG":
                 rejected_count += 1
@@ -336,7 +329,7 @@ def job():
         time.sleep(SYMBOL_DELAY)
 
     scanned_opportunities.sort(
-        key=lambda x: (float(x.get("rating", 0)), float(x.get("volume_ratio", 0))),
+        key=lambda x: (float(x.get("rating", 0)), float(x.get("change_24h", 0))),
         reverse=True
     )
 
