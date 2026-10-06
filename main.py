@@ -18,7 +18,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Professional SMC/ICT Crypto Scanner Engine is Running!"
+    return "Volume Profile & Order Flow SMC Bot is Running!"
 
 
 @app.route("/health")
@@ -102,7 +102,7 @@ exchange = ccxt.bingx({
 
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", 900))
 TOP_RESULTS = 4
-MIN_SCORE_TO_SEND = 80  # رفع الحد الأدنى للثقة لضمان صفقات عالية الجودة
+MIN_SCORE_TO_SEND = 85
 SYMBOL_DELAY = 0.15
 
 
@@ -201,11 +201,11 @@ def pct_from_entry(entry, target):
 def build_report(top_results, total_scanned, total_candidates):
     current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
-    msg = "🚀 *تقرير صفقات التحليل المؤسسي (SMC / ICT)*\n"
-    msg += "🎯 *Advanced Multi-Timeframe Institutional Engine*\n"
+    msg = "🚀 *تقرير صفقات (SMC + Volume Profile + Order Flow)*\n"
+    msg += "🎯 *Institutional Advanced Engine v2*\n"
     msg += f"⏰ `{current_time}` UTC\n"
     msg += f"📊 تم فحص `{total_scanned}` عقد BingX\n"
-    msg += f"⭐ الفرص المؤكدة بنجاح: `{total_candidates}`\n\n"
+    msg += f"⭐ الفرص المؤكدة بالسيولة وتدفق الأوامر: `{total_candidates}`\n\n"
 
     for idx, item in enumerate(top_results, 1):
         symbol = item.get("symbol", "UNKNOWN")
@@ -226,7 +226,7 @@ def build_report(top_results, total_scanned, total_candidates):
 
         msg += f"*{idx}. {symbol}* 📈 {item.get('strength', 'LONG')}\n"
         msg += f"📈 صعود 24h: `+{item.get('change_24h', 0)}%`\n"
-        msg += f"⭐ *التقييم المؤسسي:* `{rating}%` | الثقة: `{item.get('confidence', 0)}%`\n\n"
+        msg += f"⭐ *التقييم المؤسسي:* `{rating}%` | دقة السيولة: `{item.get('v_factor', 0)}%`\n\n"
 
         msg += f"💰 السعر الحالي: `{item.get('current_price', entry)}`\n"
         msg += f"🎯 *سعر الدخول:* `{entry}`\n"
@@ -241,10 +241,9 @@ def build_report(top_results, total_scanned, total_candidates):
 
         msg += "━━━━━━━━━━━━━━\n\n"
 
-    msg += "🎯 *شروط الاستراتيجية المؤسسية:*\n"
-    msg += "• توافق الهيكل على فريمات 4H و 1H\n"
-    msg += "• تصفية السيولة عبر الفجوات السعرية (FVG)\n"
-    msg += "• وقف خسارة محصن تحت أحدث قاع هيكلي بدقة\n"
+    msg += "🎯 *فلاتر السيولة وتدفق الأوامر المطبقة:*\n"
+    msg += "• تواجده بالقرب من نقطة أكبر سيولة (POC)\n"
+    msg += "• ضغط شرائي مؤكد في تدفق الأوامر اللحظي (Delta)\n"
     return msg
 
 
@@ -254,7 +253,7 @@ def build_report(top_results, total_scanned, total_candidates):
 
 def job():
     print("\n==================================================")
-    print("STARTING ADVANCED SMC / ICT INSTITUTIONAL SCANNER")
+    print("STARTING SMC + VOLUME PROFILE + ORDER FLOW SCANNER")
     print("==================================================")
 
     symbols = get_active_symbols()
@@ -325,14 +324,13 @@ def job():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Starting Advanced SMC / ICT Crypto Scanner Engine...")
+    print("🚀 Starting Advanced Volume Profile & Order Flow Scanner...")
     keep_alive()
 
     send_telegram_message(
-        "🚀 *Professional SMC / ICT Crypto Scanner Started*\n\n"
-        "📈 محرك التحليل المؤسسي ومتعدد الأطر الزمنية\n"
-        "🛡 فحص الهيكل السيولة والفجوات السعرية بدقة عالية\n"
-        "✅ البوت متصل وجاهز لاستهداف أفضل الفرص بنسبة نجاح عالية عبر BingX."
+        "🚀 *SMC + Volume Profile & Order Flow Bot Started*\n\n"
+        "📈 النسخة المتقدمة جاهزة ومفعلة بفلتر السيولة وتدفق الأوامر\n"
+        "🛡 لا توجيه لأي صفقة إلا بتأكيد صانع السوق وحجم التداول اللحظي."
     )
 
     while True:
