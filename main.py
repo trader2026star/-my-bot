@@ -18,7 +18,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Dr. Mazen Style Crypto Breakout Scanner is Running!"
+    return "Professional Crypto Scanner Engine is Running!"
 
 
 @app.route("/health")
@@ -97,19 +97,12 @@ exchange = ccxt.bingx({
 
 
 # ============================================================
-# SETTINGS (MAZEN STRATEGY)
+# SETTINGS
 # ============================================================
 
-# فحص كل 15 دقيقة لاصطياد الاختراقات المبكرة
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", 900))
-
-# عدد أفضل الصفقات المرشحة في التقرير
 TOP_RESULTS = 4
-
-# الحد الأدنى للتقييم لضمان نظافة الصفقة
-MIN_SCORE_TO_SEND = 72
-
-# تأخير بين كل عملة لتجنب حظر السيرفر
+MIN_SCORE_TO_SEND = 75
 SYMBOL_DELAY = 0.15
 
 
@@ -201,29 +194,15 @@ def pct_from_entry(entry, target):
         return 0.0
 
 
-def format_confirmations(item):
-    confirmations = item.get("confirmations", [])
-    if not confirmations:
-        return "تم رصد صفقة انطلاق مبكرة واختراق لحظي مع فوليوم قوي بدون انتظار إغلاق الشمعة."
-    return ", ".join(str(x) for x in confirmations[:10])
-
-
-def format_warnings(item):
-    warnings = item.get("warnings", [])
-    if not warnings:
-        return "NONE"
-    return ", ".join(str(x) for x in warnings[:6])
-
-
 # ============================================================
-# BUILD TELEGRAM REPORT (DR. MAZEN STYLE)
+# BUILD TELEGRAM REPORT
 # ============================================================
 
 def build_report(top_results, total_scanned, total_candidates):
     current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
-    msg = "🚀 *تقرير صفقات دكتور مازن لاختراق المقاومات*\n"
-    msg += "🎯 *Dr. Chart Mazen Breakout & Reversal Engine*\n"
+    msg = "🚀 *تقرير صفقات الزخم الذكي واختراق المقاومات*\n"
+    msg += "🎯 *Professional Multi-Timeframe Trend Engine*\n"
     msg += f"⏰ `{current_time}` UTC\n"
     msg += f"📊 تم فحص `{total_scanned}` عقد BingX\n"
     msg += f"⭐ الصفقات المطابقة بنجاح: `{total_candidates}`\n\n"
@@ -257,20 +236,15 @@ def build_report(top_results, total_scanned, total_candidates):
         msg += f"• TP1: `{tp1}` (`+{p_tp1}%`)\n"
         msg += f"• TP2: `{tp2}` (`+{p_tp2}%`)\n"
         msg += f"• TP3: `{tp3}` (`+{p_tp3}%`)\n"
-        msg += f"⚖️ مخاطرة/عائد: `{item.get('risk_reward', '1:3')}`\n"
-        msg += f"⏳ الإطار الزمني: `{item.get('timeframe', '1-3 ساعات')}`\n"
-        msg += f"📊 العوامل: M{item.get('m_factor', 99)}% V{item.get('v_factor', 98)}% T{item.get('t_factor', 96)}%\n\n"
+        msg += f"⚖️ مخاطرة/عائد: `{item.get('risk_reward', '1:3.5')}`\n"
+        msg += f"⏳ الإطار الزمني: `{item.get('timeframe', '1-4 ساعات')}`\n\n"
 
         msg += "━━━━━━━━━━━━━━\n\n"
 
-    msg += "🎯 *معايير الاختيار:*\n"
-    msg += "• صعود صحي مبكر (بدون دخول في القمة)\n"
-    msg += "• وقف خسارة هندسي تحت آخر قاع\n"
-    msg += "• نسبة مخاطرة/عائد ممتازة\n\n"
-    msg += "⚠️ *إدارة رأس المال:*\n"
-    msg += "• استخدم فقط 2-5% من رأس المال في الصفقة\n"
-    msg += "• خذ ربح جزئي عند TP1 و TP2\n"
-    msg += "• حرك وقف الخسارة عند تحقيق الأهداف"
+    msg += "🎯 *شروط الاستراتيجية الجديدة:*\n"
+    msg += "• توافق الاتجاه على فريمات 1H و 4H\n"
+    msg += "• فوليوم سيولة حقيقي وزخم RSI سليم\n"
+    msg += "• وقف خسارة هندسي آمن تحت القيعان\n"
     return msg
 
 
@@ -280,7 +254,7 @@ def build_report(top_results, total_scanned, total_candidates):
 
 def job():
     print("\n==================================================")
-    print("STARTING DR. MAZEN STYLE BINGX SCANNER")
+    print("STARTING PROFESSIONAL TREND & MOMENTUM SCANNER")
     print("==================================================")
 
     symbols = get_active_symbols()
@@ -307,7 +281,6 @@ def job():
             if df_4h.empty:
                 continue
 
-            # Pass 3 dataframes to match analysis.py
             result = analyze_market_conditions(df_15m, df_1h, df_4h)
 
             if not result or result.get("signal") != "LONG":
@@ -343,7 +316,7 @@ def job():
         message = build_report(top_results, total_scanned, len(scanned_opportunities))
         send_telegram_message(message)
     else:
-        print("No high-quality breakout setups found.")
+        print("No high-quality setups found.")
         print(f"Rejected candidates: {rejected_count}")
 
 
@@ -352,15 +325,14 @@ def job():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Starting Dr. Mazen Style Crypto Scanner...")
+    print("🚀 Starting Professional Crypto Scanner Engine...")
     keep_alive()
 
     send_telegram_message(
-        "🚀 *Dr. Chart Mazen Scanner Started*\n\n"
-        "📈 اختراق المقاومات الحقيقية (Resistance Flip)\n"
-        "💥 رصد تدفقات السيولة وفوليوم الانفجار\n"
-        "🛡 حماية صارمة ووقف خسارة ديناميكي\n"
-        "✅ البوت متصل وجاهز لاصطياد الصفقات الصاروخية عبر BingX."
+        "🚀 *Professional Crypto Scanner Started*\n\n"
+        "📈 استراتيجية الزخم متعدد الأطراف والسيولة الحقيقية\n"
+        "🛡 فحص الترند على الفريمات الكبرى والصغرى\n"
+        "✅ البوت متصل وجاهز لاصطياد أفضل الفرص عبر BingX."
     )
 
     while True:
