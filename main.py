@@ -18,7 +18,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Professional Crypto Scanner Engine is Running!"
+    return "Professional SMC/ICT Crypto Scanner Engine is Running!"
 
 
 @app.route("/health")
@@ -102,7 +102,7 @@ exchange = ccxt.bingx({
 
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", 900))
 TOP_RESULTS = 4
-MIN_SCORE_TO_SEND = 75
+MIN_SCORE_TO_SEND = 80  # رفع الحد الأدنى للثقة لضمان صفقات عالية الجودة
 SYMBOL_DELAY = 0.15
 
 
@@ -201,11 +201,11 @@ def pct_from_entry(entry, target):
 def build_report(top_results, total_scanned, total_candidates):
     current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
-    msg = "🚀 *تقرير صفقات الزخم الذكي واختراق المقاومات*\n"
-    msg += "🎯 *Professional Multi-Timeframe Trend Engine*\n"
+    msg = "🚀 *تقرير صفقات التحليل المؤسسي (SMC / ICT)*\n"
+    msg += "🎯 *Advanced Multi-Timeframe Institutional Engine*\n"
     msg += f"⏰ `{current_time}` UTC\n"
     msg += f"📊 تم فحص `{total_scanned}` عقد BingX\n"
-    msg += f"⭐ الصفقات المطابقة بنجاح: `{total_candidates}`\n\n"
+    msg += f"⭐ الفرص المؤكدة بنجاح: `{total_candidates}`\n\n"
 
     for idx, item in enumerate(top_results, 1):
         symbol = item.get("symbol", "UNKNOWN")
@@ -226,25 +226,25 @@ def build_report(top_results, total_scanned, total_candidates):
 
         msg += f"*{idx}. {symbol}* 📈 {item.get('strength', 'LONG')}\n"
         msg += f"📈 صعود 24h: `+{item.get('change_24h', 0)}%`\n"
-        msg += f"⭐ *التقييم:* `{rating}%` | الثقة: `{item.get('confidence', 0)}%`\n\n"
+        msg += f"⭐ *التقييم المؤسسي:* `{rating}%` | الثقة: `{item.get('confidence', 0)}%`\n\n"
 
         msg += f"💰 السعر الحالي: `{item.get('current_price', entry)}`\n"
         msg += f"🎯 *سعر الدخول:* `{entry}`\n"
-        msg += f"🛑 *وقف الخسارة:* `{stop}` (`{p_sl}%`)\n\n"
+        msg += f"🛑 *وقف الخسارة الهندسي:* `{stop}` (`{p_sl}%`)\n\n"
 
-        msg += "✅ *أهداف الربح:*\n"
+        msg += "✅ *أهداف الربح المعتمدة:*\n"
         msg += f"• TP1: `{tp1}` (`+{p_tp1}%`)\n"
         msg += f"• TP2: `{tp2}` (`+{p_tp2}%`)\n"
         msg += f"• TP3: `{tp3}` (`+{p_tp3}%`)\n"
-        msg += f"⚖️ مخاطرة/عائد: `{item.get('risk_reward', '1:3.5')}`\n"
-        msg += f"⏳ الإطار الزمني: `{item.get('timeframe', '1-4 ساعات')}`\n\n"
+        msg += f"⚖️ مخاطرة/عائد: `{item.get('risk_reward', '1:4.0')}`\n"
+        msg += f"⏳ الإطار الزمني: `{item.get('timeframe', '15m / 1H / 4H')}`\n\n"
 
         msg += "━━━━━━━━━━━━━━\n\n"
 
-    msg += "🎯 *شروط الاستراتيجية الجديدة:*\n"
-    msg += "• توافق الاتجاه على فريمات 1H و 4H\n"
-    msg += "• فوليوم سيولة حقيقي وزخم RSI سليم\n"
-    msg += "• وقف خسارة هندسي آمن تحت القيعان\n"
+    msg += "🎯 *شروط الاستراتيجية المؤسسية:*\n"
+    msg += "• توافق الهيكل على فريمات 4H و 1H\n"
+    msg += "• تصفية السيولة عبر الفجوات السعرية (FVG)\n"
+    msg += "• وقف خسارة محصن تحت أحدث قاع هيكلي بدقة\n"
     return msg
 
 
@@ -254,7 +254,7 @@ def build_report(top_results, total_scanned, total_candidates):
 
 def job():
     print("\n==================================================")
-    print("STARTING PROFESSIONAL TREND & MOMENTUM SCANNER")
+    print("STARTING ADVANCED SMC / ICT INSTITUTIONAL SCANNER")
     print("==================================================")
 
     symbols = get_active_symbols()
@@ -325,14 +325,14 @@ def job():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Starting Professional Crypto Scanner Engine...")
+    print("🚀 Starting Advanced SMC / ICT Crypto Scanner Engine...")
     keep_alive()
 
     send_telegram_message(
-        "🚀 *Professional Crypto Scanner Started*\n\n"
-        "📈 استراتيجية الزخم متعدد الأطراف والسيولة الحقيقية\n"
-        "🛡 فحص الترند على الفريمات الكبرى والصغرى\n"
-        "✅ البوت متصل وجاهز لاصطياد أفضل الفرص عبر BingX."
+        "🚀 *Professional SMC / ICT Crypto Scanner Started*\n\n"
+        "📈 محرك التحليل المؤسسي ومتعدد الأطر الزمنية\n"
+        "🛡 فحص الهيكل السيولة والفجوات السعرية بدقة عالية\n"
+        "✅ البوت متصل وجاهز لاستهداف أفضل الفرص بنسبة نجاح عالية عبر BingX."
     )
 
     while True:
