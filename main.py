@@ -94,11 +94,17 @@ def get_active_symbols():
                     continue
                 if market.get("active", True) is False:
                     continue
+                
                 base = market.get("base", "")
                 if not base:
                     continue
 
                 base_upper = str(base).upper()
+                
+                # قائمة استبعاد صارمة للعملات الوهمية، المؤشرات، أو الرموز الغريبة
+                if "NCSK" in base_upper or "TEST" in base_upper or "USD" in base_upper:
+                    continue
+                
                 excluded_bases = {
                     "USD", "USDT", "USDC", "BUSD",
                     "DAI", "EUR", "GBP", "JPY",
@@ -119,11 +125,11 @@ def get_active_symbols():
         return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 
 def run_trading_bot():
-    print("Trend Pullback & RSI Reversal Bot Started...")
+    print("Trend Pullback & RSI Reversal Bot Started (Filtered)...")
     while True:
         try:
             symbols = get_active_symbols()
-            print(f"Scanning {len(symbols)} markets...")
+            print(f"Scanning {len(symbols)} valid markets...")
 
             for symbol in symbols:
                 df_15m, df_1h, df_4h = fetch_ohlcv_data(symbol)
@@ -156,7 +162,7 @@ def run_trading_bot():
 
 @app.route('/')
 def home():
-    return jsonify({"status": "Active", "message": "Trend Pullback & RSI Reversal Bot is running successfully!"})
+    return jsonify({"status": "Active", "message": "Trend Pullback Bot is running with strict filters!"})
 
 @app.route('/health')
 def health():
