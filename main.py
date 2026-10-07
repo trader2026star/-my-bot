@@ -6,7 +6,7 @@ import pandas as pd
 from flask import Flask, jsonify
 from threading import Thread
 
-# استيراد ملف التحليل الخاص بالاستراتيجية المعتمدة (Trend Pullback & RSI Reversal)
+# استيراد ملف التحليل الخاص بالاستراتيجية المؤسسية الجديدة
 import analysis
 
 app = Flask(__name__)
@@ -101,7 +101,7 @@ def get_active_symbols():
 
                 base_upper = str(base).upper()
                 
-                # قائمة استبعاد صارمة للعملات الوهمية، المؤشرات، أو الرموز الغريبة
+                # قائمة استبعاد صارمة للعملات الوهمية أو المؤشرات
                 if "NCSK" in base_upper or "TEST" in base_upper or "USD" in base_upper:
                     continue
                 
@@ -125,7 +125,7 @@ def get_active_symbols():
         return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 
 def run_trading_bot():
-    print("Trend Pullback & RSI Reversal Bot Started (Filtered)...")
+    print("Institutional FVG & ATR Bot Started...")
     while True:
         try:
             symbols = get_active_symbols()
@@ -137,12 +137,12 @@ def run_trading_bot():
                     signal = analysis.analyze_market_conditions(df_15m, df_1h, df_4h)
                     if signal:
                         msg = (
-                            f"🚀 *تنبيه صفقة شراء آمنة (Trend Pullback)* 🚀\n\n"
+                            f"🚀 *تنبيه صفقة مؤسسية آمنة (FVG & ATR)* 🚀\n\n"
                             f"📌 *العملة:* `{symbol}`\n"
                             f"🟢 *الاتجاه:* `{signal['signal']}`\n"
                             f"📊 *النموذج:* `{signal['strength']}`\n"
                             f"💰 *سعر الدخول:* `{signal['entry']}`\n"
-                            f"🛑 *وقف الخسارة الهندسي:* `{signal['stop_loss']}`\n"
+                            f"🛑 *وقف الخسارة المحمي (ATR):* `{signal['stop_loss']}`\n"
                             f"🎯 *الهدف الأول:* `{signal['tp1']}`\n"
                             f"🎯 *الهدف الثاني:* `{signal['tp2']}`\n"
                             f"🎯 *الهدف الثالث:* `{signal['tp3']}`\n"
@@ -155,14 +155,14 @@ def run_trading_bot():
                 time.sleep(0.2)
             
             print("Completed scanning cycle. Waiting for next cycle...")
-            time.sleep(300) # الانتظار 5 دقائق لدورة الفحص القادمة
+            time.sleep(300)
         except Exception as e:
             print(f"Main loop error: {e}")
             time.sleep(60)
 
 @app.route('/')
 def home():
-    return jsonify({"status": "Active", "message": "Trend Pullback Bot is running with strict filters!"})
+    return jsonify({"status": "Active", "message": "Institutional FVG & ATR Bot is running strictly!"})
 
 @app.route('/health')
 def health():
