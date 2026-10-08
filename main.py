@@ -1,14 +1,31 @@
 # ==========================================
-# MAIN SERVER SCRIPT WITH AUTO-TEST (main.py)
+# MAIN SERVER SCRIPT WITH TELEGRAM & BINGX (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
 import os
+import requests
 from flask import Flask, request
 from analysis import StrategyEngine
 import ccxt
 
 app = Flask(__name__)
+
+# إعدادات تليجرام
+TELEGRAM_BOT_TOKEN = "8657177472:AAHTvNDhtV3j5UlyxU-M1QmSBBdcuci7KQ0"
+TELEGRAM_CHAT_ID = "7695985627"
+
+def send_telegram_message(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 # إعدادات ربط منصة BingX عبر API
 bingx = ccxt.bingx({
@@ -22,9 +39,9 @@ bingx = ccxt.bingx({
 
 @app.route('/')
 def home():
-    return "BingX Direct Bot is running safely with institutional rules (SMC & ICT)!"
+    return "BingX Direct Bot with Telegram is running safely!"
 
-# مسار اختبار ذاتي مباشر: افتح الرابط وفيه /test وهيعمل تجربة لوحده
+# مسار اختبار ذاتي مع إرسال إشعار لتليجرام
 @app.route('/test', methods=['GET'])
 def test_bot():
     try:
@@ -34,26 +51,34 @@ def test_bot():
         leverage = 5
         swing_level = 65000.0
         
-        # جلب السعر الحالي للتجربة
         ticker = bingx.fetch_ticker(symbol)
         entry_price = ticker['last']
         
-        # حساب إدارة المخاطر
         engine = StrategyEngine(None, None)
         sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, direction, swing_level)
         
-        test_result = {
-            "status": "Test Successful",
+        # تجهيز رسالة التليجرام
+        msg = (
+            f"🚨 *تجربة ناجحة للبوت* 🚨\n\n"
+            f"🔹 *العملة:* {symbol}\n"
+            f"🔹 *الاتجاه:* {direction}\n"
+            f"🔹 *سعر الدخول:* `{entry_price}`\n"
+            f"🛑 *وقف الخسارة:* `{sl}`\n"
+            f"🎯 *الهدف الأول:* `{tp1}`\n"
+            f"🎯 *الهدف الثاني:* `{tp2}`\n"
+            f"🎯 *الهدف الثالث:* `{tp3}`\n\n"
+            f"✅ البوت متصل ويسحب البيانات بنجاح!"
+        )
+        
+        # إرسال الرسالة إلى تليجرام
+        send_telegram_message(msg)
+        
+        return {
+            "status": "Test Successful & Telegram message sent!",
             "symbol": symbol,
-            "direction": direction,
             "current_entry_price": entry_price,
-            "calculated_stop_loss": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "tp3": tp3,
-            "message": "Bot analysis and risk management are working perfectly!"
-        }
-        return test_result, 200
+            "calculated_stop_loss": sl
+        }, 200
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
@@ -84,28 +109,33 @@ def execute_trade():
         order = None
         if direction == 'LONG':
             order = bingx.create_market_buy_order(symbol, amount)
-            print(f"BingX LONG Executed -> Symbol: {symbol} | Price: {entry_price} | SL: {sl}")
-            
         elif direction == 'SHORT':
             order = bingx.create_market_sell_order(symbol, amount)
-            print(f"BingX SHORT Executed -> Symbol: {symbol} | Price: {entry_price} | SL: {sl}")
         else:
-            return {"error": "Invalid direction, must be LONG or SHORT"}, 400
+            return {"error": "Invalid direction"}, 400
+        
+        # إرسال إشعار بتنفيذ الصفقة على تليجرام
+        trade_msg = (
+            f"🔥 *تم تنفيذ صفقة جديدة على BingX!* 🔥\n\n"
+            f"🔹 *العملة:* {symbol}\n"
+            f"🔹 *النوع:* {direction}\n"
+            f"🔹 *سعر الدخول:* `{entry_price}`\n"
+            f"🛑 *وقف الخسارة:* `{sl}`\n"
+            f"🎯 *الهدف 1:* `{tp1}` | *الهدف 2:* `{tp2}` | *الهدف 3:* `{tp3}`"
+        )
+        send_telegram_message(trade_msg)
         
         return {
             "status": "success",
             "direction": direction,
             "symbol": symbol,
             "entry_price": entry_price,
-            "stop_loss": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "tp3": tp3,
             "order_id": order.get('id', '') if order else ''
         }, 200
 
     except Exception as e:
-        print(f"Error executing trade on BingX: {e}")
+        err_msg = f"❌ خطأ في تنفيذ الصفقة: {str(e)}"
+        send_telegram_message(err_msg)
         return {"error": str(e)}, 500
 
 if __name__ == '__main__':
