@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN SERVER SCRIPT WITH TELEGRAM & BINGX (main.py)
+# MAIN SERVER SCRIPT WITH SECURE TELEGRAM & BINGX (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -11,12 +11,15 @@ import ccxt
 
 app = Flask(__name__)
 
-# إعدادات تليجرام
-TELEGRAM_BOT_TOKEN = "8657177472:AAHTvNDhtV3j5UlyxU-M1QmSBBdcuci7KQ0"
-TELEGRAM_CHAT_ID = "7695985627"
+# إعدادات تليجرام بأمان من متغيرات البيئة على Render
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
 def send_telegram_message(message):
     try:
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            print("Telegram token or chat ID is missing!")
+            return
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -39,7 +42,7 @@ bingx = ccxt.bingx({
 
 @app.route('/')
 def home():
-    return "BingX Direct Bot with Telegram is running safely!"
+    return "BingX Direct Bot with Secure Telegram is running safely!"
 
 # مسار اختبار ذاتي مع إرسال إشعار لتليجرام
 @app.route('/test', methods=['GET'])
