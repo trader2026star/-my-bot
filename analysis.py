@@ -28,9 +28,9 @@ def analyze_market_conditions(df_1m, df_15m, df_4h):
         df_15m['ema20'] = calculate_ema(df_15m['close'], 20)
 
         if float(df_4h['close'].iloc[-1]) <= float(df_4h['ema50'].iloc[-1]):
-            return None # الاتجاه العام على الـ 4 ساعات هابط، ممنوع الدخول!
+            return None
         if float(df_15m['close'].iloc[-1]) <= float(df_15m['ema20'].iloc[-1]):
-            return None # الاتجاه على الـ 15 دقيقة هابط، ممنوع الدخول!
+            return None
 
         # 2. فريم الدقيقة (1m): التأكد من وجود ارتداد حقيقي من قاع محلي بفوليوم مؤكد
         current_close = float(df_1m['close'].iloc[-1])
@@ -41,16 +41,14 @@ def analyze_market_conditions(df_1m, df_15m, df_4h):
         if not is_green:
             return None
 
-        # التأكد أن السعر ارتد للتو من دعم أو قاع محلي خلال الـ 20 شمعة الماضية
         recent_low = float(df_1m['low'].iloc[-20:].min())
         if current_low > (recent_low * 1.02):
-            return None # السعر ليس في منطقة قاع حقيقية
+            return None
 
-        # تأكد من فوليوم الشراء (أكبر من متوسط الفوليوم لضمان عدم عشوائية الشمعة)
         volume_sma = df_1m['volume'].rolling(window=15).mean().iloc[-1]
         current_volume = float(df_1m['volume'].iloc[-1])
         if current_volume <= (volume_sma * 1.3):
-            return None # فوليوم ضعيف، نرفض الشمعة
+            return None
 
         # 3. وقف خسارة محمي بالـ ATR تحت القاع المحلي مباشرة
         df_1m['atr'] = calculate_atr(df_1m, 14)
