@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN SERVER SCRIPT WITH BINGX DIRECT API (main.py)
+# MAIN SERVER SCRIPT WITH AUTO-TEST (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -24,6 +24,39 @@ bingx = ccxt.bingx({
 def home():
     return "BingX Direct Bot is running safely with institutional rules (SMC & ICT)!"
 
+# مسار اختبار ذاتي مباشر: افتح الرابط وفيه /test وهيعمل تجربة لوحده
+@app.route('/test', methods=['GET'])
+def test_bot():
+    try:
+        symbol = 'BTC/USDT:USDT'
+        direction = 'SHORT'
+        amount = 10
+        leverage = 5
+        swing_level = 65000.0
+        
+        # جلب السعر الحالي للتجربة
+        ticker = bingx.fetch_ticker(symbol)
+        entry_price = ticker['last']
+        
+        # حساب إدارة المخاطر
+        engine = StrategyEngine(None, None)
+        sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, direction, swing_level)
+        
+        test_result = {
+            "status": "Test Successful",
+            "symbol": symbol,
+            "direction": direction,
+            "current_entry_price": entry_price,
+            "calculated_stop_loss": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "message": "Bot analysis and risk management are working perfectly!"
+        }
+        return test_result, 200
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
 @app.route('/execute_trade', methods=['POST'])
 def execute_trade():
     try:
@@ -31,23 +64,20 @@ def execute_trade():
         if not data:
             return {"error": "No data provided"}, 400
         
-        symbol = data.get('symbol', 'BTC/USDT:USDT') # مثال: 'LOKA/USDT:USDT'
-        direction = data.get('direction', '').upper() # LONG أو SHORT
-        amount = float(data.get('amount', 10)) # حجم العقد بالدولار
-        leverage = int(data.get('leverage', 5)) # الرافعة المالية
+        symbol = data.get('symbol', 'BTC/USDT:USDT')
+        direction = data.get('direction', '').upper()
+        amount = float(data.get('amount', 10))
+        leverage = int(data.get('leverage', 5))
         swing_level = float(data.get('swing_level', 0))
         
-        # ضبط الرافعة المالية قبل فتح الصفقة
         try:
             bingx.set_leverage(leverage, symbol)
         except Exception as lev_err:
             print(f"Leverage notice: {lev_err}")
 
-        # جلب السعر الحالي من المنصة
         ticker = bingx.fetch_ticker(symbol)
         entry_price = ticker['last']
         
-        # حساب إدارة المخاطر وتحديد وقف الخسارة والأهداف
         engine = StrategyEngine(None, None)
         sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, direction, swing_level)
         
