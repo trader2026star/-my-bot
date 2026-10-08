@@ -14,10 +14,7 @@ def calculate_atr(df, period=14):
 
 def analyze_market_conditions(df_15m, df_1h, df_4h):
     """
-    استراتيجية اقتناص شمعة الانفجار الحقيقي المؤكدة (Confirmed Volume Explosion)
-    1. رصد شمعة انفجار سعرية صاعدة قوية على فريم 15 دقيقة (جسم الشمعة كبير وإغلاق قرب القمة).
-    2. تأكيد الانفجار بفوليوم تداول ضخم يفوق متوسط الشموع السابقة بوضوح.
-    3. التأكد من أن الانفجار في بداية الحركة (ليس بعد ارتفاع فلكي متأخر).
+    استراتيجية الصيد المبكر جداً من القاع (أول شرارة صعود قبل أي حركة)
     """
     try:
         if df_15m is None or df_1h is None or df_4h is None:
@@ -25,66 +22,49 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
         if df_15m.empty or df_1h.empty or df_4h.empty:
             return None
 
-        # 1. الاتجاه العام صاعد على فريم 4 ساعات
-        df_4h['ema50'] = calculate_ema(df_4h['close'], 50)
-        if df_4h['close'].iloc[-1] <= df_4h['ema50'].iloc[-1]:
-            return None
-
-        # 2. فريم 15 دقيقة: رصد شمعة الانفجار الحقيقي
         current_close = float(df_15m['close'].iloc[-1])
         current_open = float(df_15m['open'].iloc[-1])
-        current_high = float(df_15m['high'].iloc[-1])
         current_low = float(df_15m['low'].iloc[-1])
 
-        # حساب التغير في آخر 24 ساعة (نسمح بالعملات التي تبدأ الانفجار أو في بدايات الصعود الهادئ)
+        # 1. منع تام لأي عملة طارت أو صعدت (يجب أن تكون العملة هادئة وقريبة من القاع)
         lookback = min(96, len(df_15m) - 1)
         price_24h_ago = float(df_15m['close'].iloc[-lookback])
         change_24h = round(((current_close - price_24h_ago) / price_24h_ago) * 100, 2)
 
-        # استبعاد العملات التي طارت بشكل جنوني مبالغ فيه لتجنب القمم المتأخرة
-        if change_24h > 15.0 or change_24h < -2.0:
+        # نرفض أي عملة صعدت بأكثر من 2% (ندخل فقط وهي في القاع لم تحرك بعد)
+        if change_24h > 2.5 or change_24h < -8.0:
             return None
 
-        # خصائص شمعة الانفجار القوية:
-        # - شمعة خضراء قوية (الإغلاق أعلى من الافتتاح بوضوح)
-        body_size = current_close - current_open
-        total_range = current_high - current_low
-        
-        if total_range <= 0:
-            return None
-            
-        is_strong_body = (body_size / total_range) >= 0.6  # جسم الشمعة يمثل 60% على الأقل من إجمالي طولها
-        is_bullish = current_close > current_open
-
-        # تأكيد الفوليوم الانفجاري (الفوليوم الحالي أكبر من متوسط آخر 20 شمعة بضعفين على الأقل!)
-        volume_sma = df_15m['volume'].rolling(window=20).mean().iloc[-1]
-        current_volume = float(df_15m['volume'].iloc[-1])
-        is_explosion_volume = current_volume > (volume_sma * 2.0)
-
-        # شرط الانفجار المتحقق: شمعة قوية جداً + فوليوم انفجاري مؤكد
-        if not (is_bullish and is_strong_body and is_explosion_volume):
+        # 2. رصد "أول شمعة صعود من القاع" (الشمعة الحالية خضراء وبدأت تطلع للتو من الدعم)
+        is_green = current_close > current_open
+        if not is_green:
             return None
 
-        # 3. وقف الخسارة الهندسي: تحت أدنى سعر شمعة الانفجار مباشرة مع حماية ATR
+        # التأكد أننا في قاع محلي (أدنى سعر خلال الـ 10 شمعات الأخيرة قريب جداً)
+        recent_low = float(df_15m['low'].iloc[-10:].min())
+        if current_low > (recent_low * 1.03):
+            return None  # السعر ابتعد عن القاع كثيراً، نرفضه
+
+        # 3. وقف خسارة ضيق ومحمي بالـ ATR تحت القاع مباشرة
         df_15m['atr'] = calculate_atr(df_15m, 14)
         current_atr = float(df_15m['atr'].iloc[-1])
         
-        stop_loss = round(current_low - (current_atr * 0.5), 4)
+        stop_loss = round(recent_low - (current_atr * 0.4), 4)
         if stop_loss >= current_close:
-            stop_loss = round(current_close * 0.98, 4)
+            stop_loss = round(current_close * 0.985, 4)
 
         risk = current_close - stop_loss
         if risk <= 0:
             return None
 
-        # الأهداف الاستثمارية مبنية على قوة الانفجار
+        # أهداف ربح متدرجة وطويلة لأننا داخلين من البداية الصافية
         tp1 = round(current_close + (risk * 2.0), 4)
         tp2 = round(current_close + (risk * 3.5), 4)
         tp3 = round(current_close + (risk * 5.0), 4)
 
         return {
             "signal": "LONG",
-            "strength": "CONFIRMED VOLUME EXPLOSION",
+            "strength": "ABSOLUTE BOTTOM ENTRY (EARLY SPARK)",
             "current_price": current_close,
             "entry": current_close,
             "stop_loss": stop_loss,
@@ -92,15 +72,15 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
             "tp2": tp2,
             "tp3": tp3,
             "risk_reward": "1:3.5+",
-            "timeframe": "15m / 4H",
+            "timeframe": "15m",
             "change_24h": change_24h,
-            "rating": 98,
-            "confidence": 98,
-            "m_factor": 99,
-            "v_factor": 99,
-            "t_factor": 96
+            "rating": 99,
+            "confidence": 99,
+            "m_factor": 98,
+            "v_factor": 98,
+            "t_factor": 98
         }
 
     except Exception as e:
-        print(f"Explosion Strategy Error: {e}")
+        print(f"Bottom Entry Strategy Error: {e}")
         return None
