@@ -11,7 +11,6 @@ import ccxt
 app = Flask(__name__)
 
 # إعدادات ربط منصة BingX عبر API
-# ملاحظة: يُفضل حفظ BINGX_API_KEY و BINGX_SECRET_KEY في Environment Variables على Render
 bingx = ccxt.bingx({
     'apiKey': os.environ.get('BINGX_API_KEY', ''),
     'secret': os.environ.get('BINGX_SECRET_KEY', ''),
@@ -34,15 +33,15 @@ def execute_trade():
         
         symbol = data.get('symbol', 'BTC/USDT:USDT') # مثال: 'LOKA/USDT:USDT'
         direction = data.get('direction', '').upper() # LONG أو SHORT
-        amount = float(data.get('amount', 10)) # حجم العقد بالدولار أو القيمة
-        leverage = int(data.get('leverage', 5)) # الرافعة المالية (افتراضي 5x)
+        amount = float(data.get('amount', 10)) # حجم العقد بالدولار
+        leverage = int(data.get('leverage', 5)) # الرافعة المالية
         swing_level = float(data.get('swing_level', 0))
         
-        # ضبط وضع الهامش (Isolated) والرافعة المالية (Leverage) قبل فتح الصفقة
+        # ضبط الرافعة المالية قبل فتح الصفقة
         try:
             bingx.set_leverage(leverage, symbol)
         except Exception as lev_err:
-            print(f"Leverage notice (might already be set): {lev_err}")
+            print(f"Leverage notice: {lev_err}")
 
         # جلب السعر الحالي من المنصة
         ticker = bingx.fetch_ticker(symbol)
@@ -54,14 +53,12 @@ def execute_trade():
         
         order = None
         if direction == 'LONG':
-            # تنفيذ صفقة شراء (Long) بسعر السوق
             order = bingx.create_market_buy_order(symbol, amount)
-            print(f"BingX LONG Executed -> Symbol: {symbol} | Price: {entry_price} | SL: {sl} | TP1: {tp1}")
+            print(f"BingX LONG Executed -> Symbol: {symbol} | Price: {entry_price} | SL: {sl}")
             
         elif direction == 'SHORT':
-            # تنفيذ صفقة بيع (Short) بسعر السوق
             order = bingx.create_market_sell_order(symbol, amount)
-            print(f"BingX SHORT Executed -> Symbol: {symbol} | Price: {entry_price} | SL: {sl} | TP1: {tp1}")
+            print(f"BingX SHORT Executed -> Symbol: {symbol} | Price: {entry_price} | SL: {sl}")
         else:
             return {"error": "Invalid direction, must be LONG or SHORT"}, 400
         
@@ -77,7 +74,7 @@ def execute_trade():
             "order_id": order.get('id', '') if order else ''
         }, 200
 
--    except Exception as e:
+    except Exception as e:
         print(f"Error executing trade on BingX: {e}")
         return {"error": str(e)}, 500
 
