@@ -20,7 +20,6 @@ class StrategyEngine:
             if self.df_1h is None or self.df_4h is None or self.df_1h.empty or self.df_4h.empty:
                 return 'NEUTRAL'
             
-            # Simple EMA trend check
             ema50_4h = self.df_4h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
             close_4h = self.df_4h['close'].iloc[-1]
             
@@ -39,12 +38,12 @@ class StrategyEngine:
     def calculate_risk_management(self, entry_price, direction, swing_low_high):
         """
         Strict Risk Controls:
-        - Stop Loss placed strictly below/above the latest swing low/high structure.
-        - Leverage capped at 3x - 5x max.
-        - Automated Take Profit targets and break-even trigger.
+        - Stop Loss placed strictly below swing low (for Long) or above swing high (for Short).
+        - Multi-target Take Profits (TP1, TP2, TP3).
         """
         if direction == 'LONG':
-            stop_loss = round(swing_low_high * 0.992, 4) # Just below swing low
+            # وقف الخسارة تحت الـ Swing Low للونج
+            stop_loss = round(swing_low_high * 0.992, 4)
             risk_amount = entry_price - stop_loss
             if risk_amount <= 0:
                 risk_amount = entry_price * 0.005
@@ -52,8 +51,11 @@ class StrategyEngine:
             
             tp1 = round(entry_price + (risk_amount * 1.5), 4)
             tp2 = round(entry_price + (risk_amount * 3.0), 4)
-        else:
-            stop_loss = round(swing_low_high * 1.008, 4) # Just above swing high
+            tp3 = round(entry_price + (risk_amount * 4.5), 4)
+            
+        elif direction == 'SHORT':
+            # وقف الخسارة فوق الـ Swing High للشورت (زي setup الـ Wolf_Trader)
+            stop_loss = round(swing_low_high * 1.008, 4)
             risk_amount = stop_loss - entry_price
             if risk_amount <= 0:
                 risk_amount = entry_price * 0.005
@@ -61,5 +63,8 @@ class StrategyEngine:
                 
             tp1 = round(entry_price - (risk_amount * 1.5), 4)
             tp2 = round(entry_price - (risk_amount * 3.0), 4)
+            tp3 = round(entry_price - (risk_amount * 4.5), 4)
+        else:
+            stop_loss, tp1, tp2, tp3 = 0, 0, 0, 0
             
-        return stop_loss, tp1, tp2
+        return stop_loss, tp1, tp2, tp3
