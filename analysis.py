@@ -12,44 +12,51 @@ def calculate_atr(df, period=14):
     true_range = ranges.max(axis=1)
     return true_range.rolling(window=period).mean()
 
-def analyze_market_conditions(df_15m, df_1h, df_4h):
+def analyze_market_conditions(df_1m, df_15m, df_4h):
     """
-    استراتيجية الصيد المبكر جداً من القاع (أول شرارة صعود قبل أي حركة)
+    استراتيجية دقيقة تمنع الخسارة: شرط توافق الفريمات الكبرى (الاتجاه الصاعد العام)
+    مع رصد ارتداد حقيقي من القاع على الفريم الصغير بفلتر الفوليوم.
     """
     try:
-        if df_15m is None or df_1h is None or df_4h is None:
+        if df_1m is None or df_15m is None or df_4h is None:
             return None
-        if df_15m.empty or df_1h.empty or df_4h.empty:
-            return None
-
-        current_close = float(df_15m['close'].iloc[-1])
-        current_open = float(df_15m['open'].iloc[-1])
-        current_low = float(df_15m['low'].iloc[-1])
-
-        # 1. منع تام لأي عملة طارت أو صعدت (يجب أن تكون العملة هادئة وقريبة من القاع)
-        lookback = min(96, len(df_15m) - 1)
-        price_24h_ago = float(df_15m['close'].iloc[-lookback])
-        change_24h = round(((current_close - price_24h_ago) / price_24h_ago) * 100, 2)
-
-        # نرفض أي عملة صعدت بأكثر من 2% (ندخل فقط وهي في القاع لم تحرك بعد)
-        if change_24h > 2.5 or change_24h < -8.0:
+        if df_1m.empty or df_15m.empty or df_4h.empty:
             return None
 
-        # 2. رصد "أول شمعة صعود من القاع" (الشمعة الحالية خضراء وبدأت تطلع للتو من الدعم)
+        # 1. فلتر الاتجاه العام الصارم على فريم 4 ساعات و 15 دقيقة (لمنع الدخول في اتجاه هابط نهائياً)
+        df_4h['ema50'] = calculate_ema(df_4h['close'], 50)
+        df_15m['ema20'] = calculate_ema(df_15m['close'], 20)
+
+        if float(df_4h['close'].iloc[-1]) <= float(df_4h['ema50'].iloc[-1]):
+            return None # الاتجاه العام على الـ 4 ساعات هابط، ممنوع الدخول!
+        if float(df_15m['close'].iloc[-1]) <= float(df_15m['ema20'].iloc[-1]):
+            return None # الاتجاه على الـ 15 دقيقة هابط، ممنوع الدخول!
+
+        # 2. فريم الدقيقة (1m): التأكد من وجود ارتداد حقيقي من قاع محلي بفوليوم مؤكد
+        current_close = float(df_1m['close'].iloc[-1])
+        current_open = float(df_1m['open'].iloc[-1])
+        current_low = float(df_1m['low'].iloc[-1])
+
         is_green = current_close > current_open
         if not is_green:
             return None
 
-        # التأكد أننا في قاع محلي (أدنى سعر خلال الـ 10 شمعات الأخيرة قريب جداً)
-        recent_low = float(df_15m['low'].iloc[-10:].min())
-        if current_low > (recent_low * 1.03):
-            return None  # السعر ابتعد عن القاع كثيراً، نرفضه
+        # التأكد أن السعر ارتد للتو من دعم أو قاع محلي خلال الـ 20 شمعة الماضية
+        recent_low = float(df_1m['low'].iloc[-20:].min())
+        if current_low > (recent_low * 1.02):
+            return None # السعر ليس في منطقة قاع حقيقية
 
-        # 3. وقف خسارة ضيق ومحمي بالـ ATR تحت القاع مباشرة
-        df_15m['atr'] = calculate_atr(df_15m, 14)
-        current_atr = float(df_15m['atr'].iloc[-1])
+        # تأكد من فوليوم الشراء (أكبر من متوسط الفوليوم لضمان عدم عشوائية الشمعة)
+        volume_sma = df_1m['volume'].rolling(window=15).mean().iloc[-1]
+        current_volume = float(df_1m['volume'].iloc[-1])
+        if current_volume <= (volume_sma * 1.3):
+            return None # فوليوم ضعيف، نرفض الشمعة
+
+        # 3. وقف خسارة محمي بالـ ATR تحت القاع المحلي مباشرة
+        df_1m['atr'] = calculate_atr(df_1m, 14)
+        current_atr = float(df_1m['atr'].iloc[-1]) if not pd.isna(df_1m['atr'].iloc[-1]) else (current_close * 0.005)
         
-        stop_loss = round(recent_low - (current_atr * 0.4), 4)
+        stop_loss = round(recent_low - (current_atr * 0.6), 4)
         if stop_loss >= current_close:
             stop_loss = round(current_close * 0.985, 4)
 
@@ -57,30 +64,19 @@ def analyze_market_conditions(df_15m, df_1h, df_4h):
         if risk <= 0:
             return None
 
-        # أهداف ربح متدرجة وطويلة لأننا داخلين من البداية الصافية
         tp1 = round(current_close + (risk * 2.0), 4)
         tp2 = round(current_close + (risk * 3.5), 4)
         tp3 = round(current_close + (risk * 5.0), 4)
 
         return {
             "signal": "LONG",
-            "strength": "ABSOLUTE BOTTOM ENTRY (EARLY SPARK)",
-            "current_price": current_close,
             "entry": current_close,
             "stop_loss": stop_loss,
             "tp1": tp1,
             "tp2": tp2,
-            "tp3": tp3,
-            "risk_reward": "1:3.5+",
-            "timeframe": "15m",
-            "change_24h": change_24h,
-            "rating": 99,
-            "confidence": 99,
-            "m_factor": 98,
-            "v_factor": 98,
-            "t_factor": 98
+            "tp3": tp3
         }
 
     except Exception as e:
-        print(f"Bottom Entry Strategy Error: {e}")
+        print(f"Strict Filter Error: {e}")
         return None
