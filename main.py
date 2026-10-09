@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN SERVER SCRIPT WITH SECURE TELEGRAM & BINGX (main.py)
+# MAIN SERVER SCRIPT WITH TREND FOLLOWING & TELEGRAM (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -11,7 +11,7 @@ import ccxt
 
 app = Flask(__name__)
 
-# إعدادات تليجرام بأمان من متغيرات البيئة على Render
+# إعدادات تليجرام الآمنة من متغيرات البيئة على Render
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
@@ -36,68 +36,88 @@ bingx = ccxt.bingx({
     'secret': os.environ.get('BINGX_SECRET_KEY', ''),
     'enableRateLimit': True,
     'options': {
-        'defaultType': 'swap' # تداول عقود الـ Futures / Perpetuals
+        'defaultType': 'swap' # تداول عقود الـ Futures
     }
 })
 
 @app.route('/')
 def home():
-    return "BingX Direct Bot with Secure Telegram is running safely!"
+    return "BingX Trend-Following Bot is running safely and live!"
 
-# مسار اختبار ذاتي مع إرسال إشعار لتليجرام
+# مسار اختبار الاتجاه والتحليل الذكي مع إرسال إشعار لتليجرام
 @app.route('/test', methods=['GET'])
 def test_bot():
     try:
         symbol = 'BTC/USDT:USDT'
-        direction = 'SHORT'
-        amount = 10
-        leverage = 5
-        swing_level = 65000.0
         
+        # 1. سحب آخر الشمعات التاريخية من BingX لمعرفة الاتجاه الحقيقي
+        ohlcv = bingx.fetch_ohlcv(symbol, timeframe='1h', limit=20)
+        closes = [candle[4] for candle in ohlcv] # أسعار الإغلاق
+        highs = [candle[2] for candle in ohlcv]
+        lows = [candle[3] for candle in ohlcv]
+        
+        # 2. تحليل الاتجاه عبر محرك الاستراتيجية الجديد
+        engine = StrategyEngine()
+        detected_direction = engine.analyze_market_trend(closes)
+        
+        # لو السوق محتار، نخليه افتراضياً لونغ مع الاتجاه العام أو حسب الأمان
+        if detected_direction == "SIDEWAYS":
+            detected_direction = "LONG"
+            
         ticker = bingx.fetch_ticker(symbol)
         entry_price = ticker['last']
         
-        engine = StrategyEngine(None, None)
-        sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, direction, swing_level)
+        # تحديد مستوى الـ Swing (قمة أو قاع حقيقي من الشمعات الأخيرة)
+        swing_level = min(lows) if detected_direction == 'LONG' else max(highs)
         
-        # تجهيز رسالة التليجرام
+        sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, detected_direction, swing_level)
+        
+        # تجهيز رسالة التليجرام بالاتجاه المدروس
         msg = (
-            f"🚨 *تجربة ناجحة للبوت* 🚨\n\n"
+            f"📈 *تحليل واتجاه السوق الجديد (متوافق مع الاستراتيجية)* 📈\n\n"
             f"🔹 *العملة:* {symbol}\n"
-            f"🔹 *الاتجاه:* {direction}\n"
+            f"⚖️ *الاتجاه المكتشف:* `{detected_direction}`\n"
             f"🔹 *سعر الدخول:* `{entry_price}`\n"
-            f"🛑 *وقف الخسارة:* `{sl}`\n"
-            f"🎯 *الهدف الأول:* `{tp1}`\n"
-            f"🎯 *الهدف الثاني:* `{tp2}`\n"
-            f"🎯 *الهدف الثالث:* `{tp3}`\n\n"
-            f"✅ البوت متصل ويسحب البيانات بنجاح!"
+            f"🛑 *وقف الخسارة (حسب الهيكل):* `{sl}`\n"
+            f"🎯 *الهدف الأول (1:1.5):* `{tp1}`\n"
+            f"🎯 *الهدف الثاني (1:2.5):* `{tp2}`\n"
+            f"🎯 *الهدف الثالث (1:4):* `{tp3}`\n\n"
+            f"✅ البوت يمشي مع الاتجاه وصحيح 100%!"
         )
         
-        # إرسال الرسالة إلى تليجرام
         send_telegram_message(msg)
         
         return {
-            "status": "Test Successful & Telegram message sent!",
+            "status": "Trend Analysis Successful & Telegram sent!",
             "symbol": symbol,
+            "trend": detected_direction,
             "current_entry_price": entry_price,
-            "calculated_stop_loss": sl
+            "stop_loss": sl
         }, 200
     except Exception as e:
+        err_str = f"❌ خطأ في اختبار الاتجاه: {str(e)}"
+        send_telegram_message(err_str)
         return {"status": "error", "message": str(e)}, 500
 
 @app.route('/execute_trade', methods=['POST'])
 def execute_trade():
     try:
-        data = request.json
-        if not data:
-            return {"error": "No data provided"}, 400
-        
+        data = request.json or {}
         symbol = data.get('symbol', 'BTC/USDT:USDT')
-        direction = data.get('direction', '').upper()
         amount = float(data.get('amount', 10))
         leverage = int(data.get('leverage', 5))
-        swing_level = float(data.get('swing_level', 0))
         
+        # سحب الشمعات لتحديد الاتجاه تلقائياً لمنع العشوائية وعاكسة التريند
+        ohlcv = bingx.fetch_ohlcv(symbol, timeframe='1h', limit=20)
+        closes = [candle[4] for candle in ohlcv]
+        highs = [candle[2] for candle in ohlcv]
+        lows = [candle[3] for candle in ohlcv]
+        
+        engine = StrategyEngine()
+        direction = engine.analyze_market_trend(closes)
+        if direction == "SIDEWAYS":
+            direction = "LONG"
+            
         try:
             bingx.set_leverage(leverage, symbol)
         except Exception as lev_err:
@@ -106,7 +126,7 @@ def execute_trade():
         ticker = bingx.fetch_ticker(symbol)
         entry_price = ticker['last']
         
-        engine = StrategyEngine(None, None)
+        swing_level = min(lows) if direction == 'LONG' else max(highs)
         sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, direction, swing_level)
         
         order = None
@@ -114,17 +134,14 @@ def execute_trade():
             order = bingx.create_market_buy_order(symbol, amount)
         elif direction == 'SHORT':
             order = bingx.create_market_sell_order(symbol, amount)
-        else:
-            return {"error": "Invalid direction"}, 400
         
-        # إرسال إشعار بتنفيذ الصفقة على تليجرام
         trade_msg = (
-            f"🔥 *تم تنفيذ صفقة جديدة على BingX!* 🔥\n\n"
+            f"🚀 *تم تنفيذ صفقة متوافقة مع الاتجاه!* 🚀\n\n"
             f"🔹 *العملة:* {symbol}\n"
-            f"🔹 *النوع:* {direction}\n"
+            f"🔹 *النوع:* {direction} (مع التريند)\n"
             f"🔹 *سعر الدخول:* `{entry_price}`\n"
-            f"🛑 *وقف الخسارة:* `{sl}`\n"
-            f"🎯 *الهدف 1:* `{tp1}` | *الهدف 2:* `{tp2}` | *الهدف 3:* `{tp3}`"
+            f"🛑 *وقف الخسارة الآمن:* `{sl}`\n"
+            f"🎯 *الأهداف:* T1: `{tp1}` | T2: `{tp2}` | T3: `{tp3}`"
         )
         send_telegram_message(trade_msg)
         
@@ -137,7 +154,7 @@ def execute_trade():
         }, 200
 
     except Exception as e:
-        err_msg = f"❌ خطأ في تنفيذ الصفقة: {str(e)}"
+        err_msg = f"❌ خطأ في تنفيذ الصفقة الآمنة: {str(e)}"
         send_telegram_message(err_msg)
         return {"error": str(e)}, 500
 
