@@ -1,5 +1,5 @@
 # ==========================================
-# TRADING STRATEGY & ANALYSIS MODULE (analysis.py)
+# ADVANCED SMC & LIQUIDITY STRATEGY (analysis.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -7,64 +7,51 @@ import pandas as pd
 import numpy as np
 
 class StrategyEngine:
-    def __init__(self, df_1h, df_4h):
+    def __init__(self, df_1h=None, df_4h=None):
         self.df_1h = df_1h
         self.df_4h = df_4h
 
-    def check_market_trend(self):
+    def calculate_risk_management(self, entry_price, direction, swing_level):
         """
-        Multi-timeframe trend alignment:
-        Ensures 4H and 1H trends are synchronized to prevent counter-trend traps.
+        حساب وقف الخسارة والأهداف بناءً على أحدث قاع/قمة للسيولة (Swing Level)
+        مع التسكين الاحترافي للأهداف (Risk-to-Reward Ratio)
         """
-        try:
-            if self.df_1h is None or self.df_4h is None or self.df_1h.empty or self.df_4h.empty:
-                return 'NEUTRAL'
-            
-            ema50_4h = self.df_4h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-            close_4h = self.df_4h['close'].iloc[-1]
-            
-            ema20_1h = self.df_1h['close'].ewm(span=20, adjust=False).mean().iloc[-1]
-            close_1h = self.df_1h['close'].iloc[-1]
-
-            if close_4h > ema50_4h and close_1h > ema20_1h:
-                return 'LONG'
-            elif close_4h < ema50_4h and close_1h < ema20_1h:
-                return 'SHORT'
-            
-            return 'NEUTRAL'
-        except Exception:
-            return 'NEUTRAL'
-
-    def calculate_risk_management(self, entry_price, direction, swing_low_high):
-        """
-        Strict Risk Controls:
-        - Stop Loss placed strictly below swing low (for Long) or above swing high (for Short).
-        - Multi-target Take Profits (TP1, TP2, TP3).
-        """
+        direction = direction.upper()
+        
         if direction == 'LONG':
-            # وقف الخسارة تحت الـ Swing Low للونج
-            stop_loss = round(swing_low_high * 0.992, 4)
-            risk_amount = entry_price - stop_loss
-            if risk_amount <= 0:
-                risk_amount = entry_price * 0.005
-                stop_loss = entry_price - risk_amount
+            # وقف الخسارة يجب أن يكون تحت قاع السيولة الأخير بدقة
+            stop_loss = swing_level if swing_level < entry_price else entry_price * (1 - 0.015)
+            risk_distance = entry_price - stop_loss
             
-            tp1 = round(entry_price + (risk_amount * 1.5), 4)
-            tp2 = round(entry_price + (risk_amount * 3.0), 4)
-            tp3 = round(entry_price + (risk_amount * 4.5), 4)
+            # الأهداف بناءً على مضاعفات المخاطرة (1:1.5, 1:2.5, 1:4)
+            tp1 = entry_price + (risk_distance * 1.5)
+            tp2 = entry_price + (risk_distance * 2.5)
+            tp3 = entry_price + (risk_distance * 4.0)
             
         elif direction == 'SHORT':
-            # وقف الخسارة فوق الـ Swing High للشورت (زي setup الـ Wolf_Trader)
-            stop_loss = round(swing_low_high * 1.008, 4)
-            risk_amount = stop_loss - entry_price
-            if risk_amount <= 0:
-                risk_amount = entry_price * 0.005
-                stop_loss = entry_price + risk_amount
-                
-            tp1 = round(entry_price - (risk_amount * 1.5), 4)
-            tp2 = round(entry_price - (risk_amount * 3.0), 4)
-            tp3 = round(entry_price - (risk_amount * 4.5), 4)
-        else:
-            stop_loss, tp1, tp2, tp3 = 0, 0, 0, 0
+            # وقف الخسارة يجب أن يكون فوق قمة السيولة الأخيرة بدقة
+            stop_loss = swing_level if swing_level > entry_price else entry_price * (1 + 0.015)
+            risk_distance = stop_loss - entry_price
             
-        return stop_loss, tp1, tp2, tp3
+            # الأهداف للانخفاض
+            tp1 = entry_price - (risk_distance * 1.5)
+            tp2 = entry_price - (risk_distance * 2.5)
+            tp3 = entry_price - (risk_distance * 4.0)
+        else:
+            raise ValueError("Invalid direction: must be LONG or SHORT")
+
+        return round(stop_loss, 4), round(tp1, 4), round(tp2, 4), round(tp3, 4)
+
+    def detect_liquidity_sweep_signal(self, current_high, current_low, prev_swing_high, prev_swing_low):
+        """
+        كشف هل حصل ضرب سيولة (Liquidity Sweep) وصيد وقوف الخسارة أم لا
+        """
+        signal = "NEUTRAL"
+        # إذا السعر كسر القمة المؤقتة ورجع اغلق تحتها (شورت انعكاسي قوي)
+        if current_high > prev_swing_high:
+            signal = "SHORT_SWEEP"
+        # إذا السعر كسر القاع المؤقت ورجع اغلق فوقه (لونغ انعكاسي قوي)
+        elif current_low < prev_swing_low:
+            signal = "LONG_SWEEP"
+            
+        return signal
