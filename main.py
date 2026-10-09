@@ -1,5 +1,5 @@
 # ==========================================
-# 24/7 COMPLETE MARKET SCANNER WITH AI & VOLUME (main.py)
+# 24/7 ADVANCED SMC & QUANTITATIVE SCANNER (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -16,6 +16,10 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
+# فترة منع تكرار إرسال نفس الإشارة لنفس العملة (بالثواني - افتراضياً ساعتين)
+SIGNAL_COOLDOWN_SECONDS = int(os.environ.get('SIGNAL_COOLDOWN_SECONDS', 7200))
+signal_history = {}
+
 def send_telegram_message(message):
     try:
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -26,13 +30,11 @@ def send_telegram_message(message):
             "text": message,
             "parse_mode": "Markdown"
         }
-        requests.post(url, json=payload)
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
 
 bingx = ccxt.bingx({
-    'apiKey': os.environ.get('BINGX_API_KEY', ''),
-    'secret': os.environ.get('BINGX_SECRET_KEY', ''),
     'enableRateLimit': True,
     'options': {
         'defaultType': 'swap'
@@ -41,67 +43,97 @@ bingx = ccxt.bingx({
 
 @app.route('/')
 def home():
-    return "BingX Comprehensive Market Scanner (AI & Volume) is running live!"
+    return "My Expert Crypto Bot - Advanced SMC & Quantitative Scanner is running live!"
+
+@app.route('/health')
+def health():
+    return {"status": "healthy", "service": "active"}, 200
 
 def background_scanner():
-    time.sleep(10)
-    send_telegram_message("🤖 *تم تشغيل المحلل الآلي الشامل بنجاح!* البوت يفحص السوق بالكامل بناءً على تقييم المدارس الفنية وحجم التداول.")
+    time.sleep(15)
+    send_telegram_message("🤖 *تم تشغيل ماسح السوق المتقدم (SMC) بنجاح!* النظام يراقب السوق على مدار 24 ساعة.")
     
     while True:
         try:
             markets = bingx.load_markets()
             all_symbols = [
-                symbol for symbol, market in markets.items() 
-                if market.get('active', True) and market.get('swap', False) and 'USDT' in symbol
+                sym for sym, mkt in markets.items() 
+                if mkt.get('active', True) and mkt.get('swap', False) and 'USDT' in sym
             ]
             
             engine = StrategyEngine()
             
+            # جلب بيانات البيتكوين المرجعية
+            btc_ohlcv = []
+            try:
+                btc_ohlcv = bingx.fetch_ohlcv('BTC/USDT:USDT', timeframe='1h', limit=20)
+            except Exception:
+                pass
+
             for symbol in all_symbols:
                 try:
-                    ohlcv = bingx.fetch_ohlcv(symbol, timeframe='1h', limit=25)
-                    if not ohlcv or len(ohlcv) < 20:
-                        continue
-                        
-                    highs = [candle[2] for candle in ohlcv]
-                    lows = [candle[3] for candle in ohlcv]
+                    ohlcv_4h = bingx.fetch_ohlcv(symbol, timeframe='4h', limit=15)
+                    ohlcv_1h = bingx.fetch_ohlcv(symbol, timeframe='1h', limit=25)
+                    ohlcv_15m = bingx.fetch_ohlcv(symbol, timeframe='15m', limit=15)
                     
-                    signal, ai_score, volume_ratio = engine.analyze_market_conditions(ohlcv)
-                    
-                    if signal == "NEUTRAL":
+                    if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
                         continue
-                        
+
+                    signal, score, vol_ratio, details, price_arrays = engine.analyze_multi_timeframe(
+                        ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv
+                    )
+
+                    # رفض الإشارات الضعيفة أو المحايدة
+                    if signal == "NEUTRAL" or score < 70:
+                        continue
+
+                    # نظام منع تكرار الإشارات المتتالية
+                    current_time = time.time()
+                    cooldown_key = f"{symbol}_{signal}"
+                    if cooldown_key in signal_history:
+                        if current_time - signal_history[cooldown_key] < SIGNAL_COOLDOWN_SECONDS:
+                            continue
+                    
+                    signal_history[cooldown_key] = current_time
+
                     ticker = bingx.fetch_ticker(symbol)
                     entry_price = ticker['last']
                     
-                    swing_level = min(lows) if signal in ['LONG', 'BUY'] else max(highs)
-                    sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, signal, swing_level)
-                    
-                    # رسالة منسقة تحاكي التحليل الشامل ومعنويات السوق
-                    msg = (
-                        f"📊 *المحلل الآلي الشامل يرصد فرصة!* 📊\n\n"
-                        f"🔹 *العملة:* {symbol}\n"
-                        f"🟢 *الإشارة:* `{signal}`\n"
-                        f"⭐ *تقييم الذكاء (AI Score):* `{ai_score}/100`\n"
-                        f"📈 *حجم التداول (Volume):* `{volume_ratio}x`\n"
-                        f"🔹 *سعر الدخول:* `{entry_price}`\n"
-                        f"🛑 *وقف الخسارة:* `{sl}`\n"
-                        f"🎯 *الهدف 1:* `{tp1}`\n"
-                        f"🎯 *الهدف 2:* `{tp2}`\n"
-                        f"🎯 *الهدف 3:* `{tp3}`"
+                    highs, lows, closes = price_arrays
+                    sl, tp1, tp2, tp3, sl_pct, tp1_pct = engine.calculate_risk_management(
+                        entry_price, signal, highs, lows
                     )
+
+                    confirmations_text = "\n".join([f"• {c}" for c in details.get('confirmations', [])])
+                    exclusions_text = "\n".join([f"• {e}" for e in details.get('reasons_excluded', [])]) or "• لا توجد موانع"
+
+                    msg = (
+                        f"🚨 *فرصة SMC مؤكدة عالية الجودة!* 🚨\n\n"
+                        f"🔹 *العملة:* `{symbol}`\n"
+                        f"⚖️ *الاتجاه:* `{signal}`\n"
+                        f"⭐ *التقييم الشامل:* `{score}/100`\n"
+                        f"📈 *حجم التداول:* `{vol_ratio}x المتوسط`\n"
+                        f"🔹 *سعر الدخول المرجعي:* `{entry_price}`\n\n"
+                        f"🛑 *وقف الخسارة:* `{sl}` (-{sl_pct}%)\n"
+                        f"🎯 *الهدف الأول:* `{tp1}` (+{tp1_pct}%)\n"
+                        f"🎯 *الهدف الثاني:* `{tp2}`\n"
+                        f"🎯 *الهدف الثالث:* `{tp3}`\n\n"
+                        f"✅ *تأكيدات السوق (SMC & Trend):*\n{confirmations_text}\n\n"
+                        f"⚠️ *ملاحظات الاستبعاد:*\n{exclusions_text}"
+                    )
+                    
                     send_telegram_message(msg)
-                    
-                    time.sleep(5)
-                    
+                    time.sleep(10) # مهلة فاصلة بين العملات لتفادي قيود المنصة
+
                 except Exception as inner_err:
-                    print(f"Error on symbol {symbol}: {inner_err}")
+                    print(f"Error processing {symbol}: {inner_err}")
             
-            time.sleep(300)
-            
+            # استراحة قبل دورة الفحص الشامل الجديدة للسوق
+            time.sleep(600)
+
         except Exception as e:
-            print(f"Global scanner error: {e}")
-            time.sleep(30)
+            print(f"Global scanner loop error: {e}")
+            time.sleep(60)
 
 scanner_thread = threading.Thread(target=background_scanner, daemon=True)
 scanner_thread.start()
