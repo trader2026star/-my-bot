@@ -1,5 +1,5 @@
 # ==========================================
-# 24/7 FULL MARKET SCANNER (All Coins) (main.py)
+# 24/7 ADVANCED MULTI-FACTOR SCANNER (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -41,18 +41,15 @@ bingx = ccxt.bingx({
 
 @app.route('/')
 def home():
-    return "BingX Full Market Scanner (All Coins) is running live!"
+    return "BingX Advanced Multi-Factor Analysis Bot is running live!"
 
 def background_scanner():
     time.sleep(10)
-    send_telegram_message("🤖 *تم تشغيل ماسح السوق الشامل!* البوت هيسحب كل عملات المنصة أوتوماتيك ويفحص السوق بالكامل.")
+    send_telegram_message("🤖 *تم تشغيل المحلل الآلي الشامل بنجاح!* البوت يفحص السوق الآن بناءً على الفوليوم والزخم وتقييم النقاط.")
     
     while True:
         try:
-            # 1. سحب كل الأسواق المتاحة على المنصة أوتوماتيك
             markets = bingx.load_markets()
-            
-            # تصفية العملات لجلب عقود الـ USDT المتاحة فقط
             all_symbols = [
                 symbol for symbol, market in markets.items() 
                 if market.get('swap', False) and symbol.endswith('/USDT:USDT')
@@ -60,31 +57,34 @@ def background_scanner():
             
             engine = StrategyEngine()
             
-            # لفة على جميع عملات السوق بدون استثناء
             for symbol in all_symbols:
                 try:
-                    ohlcv = bingx.fetch_ohlcv(symbol, timeframe='1h', limit=20)
-                    if not ohlcv or len(ohlcv) < 10:
+                    ohlcv = bingx.fetch_ohlcv(symbol, timeframe='1h', limit=25)
+                    if not ohlcv or len(ohlcv) < 20:
                         continue
                         
-                    closes = [candle[4] for candle in ohlcv]
                     highs = [candle[2] for candle in ohlcv]
                     lows = [candle[3] for candle in ohlcv]
                     
-                    direction = engine.analyze_market_trend(closes)
-                    if direction == "SIDEWAYS":
+                    # تحليل السوق عبر استراتيجية الفوليوم والزخم الجديدة
+                    signal, ai_score, volume_ratio = engine.analyze_market_conditions(ohlcv)
+                    
+                    if signal == "NEUTRAL":
                         continue
                         
                     ticker = bingx.fetch_ticker(symbol)
                     entry_price = ticker['last']
                     
-                    swing_level = min(lows) if direction == 'LONG' else max(highs)
-                    sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, direction, swing_level)
+                    swing_level = min(lows) if signal in ['LONG', 'BUY'] else max(highs)
+                    sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, signal, swing_level)
                     
+                    # رسالة منسقة تشبه لوحة التحليل الشامل
                     msg = (
-                        f"🔥 *فرصة جديدة من قلب السوق!* 🔥\n\n"
+                        f"📊 *المحلل الآلي الشامل يرضد فرصة!* 📊\n\n"
                         f"🔹 *العملة:* {symbol}\n"
-                        f"⚖️ *الاتجاه:* `{direction}`\n"
+                        f"🟢 *الإشارة:* `{signal}`\n"
+                        f"⭐ *تقييم الذكاء (AI Score):* `{ai_score}/100`\n"
+                        f"📈 *حجم التداول (Volume):* `{volume_ratio}x`\n"
                         f"🔹 *سعر الدخول:* `{entry_price}`\n"
                         f"🛑 *وقف الخسارة:* `{sl}`\n"
                         f"🎯 *الهدف 1:* `{tp1}`\n"
@@ -93,13 +93,11 @@ def background_scanner():
                     )
                     send_telegram_message(msg)
                     
-                    # مهلة قصيرة بين كل عملة والتانية عشان مانعملش ضغط على السيرفر والمنصة
-                    time.sleep(10)
+                    time.sleep(15)
                     
                 except Exception as inner_err:
                     print(f"Error processing {symbol}: {inner_err}")
             
-            # استراحة قبل بدء مسح السوق بالكامل من جديد
             time.sleep(600)
             
         except Exception as e:
