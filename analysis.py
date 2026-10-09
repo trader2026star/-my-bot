@@ -22,6 +22,16 @@ class StrategyEngine:
             tr_list.append(tr)
         return float(np.mean(tr_list[-period:]))
 
+    def calculate_vwap(self, highs, lows, closes, volumes):
+        """
+        حساب مؤشر VWAP (معدل السعر المرجح بالحجم) لتأكيد الاتجاه المؤسسي
+        """
+        typical_price = (np.array(highs) + np.array(lows) + np.array(closes)) / 3
+        vols = np.array(volumes)
+        if np.sum(vols) == 0:
+            return closes[-1]
+        return float(np.sum(typical_price * vols) / np.sum(vols))
+
     def detect_order_blocks_and_fvg(self, highs, lows, opens, closes):
         """
         اكتشاف مبسط ومبدئي لمناطق الـ Order Blocks (OB) واختلالات التوازن (FVG)
@@ -57,7 +67,7 @@ class StrategyEngine:
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None):
         """
-        تحليل متقدم يدمج الأطر الزمنية مع الكشف عن مناطق الـ SMC (Order Blocks & FVG)
+        تحليل متقدم يدمج الأطر الزمنية مع الكشف عن مناطق الـ SMC ومؤشر VWAP
         """
         if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m or len(ohlcv_4h) < 15 or len(ohlcv_1h) < 15 or len(ohlcv_15m) < 15:
             return "NEUTRAL", 0, 1.0, {}, []
@@ -85,7 +95,7 @@ class StrategyEngine:
         # 2. اتجاه 1H
         trend_1h = "LONG" if closes_1h[-1] > closes_1h[-5] else "SHORT"
         if trend_4h == trend_1h:
-            score += 20
+            score += 15
             confirmations.append(f"توافق اتجاه 1H مع 4H ({trend_1h})")
         else:
             score -= 15
@@ -108,11 +118,24 @@ class StrategyEngine:
         vol_ratio = round(cur_vol / avg_vol, 2) if avg_vol > 0 else 1.0
         
         if vol_ratio >= 1.2:
-            score += 15
+            score += 10
             confirmations.append(f"فوليوم تداول قوي ومدعوم ({vol_ratio}x)")
         else:
             score -= 5
             reasons_excluded.append(f"فوليوم هادئ ({vol_ratio}x)")
+
+        # 5. تأكيد مؤشر VWAP الجديد
+        vwap_value = self.calculate_vwap(highs_1h, lows_1h, closes_1h, volumes_1h)
+        current_price = closes_1h[-1]
+        
+        if trend_1h == "LONG" and current_price > vwap_value:
+            score += 10
+            confirmations.append("السعر يتداول أعلى مؤشر VWAP (دعم لـ LONG)")
+        elif trend_1h == "SHORT" and current_price < vwap_value:
+            score += 10
+            confirmations.append("السعر يتداول أسفل مؤشر VWAP (دعم لـ SHORT)")
+        else:
+            reasons_excluded.append("موقع السعر مخالف لاتجاه VWAP")
 
         # الحد النهائي للنقاط
         score = max(0, min(100, score))
@@ -129,6 +152,7 @@ class StrategyEngine:
             "trend_1h": trend_1h,
             "smc_structure": smc_type,
             "volume_ratio": vol_ratio,
+            "vwap_price": round(vwap_value, 4),
             "confirmations": confirmations,
             "reasons_excluded": reasons_excluded
         }
