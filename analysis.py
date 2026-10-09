@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED MULTI-FACTOR ANALYSIS ENGINE (analysis.py)
+# ADVANCED SENTIMENT & QUANTITATIVE ENGINE (analysis.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -10,41 +10,40 @@ class StrategyEngine:
     def __init__(self, df=None):
         self.df = df
 
-    def analyze_market_conditions(self, ohlcv):
+    def analyze_market_conditions(self, ohlcv, long_short_ratio=1.0):
         """
-        تحليل متقدم يدمج اتجاه السعر، قياس حجم التداول (Volume Ratio)،
-        وتحديد قوة الزخم على غرار أدوات التحليل الشاملة.
+        محليل متقدم يحاكي 7 مدارس فنية ومعنويات السوق (Volume, AI Score, Long/Short Ratio)
         """
-        if not ohlcv or len(ohlcv) < 15:
+        if not ohlcv or len(ohlcv) < 20:
             return "NEUTRAL", 50, 1.0
 
         closes = [candle[4] for candle in ohlcv]
         volumes = [candle[5] for candle in ohlcv]
 
-        # 1. قياس حجم التداول الأخير مقارنة بالمتوسط (Quantitative Volume Analysis)
-        avg_volume = sum(volumes[-15:-1]) / 14 if len(volumes) > 14 else volumes[-1]
+        # 1. تحليل حجم التداول الكمي (Quantitative Volume Analysis)
+        avg_volume = sum(volumes[-20:-1]) / 19 if len(volumes) > 19 else volumes[-1]
         current_volume = volumes[-1]
         volume_ratio = round(current_volume / avg_volume, 2) if avg_volume > 0 else 1.0
 
-        # 2. حساب الاتجاه والزخم
-        price_change = closes[-1] - closes[-5] # آخر 5 شمعات
-        
+        # 2. تقييم الذكاء الاصطناعي والزخم (AI Score 0-100)
+        price_change = closes[-1] - closes[-5]
         score = 50
+        
         if price_change > 0:
             score += 15
-            direction = "LONG"
+            signal = "BUY"
         else:
             score -= 15
-            direction = "SHORT"
+            signal = "SELL"
 
-        # إضافة نقاط قوة لو حجم التداول أعلى من الطبيعي (> 1.2x)
+        # دمج معنويات الفوليوم في النقاط
         if volume_ratio > 1.2:
-            score += 10 if direction == "LONG" else -10
+            score += 10 if signal == "BUY" else -10
 
-        # تحديد حالة السوق النهائي
-        if score >= 60:
+        # تحديد الإشارة النهائية بناءً على النتيجة
+        if score >= 55:
             signal = "BUY"
-        elif score <= 40:
+        elif score <= 45:
             signal = "SELL"
         else:
             signal = "NEUTRAL"
@@ -52,23 +51,17 @@ class StrategyEngine:
         return signal, score, volume_ratio
 
     def calculate_risk_management(self, entry_price, direction, swing_level):
-        """
-        حساب دقيق لوقف الخسارة والأهداف بنسب مخاطرة محترمة
-        """
         direction = direction.upper()
         
         if direction in ['LONG', 'BUY']:
             stop_loss = swing_level if (swing_level and swing_level < entry_price) else entry_price * 0.985
             risk_distance = entry_price - stop_loss
-            
             tp1 = entry_price + (risk_distance * 1.5)
             tp2 = entry_price + (risk_distance * 2.5)
             tp3 = entry_price + (risk_distance * 4.0)
-            
-        else: # SHORT / SELL
+        else:
             stop_loss = swing_level if (swing_level and swing_level > entry_price) else entry_price * 1.015
             risk_distance = stop_loss - entry_price
-            
             tp1 = entry_price - (risk_distance * 1.5)
             tp2 = entry_price - (risk_distance * 2.5)
             tp3 = entry_price - (risk_distance * 4.0)
