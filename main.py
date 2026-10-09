@@ -1,5 +1,5 @@
 # ==========================================
-# 24/7 ADVANCED MULTI-FACTOR SCANNER (main.py)
+# 24/7 COMPLETE MARKET SCANNER WITH AI & VOLUME (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -41,18 +41,18 @@ bingx = ccxt.bingx({
 
 @app.route('/')
 def home():
-    return "BingX Advanced Multi-Factor Analysis Bot is running live!"
+    return "BingX Comprehensive Market Scanner (AI & Volume) is running live!"
 
 def background_scanner():
     time.sleep(10)
-    send_telegram_message("🤖 *تم تشغيل المحلل الآلي الشامل بنجاح!* البوت يفحص السوق الآن بناءً على الفوليوم والزخم وتقييم النقاط.")
+    send_telegram_message("🤖 *تم تشغيل المحلل الآلي الشامل بنجاح!* البوت يفحص السوق بالكامل بناءً على تقييم المدارس الفنية وحجم التداول.")
     
     while True:
         try:
             markets = bingx.load_markets()
             all_symbols = [
                 symbol for symbol, market in markets.items() 
-                if market.get('swap', False) and symbol.endswith('/USDT:USDT')
+                if market.get('active', True) and market.get('swap', False) and 'USDT' in symbol
             ]
             
             engine = StrategyEngine()
@@ -66,7 +66,6 @@ def background_scanner():
                     highs = [candle[2] for candle in ohlcv]
                     lows = [candle[3] for candle in ohlcv]
                     
-                    # تحليل السوق عبر استراتيجية الفوليوم والزخم الجديدة
                     signal, ai_score, volume_ratio = engine.analyze_market_conditions(ohlcv)
                     
                     if signal == "NEUTRAL":
@@ -78,9 +77,9 @@ def background_scanner():
                     swing_level = min(lows) if signal in ['LONG', 'BUY'] else max(highs)
                     sl, tp1, tp2, tp3 = engine.calculate_risk_management(entry_price, signal, swing_level)
                     
-                    # رسالة منسقة تشبه لوحة التحليل الشامل
+                    # رسالة منسقة تحاكي التحليل الشامل ومعنويات السوق
                     msg = (
-                        f"📊 *المحلل الآلي الشامل يرضد فرصة!* 📊\n\n"
+                        f"📊 *المحلل الآلي الشامل يرصد فرصة!* 📊\n\n"
                         f"🔹 *العملة:* {symbol}\n"
                         f"🟢 *الإشارة:* `{signal}`\n"
                         f"⭐ *تقييم الذكاء (AI Score):* `{ai_score}/100`\n"
@@ -93,16 +92,16 @@ def background_scanner():
                     )
                     send_telegram_message(msg)
                     
-                    time.sleep(15)
+                    time.sleep(5)
                     
                 except Exception as inner_err:
-                    print(f"Error processing {symbol}: {inner_err}")
+                    print(f"Error on symbol {symbol}: {inner_err}")
             
-            time.sleep(600)
+            time.sleep(300)
             
         except Exception as e:
             print(f"Global scanner error: {e}")
-            time.sleep(60)
+            time.sleep(30)
 
 scanner_thread = threading.Thread(target=background_scanner, daemon=True)
 scanner_thread.start()
