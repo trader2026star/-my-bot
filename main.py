@@ -56,10 +56,19 @@ def background_scanner():
     while True:
         try:
             markets = bingx.load_markets()
-            all_symbols = [
-                sym for sym, mkt in markets.items() 
-                if mkt.get('active', True) and mkt.get('swap', False) and 'USDT' in sym
-            ]
+            all_symbols = []
+            for sym, mkt in markets.items():
+                # الشروط: نشط، سواب، ينتهي بـ /USDT:USDT، والتأكد من استبعاد أي رموز فوركس أو حروف مركبة وهمية
+                if (mkt.get('active', True) and 
+                    mkt.get('swap', False) and 
+                    sym.endswith('/USDT:USDT')):
+                    
+                    base_currency = sym.split('/')[0]
+                    # استبعاد الرموز التي تحتوي على بادئات فوركس أو رموز افتراضية غريبة
+                    if any(x in base_currency for x in ['EUR', 'GBP', 'AUD', 'NZD', 'CAD', 'CHF', 'JPY', 'FX', 'NC']):
+                        continue
+                        
+                    all_symbols.append(sym)
             
             engine = StrategyEngine()
             
