@@ -1,10 +1,11 @@
-
 # ==========================================
-# ADVANCED SMC & ICT ENGINE
+# ADVANCED INSTITUTIONAL SMC & ICT ENGINE
 # File: analysis.py
+# Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
 import numpy as np
+from datetime import datetime, timezone
 
 
 class StrategyEngine:
@@ -36,6 +37,21 @@ class StrategyEngine:
         closes = np.array([float(c[4]) for c in ohlcv])
         volumes = np.array([max(0.0, float(c[5])) for c in ohlcv])
         return opens, highs, lows, closes, volumes
+
+    @staticmethod
+    def get_ict_killzone():
+        """تحديد جلسة التداول الحالية بناءً على التوقيت العالمي UTC"""
+        now_utc = datetime.now(timezone.utc)
+        hour = now_utc.hour
+
+        if 7 <= hour < 10:
+            return "LONDON_KILLZONE", "جلسة لندن (سيولة عالية)"
+        elif 12 <= hour < 15:
+            return "NEW_YORK_KILLZONE", "جلسة نيويورك (سيولة عالية جداً)"
+        elif 0 <= hour < 5:
+            return "ASIAN_SESSION", "الجلسة الآسيوية (تذبذب عرضي)"
+        else:
+            return "OFF_PEAK", "خارج أوقات الذروة المؤسسية"
 
     def calculate_atr(self, highs, lows, closes, period=14):
         highs = np.asarray(highs, dtype=float)
@@ -71,7 +87,6 @@ class StrategyEngine:
         if n == 0:
             return 0.0
 
-        # Rolling VWAP estimate using recent 24 candles.
         highs = highs[-n:][-24:]
         lows = lows[-n:][-24:]
         closes = closes[-n:][-24:]
@@ -159,14 +174,11 @@ class StrategyEngine:
         if n < 6:
             return sweep, fvg, ob
 
-        # Liquidity sweep: wick crosses the prior candle level,
-        # then candle closes back through that level.
         if highs[-1] > highs[-2] and closes[-1] < highs[-2]:
             sweep = "BEARISH_SWEEP"
         elif lows[-1] < lows[-2] and closes[-1] > lows[-2]:
             sweep = "BULLISH_SWEEP"
 
-        # Three-candle Fair Value Gap.
         if lows[-1] > highs[-3]:
             fvg = "BULLISH_FVG"
         elif highs[-1] < lows[-3]:
@@ -176,7 +188,6 @@ class StrategyEngine:
         average_body = float(np.mean(bodies[-6:-1]))
         current_body = float(bodies[-1])
 
-        # Candidate Order Block: last opposite candle before displacement.
         if average_body > 0 and current_body >= average_body * 1.5:
             if closes[-1] > opens[-1]:
                 for i in range(n - 2, max(-1, n - 6), -1):
@@ -224,7 +235,6 @@ class StrategyEngine:
         o1, h1, l1, c1, v1 = self.arrays(ohlcv_1h)
         o15, h15, l15, c15, v15 = self.arrays(ohlcv_15m)
 
-        # Exclude the newest potentially unfinished candle for trend/structure.
         trend_4h = self._trend(h4[:-1], l4[:-1], c4[:-1])
         trend_1h = self._trend(h1[:-1], l1[:-1], c1[:-1])
 
@@ -235,6 +245,14 @@ class StrategyEngine:
         excluded = []
         score = 25
 
+        # 1. فحص جلسة التداول (ICT Killzone)
+        kz_code, kz_desc = self.get_ict_killzone()
+        if kz_code in ["LONDON_KILLZONE", "NEW_YORK_KILLZONE"]:
+            score += 10
+            confirmations.append(f"توقيت دخول مؤسسي ممتاز: {kz_desc}")
+        else:
+            confirmations.append(f"التوقيت الحالي: {kz_desc}")
+
         if trend_4h != "NEUTRAL" and trend_4h == trend_1h:
             direction = trend_1h
             score += 15
@@ -243,7 +261,6 @@ class StrategyEngine:
             direction = "NEUTRAL"
             excluded.append("لا يوجد توافق واضح بين اتجاه 4H و1H")
 
-        # Use completed 1H candles for structural analysis.
         bos, mss = self.detect_ict_market_structure(
             h1[:-1], l1[:-1], c1[:-1]
         )
@@ -266,7 +283,6 @@ class StrategyEngine:
             confirmations.append(f"تحول هيكل محتمل: {mss}")
             score += 5
 
-        # Analyze 15m closed candles, excluding the newest candle.
         sweep, fvg, ob_data = self.detect_liquidity_sweep_and_fvg(
             h15[:-1], l15[:-1], o15[:-1], c15[:-1]
         )
@@ -312,7 +328,6 @@ class StrategyEngine:
         else:
             excluded.append("لم يتم العثور على OB مرشحة بشروط الاندفاع")
 
-        # Compare last completed hourly volume with preceding hourly bars.
         average_volume = (
             float(np.mean(v1[-16:-2]))
             if len(v1) >= 16 else float(np.mean(v1[:-2]))
@@ -366,20 +381,21 @@ class StrategyEngine:
             else:
                 retest_advice = "راقب إعادة اختبار OB وتأكيد شمعة الدخول"
 
+        # 2. تشديد فحص اتجاه البيتكوين الصارم
         btc_trend = "UNKNOWN"
         if self.valid_ohlcv(ohlcv_btc_1h):
             _, bh, bl, bc, _ = self.arrays(ohlcv_btc_1h)
             btc_trend = self._trend(bh[:-1], bl[:-1], bc[:-1])
 
             if direction == "LONG" and btc_trend == "SHORT":
-                score -= 5
-                excluded.append("اتجاه BTC هابط ويزيد مخاطرة LONG")
+                score -= 15
+                excluded.append("حظر: اتجاه BTC هابط يمثل خطورة على صفقات LONG")
             elif direction == "SHORT" and btc_trend == "LONG":
-                score -= 5
-                excluded.append("اتجاه BTC صاعد ويزيد مخاطرة SHORT")
+                score -= 15
+                excluded.append("حظر: اتجاه BTC صاعد يمثل خطورة على صفقات SHORT")
             elif direction != "NEUTRAL" and btc_trend == direction:
-                score += 5
-                confirmations.append(f"اتجاه BTC يدعم الصفقة: {btc_trend}")
+                score += 10
+                confirmations.append(f"اتجاه BTC مدعم وقوي للصفقة: {btc_trend}")
 
         if (
             direction == "LONG" and resistance > current_price
@@ -404,6 +420,7 @@ class StrategyEngine:
             and aligned_ob
             and volume_ratio >= 1.0
             and (distance_pct is None or distance_pct <= 1.5)
+            and (btc_trend == "UNKNOWN" or btc_trend == direction)
         )
 
         if not entry_valid or score < 70:
@@ -411,7 +428,7 @@ class StrategyEngine:
             if score < 70:
                 excluded.append(f"التقييم أقل من حد القبول: {score}/100")
             if not entry_valid:
-                excluded.append("شروط الدخول الهيكلي لم تكتمل")
+                excluded.append("شروط الدخول الهيكلي أو توافق البيتكوين لم تكتمل")
         else:
             signal = direction
 
@@ -443,7 +460,6 @@ class StrategyEngine:
     def calculate_risk_management(
         self, entry_price, direction, highs, lows, closes=None
     ):
-        # Returns: SL, TP1, TP2, TP3, SL%, TP1%, RR estimate.
         entry = float(entry_price)
         direction = str(direction).upper()
         highs = np.asarray(highs, dtype=float)
@@ -484,7 +500,6 @@ class StrategyEngine:
             tp2 = entry - risk * 2.5
             tp3 = entry - risk * 4.0
 
-            # Prevent nonsensical negative targets.
             if tp3 <= 0:
                 tp3 = max(entry * 0.01, tp2 - risk)
 
