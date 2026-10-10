@@ -1,5 +1,5 @@
 # ==========================================
-# 24/7 ADVANCED SMC & QUANTITATIVE SCANNER (main.py)
+# 24/7 ADVANCED STRICT SMC & QUANTITATIVE SCANNER (main.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -50,21 +50,20 @@ def health():
     return {"status": "healthy", "service": "active"}, 200
 
 def background_scanner():
-    time.sleep(15)
-    send_telegram_message("🤖 *تم تشغيل ماسح السوق المتقدم (SMC) بنجاح!* النظام يراقب السوق على مدار 24 ساعة.")
+    time.sleep(10)
+    send_telegram_message("🤖 *تم تشغيل ماسح السوق الصارم (Strict SMC) بنجاح!*\nتم تفعيل الفلترة الماسية: لن يتم إرسال إلا الصفقات المدعومة بـ Order Block وفوليوم قوي.")
     
     while True:
         try:
             markets = bingx.load_markets()
             all_symbols = []
             for sym, mkt in markets.items():
-                # الشروط: نشط، سواب، ينتهي بـ /USDT:USDT، والتأكد من استبعاد أي رموز فوركس أو حروف مركبة وهمية
+                # الشروط: نشط، سواب، ينتهي بـ /USDT:USDT، واستبعاد الفوركس
                 if (mkt.get('active', True) and 
                     mkt.get('swap', False) and 
                     sym.endswith('/USDT:USDT')):
                     
                     base_currency = sym.split('/')[0]
-                    # استبعاد الرموز التي تحتوي على بادئات فوركس أو رموز افتراضية غريبة
                     if any(x in base_currency for x in ['EUR', 'GBP', 'AUD', 'NZD', 'CAD', 'CHF', 'JPY', 'FX', 'NC']):
                         continue
                         
@@ -92,11 +91,15 @@ def background_scanner():
                         ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv
                     )
 
-                    # رفض الإشارات الضعيفة أو المحايدة
-                    if signal == "NEUTRAL" or score < 70:
+                    # 1. فلترة صارمة: استبعاد المحايد والتقييم الأقل من 75
+                    if signal == "NEUTRAL" or score < 75:
                         continue
 
-                    # نظام منع تكرار الإشارات المتتالية
+                    # 2. فلترة صارمة إضافية: حظر الفوليوم الضعيف (أقل من 1.0x)
+                    if vol_ratio < 1.0:
+                        continue
+
+                    # 3. منع تكرار الإشارات
                     current_time = time.time()
                     cooldown_key = f"{symbol}_{signal}"
                     if cooldown_key in signal_history:
@@ -114,10 +117,10 @@ def background_scanner():
                     )
 
                     confirmations_text = "\n".join([f"• {c}" for c in details.get('confirmations', [])])
-                    exclusions_text = "\n".join([f"• {e}" for e in details.get('reasons_excluded', [])]) or "• لا توجد موانع"
+                    exclusions_text = "\n".join([f"• {e}" for e in details.get('reasons_excluded', [])]) or "• لا توجد موانع (صفقة كاملة الشروط)"
 
                     msg = (
-                        f"🚨 *فرصة SMC مؤكدة عالية الجودة!* 🚨\n\n"
+                        f"💎 *صفقة SMC ماسية عالية الدقة!* 💎\n\n"
                         f"🔹 *العملة:* `{symbol}`\n"
                         f"⚖️ *الاتجاه:* `{signal}`\n"
                         f"⭐ *التقييم الشامل:* `{score}/100`\n"
@@ -127,18 +130,18 @@ def background_scanner():
                         f"🎯 *الهدف الأول:* `{tp1}` (+{tp1_pct}%)\n"
                         f"🎯 *الهدف الثاني:* `{tp2}`\n"
                         f"🎯 *الهدف الثالث:* `{tp3}`\n\n"
-                        f"✅ *تأكيدات السوق (SMC & Trend):*\n{confirmations_text}\n\n"
-                        f"⚠️ *ملاحظات الاستبعاد:*\n{exclusions_text}"
+                        f"✅ *تأكيدات الصفقة المؤكدة:*\n{confirmations_text}\n\n"
+                        f"⚠️ *ملاحظات الفحص:*\n{exclusions_text}"
                     )
                     
                     send_telegram_message(msg)
-                    time.sleep(10) # مهلة فاصلة بين العملات لتفادي قيود المنصة
+                    time.sleep(2) # مهلة بسيطة بين كل عملة والتانية بدلاً من 10 ثواني لسرعة الفحص
 
                 except Exception as inner_err:
                     print(f"Error processing {symbol}: {inner_err}")
             
-            # استراحة قبل دورة الفحص الشامل الجديدة للسوق
-            time.sleep(600)
+            # استراحة لمدة 3 دقائق فقط بين الدورة والثانية بدلاً من 10 دقائق
+            time.sleep(180)
 
         except Exception as e:
             print(f"Global scanner loop error: {e}")
