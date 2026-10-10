@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED SMC, VWAP & QUANTITATIVE ANALYSIS (analysis.py)
+# ADVANCED STRICT SMC & QUANTITATIVE ANALYSIS (analysis.py)
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
 
@@ -23,9 +23,6 @@ class StrategyEngine:
         return float(np.mean(tr_list[-period:]))
 
     def calculate_vwap(self, highs, lows, closes, volumes):
-        """
-        حساب مؤشر VWAP (معدل السعر المرجح بالحجم) لتأكيد الاتجاه المؤسسي
-        """
         typical_price = (np.array(highs) + np.array(lows) + np.array(closes)) / 3
         vols = np.array(volumes)
         if np.sum(vols) == 0:
@@ -33,10 +30,6 @@ class StrategyEngine:
         return float(np.sum(typical_price * vols) / np.sum(vols))
 
     def calculate_geometric_box_levels(self, highs, lows, closes):
-        """
-        استخراج المستويات الهندسية والكمية (شبيهة بمستويات ومناطق مربع وقنوات غان)
-        بناءً على المدى بين أعلى قمة وأدنى قاع في آخر الفترات.
-        """
         if len(highs) < 10 or len(lows) < 10:
             return None, None, None
             
@@ -47,9 +40,8 @@ class StrategyEngine:
         if box_range == 0:
             return box_high, box_low, closes[-1]
             
-        # المستويات الهندسية الرئيسية (0.25, 0.5, 0.75)
         lvl_025 = box_low + (box_range * 0.25)
-        lvl_050 = box_low + (box_range * 0.50)  # منتصف المدى الهندسي
+        lvl_050 = box_low + (box_range * 0.50)
         lvl_075 = box_low + (box_range * 0.75)
         
         current_price = closes[-1]
@@ -62,10 +54,9 @@ class StrategyEngine:
 
     def detect_order_blocks_and_fvg(self, highs, lows, opens, closes):
         """
-        اكتشاف مناطق الـ Order Blocks (OB) واختلالات التوازن (FVG)
+        اكتشاف صارم لمناطق الـ Order Blocks (OB) الشمعية الحقيقية
         """
         ob_zone = None
-        fvg_detected = False
         
         if len(closes) < 5:
             return "NONE", None
@@ -79,22 +70,19 @@ class StrategyEngine:
                     if closes[i] < opens[i]:
                         ob_zone = (lows[i], highs[i])
                         break
-                fvg_detected = True
-                return "BULLISH_OB", ob_zone
+                if ob_zone:
+                    return "BULLISH_OB", ob_zone
             else: 
                 for i in range(-2, -5, -1):
                     if closes[i] > opens[i]:
                         ob_zone = (lows[i], highs[i])
                         break
-                fvg_detected = True
-                return "BEARISH_OB", ob_zone
+                if ob_zone:
+                    return "BEARISH_OB", ob_zone
 
-        return "NORMAL", None
+        return "NONE", None
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None):
-        """
-        تحليل متقدم يدمج الأطر الزمنية، مناطق الـ SMC، مؤشر VWAP، والمستويات الهندسية الكمية
-        """
         if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m or len(ohlcv_4h) < 15 or len(ohlcv_1h) < 15 or len(ohlcv_15m) < 15:
             return "NEUTRAL", 0, 1.0, {}, []
 
@@ -112,7 +100,7 @@ class StrategyEngine:
 
         confirmations = []
         reasons_excluded = []
-        score = 50
+        score = 40
 
         # 1. اتجاه 4H الرئيسي
         trend_4h = "LONG" if closes_4h[-1] > closes_4h[0] else "SHORT"
@@ -124,31 +112,33 @@ class StrategyEngine:
             score += 15
             confirmations.append(f"توافق اتجاه 1H مع 4H ({trend_1h})")
         else:
-            score -= 15
             reasons_excluded.append("تعارض اتجاه 1H مع 4H")
+            return "NEUTRAL", 0, 1.0, {}, []
 
-        # 3. فحص الـ Order Blocks والـ FVG على فريم 15M (SMC)
+        # 3. شرط أساسي صارم: فحص الـ Order Blocks على فريم 15M (ممنوع تجاوز هذا الشرط)
         smc_type, ob_zone = self.detect_order_blocks_and_fvg(highs_15m, lows_15m, opens_15m, closes_15m)
         if smc_type == "BULLISH_OB" and trend_1h == "LONG":
-            score += 15
-            confirmations.append("تم اكتشاف منطقة Order Block شرائية (SMC)")
+            score += 25
+            confirmations.append("تم اكتشاف منطقة Order Block شرائية مؤكدة (SMC)")
         elif smc_type == "BEARISH_OB" and trend_1h == "SHORT":
-            score += 15
-            confirmations.append("تم اكتشاف منطقة Order Block بيعية (SMC)")
+            score += 25
+            confirmations.append("تم اكتشاف منطقة Order Block بيعية مؤكدة (SMC)")
         else:
-            reasons_excluded.append("لم يتم رصد منطقة Order Block قوية حالياً")
+            reasons_excluded.append("لم يتم رصد منطقة Order Block مطابقة للإتجاه")
+            # رفض تام للصفقة إذا لم تتواجد منطقة الـ Order Block المؤسسية
+            return "NEUTRAL", score, 1.0, {"confirmations": confirmations, "reasons_excluded": reasons_excluded}, (highs_1h, lows_1h, closes_1h)
 
-        # 4. حجم التداول (Volume Ratio)
+        # 4. حجم التداول (Volume Ratio) - شرط ألا يكون أقل من المتوسط
         avg_vol = np.mean(volumes_1h[-15:-1]) if len(volumes_1h) > 15 else volumes_1h[-1]
         cur_vol = volumes_1h[-1]
         vol_ratio = round(cur_vol / avg_vol, 2) if avg_vol > 0 else 1.0
         
-        if vol_ratio >= 1.2:
+        if vol_ratio >= 1.0:
             score += 10
-            confirmations.append(f"فوليوم تداول قوي ومدعوم ({vol_ratio}x)")
+            confirmations.append(f"فوليوم تداول مدعوم ({vol_ratio}x)")
         else:
-            score -= 5
-            reasons_excluded.append(f"فوليوم هادئ ({vol_ratio}x)")
+            reasons_excluded.append(f"فوليوم ضعيف ({vol_ratio}x)")
+            return "NEUTRAL", score, vol_ratio, {"confirmations": confirmations, "reasons_excluded": reasons_excluded}, (highs_1h, lows_1h, closes_1h)
 
         # 5. تأكيد مؤشر VWAP
         vwap_value = self.calculate_vwap(highs_1h, lows_1h, closes_1h, volumes_1h)
@@ -156,32 +146,27 @@ class StrategyEngine:
         
         if trend_1h == "LONG" and current_price > vwap_value:
             score += 10
-            confirmations.append("السعر يتداول أعلى مؤشر VWAP (دعم لـ LONG)")
+            confirmations.append("السعر يتداول أعلى مؤشر VWAP")
         elif trend_1h == "SHORT" and current_price < vwap_value:
             score += 10
-            confirmations.append("السعر يتداول أسفل مؤشر VWAP (دعم لـ SHORT)")
+            confirmations.append("السعر يتداول أسفل مؤشر VWAP")
         else:
             reasons_excluded.append("موقع السعر مخالف لاتجاه VWAP")
 
-        # 6. دمج التحليل الهندسي والكمي (Gann Box / Range Ratios)
+        # 6. المستويات الهندسية
         box_high, box_low, geo_levels = self.calculate_geometric_box_levels(highs_1h, lows_1h, closes_1h)
         if geo_levels:
             cur = geo_levels["current"]
-            # إذا كان اتجاه شراء، يفضل أن يكون السعر قريب من منتصف المدى أو مدعوم فوق المستوى الهندسي 0.25/0.5
             if trend_1h == "LONG" and cur >= geo_levels["lvl_025"]:
                 score += 10
-                confirmations.append("توافق السعر مع المستويات الهندسية الصاعدة (أعلى 0.25)")
+                confirmations.append("توافق السعر مع المستويات الهندسية الصاعدة")
             elif trend_1h == "SHORT" and cur <= geo_levels["lvl_075"]:
                 score += 10
-                confirmations.append("توافق السعر مع المستويات الهندسية الهابطة (أدنى 0.75)")
-            else:
-                reasons_excluded.append("السعر في منطقة عرضية بين المستويات الهندسية")
+                confirmations.append("توافق السعر مع المستويات الهندسية الهابطة")
 
-        # الحد النهائي للنقاط
         score = max(0, min(100, score))
 
-        # تحديد الإشارة
-        if score >= 70:
+        if score >= 75:
             signal = trend_1h
         else:
             signal = "NEUTRAL"
