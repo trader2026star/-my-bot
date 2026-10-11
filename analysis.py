@@ -42,23 +42,23 @@ class StrategyEngine:
     def get_allowed_trading_window():
         """
         التحقق من أوقات التداول الثلاثة المطلوبة:
-        1. وقت افتتاح الشمعة اليومية (حوالي الساعة 03:00 UTC / 06:00 مكة أو بدايتها)
+        1. وقت افتتاح الشمعة اليومية (بداية اليوم UTC)
         2. وقت افتتاح جلسة لندن (07:00 UTC / 10:00 صباحاً مكة)
-        3. وقت افتتاح جلسة نيويورك (12:00 UTC / 03:00/04:30 عصراً مكة)
+        3. وقت افتتاح جلسة نيويورك (12:00 UTC / 03:00 عصراً مكة)
         """
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
         minute = now_utc.minute
 
-        # 1. نافذة افتتاح الشمعة اليومية (الساعة 3 فجراً بتوقيت UTC تقريباً أو بدايتها)
-        if hour == 3 and minute <= 45:
+        # 1. نافذة افتتاح الشمعة اليومية
+        if hour == 0 and minute <= 45:
             return True, "افتتاح الشمعة اليومية"
         
-        # 2. نافذة افتتاح جلسة لندن (الساعة 7 إلى 9 صباحاً UTC / 10 صباحاً مكة)
+        # 2. نافذة افتتاح جلسة لندن
         elif 7 <= hour < 10:
             return True, "جلسة افتتاح لندن"
         
-        # 3. نافذة افتتاح جلسة نيويورك (الساعة 12 إلى 15 UTC / 3 عصراً مكة)
+        # 3. نافذة افتتاح جلسة نيويورك
         elif 12 <= hour < 15:
             return True, "جلسة افتتاح نيويورك"
         
@@ -118,56 +118,55 @@ class StrategyEngine:
         trend_weekly = self._trend(hw[:-1], lw[:-1], cw[:-1])
         confirmations.append(f"اتجاه الإطار الأسبوعي (Weekly): {trend_weekly}")
 
-        # 3. استخراج قمة وقاع الشمعة اليومية (Daily Candle)
+        # 3. استخراج قمة وقاع الشمعة اليومية السابقة بدقة ([-2])
         od, hd, ld, cd, vd = self.arrays(ohlcv_daily)
-        # الشمعة اليومية السابقة أو الحالية المكتملة جزئياً
         daily_high = float(hd[-2])
         daily_low = float(ld[-2])
-        confirmations.append(f"مستويات اليوم - القمة: {daily_high:.8g} | القاع: {daily_low:.8g}")
+        confirmations.append(f"مستويات اليوم السابق - القمة: {daily_high:.8g} | القاع: {daily_low:.8g}")
 
-        # 4. فحص فريم الـ 15 دقيقة (15M) للبحث عن كنس السيولة والرفض
+        # 4. فحص فريم الـ 15 دقيقة (15M) بدقة للشمعة
         o15, h15, l15, c15, v15 = self.arrays(ohlcv_15m)
         
-        current_price = float(c15[-1])
-        last_high_15m = float(np.max(h15[-5:-1]))
-        last_low_15m = float(np.min(l15[-5:-1]))
+        # الشمعة الأخيرة المغلقة على فريم الـ 15 دقيقة
+        last_open_15m = o15[-2]
+        last_high_15m = h15[-2]
+        last_low_15m = l15[-2]
+        last_close_15m = c15[-2]
 
         sweep = "NONE"
         direction = "NEUTRAL"
         score = 50
 
-        # شرط البيع: السعر كسر قمة الشمعة اليومية وحدث رفض على فريم 15 دقيقة
-        if current_price >= daily_high or h15[-1] >= daily_high:
-            if c15[-1] < o15[-1]:  # شمعة هابطة/رفض
-                sweep = "BEARISH_REJECTION_AT_DAILY_HIGH"
-                if trend_weekly == "SHORT" or trend_weekly == "NEUTRAL":
-                    direction = "SHORT"
-                    score += 30
-                    confirmations.append("تم رصد كنس للسيولة وشمعة رفض هابطة عند قمة الشمعة اليومية")
+        # شرط البيع: الشمعة تجاوزت قمة اليوم السابق وأغلقت هابطة (شمعة رفض بذيل علوي)
+        if last_high_15m >= daily_high and last_close_15m < last_open_15m:
+            sweep = "BEARISH_REJECTION_AT_DAILY_HIGH"
+            if trend_weekly in ("SHORT", "NEUTRAL"):
+                direction = "SHORT"
+                score += 35
+                confirmations.append("تم رصد كنس للسيولة وشمعة رفض هابطة مؤكدة عند قمة اليوم السابق")
 
-        # شرط الشراء: السعر وصل قاع الشمعة اليومية وظهرت شمعة شراء/ارتداد عند الذيل السفلي
-        elif current_price <= daily_low or l15[-1] <= daily_low:
-            if c15[-1] > o15[-1]:  # شمعة صاعدة/شراء
-                sweep = "BULLISH_REJECTION_AT_DAILY_LOW"
-                if trend_weekly == "LONG" or trend_weekly == "NEUTRAL":
-                    direction = "LONG"
-                    score += 30
-                    confirmations.append("تم رصد كنس للسيولة وشمعة شراء صاعدة عند قاع الشمعة اليومية")
+        # شرط الشراء: الشمعة كسر قاع اليوم السابق وأغلقت صاعدة (شمعة ارتداد بذيل سفلي)
+        elif last_low_15m <= daily_low and last_close_15m > last_open_15m:
+            sweep = "BULLISH_REJECTION_AT_DAILY_LOW"
+            if trend_weekly in ("LONG", "NEUTRAL"):
+                direction = "LONG"
+                score += 35
+                confirmations.append("تم رصد كنس للسيولة وشمعة شراء صاعدة مؤكدة عند قاع اليوم السابق")
         else:
-            excluded.append("السعر لم يصل بعد لقمة أو قاع الشمعة اليومية لاختبارها")
+            excluded.append("لم تظهر شمعة رفض/ارتداد واضحة على فريم 15M عند قمة أو قاع اليوم السابق")
 
         score = int(max(0, min(100, round(score))))
         entry_valid = (direction in ("LONG", "SHORT") and score >= 75)
 
         if not entry_valid:
-            excluded.append("شروط شمعة الرفض أو الشراء عند أطراف الشمعة اليومية لم تكتمل بعد")
+            excluded.append("شروط شمعة الرفض أو الشراء عند أطراف الشمعة اليومية السابقة لم تكتمل بعد")
 
         details = {
             "trend_weekly": trend_weekly,
             "daily_high": daily_high,
             "daily_low": daily_low,
             "sweep": sweep,
-            "retest_advice": "راقب شمعة الرفض أو الشراء على فريم 15M عند أطراف الشمعة اليومية",
+            "retest_advice": "تأكد من إغلاق شمعة الـ 15M بالكامل وتحديد الرفض قبل التنفيذ",
             "entry_valid": bool(entry_valid),
             "confirmations": confirmations,
             "reasons_excluded": excluded
@@ -189,19 +188,23 @@ class StrategyEngine:
         if entry <= 0:
             raise ValueError("سعر دخول غير صالح")
 
-        # الهدف الأول (TP1) هو 50% من نطاق الشمعة أو المسافة، والهدف الثاني (TP2) هو الـ 50% الباقية
+        # حساب الأهداف:
+        # TP1 = 50% من منتصف النطاق
+        # TP2 = الطرف المقابل الكامل للشمعة اليومية السابقة
         if direction in ("LONG", "BUY"):
             stop = daily_low if daily_low > 0 else entry * 0.98
-            total_range = abs(entry - stop)
-            tp1 = entry + (total_range * 0.5)  # 50% من الهدف
-            tp2 = entry + total_range          # الـ 50% الثانية (الهدف الثاني الكامل)
-            tp3 = tp2                          # دمج الهدف الثالث مع الثاني بناءً على استراتيجية النصفين
+            mid_range = entry + ((daily_high - entry) / 2.0) if daily_high > entry else entry * 1.02
+            
+            tp1 = mid_range
+            tp2 = daily_high if daily_high > entry else entry * 1.04
+            tp3 = tp2
 
         elif direction in ("SHORT", "SELL"):
             stop = daily_high if daily_high > 0 else entry * 1.02
-            total_range = abs(stop - entry)
-            tp1 = entry - (total_range * 0.5)  # 50% من الهدف
-            tp2 = entry - total_range          # الـ 50% الثانية
+            mid_range = entry - ((entry - daily_low) / 2.0) if daily_low < entry else entry * 0.98
+
+            tp1 = mid_range
+            tp2 = daily_low if daily_low < entry else entry * 0.96
             tp3 = tp2
 
         else:
