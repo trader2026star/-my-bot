@@ -41,23 +41,28 @@ class StrategyEngine:
     @staticmethod
     def get_allowed_trading_window():
         """
-        التحقق من أوقات التداول الثلاثة المطلوبة (UTC):
-        1. افتتاح الشمعة اليومية (00:00 UTC / 03:00 فجراً مكة)
-        2. افتتاح جلسة لندن (07:00 UTC / 10:00 صباحاً مكة)
-        3. افتتاح جلسة نيويورك (12:00 UTC / 03:00 عصراً مكة)
+        التحقق من أوقات التداول الثلاثة للسيولة العالية (بتوقيت UTC):
+        1. افتتاح الشمعة اليومية (00:00 UTC / 03:00 فجراً مكة) لمدة 45 دقيقة
+        2. افتتاح جلسة لندن (07:00 إلى 10:00 UTC / 10:00 صباحاً إلى 1:00 ظهراً مكة)
+        3. افتتاح جلسة نيويورك (12:00 إلى 15:00 UTC / 03:00 عصراً إلى 6:00 مساءً مكة)
         """
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
         minute = now_utc.minute
 
+        # 1. نافذة افتتاح الشمعة اليومية (03:00 فجراً مكة)
         if hour == 0 and minute <= 45:
-            return True, "افتتاح الشمعة اليومية"
-        elif 7 <= hour < 10:
-            return True, "جلسة افتتاح لندن"
-        elif 12 <= hour < 15:
-            return True, "جلسة افتتاح نيويورك"
+            return True, "افتتاح الشمعة اليومية (03:00 فجراً مكة)"
         
-        return False, "خارج الأوقات الثلاثة المحددة"
+        # 2. نافذة جلسة لندن (من 10:00 صباحاً إلى 1:00 ظهراً مكة)
+        elif 7 <= hour < 10:
+            return True, "جلسة افتتاح لندن (من 10:00 صباحاً مكة)"
+        
+        # 3. نافذة جلسة نيويورك (من 03:00 عصراً إلى 6:00 مساءً مكة)
+        elif 12 <= hour < 15:
+            return True, "جلسة افتتاح نيويورك (من 03:00 عصراً مكة)"
+        
+        return False, "خارج أوقات الذروة المحددة للسيولة"
 
     @staticmethod
     def _trend(highs, lows, closes):
@@ -143,7 +148,7 @@ class StrategyEngine:
         if not all(self.valid_ohlcv(x) for x in (ohlcv_weekly, ohlcv_daily, ohlcv_15m)):
             return "NEUTRAL", 0, 0.0, empty_details, ([], [], [])
 
-        # 1. فحص توقيت الجلسة
+        # 1. فحص توقيت الجلسة الصارم
         is_allowed_time, time_desc = self.get_allowed_trading_window()
         confirmations = [f"التوقيت الحالي: {time_desc}"]
         excluded = []
@@ -240,7 +245,7 @@ class StrategyEngine:
             sweep_low = min(float(np.min(lows[-4:])), daily_low) if daily_low > 0 else float(np.min(lows[-4:]))
             stop = sweep_low * 0.998 if sweep_low < entry else entry * 0.985
             
-            # Target 1: 50% من الطريق للقمة اليومية السابق
+            # Target 1: 50% من الطريق للقمة اليومية السابقة
             # Target 2: القمة اليومية السابقة الكاملة
             target_high = daily_high if daily_high > entry else entry * 1.04
             total_distance = abs(target_high - entry)
