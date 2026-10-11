@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED DAILY & WEEKLY SWEEP ENGINE
+# INSTITUTIONAL SMC & LIQUIDITY SWEEP ENGINE
 # File: analysis.py
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
@@ -14,7 +14,7 @@ class StrategyEngine:
 
     @staticmethod
     def valid_ohlcv(data):
-        if not isinstance(data, (list, tuple)) or len(data) < 5:
+        if not isinstance(data, (list, tuple)) or len(data) < 10:
             return False
         try:
             for candle in data:
@@ -42,27 +42,22 @@ class StrategyEngine:
     def get_allowed_trading_window():
         """
         التحقق من أوقات التداول الثلاثة المطلوبة (UTC):
-        1. وقت افتتاح الشمعة اليومية (الساعة 00:00 UTC / 3 فجراً مكة)
-        2. وقت افتتاح جلسة لندن (07:00 UTC / 10:00 صباحاً مكة)
-        3. وقت افتتاح جلسة نيويورك (12:00 UTC / 03:00 عصراً مكة)
+        1. افتتاح الشمعة اليومية (00:00 UTC / 03:00 فجراً مكة)
+        2. افتتاح جلسة لندن (07:00 UTC / 10:00 صباحاً مكة)
+        3. افتتاح جلسة نيويورك (12:00 UTC / 03:00 عصراً مكة)
         """
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
         minute = now_utc.minute
 
-        # 1. نافذة افتتاح الشمعة اليومية
         if hour == 0 and minute <= 45:
             return True, "افتتاح الشمعة اليومية"
-        
-        # 2. نافذة افتتاح جلسة لندن
         elif 7 <= hour < 10:
             return True, "جلسة افتتاح لندن"
-        
-        # 3. نافذة افتتاح جلسة نيويورك
         elif 12 <= hour < 15:
             return True, "جلسة افتتاح نيويورك"
         
-        return False, "خارج أوقات الأوقات الثلاثة المحددة"
+        return False, "خارج الأوقات الثلاثة المحددة"
 
     @staticmethod
     def _trend(highs, lows, closes):
@@ -70,11 +65,11 @@ class StrategyEngine:
         lows = np.asarray(lows, dtype=float)
         closes = np.asarray(closes, dtype=float)
 
-        if len(closes) < 4:
+        if len(closes) < 6:
             return "NEUTRAL"
 
-        ref_high = float(np.max(highs[-4:-1]))
-        ref_low = float(np.min(lows[-4:-1]))
+        ref_high = float(np.max(highs[-6:-1]))
+        ref_low = float(np.min(lows[-6:-1]))
         last_close = float(closes[-1])
 
         if last_close > ref_high:
@@ -84,9 +79,56 @@ class StrategyEngine:
 
         return "NEUTRAL"
 
-    def analyze_multi_timeframe(
-        self, ohlcv_weekly, ohlcv_daily, ohlcv_15m
-    ):
+    def detect_smc_structure_15m(self, opens, highs, lows, closes, volumes, daily_high, daily_low):
+        """فحص الشروط المؤسسية الكاملة على فريم 15M بعد كنس السيولة"""
+        n = len(closes)
+        if n < 10:
+            return "NONE", False, False, False, 0.0
+
+        # الشموع الأخيرة
+        last_h = float(highs[-2])
+        last_l = float(lows[-2])
+        last_o = float(opens[-2])
+        last_c = float(closes[-2])
+        
+        prev_h = float(highs[-3])
+        prev_l = float(lows[-3])
+
+        # 1. فحص كنس السيولة والرفض (Sweep & Rejection)
+        bearish_sweep = (last_h >= daily_high or prev_h >= daily_high) and (last_c < last_o)
+        bullish_sweep = (last_l <= daily_low or prev_l <= daily_low) and (last_c > last_o)
+
+        # 2. فحص كسر الهيكل (CHoCH / MSS) على 15M
+        recent_low_swing = float(np.min(lows[-8:-2]))
+        recent_high_swing = float(np.max(highs[-8:-2]))
+
+        bearish_choch = bearish_sweep and (last_c < recent_low_swing or float(closes[-1]) < recent_low_swing)
+        bullish_choch = bullish_sweep and (last_c > recent_high_swing or float(closes[-1]) > recent_high_swing)
+
+        # 3. فحص الـ FVG أو Order Block
+        has_fvg = False
+        if bearish_sweep and float(highs[-1]) < float(lows[-3]):
+            has_fvg = True
+        elif bullish_sweep and float(lows[-1]) > float(highs[-3]):
+            has_fvg = True
+
+        # 4. فحص الفوليوم
+        avg_vol = float(np.mean(volumes[-10:-2])) if len(volumes) >= 10 else 1.0
+        curr_vol = float(volumes[-2])
+        vol_ratio = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+        good_volume = vol_ratio >= 1.1
+
+        signal = "NONE"
+        if bearish_sweep:
+            signal = "SHORT"
+        elif bullish_sweep:
+            signal = "LONG"
+
+        choch_valid = (signal == "SHORT" and bearish_choch) or (signal == "LONG" and bullish_choch)
+
+        return signal, choch_valid, has_fvg, good_volume, vol_ratio
+
+    def analyze_multi_timeframe(self, ohlcv_weekly, ohlcv_daily, ohlcv_15m):
         empty_details = {
             "trend_weekly": "NEUTRAL",
             "daily_high": 0.0,
@@ -98,13 +140,10 @@ class StrategyEngine:
             "reasons_excluded": ["بيانات غير كافية للتحليل"]
         }
 
-        if not all(
-            self.valid_ohlcv(x)
-            for x in (ohlcv_weekly, ohlcv_daily, ohlcv_15m)
-        ):
+        if not all(self.valid_ohlcv(x) for x in (ohlcv_weekly, ohlcv_daily, ohlcv_15m)):
             return "NEUTRAL", 0, 0.0, empty_details, ([], [], [])
 
-        # 1. فحص الوقت المحدد (الأوقات الثلاثة)
+        # 1. فحص توقيت الجلسة
         is_allowed_time, time_desc = self.get_allowed_trading_window()
         confirmations = [f"التوقيت الحالي: {time_desc}"]
         excluded = []
@@ -113,66 +152,75 @@ class StrategyEngine:
             excluded.append("الوقت الحالي ليس ضمن الأوقات الثلاثة المحددة للافتتاح")
             return "NEUTRAL", 0, 0.0, empty_details, ([], [], [])
 
-        # 2. تحديد الاتجاه من الإطار الأسبوعي (Weekly)
+        # 2. تحديد الاتجاه من الفريم الأسبوعي
         ow, hw, lw, cw, vw = self.arrays(ohlcv_weekly)
         trend_weekly = self._trend(hw[:-1], lw[:-1], cw[:-1])
         confirmations.append(f"اتجاه الإطار الأسبوعي (Weekly): {trend_weekly}")
 
-        # 3. استخراج قمة وقاع الشمعة اليومية السابقة المكتملة ([-2])
+        # 3. مستويات اليوم السابق المكتملة ([-2])
         od, hd, ld, cd, vd = self.arrays(ohlcv_daily)
         daily_high = float(hd[-2])
         daily_low = float(ld[-2])
         confirmations.append(f"مستويات اليوم السابق - القمة: {daily_high:.8g} | القاع: {daily_low:.8g}")
 
-        # 4. فحص فريم الـ 15 دقيقة (15M) للبحث عن شمعة كنس ورسم الرفض
+        # 4. تحليل الهيكل المؤسسي على 15M
         o15, h15, l15, c15, v15 = self.arrays(ohlcv_15m)
         
-        last_open_15m = o15[-2]
-        last_high_15m = h15[-2]
-        last_low_15m = l15[-2]
-        last_close_15m = c15[-2]
+        signal, choch_valid, has_fvg, good_volume, vol_ratio = self.detect_smc_structure_15m(
+            o15, h15, l15, c15, v15, daily_high, daily_low
+        )
 
-        sweep = "NONE"
-        direction = "NEUTRAL"
-        score = 50
+        score = 40
 
-        # شرط البيع SHORT: الشمعة كسر القمة وأغلقت هابطة (رفض للقمة)
-        if last_high_15m >= daily_high and last_close_15m < last_open_15m:
-            sweep = "BEARISH_REJECTION_AT_DAILY_HIGH"
-            if trend_weekly in ("SHORT", "NEUTRAL"):
-                direction = "SHORT"
-                score += 35
-                confirmations.append("تم رصد كنس للسيولة وشمعة رفض هابطة مؤكدة عند قمة اليوم السابق")
+        if signal == "SHORT":
+            confirmations.append("تم رصد كنس لسيولة قمة اليوم السابق مع شمعة رفض هابطة")
+            score += 25
+            if choch_valid:
+                confirmations.append("تأكيد كسر الهيكل (CHoCH / MSS) لصالح الهبوط")
+                score += 15
+            if has_fvg:
+                confirmations.append("رصد فجوة سعرية اندفاعية (FVG) تدعم الهبوط")
+                score += 10
+            if good_volume:
+                confirmations.append(f"ارتفاع الفوليوم المؤكد ({vol_ratio}x)")
+                score += 10
 
-        # شرط الشراء LONG: الشمعة كسرت القاع وأغلقت صاعدة (ارتداد من القاع)
-        elif last_low_15m <= daily_low and last_close_15m > last_open_15m:
-            sweep = "BULLISH_REJECTION_AT_DAILY_LOW"
-            if trend_weekly in ("LONG", "NEUTRAL"):
-                direction = "LONG"
-                score += 35
-                confirmations.append("تم رصد كنس للسيولة وشمعة شراء صاعدة مؤكدة عند قاع اليوم السابق")
+        elif signal == "LONG":
+            confirmations.append("تم رصد كنس لسيولة قاع اليوم السابق مع شمعة شراء ارتدادية")
+            score += 25
+            if choch_valid:
+                confirmations.append("تأكيد كسر الهيكل (CHoCH / MSS) لصالح الصعود")
+                score += 15
+            if has_fvg:
+                confirmations.append("رصد فجوة سعرية اندفاعية (FVG) تدعم الصعود")
+                score += 10
+            if good_volume:
+                confirmations.append(f"ارتفاع الفوليوم المؤكد ({vol_ratio}x)")
+                score += 10
         else:
-            excluded.append("لم تظهر شمعة رفض/ارتداد واضحة على فريم 15M عند قمة أو قاع اليوم السابق")
+            excluded.append("السعر لم يقم بكنس سيولة قمة أو قاع اليوم السابق")
 
         score = int(max(0, min(100, round(score))))
-        entry_valid = (direction in ("LONG", "SHORT") and score >= 75)
+        
+        # فلتر الدخول الصارم: يجب أن تتجاوز النقاط 75 وتتطابق الشروط الهيكلية
+        entry_valid = (signal in ("LONG", "SHORT") and score >= 75)
 
         if not entry_valid:
-            excluded.append("شروط شمعة الرفض أو الشراء عند أطراف الشمعة اليومية السابقة لم تكتمل بعد")
+            excluded.append("شروط التأكيد الهيكلي الفائقة (CHoCH / Volume / FVG) لم تكتمل بعد")
 
         details = {
             "trend_weekly": trend_weekly,
             "daily_high": daily_high,
             "daily_low": daily_low,
-            "sweep": sweep,
-            "retest_advice": "تأكد من إغلاق شمعة 15M بالكامل وتأكيد الرفض قبل التنفيذ",
+            "sweep": signal,
+            "retest_advice": "تأكد من تأكيد الرفض وكسر الهيكل على 15M قبل الدخول",
             "entry_valid": bool(entry_valid),
             "confirmations": confirmations,
             "reasons_excluded": excluded
         }
 
         return (
-            direction, score, 1.5, details,
+            signal, score, vol_ratio, details,
             (h15.tolist(), l15.tolist(), c15.tolist())
         )
 
@@ -187,28 +235,32 @@ class StrategyEngine:
         if entry <= 0:
             raise ValueError("سعر دخول غير صالح")
 
-        # تصحيح الحسابات الرياضية ومنطقية الأهداف والوقف
         if direction in ("LONG", "BUY"):
-            # في الشراء: الوقف يكون أسفل سعر الدخول وعند قاع اليوم السابق
-            stop = daily_low if (daily_low > 0 and daily_low < entry) else entry * 0.98
+            # الوقف تحت القاع المسحوب بذيل حماية
+            sweep_low = min(float(np.min(lows[-4:])), daily_low) if daily_low > 0 else float(np.min(lows[-4:]))
+            stop = sweep_low * 0.998 if sweep_low < entry else entry * 0.985
             
-            # أعلى ذيل شمعة الرفض الأخيرة للحساب أو قمة اليوم السابق
-            highest_wick = max(float(np.max(highs[-3:])), daily_high)
-            target_distance = highest_wick - entry if highest_wick > entry else entry * 0.04
+            # Target 1: 50% من الطريق للقمة اليومية السابق
+            # Target 2: القمة اليومية السابقة الكاملة
+            target_high = daily_high if daily_high > entry else entry * 1.04
+            total_distance = abs(target_high - entry)
             
-            tp1 = entry + (target_distance * 0.5)  # منتصف النطاق (50%)
-            tp2 = entry + target_distance          # النطاق الكامل (القمة)
+            tp1 = entry + (total_distance * 0.5)
+            tp2 = target_high
             tp3 = tp2
 
         elif direction in ("SHORT", "SELL"):
-            # في البيع: الوقف يجب أن يكون أعلى من سعر الدخول (عند أعلى الشمعة أو قمة اليوم السابق)
-            highest_wick = max(float(np.max(highs[-3:])), daily_high)
-            stop = highest_wick if highest_wick > entry else entry * 1.02
+            # الوقف فوق القمة المسحوبة بذيل حماية
+            sweep_high = max(float(np.max(highs[-4:])), daily_high) if daily_high > 0 else float(np.max(highs[-4:]))
+            stop = sweep_high * 1.002 if sweep_high > entry else entry * 1.015
             
-            target_distance = entry - daily_low if daily_low < entry else entry * 0.04
+            # Target 1: 50% من الطريق للقاع اليومي السابق
+            # Target 2: القاع اليومي السابق الكامل
+            target_low = daily_low if daily_low < entry else entry * 0.96
+            total_distance = abs(entry - target_low)
             
-            tp1 = entry - (target_distance * 0.5)  # منتصف النطاق (50%)
-            tp2 = entry - target_distance          # النطاق الكامل (القاع)
+            tp1 = entry - (total_distance * 0.5)
+            tp2 = target_low
             tp3 = tp2
 
         else:
