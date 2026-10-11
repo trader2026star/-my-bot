@@ -194,7 +194,7 @@ def process_symbol(symbol, engine):
 
 def background_scanner():
     time.sleep(10)
-    send_telegram_message("🚀 *تم إطلاق المحرك المؤسسي المطور بفلترة الهيكل والفوليوم بنجاح*")
+    send_telegram_message("🚀 *تم إطلاق المحرك المؤسسي المطور بدعم الساعات الثلاث للسيولة (بتوقيت مكة)*")
 
     engine = StrategyEngine()
 
