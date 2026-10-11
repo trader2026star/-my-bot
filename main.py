@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - DAILY SWEEP & 15M ENGINE
+# MY EXPERT CRYPTO BOT - HIGH PRECISION SMC
 # File: main.py
 # ==========================================
 
@@ -34,7 +34,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Daily & Weekly Sweep Bot is running!"
+    return "Institutional SMC & Daily Sweep Scanner Running!"
 
 
 @app.route("/health")
@@ -113,24 +113,24 @@ def build_signal_message(
     confirmations_text = "\n".join(f"• {item}" for item in details.get("confirmations", []))
     
     return (
-        "📊 *إشارة استراتيجية الشمعة اليومية والأسبوعية*\n\n"
+        "🎯 *إشارة مؤسسية فائقة الدقة (SMC & Daily Sweep)*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
         f"⚖️ *الاتجاه:* `{signal}`\n"
-        f"⭐ *درجة الإعداد:* `{score}/100`\n"
-        f"💵 *سعر الدخول:* `{format_price(entry)}`\n\n"
-        f"🛑 *وقف الخسارة:* `{format_price(sl)}` (-{sl_pct}%)\n"
-        f"🎯 *الهدف الأول (50% من النطاق):* `{format_price(tp1)}` (+{tp1_pct}%)\n"
-        f"🎯 *الهدف الثاني (الـ 50% المتبقية):* `{format_price(tp2)}`\n\n"
-        f"📅 *اتجاه الأسبوع (Weekly):* `{details.get('trend_weekly')}`\n"
-        f"📈 *قمة الشمعة اليومية:* `{format_price(details.get('daily_high'))}`\n"
-        f"📉 *قاع الشمعة اليومية:* `{format_price(details.get('daily_low'))}`\n\n"
-        f"✅ *التأكيدات المرصودة:*\n{confirmations_text}\n"
+        f"⭐ *قوة الإعداد:* `{score}/100`\n"
+        f"💵 *سعر الدخول الحاضر:* `{format_price(entry)}`\n\n"
+        f"🛑 *وقف الخسارة المحمي:* `{format_price(sl)}` (-{sl_pct}%)\n"
+        f"🎯 *الهدف الأول (50% المنتصف):* `{format_price(tp1)}` (+{tp1_pct}%)\n"
+        f"🎯 *الهدف الثاني (الطرف المقابل):* `{format_price(tp2)}`\n\n"
+        f"📅 *الاتجاه الأسبوعي:* `{details.get('trend_weekly')}`\n"
+        f"📈 *قمة اليوم السابق:* `{format_price(details.get('daily_high'))}`\n"
+        f"📉 *قاع اليوم السابق:* `{format_price(details.get('daily_low'))}`\n\n"
+        f"✅ *التأكيدات الهيكلية المرصودة:*\n{confirmations_text}\n\n"
+        f"💡 *نصيحة التنفيذ:* {details.get('retest_advice')}"
     )
 
 
 def process_symbol(symbol, engine):
     try:
-        # جلب فريم الأسبوع، اليوم، والـ 15 دقيقة
         ohlcv_weekly = bingx.fetch_ohlcv(symbol, timeframe="1w", limit=10)
         ohlcv_daily = bingx.fetch_ohlcv(symbol, timeframe="1d", limit=10)
         ohlcv_15m = bingx.fetch_ohlcv(symbol, timeframe="15m", limit=30)
@@ -163,6 +163,15 @@ def process_symbol(symbol, engine):
             entry, signal, highs, lows, daily_high, daily_low
         )
 
+        # فلاتر حماية صارمة لسلامة الأرقام والاتجاه
+        if signal == "SHORT" and (sl <= entry or tp1 >= entry):
+            return
+        if signal == "LONG" and (sl >= entry or tp1 <= entry):
+            return
+
+        if sl_pct <= 0.1 or sl_pct > 5.5:  # استبعاد الأوقاف الشاسعة أو المتناهية الصغر
+            return
+
         message = build_signal_message(
             symbol=symbol,
             signal=signal,
@@ -185,7 +194,7 @@ def process_symbol(symbol, engine):
 
 def background_scanner():
     time.sleep(10)
-    send_telegram_message("🤖 *تم تشغيل بوت استراتيجية الشمعة اليومية والافتتاحيات بنجاح*")
+    send_telegram_message("🚀 *تم إطلاق المحرك المؤسسي المطور بفلترة الهيكل والفوليوم بنجاح*")
 
     engine = StrategyEngine()
 
