@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL SMC & ICT ENGINE
+# ADVANCED DAILY & WEEKLY SWEEP ENGINE
 # File: analysis.py
 # Developed for Mohamed Barakat (trader2026star)
 # ==========================================
@@ -14,7 +14,7 @@ class StrategyEngine:
 
     @staticmethod
     def valid_ohlcv(data):
-        if not isinstance(data, (list, tuple)) or len(data) < 10:
+        if not isinstance(data, (list, tuple)) or len(data) < 5:
             return False
         try:
             for candle in data:
@@ -39,65 +39,30 @@ class StrategyEngine:
         return opens, highs, lows, closes, volumes
 
     @staticmethod
-    def get_ict_killzone():
-        """تحديد جلسة التداول الحالية بناءً على التوقيت العالمي UTC"""
+    def get_allowed_trading_window():
+        """
+        التحقق من أوقات التداول الثلاثة المطلوبة:
+        1. وقت افتتاح الشمعة اليومية (حوالي الساعة 03:00 UTC / 06:00 مكة أو بدايتها)
+        2. وقت افتتاح جلسة لندن (07:00 UTC / 10:00 صباحاً مكة)
+        3. وقت افتتاح جلسة نيويورك (12:00 UTC / 03:00/04:30 عصراً مكة)
+        """
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
+        minute = now_utc.minute
 
-        if 7 <= hour < 10:
-            return "LONDON_KILLZONE", "جلسة لندن (سيولة عالية)"
+        # 1. نافذة افتتاح الشمعة اليومية (الساعة 3 فجراً بتوقيت UTC تقريباً أو بدايتها)
+        if hour == 3 and minute <= 45:
+            return True, "افتتاح الشمعة اليومية"
+        
+        # 2. نافذة افتتاح جلسة لندن (الساعة 7 إلى 9 صباحاً UTC / 10 صباحاً مكة)
+        elif 7 <= hour < 10:
+            return True, "جلسة افتتاح لندن"
+        
+        # 3. نافذة افتتاح جلسة نيويورك (الساعة 12 إلى 15 UTC / 3 عصراً مكة)
         elif 12 <= hour < 15:
-            return "NEW_YORK_KILLZONE", "جلسة نيويورك (سيولة عالية جداً)"
-        elif 0 <= hour < 5:
-            return "ASIAN_SESSION", "الجلسة الآسيوية (تذبذب عرضي)"
-        else:
-            return "OFF_PEAK", "خارج أوقات الذروة المؤسسية"
-
-    def calculate_atr(self, highs, lows, closes, period=14):
-        highs = np.asarray(highs, dtype=float)
-        lows = np.asarray(lows, dtype=float)
-        closes = np.asarray(closes, dtype=float)
-
-        n = min(len(highs), len(lows), len(closes))
-        if n < 2:
-            return 0.0
-
-        highs, lows, closes = highs[-n:], lows[-n:], closes[-n:]
-        true_ranges = np.maximum(
-            highs[1:] - lows[1:],
-            np.maximum(
-                np.abs(highs[1:] - closes[:-1]),
-                np.abs(lows[1:] - closes[:-1])
-            )
-        )
-
-        if len(true_ranges) == 0:
-            return 0.0
-
-        atr = float(np.mean(true_ranges[-period:]))
-        return atr if np.isfinite(atr) and atr > 0 else 0.0
-
-    def calculate_vwap(self, highs, lows, closes, volumes):
-        highs = np.asarray(highs, dtype=float)
-        lows = np.asarray(lows, dtype=float)
-        closes = np.asarray(closes, dtype=float)
-        volumes = np.asarray(volumes, dtype=float)
-
-        n = min(len(highs), len(lows), len(closes), len(volumes))
-        if n == 0:
-            return 0.0
-
-        highs = highs[-n:][-24:]
-        lows = lows[-n:][-24:]
-        closes = closes[-n:][-24:]
-        volumes = np.maximum(volumes[-n:][-24:], 0.0)
-
-        total_volume = float(np.sum(volumes))
-        if total_volume <= 0:
-            return float(closes[-1])
-
-        typical = (highs + lows + closes) / 3.0
-        return float(np.sum(typical * volumes) / total_volume)
+            return True, "جلسة افتتاح نيويورك"
+        
+        return False, "خارج أوقات الأوقات الثلاثة المحددة"
 
     @staticmethod
     def _trend(highs, lows, closes):
@@ -105,412 +70,146 @@ class StrategyEngine:
         lows = np.asarray(lows, dtype=float)
         closes = np.asarray(closes, dtype=float)
 
-        if len(closes) < 8:
+        if len(closes) < 4:
             return "NEUTRAL"
 
-        ref_high = float(np.max(highs[-8:-1]))
-        ref_low = float(np.min(lows[-8:-1]))
+        ref_high = float(np.max(highs[-4:-1]))
+        ref_low = float(np.min(lows[-4:-1]))
         last_close = float(closes[-1])
-        previous_close = float(closes[-2])
 
-        if last_close > ref_high and previous_close <= ref_high:
+        if last_close > ref_high:
             return "LONG"
-        if last_close < ref_low and previous_close >= ref_low:
-            return "SHORT"
-
-        recent = closes[-6:]
-        older = closes[-12:-6] if len(closes) >= 12 else closes[:-6]
-
-        if len(older) and np.mean(recent) > np.mean(older) and recent[-1] >= recent[0]:
-            return "LONG"
-        if len(older) and np.mean(recent) < np.mean(older) and recent[-1] <= recent[0]:
+        if last_close < ref_low:
             return "SHORT"
 
         return "NEUTRAL"
 
-    def detect_ict_market_structure(self, highs, lows, closes):
-        highs = np.asarray(highs, dtype=float)
-        lows = np.asarray(lows, dtype=float)
-        closes = np.asarray(closes, dtype=float)
-
-        if len(closes) < 10:
-            return "NONE", "NONE"
-
-        ref_high = float(np.max(highs[-10:-2]))
-        ref_low = float(np.min(lows[-10:-2]))
-        previous_close = float(closes[-2])
-        current_close = float(closes[-1])
-
-        prior_trend = self._trend(
-            highs[:-2], lows[:-2], closes[:-2]
-        )
-
-        bos = "NONE"
-        mss = "NONE"
-
-        if current_close > ref_high and previous_close <= ref_high:
-            bos = "BULLISH_BOS"
-            if prior_trend == "SHORT":
-                mss = "BULLISH_MSS"
-
-        elif current_close < ref_low and previous_close >= ref_low:
-            bos = "BEARISH_BOS"
-            if prior_trend == "LONG":
-                mss = "BEARISH_MSS"
-
-        return bos, mss
-
-    def detect_liquidity_sweep_and_fvg(self, highs, lows, opens, closes):
-        highs = np.asarray(highs, dtype=float)
-        lows = np.asarray(lows, dtype=float)
-        opens = np.asarray(opens, dtype=float)
-        closes = np.asarray(closes, dtype=float)
-
-        sweep = "NONE"
-        fvg = "NONE"
-        ob = ("NONE", None)
-
-        n = min(len(highs), len(lows), len(opens), len(closes))
-        if n < 6:
-            return sweep, fvg, ob
-
-        if highs[-1] > highs[-2] and closes[-1] < highs[-2]:
-            sweep = "BEARISH_SWEEP"
-        elif lows[-1] < lows[-2] and closes[-1] > lows[-2]:
-            sweep = "BULLISH_SWEEP"
-
-        if lows[-1] > highs[-3]:
-            fvg = "BULLISH_FVG"
-        elif highs[-1] < lows[-3]:
-            fvg = "BEARISH_FVG"
-
-        bodies = np.abs(closes - opens)
-        average_body = float(np.mean(bodies[-6:-1]))
-        current_body = float(bodies[-1])
-
-        if average_body > 0 and current_body >= average_body * 1.5:
-            if closes[-1] > opens[-1]:
-                for i in range(n - 2, max(-1, n - 6), -1):
-                    if closes[i] < opens[i]:
-                        ob = ("BULLISH_OB", (float(lows[i]), float(highs[i])))
-                        break
-            elif closes[-1] < opens[-1]:
-                for i in range(n - 2, max(-1, n - 6), -1):
-                    if closes[i] > opens[i]:
-                        ob = ("BEARISH_OB", (float(lows[i]), float(highs[i])))
-                        break
-
-        return sweep, fvg, ob
-
     def analyze_multi_timeframe(
-        self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None
+        self, ohlcv_weekly, ohlcv_daily, ohlcv_15m
     ):
         empty_details = {
-            "trend_4h": "NEUTRAL",
-            "trend_1h": "NEUTRAL",
-            "bos": "NONE",
-            "mss": "NONE",
+            "trend_weekly": "NEUTRAL",
+            "daily_high": 0.0,
+            "daily_low": 0.0,
             "sweep": "NONE",
-            "fvg": "NONE",
-            "ob_type": "NONE",
-            "ob_zone": None,
-            "volume_ratio": 0.0,
-            "vwap_price": 0.0,
-            "support": None,
-            "resistance": None,
             "retest_advice": "بيانات غير كافية",
             "entry_valid": False,
-            "btc_trend": "UNKNOWN",
             "confirmations": [],
             "reasons_excluded": ["بيانات غير كافية للتحليل"]
         }
 
         if not all(
             self.valid_ohlcv(x)
-            for x in (ohlcv_4h, ohlcv_1h, ohlcv_15m)
+            for x in (ohlcv_weekly, ohlcv_daily, ohlcv_15m)
         ):
             return "NEUTRAL", 0, 0.0, empty_details, ([], [], [])
 
-        o4, h4, l4, c4, v4 = self.arrays(ohlcv_4h)
-        o1, h1, l1, c1, v1 = self.arrays(ohlcv_1h)
-        o15, h15, l15, c15, v15 = self.arrays(ohlcv_15m)
-
-        trend_4h = self._trend(h4[:-1], l4[:-1], c4[:-1])
-        trend_1h = self._trend(h1[:-1], l1[:-1], c1[:-1])
-
-        confirmations = [
-            f"اتجاه 4H: {trend_4h}",
-            f"اتجاه 1H: {trend_1h}"
-        ]
+        # 1. فحص الوقت المحدد (الأوقات الثلاثة للبورصة)
+        is_allowed_time, time_desc = self.get_allowed_trading_window()
+        confirmations = [f"التوقيت الحالي: {time_desc}"]
         excluded = []
-        score = 25
 
-        # 1. فحص جلسة التداول (ICT Killzone)
-        kz_code, kz_desc = self.get_ict_killzone()
-        if kz_code in ["LONDON_KILLZONE", "NEW_YORK_KILLZONE"]:
-            score += 10
-            confirmations.append(f"توقيت دخول مؤسسي ممتاز: {kz_desc}")
+        if not is_allowed_time:
+            excluded.append("الوقت الحالي ليس ضمن الأوقات الثلاثة المحددة للافتتاح")
+            return "NEUTRAL", 0, 0.0, empty_details, ([], [], [])
+
+        # 2. تحديد الاتجاه من الإطار الأسبوعي (Weekly)
+        ow, hw, lw, cw, vw = self.arrays(ohlcv_weekly)
+        trend_weekly = self._trend(hw[:-1], lw[:-1], cw[:-1])
+        confirmations.append(f"اتجاه الإطار الأسبوعي (Weekly): {trend_weekly}")
+
+        # 3. استخراج قمة وقاع الشمعة اليومية (Daily Candle)
+        od, hd, ld, cd, vd = self.arrays(ohlcv_daily)
+        # الشمعة اليومية السابقة أو الحالية المكتملة جزئياً
+        daily_high = float(hd[-2])
+        daily_low = float(ld[-2])
+        confirmations.append(f"مستويات اليوم - القمة: {daily_high:.8g} | القاع: {daily_low:.8g}")
+
+        # 4. فحص فريم الـ 15 دقيقة (15M) للبحث عن كنس السيولة والرفض
+        o15, h15, l15, c15, v15 = self.arrays(ohlcv_15m)
+        
+        current_price = float(c15[-1])
+        last_high_15m = float(np.max(h15[-5:-1]))
+        last_low_15m = float(np.min(l15[-5:-1]))
+
+        sweep = "NONE"
+        direction = "NEUTRAL"
+        score = 50
+
+        # شرط البيع: السعر كسر قمة الشمعة اليومية وحدث رفض على فريم 15 دقيقة
+        if current_price >= daily_high or h15[-1] >= daily_high:
+            if c15[-1] < o15[-1]:  # شمعة هابطة/رفض
+                sweep = "BEARISH_REJECTION_AT_DAILY_HIGH"
+                if trend_weekly == "SHORT" or trend_weekly == "NEUTRAL":
+                    direction = "SHORT"
+                    score += 30
+                    confirmations.append("تم رصد كنس للسيولة وشمعة رفض هابطة عند قمة الشمعة اليومية")
+
+        # شرط الشراء: السعر وصل قاع الشمعة اليومية وظهرت شمعة شراء/ارتداد عند الذيل السفلي
+        elif current_price <= daily_low or l15[-1] <= daily_low:
+            if c15[-1] > o15[-1]:  # شمعة صاعدة/شراء
+                sweep = "BULLISH_REJECTION_AT_DAILY_LOW"
+                if trend_weekly == "LONG" or trend_weekly == "NEUTRAL":
+                    direction = "LONG"
+                    score += 30
+                    confirmations.append("تم رصد كنس للسيولة وشمعة شراء صاعدة عند قاع الشمعة اليومية")
         else:
-            confirmations.append(f"التوقيت الحالي: {kz_desc}")
-
-        if trend_4h != "NEUTRAL" and trend_4h == trend_1h:
-            direction = trend_1h
-            score += 15
-            confirmations.append("توافق اتجاه 4H و1H")
-        else:
-            direction = "NEUTRAL"
-            excluded.append("لا يوجد توافق واضح بين اتجاه 4H و1H")
-
-        bos, mss = self.detect_ict_market_structure(
-            h1[:-1], l1[:-1], c1[:-1]
-        )
-
-        if bos != "NONE":
-            confirmations.append(f"كسر هيكل: {bos}")
-            aligned_bos = (
-                (direction == "LONG" and "BULLISH" in bos)
-                or (direction == "SHORT" and "BEARISH" in bos)
-            )
-            if aligned_bos:
-                score += 15
-            else:
-                excluded.append("كسر الهيكل لا يدعم الاتجاه الحالي")
-        else:
-            aligned_bos = False
-            excluded.append("لا يوجد BOS واضح على فريم الساعة")
-
-        if mss != "NONE":
-            confirmations.append(f"تحول هيكل محتمل: {mss}")
-            score += 5
-
-        sweep, fvg, ob_data = self.detect_liquidity_sweep_and_fvg(
-            h15[:-1], l15[:-1], o15[:-1], c15[:-1]
-        )
-        ob_type, ob_zone = ob_data if ob_data else ("NONE", None)
-
-        aligned_sweep = (
-            (direction == "LONG" and sweep == "BULLISH_SWEEP")
-            or (direction == "SHORT" and sweep == "BEARISH_SWEEP")
-        )
-        if sweep != "NONE":
-            confirmations.append(f"سحب سيولة مرصود: {sweep}")
-            if aligned_sweep:
-                score += 10
-            else:
-                excluded.append("سحب السيولة لا يدعم الاتجاه الحالي")
-        else:
-            excluded.append("لا يوجد سحب سيولة واضح على 15M")
-
-        aligned_fvg = (
-            (direction == "LONG" and fvg == "BULLISH_FVG")
-            or (direction == "SHORT" and fvg == "BEARISH_FVG")
-        )
-        if fvg != "NONE":
-            confirmations.append(f"FVG مرصودة: {fvg}")
-            if aligned_fvg:
-                score += 5
-            else:
-                excluded.append("اتجاه FVG لا يتوافق مع الصفقة")
-
-        aligned_ob = (
-            (direction == "LONG" and ob_type == "BULLISH_OB")
-            or (direction == "SHORT" and ob_type == "BEARISH_OB")
-        )
-        if ob_zone:
-            confirmations.append(
-                f"منطقة OB مرشحة: {ob_type} "
-                f"({ob_zone[0]:.8g}–{ob_zone[1]:.8g})"
-            )
-            if aligned_ob:
-                score += 10
-            else:
-                excluded.append("منطقة OB لا تتوافق مع الاتجاه")
-        else:
-            excluded.append("لم يتم العثور على OB مرشحة بشروط الاندفاع")
-
-        average_volume = (
-            float(np.mean(v1[-16:-2]))
-            if len(v1) >= 16 else float(np.mean(v1[:-2]))
-        )
-        current_volume = float(v1[-2])
-        volume_ratio = (
-            round(current_volume / average_volume, 2)
-            if average_volume > 0 else 0.0
-        )
-
-        if 1.15 <= volume_ratio <= 3.5:
-            score += 10
-            confirmations.append(f"الفوليوم أعلى من المتوسط ({volume_ratio}x)")
-        elif volume_ratio > 3.5:
-            excluded.append(f"الفوليوم مرتفع جدًا ({volume_ratio}x)")
-        else:
-            excluded.append(f"الفوليوم لا يقدم تأكيدًا كافيًا ({volume_ratio}x)")
-
-        vwap = self.calculate_vwap(h1[:-1], l1[:-1], c1[:-1], v1[:-1])
-        current_price = float(c15[-2])
-
-        if direction == "LONG" and current_price > vwap:
-            score += 5
-            confirmations.append("السعر أعلى VWAP المرجعي")
-        elif direction == "SHORT" and current_price < vwap:
-            score += 5
-            confirmations.append("السعر أسفل VWAP المرجعي")
-        else:
-            excluded.append("السعر لا يدعم الاتجاه بالنسبة إلى VWAP")
-
-        support = float(np.min(l1[-11:-1]))
-        resistance = float(np.max(h1[-11:-1]))
-
-        distance_pct = None
-        retest_advice = "انتظر تأكيد شمعة 15M قبل التنفيذ"
-
-        if ob_zone:
-            ob_low, ob_high = sorted(ob_zone)
-            ob_mid = (ob_low + ob_high) / 2.0
-            distance_pct = (
-                abs(current_price - ob_mid) / current_price * 100
-                if current_price > 0 else None
-            )
-
-            if distance_pct is not None and distance_pct > 1.5:
-                score -= 10
-                retest_advice = "السعر بعيد عن OB؛ لا تطارد السعر وانتظر إعادة الاختبار"
-                excluded.append(f"البعد عن منتصف OB يبلغ {distance_pct:.2f}%")
-            elif ob_low <= current_price <= ob_high:
-                retest_advice = "السعر داخل OB المرشحة؛ انتظر تأكيد الرفض"
-            else:
-                retest_advice = "راقب إعادة اختبار OB وتأكيد شمعة الدخول"
-
-        # 2. تشديد فحص اتجاه البيتكوين الصارم
-        btc_trend = "UNKNOWN"
-        if self.valid_ohlcv(ohlcv_btc_1h):
-            _, bh, bl, bc, _ = self.arrays(ohlcv_btc_1h)
-            btc_trend = self._trend(bh[:-1], bl[:-1], bc[:-1])
-
-            if direction == "LONG" and btc_trend == "SHORT":
-                score -= 15
-                excluded.append("حظر: اتجاه BTC هابط يمثل خطورة على صفقات LONG")
-            elif direction == "SHORT" and btc_trend == "LONG":
-                score -= 15
-                excluded.append("حظر: اتجاه BTC صاعد يمثل خطورة على صفقات SHORT")
-            elif direction != "NEUTRAL" and btc_trend == direction:
-                score += 10
-                confirmations.append(f"اتجاه BTC مدعم وقوي للصفقة: {btc_trend}")
-
-        if (
-            direction == "LONG" and resistance > current_price
-            and (resistance - current_price) / current_price < 0.004
-        ):
-            score -= 8
-            excluded.append("المقاومة قريبة من السعر")
-        elif (
-            direction == "SHORT" and support < current_price
-            and (current_price - support) / current_price < 0.004
-        ):
-            score -= 8
-            excluded.append("الدعم قريب من السعر")
+            excluded.append("السعر لم يصل بعد لقمة أو قاع الشمعة اليومية لاختبارها")
 
         score = int(max(0, min(100, round(score))))
+        entry_valid = (direction in ("LONG", "SHORT") and score >= 75)
 
-        entry_valid = (
-            direction in ("LONG", "SHORT")
-            and trend_4h == trend_1h
-            and aligned_bos
-            and aligned_sweep
-            and aligned_ob
-            and volume_ratio >= 1.0
-            and (distance_pct is None or distance_pct <= 1.5)
-            and (btc_trend == "UNKNOWN" or btc_trend == direction)
-        )
-
-        if not entry_valid or score < 70:
-            signal = "NEUTRAL"
-            if score < 70:
-                excluded.append(f"التقييم أقل من حد القبول: {score}/100")
-            if not entry_valid:
-                excluded.append("شروط الدخول الهيكلي أو توافق البيتكوين لم تكتمل")
-        else:
-            signal = direction
+        if not entry_valid:
+            excluded.append("شروط شمعة الرفض أو الشراء عند أطراف الشمعة اليومية لم تكتمل بعد")
 
         details = {
-            "trend_4h": trend_4h,
-            "trend_1h": trend_1h,
-            "bos": bos,
-            "mss": mss,
+            "trend_weekly": trend_weekly,
+            "daily_high": daily_high,
+            "daily_low": daily_low,
             "sweep": sweep,
-            "fvg": fvg,
-            "ob_type": ob_type,
-            "ob_zone": ob_zone,
-            "volume_ratio": volume_ratio,
-            "vwap_price": round(float(vwap), 10),
-            "support": round(support, 10),
-            "resistance": round(resistance, 10),
-            "retest_advice": retest_advice,
+            "retest_advice": "راقب شمعة الرفض أو الشراء على فريم 15M عند أطراف الشمعة اليومية",
             "entry_valid": bool(entry_valid),
-            "btc_trend": btc_trend,
             "confirmations": confirmations,
             "reasons_excluded": excluded
         }
 
         return (
-            signal, score, volume_ratio, details,
-            (h1.tolist(), l1.tolist(), c1.tolist())
+            direction, score, 1.5, details,
+            (h15.tolist(), l15.tolist(), c15.tolist())
         )
 
     def calculate_risk_management(
-        self, entry_price, direction, highs, lows, closes=None
+        self, entry_price, direction, highs, lows, daily_high=0, daily_low=0
     ):
         entry = float(entry_price)
         direction = str(direction).upper()
         highs = np.asarray(highs, dtype=float)
         lows = np.asarray(lows, dtype=float)
 
-        if closes is None:
-            closes = (highs + lows) / 2.0
-        closes = np.asarray(closes, dtype=float)
+        if entry <= 0:
+            raise ValueError("سعر دخول غير صالح")
 
-        n = min(len(highs), len(lows), len(closes))
-        if entry <= 0 or n < 2:
-            raise ValueError("سعر دخول غير صالح أو بيانات شموع غير كافية")
-
-        highs, lows, closes = highs[-n:], lows[-n:], closes[-n:]
-        atr = self.calculate_atr(highs, lows, closes)
-        if atr <= 0:
-            atr = entry * 0.01
-
+        # الهدف الأول (TP1) هو 50% من نطاق الشمعة أو المسافة، والهدف الثاني (TP2) هو الـ 50% الباقية
         if direction in ("LONG", "BUY"):
-            swing_low = float(np.min(lows[-5:]))
-            stop = min(swing_low, entry - 1.5 * atr)
-            if stop >= entry:
-                stop = entry - max(1.5 * atr, entry * 0.01)
-
-            risk = entry - stop
-            tp1 = entry + risk * 1.5
-            tp2 = entry + risk * 2.5
-            tp3 = entry + risk * 4.0
+            stop = daily_low if daily_low > 0 else entry * 0.98
+            total_range = abs(entry - stop)
+            tp1 = entry + (total_range * 0.5)  # 50% من الهدف
+            tp2 = entry + total_range          # الـ 50% الثانية (الهدف الثاني الكامل)
+            tp3 = tp2                          # دمج الهدف الثالث مع الثاني بناءً على استراتيجية النصفين
 
         elif direction in ("SHORT", "SELL"):
-            swing_high = float(np.max(highs[-5:]))
-            stop = max(swing_high, entry + 1.5 * atr)
-            if stop <= entry:
-                stop = entry + max(1.5 * atr, entry * 0.01)
-
-            risk = stop - entry
-            tp1 = entry - risk * 1.5
-            tp2 = entry - risk * 2.5
-            tp3 = entry - risk * 4.0
-
-            if tp3 <= 0:
-                tp3 = max(entry * 0.01, tp2 - risk)
+            stop = daily_high if daily_high > 0 else entry * 1.02
+            total_range = abs(stop - entry)
+            tp1 = entry - (total_range * 0.5)  # 50% من الهدف
+            tp2 = entry - total_range          # الـ 50% الثانية
+            tp3 = tp2
 
         else:
             raise ValueError("الاتجاه يجب أن يكون LONG أو SHORT")
 
         sl_pct = round(abs(entry - stop) / entry * 100, 3)
         tp1_pct = round(abs(tp1 - entry) / entry * 100, 3)
-        rr_ratio = round(
-            max(0.0, tp1_pct - 0.1) / max(sl_pct + 0.1, 0.001), 2
-        )
+        rr_ratio = 2.0
 
         return (
             round(float(stop), 10),
