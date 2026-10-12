@@ -1,8 +1,7 @@
 # ==========================================
-# BREAKOUT + RETEST STRATEGY ENGINE
+# BREAKOUT + RETEST STRATEGY ENGINE (FIXED DIRECTION)
 # File: analysis.py
 # Compatible with current BingX/Telegram main.py
-# Updated with Symbol Filtering & SMC / Edge Algo Integration
 # ==========================================
 
 import numpy as np
@@ -16,16 +15,14 @@ class StrategyEngine:
     def is_valid_symbol(symbol):
         """منع العملات الوهمية أو الرموز التي تحتوي على أسهم تجريبية مثل AAPL أو رموز غير صالحة"""
         if not symbol or not isinstance(symbol, str):
-            return True # إذا لم يُمرر الرمز، يتم تجاوزه عبر الفحوصات الأخرى
+            return True 
         symbol_upper = symbol.upper()
         
-        # قائمة الكلمات المفتاحية المحظورة للعملات الوهمية أو الأسهم المدمجة
         blocked_keywords = ["AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "TEST", "DEMO", "FAKE"]
         for kw in blocked_keywords:
             if kw in symbol_upper:
                 return False
         
-        # التأكد من أن الرمز يتبع صيغة عملات رقمية صحيحة ولا يحتوي على صيغ وهمية غريبة
         if "NCSK" in symbol_upper or len(symbol_upper) > 30:
             return False
             
@@ -79,25 +76,15 @@ class StrategyEngine:
             return "NEUTRAL"
         recent_high = float(np.max(highs[-6:-1]))
         recent_low = float(np.min(lows[-6:-1]))
-        if closes[-1] > recent_high and closes[-2] <= recent_high:
-            return "LONG"
-        if closes[-1] < recent_low and closes[-2] >= recent_low:
-            return "SHORT"
+        
         fast = float(np.mean(closes[-5:]))
         slow = float(np.mean(closes[-12:-5]))
-        if fast > slow and closes[-1] > closes[-4]:
+        
+        if fast > slow and closes[-1] > recent_high * 0.99:
             return "LONG"
-        if fast < slow and closes[-1] < closes[-4]:
+        if fast < slow and closes[-1] < recent_low * 1.01:
             return "SHORT"
         return "NEUTRAL"
-
-    @staticmethod
-    def _levels(highs, lows, lookback=20):
-        highs, lows = np.asarray(highs, float), np.asarray(lows, float)
-        if len(highs) < 5:
-            return None, None
-        n = min(lookback, len(highs) - 1)
-        return float(np.max(highs[-n-1:-1])), float(np.min(lows[-n-1:-1]))
 
     def _break_retest(self, opens, highs, lows, closes, volumes, direction):
         if len(closes) < 8:
@@ -114,30 +101,34 @@ class StrategyEngine:
             volume_ok = volume_base <= 0 or volumes[i] >= volume_base * 0.9
 
             if direction == "LONG":
+                # كسر مقاومة للأعلى
                 broke = closes[i] > prior_high and closes[i] > opens[i]
                 if not broke or not volume_ok or body / candle_range < 0.35:
                     continue
                 level = prior_high
                 j = len(closes) - 1
                 tolerance = max(level * 0.003, (highs[j] - lows[j]) * 0.25)
+                # إعادة اختبار الدعم الجديد (المقاومة السابقة) وارتداد صاعد
                 retested = lows[j] <= level + tolerance and lows[j] >= level - tolerance * 2
                 rejected = closes[j] > level and closes[j] >= opens[j]
                 if retested and rejected:
-                    return True, level, "Edge Algo: كسر مقاومة وإعادة اختبار ناجحة"
+                    return True, level, "Edge Algo: كسر مقاومة وإعادة اختبار صاعد ناجحة"
 
             elif direction == "SHORT":
+                # كسر دعم للأسفل
                 broke = closes[i] < prior_low and closes[i] < opens[i]
                 if not broke or not volume_ok or body / candle_range < 0.35:
                     continue
                 level = prior_low
                 j = len(closes) - 1
                 tolerance = max(level * 0.003, (highs[j] - lows[j]) * 0.25)
+                # إعادة اختبار المقاومة الجديدة (الدعم السابق) وارتداد هابط
                 retested = highs[j] >= level - tolerance and highs[j] <= level + tolerance * 2
                 rejected = closes[j] < level and closes[j] <= opens[j]
                 if retested and rejected:
-                    return True, level, "Edge Algo: كسر دعم وإعادة اختبار ناجحة"
+                    return True, level, "Edge Algo: كسر دعم وإعادة اختبار هابط ناجحة"
 
-        return False, None, "لم يكتمل كسر المستوى وإعادة الاختبار"
+        return False, None, "لم يكتمل كسر المستوى وإعادة الاختبار الصحيحة"
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None, symbol=""):
         details = {
@@ -152,7 +143,6 @@ class StrategyEngine:
             "confirmations": [], "reasons_excluded": []
         }
 
-        # التحقق من صلاحية اسم العملة أولاً لمنع العملات الوهمية والأسهم
         if symbol and not self.is_valid_symbol(symbol):
             details["reasons_excluded"].append(f"تم استبعاد العملة لكونها وهمية أو تحتوي على رموز أسهم: {symbol}")
             return "NEUTRAL", 0, 0.0, details, ([], [], [])
@@ -176,13 +166,14 @@ class StrategyEngine:
         if trend4 != "NEUTRAL" and trend4 == trend1:
             direction = trend1
             score += 20
-            confirmations.append("اتجاه 4H و1H متوافق (SMC Trend Alignment)")
+            confirmations.append("اتجاه 4H و1H متوافق (Trend Alignment)")
         else:
             excluded.append("اتجاه 4H و1H غير متوافق أو غير واضح")
 
         br_ok, br_level, br_reason = self._break_retest(
             o15[:-1], h15[:-1], l15[:-1], c15[:-1], v15[:-1], direction
         ) if direction != "NEUTRAL" else (False, None, "الاتجاه العام غير واضح")
+        
         details["break_retest"] = br_ok
         details["break_level"] = br_level
         if br_ok:
@@ -191,7 +182,7 @@ class StrategyEngine:
             details["retest_advice"] = "تأكد من السبريد والسعر قبل التنفيذ"
         else:
             excluded.append(br_reason)
-            details["retest_advice"] = "انتظر كسر المستوى ثم إعادة اختباره وتأكيد شمعة 15M"
+            details["retest_advice"] = "انتظر كسر المستوى الصحيح وإعادة اختباره"
 
         bos = "NONE"
         if len(c1) >= 12:
@@ -202,11 +193,12 @@ class StrategyEngine:
             elif c1[-2] < ref_lo:
                 bos = "BEARISH_BOS"
         details["bos"] = bos
+        
         if (direction == "LONG" and bos == "BULLISH_BOS") or (direction == "SHORT" and bos == "BEARISH_BOS"):
             score += 10
-            confirmations.append(f"LuxAlgo SMC - كسر هيكل الاتجاه يدعم الحركة: {bos}")
+            confirmations.append(f"SMC - كسر هيكل متوافق مع الاتجاه: {bos}")
         else:
-            excluded.append("لا يوجد كسر هيكل ساعة داعم واضح")
+            excluded.append("لا يوجد كسر هيكل ساعة داعم للاتجاه")
 
         avg_vol = float(np.mean(v15[-22:-2])) if len(v15) >= 22 else float(np.mean(v15[:-2]))
         latest_vol = float(v15[-2])
@@ -214,9 +206,9 @@ class StrategyEngine:
         details["volume_ratio"] = volume_ratio
         if volume_ratio >= 1.25:
             score += 10
-            confirmations.append(f"فوليوم 15M قوي نسبيًا ({volume_ratio}x)")
+            confirmations.append(f"فوليوم 15M قوي ({volume_ratio}x)")
         else:
-            excluded.append(f"الفوليوم غير كافٍ للتأكيد (المطلوب 1.25x، الحالي {volume_ratio}x)")
+            excluded.append(f"الفوليوم غير كافٍ ({volume_ratio}x)")
 
         n = min(24, len(c1) - 1)
         typical = (h1[-n-1:-1] + l1[-n-1:-1] + c1[-n-1:-1]) / 3
@@ -224,14 +216,15 @@ class StrategyEngine:
         vwap = float(np.sum(typical * vwap_vol) / np.sum(vwap_vol)) if np.sum(vwap_vol) > 0 else float(c1[-2])
         details["vwap_price"] = vwap
         last_price = float(c15[-2])
+        
         if direction == "LONG" and last_price > vwap:
             score += 5
-            confirmations.append("السعر أعلى VWAP المرجعي")
+            confirmations.append("السعر أعلى VWAP المرجعي (دعم لونج)")
         elif direction == "SHORT" and last_price < vwap:
             score += 5
-            confirmations.append("السعر أسفل VWAP المرجعي")
+            confirmations.append("السعر أسفل VWAP المرجعي (دعم شورت)")
         else:
-            excluded.append("السعر لا يدعم الاتجاه بالنسبة إلى VWAP")
+            excluded.append("موقع السعر بالنسبة لـ VWAP غير مناسب للاتجاه")
 
         support = float(np.min(l1[-11:-1]))
         resistance = float(np.max(h1[-11:-1]))
@@ -242,15 +235,6 @@ class StrategyEngine:
                 details["sweep"] = "BEARISH_SWEEP"
             elif l15[-2] < l15[-3] and c15[-2] > l15[-3]:
                 details["sweep"] = "BULLISH_SWEEP"
-            if l15[-2] > h15[-4]:
-                details["fvg"] = "BULLISH_FVG"
-            elif h15[-2] < l15[-4]:
-                details["fvg"] = "BEARISH_FVG"
-
-        if details["sweep"] != "NONE":
-            if (direction == "LONG" and details["sweep"] == "BULLISH_SWEEP") or (direction == "SHORT" and details["sweep"] == "BEARISH_SWEEP"):
-                score += 5
-                confirmations.append(f"LuxAlgo SMC - سحب سيولة متوافق: {details['sweep']}")
 
         btc_trend = "UNKNOWN"
         if self.valid_ohlcv(ohlcv_btc_1h, 12):
@@ -278,11 +262,9 @@ class StrategyEngine:
             and volume_ratio >= 1.25
             and bos_ok
         )
-        if not bos_ok:
-            excluded.append("فلتر الدخول: لا يوجد BOS على 1H في اتجاه الصفقة")
+        
         if not entry_valid or score < 75:
             signal = "NEUTRAL"
-            excluded.append("لم تكتمل شروط الدخول الصارمة: الاتجاه + إعادة الاختبار + الفوليوم + BOS")
         else:
             signal = direction
 
