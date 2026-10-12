@@ -1,85 +1,70 @@
+import os
 from flask import Flask, request, jsonify
 import ccxt
-import pandas as pd
-import numpy as np
 import requests
 
 app = Flask(__name__)
 
-# إعداد منصة التداول (مثال: Binance Futures)
+# إعداد منصة التداول
 exchange = ccxt.binance({
-    'options': {
-        'defaultType': 'future',
-    },
+    'options': {'defaultType': 'future'},
     'enableRateLimit': True
 })
 
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID")
 
 def send_telegram_alert(message):
-    """إرسال تنبيهات تليجرام"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': CHAT_ID,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
+    payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try:
-        requests.post(url, json=payload)
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-def fetch_market_data(symbol, timeframe='15m', limit=100):
-    """جلب بيانات الشموع التاريخية والفوليوم"""
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        return df
-    except Exception as e:
-        print(f"Error fetching data for {symbol}: {e}")
-        return None
-
 def analyze_and_execute(symbol):
-    """التحليل الفني وتطبيق شروط التأكيد الجديدة"""
-    df = fetch_market_data(symbol, timeframe='15m', limit=50)
-    if df is None or len(df) < 20:
-        return
+    try:
+        # جلب أخر 21 شمعة على فريم 15 دقيقة
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=21)
+        if not ohlcv or len(ohlcv) < 21:
+            return
 
-    # حساب المتوسط المتحرك للفوليوم
-    df['avg_volume'] = df['volume'].rolling(window=20).mean()
-    
-    # تحديد القمم والقيعان الأخيرة للسيولة (مثال مبسط لاختبار القمة/القاع السابقة)
-    recent_high = df['high'].iloc[-20:-1].max()
-    recent_low = df['low'].iloc[-20:-1].min()
+        # تحديد الشمعة الأخيرة المغلقة والشموع السابقة
+        last_closed_candle = ohlcv[-2]  
+        prev_candles = ohlcv[:-2]       
 
-    last_candle = df.iloc[-1]
-    prev_candle = df.iloc[-2]
+        close_price = last_closed_candle[4]
+        volume = last_closed_candle[5]
 
-    # --- تطبيق الفلاتر الجديدة للحماية ---
-    
-    # 1. فلتر الفوليوم المؤسسي (أكبر من 1.5 ضعف المتوسط)
-    high_volume_confirmed = last_candle['volume'] >= (last_candle['avg_volume'] * 1.5)
-    
-    # 2. فلتر إغلاق الشمعة (يجب أن تغلق الشمعة بالكامل فوق/تحت مستوى السيولة وليس مجرد ذيل)
-    candle_closed_above = last_candle['close'] > recent_high
-    candle_closed_below = last_candle['close'] < recent_low
+        # حساب متوسط الفوليوم لـ 20 شمعة سابقة
+        avg_volume = sum(c[5] for c in prev_candles) / len(prev_candles)
 
-    # تنفيذ الإشارة بناءً على التأكيد الحقيقي
-    if candle_closed_above and high_volume_confirmed:
-        msg = f"🚀 *إشارة شراء مؤكدة (LONG)*\nالعملة: `{symbol}`\nسعر الدخول بعد الإغلاق: `{last_candle['close']}`\nالفوليوم: مؤكد وصاعد"
-        send_telegram_alert(msg)
-        
-    elif candle_closed_below and high_volume_confirmed:
-        msg = f"📉 *إشارة بيع مؤكدة (SHORT)*\nالعملة: `{symbol}`\nسعر الدخول بعد الإغلاق: `{last_candle['close']}`\nالفوليوم: مؤكد وهابط"
-        send_telegram_alert(msg)
+        # أعلى قمة وأقل قاع في الشموع السابقة
+        recent_high = max(c[2] for c in prev_candles)
+        recent_low = min(c[3] for c in prev_candles)
+
+        # شروط التأكيد (إغلاق الشمعة الكامل + الفوليوم العالي)
+        high_volume = volume >= (avg_volume * 1.5)
+        closed_above = close_price > recent_high
+        closed_below = close_price < recent_low
+
+        if closed_above and high_volume:
+            msg = f"🚀 *إشارة LONG مؤكدة (إغلاق شمعة)*\nالعملة: `{symbol}`\nسعر الدخول: `{close_price}`"
+            send_telegram_alert(msg)
+        elif closed_below and high_volume:
+            msg = f"📉 *إشارة SHORT مؤكدة (إغلاق شمعة)*\nالعملة: `{symbol}`\nسعر الدخول: `{close_price}`"
+            send_telegram_alert(msg)
+
+    except Exception as e:
+        print(f"Analysis error for {symbol}: {e}")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
+    data = request.json or {}
     symbol = data.get('symbol', 'BTC/USDT')
     analyze_and_execute(symbol)
-    return jsonify({"status": "success", "message": "Analyzed with candle confirmation"}), 200
+    return jsonify({"status": "success"}), 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
