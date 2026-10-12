@@ -1,5 +1,5 @@
 # ==========================================
-# BREAKOUT + RETEST STRATEGY ENGINE (FIXED DIRECTION)
+# BREAKOUT + RETEST STRATEGY ENGINE + STORM 101 WHALE DETECTION
 # File: analysis.py
 # Compatible with current BingX/Telegram main.py
 # ==========================================
@@ -86,6 +86,32 @@ class StrategyEngine:
             return "SHORT"
         return "NEUTRAL"
 
+    def _storm101_whale_check(self, opens, highs, lows, closes, volumes, direction):
+        """
+        منهجية STORM 101: رصد تجميع الحيتان، كشف التلاعب، وتتبع حجم التداول المخفي الاستباقي[span_1](start_span)[span_1](end_span)
+        """
+        if len(closes) < 10:
+            return False, "بيانات غير كافية لفحص الحيتان"
+            
+        avg_vol = float(np.mean(volumes[-15:-2])) if len(volumes) >= 15 else float(np.mean(volumes[:-2]))
+        recent_vol = float(volumes[-2])
+        
+        # رصد الحجم المخفي المرتفع غير المبرر كلاسيكياً
+        is_hidden_volume = recent_vol >= avg_vol * 1.4
+        
+        if direction == "LONG":
+            # كشف تجميع الحيتان: هبوط مظلل أو ضغط سعري يعقبه فوليوم مخفي وارتداد قوي للأعلى[span_2](start_span)[span_2](end_span)
+            is_accumulation = lows[-2] <= float(np.min(lows[-6:-2])) and closes[-2] > opens[-2]
+            if is_hidden_volume and is_accumulation:
+                return True, "STORM 101: رصد تجميع الحيتان وحجم التداول المخفي عند القاع استعداداً للصعود[span_3](start_span)[span_3](end_span)"
+        elif direction == "SHORT":
+            # كشف تصريف الحيتان: صعود وهمي يعقبه فوليوم مخفي وهبوط قوي للأسفل[span_4](start_span)[span_4](end_span)
+            is_distribution = highs[-2] >= float(np.max(highs[-6:-2])) and closes[-2] < opens[-2]
+            if is_hidden_volume and is_distribution:
+                return True, "STORM 101: رصد تصريف الحيتان وحجم التداول المخفي عند القمة استعداداً للهبوط[span_5](start_span)[span_5](end_span)"
+                
+        return False, "لا توجد بصمات واضحة لتجميع/تصريف الحيتان"
+
     def _break_retest(self, opens, highs, lows, closes, volumes, direction):
         if len(closes) < 8:
             return False, None, "بيانات شموع غير كافية"
@@ -101,34 +127,30 @@ class StrategyEngine:
             volume_ok = volume_base <= 0 or volumes[i] >= volume_base * 0.9
 
             if direction == "LONG":
-                # كسر مقاومة للأعلى
                 broke = closes[i] > prior_high and closes[i] > opens[i]
                 if not broke or not volume_ok or body / candle_range < 0.35:
                     continue
                 level = prior_high
                 j = len(closes) - 1
                 tolerance = max(level * 0.003, (highs[j] - lows[j]) * 0.25)
-                # إعادة اختبار الدعم الجديد (المقاومة السابقة) وارتداد صاعد
                 retested = lows[j] <= level + tolerance and lows[j] >= level - tolerance * 2
                 rejected = closes[j] > level and closes[j] >= opens[j]
                 if retested and rejected:
-                    return True, level, "Edge Algo: كسر مقاومة وإعادة اختبار صاعد ناجحة"
+                    return True, level, "كسر مقاومة وإعادة اختبار صاعد ناجحة"
 
             elif direction == "SHORT":
-                # كسر دعم للأسفل
                 broke = closes[i] < prior_low and closes[i] < opens[i]
                 if not broke or not volume_ok or body / candle_range < 0.35:
                     continue
                 level = prior_low
                 j = len(closes) - 1
                 tolerance = max(level * 0.003, (highs[j] - lows[j]) * 0.25)
-                # إعادة اختبار المقاومة الجديدة (الدعم السابق) وارتداد هابط
                 retested = highs[j] >= level - tolerance and highs[j] <= level + tolerance * 2
                 rejected = closes[j] < level and closes[j] <= opens[j]
                 if retested and rejected:
-                    return True, level, "Edge Algo: كسر دعم وإعادة اختبار هابط ناجحة"
+                    return True, level, "كسر دعم وإعادة اختبار هابط ناجحة"
 
-        return False, None, "لم يكتمل كسر المستوى وإعادة الاختبار الصحيحة"
+        return False, None, "لم يكتمل كسر المستوى وإعادة الاختبار"
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None, symbol=""):
         details = {
@@ -177,12 +199,21 @@ class StrategyEngine:
         details["break_retest"] = br_ok
         details["break_level"] = br_level
         if br_ok:
-            score += 30
+            score += 25
             confirmations.append(br_reason)
-            details["retest_advice"] = "تأكد من السبريد والسعر قبل التنفيذ"
         else:
             excluded.append(br_reason)
-            details["retest_advice"] = "انتظر كسر المستوى الصحيح وإعادة اختباره"
+
+        # دمج تحقق STORM 101 للحيتان والحجم المخفي
+        if direction != "NEUTRAL":
+            storm_ok, storm_msg = self._storm101_whale_check(
+                o15[:-1], h15[:-1], l15[:-1], c15[:-1], v15[:-1], direction
+            )
+            if storm_ok:
+                score += 15
+                confirmations.append(storm_msg)
+            else:
+                excluded.append(storm_msg)
 
         bos = "NONE"
         if len(c1) >= 12:
@@ -219,37 +250,12 @@ class StrategyEngine:
         
         if direction == "LONG" and last_price > vwap:
             score += 5
-            confirmations.append("السعر أعلى VWAP المرجعي (دعم لونج)")
+            confirmations.append("السعر أعلى VWAP المرجعي")
         elif direction == "SHORT" and last_price < vwap:
             score += 5
-            confirmations.append("السعر أسفل VWAP المرجعي (دعم شورت)")
+            confirmations.append("السعر أسفل VWAP المرجعي")
         else:
             excluded.append("موقع السعر بالنسبة لـ VWAP غير مناسب للاتجاه")
-
-        support = float(np.min(l1[-11:-1]))
-        resistance = float(np.max(h1[-11:-1]))
-        details["support"], details["resistance"] = support, resistance
-
-        if len(c15) >= 5:
-            if h15[-2] > h15[-3] and c15[-2] < h15[-3]:
-                details["sweep"] = "BEARISH_SWEEP"
-            elif l15[-2] < l15[-3] and c15[-2] > l15[-3]:
-                details["sweep"] = "BULLISH_SWEEP"
-
-        btc_trend = "UNKNOWN"
-        if self.valid_ohlcv(ohlcv_btc_1h, 12):
-            _, bh, bl, bc, _ = self.arrays(ohlcv_btc_1h)
-            btc_trend = self._trend(bh[:-1], bl[:-1], bc[:-1])
-            if direction == "LONG" and btc_trend == "SHORT":
-                score -= 5
-                excluded.append("اتجاه BTC هابط ويزيد مخاطرة LONG")
-            elif direction == "SHORT" and btc_trend == "LONG":
-                score -= 5
-                excluded.append("اتجاه BTC صاعد ويزيد مخاطرة SHORT")
-            elif direction != "NEUTRAL" and btc_trend == direction:
-                score += 5
-                confirmations.append("اتجاه BTC يدعم الصفقة")
-        details["btc_trend"] = btc_trend
 
         score = int(max(0, min(100, score)))
         bos_ok = (
