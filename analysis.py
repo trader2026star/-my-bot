@@ -2,6 +2,7 @@
 # BREAKOUT + RETEST STRATEGY ENGINE
 # File: analysis.py
 # Compatible with current BingX/Telegram main.py
+# Updated with Symbol Filtering & SMC / Edge Algo Integration
 # ==========================================
 
 import numpy as np
@@ -10,6 +11,25 @@ import numpy as np
 class StrategyEngine:
     def __init__(self):
         pass
+
+    @staticmethod
+    def is_valid_symbol(symbol):
+        """منع العملات الوهمية أو الرموز التي تحتوي على أسهم تجريبية مثل AAPL أو رموز غير صالحة"""
+        if not symbol or not isinstance(symbol, str):
+            return True # إذا لم يُمرر الرمز، يتم تجاوزه عبر الفحوصات الأخرى
+        symbol_upper = symbol.upper()
+        
+        # قائمة الكلمات المفتاحية المحظورة للعملات الوهمية أو الأسهم المدمجة
+        blocked_keywords = ["AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "TEST", "DEMO", "FAKE"]
+        for kw in blocked_keywords:
+            if kw in symbol_upper:
+                return False
+        
+        # التأكد من أن الرمز يتبع صيغة عملات رقمية صحيحة ولا يحتوي على صيغ وهمية غريبة
+        if "NCSK" in symbol_upper or len(symbol_upper) > 30:
+            return False
+            
+        return True
 
     @staticmethod
     def valid_ohlcv(data, minimum=20):
@@ -57,7 +77,6 @@ class StrategyEngine:
                                   (highs, lows, closes))
         if len(closes) < 12:
             return "NEUTRAL"
-        # Recent confirmed swing structure and close progression.
         recent_high = float(np.max(highs[-6:-1]))
         recent_low = float(np.min(lows[-6:-1]))
         if closes[-1] > recent_high and closes[-2] <= recent_high:
@@ -74,7 +93,6 @@ class StrategyEngine:
 
     @staticmethod
     def _levels(highs, lows, lookback=20):
-        # Exclude the newest candle; levels should exist before the breakout.
         highs, lows = np.asarray(highs, float), np.asarray(lows, float)
         if len(highs) < 5:
             return None, None
@@ -82,12 +100,9 @@ class StrategyEngine:
         return float(np.max(highs[-n-1:-1])), float(np.min(lows[-n-1:-1]))
 
     def _break_retest(self, opens, highs, lows, closes, volumes, direction):
-        """Check a recent level break followed by a retest and candle rejection."""
         if len(closes) < 8:
             return False, None, "بيانات شموع غير كافية"
 
-        # Look for a recent completed break in the previous few candles,
-        # then check the latest completed candle for a retest/rejection.
         search_start = max(3, len(closes) - 6)
         for i in range(search_start, len(closes) - 1):
             prior_start = max(0, i - 20)
@@ -108,7 +123,7 @@ class StrategyEngine:
                 retested = lows[j] <= level + tolerance and lows[j] >= level - tolerance * 2
                 rejected = closes[j] > level and closes[j] >= opens[j]
                 if retested and rejected:
-                    return True, level, "كسر مقاومة ثم إعادة اختبار ورفض صاعد"
+                    return True, level, "Edge Algo: كسر مقاومة وإعادة اختبار ناجحة"
 
             elif direction == "SHORT":
                 broke = closes[i] < prior_low and closes[i] < opens[i]
@@ -120,11 +135,11 @@ class StrategyEngine:
                 retested = highs[j] >= level - tolerance and highs[j] <= level + tolerance * 2
                 rejected = closes[j] < level and closes[j] <= opens[j]
                 if retested and rejected:
-                    return True, level, "كسر دعم ثم إعادة اختبار ورفض هابط"
+                    return True, level, "Edge Algo: كسر دعم وإعادة اختبار ناجحة"
 
         return False, None, "لم يكتمل كسر المستوى وإعادة الاختبار"
 
-    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None):
+    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None, symbol=""):
         details = {
             "trend_4h": "NEUTRAL", "trend_1h": "NEUTRAL",
             "break_retest": False, "break_level": None,
@@ -136,6 +151,12 @@ class StrategyEngine:
             "entry_valid": False, "btc_trend": "UNKNOWN",
             "confirmations": [], "reasons_excluded": []
         }
+
+        # التحقق من صلاحية اسم العملة أولاً لمنع العملات الوهمية والأسهم
+        if symbol and not self.is_valid_symbol(symbol):
+            details["reasons_excluded"].append(f"تم استبعاد العملة لكونها وهمية أو تحتوي على رموز أسهم: {symbol}")
+            return "NEUTRAL", 0, 0.0, details, ([], [], [])
+
         if not all(self.valid_ohlcv(x, 20) for x in (ohlcv_4h, ohlcv_1h, ohlcv_15m)):
             details["reasons_excluded"].append("بيانات غير كافية أو غير صالحة")
             return "NEUTRAL", 0, 0.0, details, ([], [], [])
@@ -144,7 +165,6 @@ class StrategyEngine:
         o1, h1, l1, c1, v1 = self.arrays(ohlcv_1h)
         o15, h15, l15, c15, v15 = self.arrays(ohlcv_15m)
 
-        # Exclude the last candle because it may still be forming.
         trend4 = self._trend(h4[:-1], l4[:-1], c4[:-1])
         trend1 = self._trend(h1[:-1], l1[:-1], c1[:-1])
         details["trend_4h"], details["trend_1h"] = trend4, trend1
@@ -156,11 +176,10 @@ class StrategyEngine:
         if trend4 != "NEUTRAL" and trend4 == trend1:
             direction = trend1
             score += 20
-            confirmations.append("اتجاه 4H و1H متوافق")
+            confirmations.append("اتجاه 4H و1H متوافق (SMC Trend Alignment)")
         else:
             excluded.append("اتجاه 4H و1H غير متوافق أو غير واضح")
 
-        # Level break/retest is checked on closed 15m candles.
         br_ok, br_level, br_reason = self._break_retest(
             o15[:-1], h15[:-1], l15[:-1], c15[:-1], v15[:-1], direction
         ) if direction != "NEUTRAL" else (False, None, "الاتجاه العام غير واضح")
@@ -174,7 +193,6 @@ class StrategyEngine:
             excluded.append(br_reason)
             details["retest_advice"] = "انتظر كسر المستوى ثم إعادة اختباره وتأكيد شمعة 15M"
 
-        # BOS is a separate description of the latest closed 1H range break.
         bos = "NONE"
         if len(c1) >= 12:
             ref_hi = float(np.max(h1[-9:-2]))
@@ -186,11 +204,10 @@ class StrategyEngine:
         details["bos"] = bos
         if (direction == "LONG" and bos == "BULLISH_BOS") or (direction == "SHORT" and bos == "BEARISH_BOS"):
             score += 10
-            confirmations.append(f"كسر هيكل الساعة يدعم الاتجاه: {bos}")
+            confirmations.append(f"LuxAlgo SMC - كسر هيكل الاتجاه يدعم الحركة: {bos}")
         else:
             excluded.append("لا يوجد كسر هيكل ساعة داعم واضح")
 
-        # Volume on latest completed 15m candle vs preceding 20 candles.
         avg_vol = float(np.mean(v15[-22:-2])) if len(v15) >= 22 else float(np.mean(v15[:-2]))
         latest_vol = float(v15[-2])
         volume_ratio = round(latest_vol / avg_vol, 2) if avg_vol > 0 else 0.0
@@ -199,9 +216,8 @@ class StrategyEngine:
             score += 10
             confirmations.append(f"فوليوم 15M قوي نسبيًا ({volume_ratio}x)")
         else:
-            excluded.append(f"الفوليوم غير كافٍ للتأكيد (المطلوب 1.25x على الأقل، الحالي {volume_ratio}x)")
+            excluded.append(f"الفوليوم غير كافٍ للتأكيد (المطلوب 1.25x، الحالي {volume_ratio}x)")
 
-        # Rolling VWAP estimate based on closed 1H candles.
         n = min(24, len(c1) - 1)
         typical = (h1[-n-1:-1] + l1[-n-1:-1] + c1[-n-1:-1]) / 3
         vwap_vol = v1[-n-1:-1]
@@ -221,7 +237,6 @@ class StrategyEngine:
         resistance = float(np.max(h1[-11:-1]))
         details["support"], details["resistance"] = support, resistance
 
-        # Simple liquidity sweep / FVG context on completed 15m bars.
         if len(c15) >= 5:
             if h15[-2] > h15[-3] and c15[-2] < h15[-3]:
                 details["sweep"] = "BEARISH_SWEEP"
@@ -235,9 +250,8 @@ class StrategyEngine:
         if details["sweep"] != "NONE":
             if (direction == "LONG" and details["sweep"] == "BULLISH_SWEEP") or (direction == "SHORT" and details["sweep"] == "BEARISH_SWEEP"):
                 score += 5
-                confirmations.append(f"سحب سيولة متوافق: {details['sweep']}")
+                confirmations.append(f"LuxAlgo SMC - سحب سيولة متوافق: {details['sweep']}")
 
-        # BTC trend is a risk context, not a standalone entry signal.
         btc_trend = "UNKNOWN"
         if self.valid_ohlcv(ohlcv_btc_1h, 12):
             _, bh, bl, bc, _ = self.arrays(ohlcv_btc_1h)
@@ -258,8 +272,6 @@ class StrategyEngine:
             (direction == "LONG" and bos == "BULLISH_BOS") or
             (direction == "SHORT" and bos == "BEARISH_BOS")
         )
-        # Strict mode: require aligned 4H/1H trend, confirmed 15m retest,
-        # strong relative volume, and a 1H BOS in the same direction.
         entry_valid = (
             direction in ("LONG", "SHORT")
             and br_ok
