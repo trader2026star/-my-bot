@@ -195,11 +195,11 @@ class StrategyEngine:
         latest_vol = float(v15[-2])
         volume_ratio = round(latest_vol / avg_vol, 2) if avg_vol > 0 else 0.0
         details["volume_ratio"] = volume_ratio
-        if volume_ratio >= 1.1:
+        if volume_ratio >= 1.25:
             score += 10
-            confirmations.append(f"فوليوم 15M أعلى من المتوسط ({volume_ratio}x)")
+            confirmations.append(f"فوليوم 15M قوي نسبيًا ({volume_ratio}x)")
         else:
-            excluded.append(f"فوليوم 15M غير مؤكد ({volume_ratio}x)")
+            excluded.append(f"الفوليوم غير كافٍ للتأكيد (المطلوب 1.25x على الأقل، الحالي {volume_ratio}x)")
 
         # Rolling VWAP estimate based on closed 1H candles.
         n = min(24, len(c1) - 1)
@@ -254,10 +254,23 @@ class StrategyEngine:
         details["btc_trend"] = btc_trend
 
         score = int(max(0, min(100, score)))
-        entry_valid = direction in ("LONG", "SHORT") and br_ok and volume_ratio >= 1.0
-        if not entry_valid or score < 65:
+        bos_ok = (
+            (direction == "LONG" and bos == "BULLISH_BOS") or
+            (direction == "SHORT" and bos == "BEARISH_BOS")
+        )
+        # Strict mode: require aligned 4H/1H trend, confirmed 15m retest,
+        # strong relative volume, and a 1H BOS in the same direction.
+        entry_valid = (
+            direction in ("LONG", "SHORT")
+            and br_ok
+            and volume_ratio >= 1.25
+            and bos_ok
+        )
+        if not bos_ok:
+            excluded.append("فلتر الدخول: لا يوجد BOS على 1H في اتجاه الصفقة")
+        if not entry_valid or score < 75:
             signal = "NEUTRAL"
-            excluded.append("شروط الدخول أو التقييم لم تكتمل")
+            excluded.append("لم تكتمل شروط الدخول الصارمة: الاتجاه + إعادة الاختبار + الفوليوم + BOS")
         else:
             signal = direction
 
