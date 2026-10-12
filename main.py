@@ -149,9 +149,13 @@ def process_symbol(symbol, engine, btc_ohlcv):
             ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv
         )
 
-        if signal not in ("LONG", "SHORT") or score < 65:
+        if signal not in ("LONG", "SHORT") or score < 75:
             return
-        if not details.get("entry_valid", False) or volume_ratio < 1.0:
+        if not details.get("entry_valid", False) or volume_ratio < 1.25:
+            return
+        expected_bos = "BULLISH_BOS" if signal == "LONG" else "BEARISH_BOS"
+        if details.get("bos") != expected_bos:
+            print(f"Strict BOS filter rejected {symbol}: {details.get('bos')}")
             return
         if recent_signal(symbol, signal):
             return
@@ -197,8 +201,9 @@ def background_scanner():
     time.sleep(10)
     send_telegram_message(
         "🤖 *تم تشغيل استراتيجية Breakout + Retest*\n"
-        "الفحص يشمل اتجاه 4H و1H، كسر وإعادة اختبار على 15M، "
-        "الفوليوم وإدارة المخاطر.\n"
+        "الفحص يشترط توافق 4H و1H، كسر وإعادة اختبار 15M، "
+        "BOS ساعة في نفس الاتجاه، وفوليوم 1.25x على الأقل، "
+        "مع إدارة المخاطر.\n"
         "الإشارات احتمالية وليست ضمانًا للربح."
     )
     engine = StrategyEngine()
