@@ -1,6 +1,6 @@
 # ==========================================
 # MY EXPERT CRYPTO BOT
-# BREAKOUT + RETEST SCANNER
+# BREAKOUT + RETEST SCANNER + EDGE ALGO & SMC
 # File: main.py
 # ==========================================
 
@@ -30,7 +30,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - Breakout Retest Scanner is running!"
+    return "My Expert Crypto Bot - Breakout Retest Scanner with Edge Algo & SMC is running!"
 
 
 @app.route("/health")
@@ -73,8 +73,17 @@ def is_candidate_market(symbol, market):
         return False
     if not symbol.endswith("/USDT:USDT"):
         return False
+    
     base = symbol.split("/")[0].upper()
-    return base not in {"EUR", "GBP", "AUD", "NZD", "CAD", "CHF", "JPY", "FX"}
+    
+    # 🚫 منع العملات الوهمية، الأسهم المدمجة، والرموز التي تحتوي على أرقام أو كلمات غير مألوفة
+    fake_keywords = {"AAPL", "TSLA", "MSFT", "AMZN", "GOOG", "NFLX", "NVDA", "META", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF", "JPY", "FX"}
+    if any(keyword in base for keyword in fake_keywords):
+        return False
+    if any(char.isdigit() for char in base):
+        return False
+        
+    return True
 
 
 def valid_price(value):
@@ -114,7 +123,7 @@ def build_message(symbol, signal, score, volume_ratio, entry,
     ) or "• لا توجد ملاحظات إضافية"
 
     return (
-        "📊 *إشارة كسر وإعادة اختبار — ليست ضمانًا للربح*\n\n"
+        "📊 *إشارة كسر وإعادة اختبار (مع Edge Algo & SMC) — ليست ضمانًا للربح*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
         f"⚖️ *الاتجاه:* `{signal}`\n"
         f"⭐ *التقييم:* `{score}/100`\n"
@@ -132,7 +141,7 @@ def build_message(symbol, signal, score, volume_ratio, entry,
         f"🧱 *BOS:* `{details.get('bos')}`\n"
         f"💧 *Liquidity Sweep:* `{details.get('sweep')}`\n"
         f"🟦 *FVG:* `{details.get('fvg')}`\n\n"
-        f"✅ *التأكيدات:*\n{confirmations}\n\n"
+        f"✅ *التأكيدات (Edge Algo & SMC):*\n{confirmations}\n\n"
         f"⚠️ *الملاحظات:*\n{exclusions}\n\n"
         "راجع السبريد والرافعة وحجم الصفقة قبل التنفيذ. "
         "قد يتغير السعر قبل وصول الإشعار."
@@ -186,7 +195,6 @@ def process_symbol(symbol, engine, btc_ohlcv):
             sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details
         )
 
-        # Cooldown begins only after Telegram confirms delivery.
         if send_telegram_message(message):
             mark_signal(symbol, signal)
             print(f"Sent {symbol} {signal}; score={score}, RR={rr}")
@@ -200,10 +208,8 @@ def process_symbol(symbol, engine, btc_ohlcv):
 def background_scanner():
     time.sleep(10)
     send_telegram_message(
-        "🤖 *تم تشغيل استراتيجية Breakout + Retest*\n"
-        "الفحص يشترط توافق 4H و1H، كسر وإعادة اختبار 15M، "
-        "BOS ساعة في نفس الاتجاه، وفوليوم 1.25x على الأقل، "
-        "مع إدارة المخاطر.\n"
+        "🤖 *تم تشغيل استراتيجية Breakout + Retest (مع Edge Algo & SMC)*\n"
+        "تم تفعيل فلاتر منع العملات الوهمية والأسهم المدمجة بنجاح.\n"
         "الإشارات احتمالية وليست ضمانًا للربح."
     )
     engine = StrategyEngine()
