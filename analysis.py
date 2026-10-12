@@ -50,15 +50,10 @@ class StrategyEngine:
         hour = now_utc.hour
         minute = now_utc.minute
 
-        # 1. نافذة افتتاح الشمعة اليومية (03:00 فجراً مكة)
         if hour == 0 and minute <= 45:
             return True, "افتتاح الشمعة اليومية (03:00 فجراً مكة)"
-        
-        # 2. نافذة جلسة لندن (من 10:00 صباحاً إلى 1:00 ظهراً مكة)
         elif 7 <= hour < 10:
             return True, "جلسة افتتاح لندن (من 10:00 صباحاً مكة)"
-        
-        # 3. نافذة جلسة نيويورك (من 03:00 عصراً إلى 6:00 مساءً مكة)
         elif 12 <= hour < 15:
             return True, "جلسة افتتاح نيويورك (من 03:00 عصراً مكة)"
         
@@ -85,12 +80,12 @@ class StrategyEngine:
         return "NEUTRAL"
 
     def detect_smc_structure_15m(self, opens, highs, lows, closes, volumes, daily_high, daily_low):
-        """فحص الشروط المؤسسية الكاملة على فريم 15M بعد كنس السيولة"""
+        """فحص الشروط المؤسسية الكاملة على فريم 15M اعتماداً حصرياً على الشموع المكتملة"""
         n = len(closes)
         if n < 10:
             return "NONE", False, False, False, 0.0
 
-        # الشموع الأخيرة
+        # الاعتماد على الشموع المكتملة تماماً لتجنب الإشارات الوهمية
         last_h = float(highs[-2])
         last_l = float(lows[-2])
         last_o = float(opens[-2])
@@ -104,21 +99,21 @@ class StrategyEngine:
         bullish_sweep = (last_l <= daily_low or prev_l <= daily_low) and (last_c > last_o)
 
         # 2. فحص كسر الهيكل (CHoCH / MSS) على 15M
-        recent_low_swing = float(np.min(lows[-8:-2]))
-        recent_high_swing = float(np.max(highs[-8:-2]))
+        recent_low_swing = float(np.min(lows[-9:-2]))
+        recent_high_swing = float(np.max(highs[-9:-2]))
 
-        bearish_choch = bearish_sweep and (last_c < recent_low_swing or float(closes[-1]) < recent_low_swing)
-        bullish_choch = bullish_sweep and (last_c > recent_high_swing or float(closes[-1]) > recent_high_swing)
+        bearish_choch = bearish_sweep and (last_c < recent_low_swing or float(closes[-2]) < recent_low_swing)
+        bullish_choch = bullish_sweep and (last_c > recent_high_swing or float(closes[-2]) > recent_high_swing)
 
-        # 3. فحص الـ FVG أو Order Block
+        # 3. فحص الـ FVG أو Order Block بناءً على الشموع المكتملة
         has_fvg = False
-        if bearish_sweep and float(highs[-1]) < float(lows[-3]):
+        if bearish_sweep and float(highs[-2]) < float(lows[-4]):
             has_fvg = True
-        elif bullish_sweep and float(lows[-1]) > float(highs[-3]):
+        elif bullish_sweep and float(lows[-2]) > float(highs[-4]):
             has_fvg = True
 
         # 4. فحص الفوليوم
-        avg_vol = float(np.mean(volumes[-10:-2])) if len(volumes) >= 10 else 1.0
+        avg_vol = float(np.mean(volumes[-11:-2])) if len(volumes) >= 11 else 1.0
         curr_vol = float(volumes[-2])
         vol_ratio = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
         good_volume = vol_ratio >= 1.1
@@ -177,9 +172,15 @@ class StrategyEngine:
 
         score = 40
 
+        # ربط توافق السويب مع الاتجاه الأسبوعي لتعزيز جودة النقاط
+        is_pro_trend = (signal == trend_weekly) if trend_weekly in ("LONG", "SHORT") else False
+
         if signal == "SHORT":
             confirmations.append("تم رصد كنس لسيولة قمة اليوم السابق مع شمعة رفض هابطة")
             score += 25
+            if is_pro_trend:
+                confirmations.append("السويب متوافق مع الاتجاه الهابط الرئيسي على الإطار الأسبوعي (+10 نقاط)")
+                score += 10
             if choch_valid:
                 confirmations.append("تأكيد كسر الهيكل (CHoCH / MSS) لصالح الهبوط")
                 score += 15
@@ -193,6 +194,9 @@ class StrategyEngine:
         elif signal == "LONG":
             confirmations.append("تم رصد كنس لسيولة قاع اليوم السابق مع شمعة شراء ارتدادية")
             score += 25
+            if is_pro_trend:
+                confirmations.append("السويب متوافق مع الاتجاه الصاعد الرئيسي على الإطار الأسبوعي (+10 نقاط)")
+                score += 10
             if choch_valid:
                 confirmations.append("تأكيد كسر الهيكل (CHoCH / MSS) لصالح الصعود")
                 score += 15
@@ -207,11 +211,10 @@ class StrategyEngine:
 
         score = int(max(0, min(100, round(score))))
         
-        # فلتر الدخول الصارم: يجب أن تتجاوز النقاط 75 وتتطابق الشروط الهيكلية
         entry_valid = (signal in ("LONG", "SHORT") and score >= 75)
 
         if not entry_valid:
-            excluded.append("شروط التأكيد الهيكلي الفائقة (CHoCH / Volume / FVG) لم تكتمل بعد")
+            excluded.append("شروط التأكيد الهيكلي الفائقة (CHoCH / Volume / FVG / الاتجاه) لم تكتمل بالقدر الكافي")
 
         details = {
             "trend_weekly": trend_weekly,
@@ -241,32 +244,26 @@ class StrategyEngine:
             raise ValueError("سعر دخول غير صالح")
 
         if direction in ("LONG", "BUY"):
-            # الوقف تحت القاع المسحوب بذيل حماية
             sweep_low = min(float(np.min(lows[-4:])), daily_low) if daily_low > 0 else float(np.min(lows[-4:]))
             stop = sweep_low * 0.998 if sweep_low < entry else entry * 0.985
             
-            # Target 1: 50% من الطريق للقمة اليومية السابقة
-            # Target 2: القمة اليومية السابقة الكاملة
             target_high = daily_high if daily_high > entry else entry * 1.04
             total_distance = abs(target_high - entry)
             
             tp1 = entry + (total_distance * 0.5)
             tp2 = target_high
-            tp3 = tp2
+            tp3 = target_high * 1.015  # امتداد إضافي للهدف الثالث
 
         elif direction in ("SHORT", "SELL"):
-            # الوقف فوق القمة المسحوبة بذيل حماية
             sweep_high = max(float(np.max(highs[-4:])), daily_high) if daily_high > 0 else float(np.max(highs[-4:]))
             stop = sweep_high * 1.002 if sweep_high > entry else entry * 1.015
             
-            # Target 1: 50% من الطريق للقاع اليومي السابق
-            # Target 2: القاع اليومي السابق الكامل
             target_low = daily_low if daily_low < entry else entry * 0.96
             total_distance = abs(entry - target_low)
             
             tp1 = entry - (total_distance * 0.5)
             tp2 = target_low
-            tp3 = tp2
+            tp3 = target_low * 0.985  # امتداد إضافي للهدف الثالث
 
         else:
             raise ValueError("الاتجاه يجب أن يكون LONG أو SHORT")
