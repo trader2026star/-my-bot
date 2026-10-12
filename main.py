@@ -65,9 +65,10 @@ def send_telegram_message(message):
 
 
 def is_candidate_market(symbol, market):
+    """تصفية مرنة وشاملة لأزواج العقود الآجلة المسواة بـ USDT على BingX"""
     if not market.get("active", True) or not market.get("swap", False):
         return False
-    return symbol.endswith("/USDT:USDT")
+    return symbol.endswith("/USDT") or ":USDT" in symbol
 
 
 def valid_price(value):
@@ -86,9 +87,12 @@ def format_price(value):
 
 
 def get_entry_price(symbol):
-    ticker = bingx.fetch_ticker(symbol)
-    price = ticker.get("last") or ticker.get("close")
-    return float(price) if valid_price(price) else None
+    try:
+        ticker = bingx.fetch_ticker(symbol)
+        price = ticker.get("last") or ticker.get("close")
+        return float(price) if valid_price(price) else None
+    except Exception:
+        return None
 
 
 def already_sent_recently(symbol, signal):
@@ -129,11 +133,26 @@ def build_signal_message(
     )
 
 
+def safe_fetch_ohlcv(symbol, timeframe, limit, retries=3, delay=1.5):
+    """آلية إعادة المحاولة لطلبات الـ API لمنع انقطاع البوت عند حدوث مشاكل شبكة مؤقتة"""
+    for attempt in range(retries):
+        try:
+            data = bingx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if data:
+                return data
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                pass
+    return None
+
+
 def process_symbol(symbol, engine):
     try:
-        ohlcv_weekly = bingx.fetch_ohlcv(symbol, timeframe="1w", limit=10)
-        ohlcv_daily = bingx.fetch_ohlcv(symbol, timeframe="1d", limit=10)
-        ohlcv_15m = bingx.fetch_ohlcv(symbol, timeframe="15m", limit=30)
+        ohlcv_weekly = safe_fetch_ohlcv(symbol, "1w", 10)
+        ohlcv_daily = safe_fetch_ohlcv(symbol, "1d", 10)
+        ohlcv_15m = safe_fetch_ohlcv(symbol, "15m", 30)
 
         if not ohlcv_weekly or not ohlcv_daily or not ohlcv_15m:
             return
@@ -163,13 +182,12 @@ def process_symbol(symbol, engine):
             entry, signal, highs, lows, daily_high, daily_low
         )
 
-        # فلاتر حماية صارمة لسلامة الأرقام والاتجاه
         if signal == "SHORT" and (sl <= entry or tp1 >= entry):
             return
         if signal == "LONG" and (sl >= entry or tp1 <= entry):
             return
 
-        if sl_pct <= 0.1 or sl_pct > 5.5:  # استبعاد الأوقاف الشاسعة أو المتناهية الصغر
+        if sl_pct <= 0.1 or sl_pct > 5.5:
             return
 
         message = build_signal_message(
@@ -205,7 +223,7 @@ def background_scanner():
 
             for symbol in symbols:
                 process_symbol(symbol, engine)
-                time.sleep(0.35)
+                time.sleep(0.4) # تأخير محسوب لمنع حظر الـ Rate Limit
 
             time.sleep(180)
         except Exception as exc:
