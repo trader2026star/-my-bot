@@ -24,30 +24,63 @@ def send_telegram_alert(message):
 
 def analyze_and_execute(symbol):
     try:
-        # جلب أخر 21 شمعة على فريم 15 دقيقة
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=21)
-        if not ohlcv or len(ohlcv) < 21:
+        # جلب أخر شمعة ومقارنتها بفارق الحركة والانفجار السعري
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=25)
+        if not ohlcv or len(ohlcv) < 25:
             return
 
-        last_closed_candle = ohlcv[-2]  
-        prev_candles = ohlcv[:-2]       
+        last_candle = ohlcv[-1]
+        prev_candles = ohlcv[:-1]
 
-        close_price = last_closed_candle[4]
-        volume = last_closed_candle[5]
+        open_price = last_candle[1]
+        close_price = last_candle[4]
+        high_price = last_candle[2]
+        low_price = last_candle[3]
+        volume = last_candle[5]
 
         avg_volume = sum(c[5] for c in prev_candles) / len(prev_candles)
         recent_high = max(c[2] for c in prev_candles)
         recent_low = min(c[3] for c in prev_candles)
 
-        high_volume = volume >= (avg_volume * 1.5)
-        closed_above = close_price > recent_high
-        closed_below = close_price < recent_low
-
-        if closed_above and high_volume:
-            msg = f"🚀 *إشارة LONG مؤكدة (إغلاق شمعة)*\nالعملة: `{symbol}`\nسعر الدخول: `{close_price}`"
+        # فلتر الزخم الانفجاري والفوليوم العالي (نفس منطق رادار العملات الصاعدة والهابطة)
+        is_pumping = volume >= (avg_volume * 2.0)
+        
+        # إذا حدث صنف انفجاري واخترق القمة ثم بدأ يغلق تحتها (فخ صاعد -> SHORT)
+        if high_price > recent_high and close_price < recent_high and is_pumping:
+            entry_price = close_price
+            sl = high_price * 1.01 # وقف خسارة فوق قمة الذيل بقليل
+            tp1 = entry_price * 0.98
+            tp2 = entry_price * 0.95
+            tp3 = entry_price * 0.92
+            
+            msg = (
+                f"🚨 *إشارة PHOENIX SHORT مؤكدة*\n"
+                f" العملة: `{symbol}`[span_9](start_span)[span_9](end_span)\n"
+                f" السعر الحالي: `{entry_price}`[span_10](start_span)[span_10](end_span)\n"
+                f" وقف الخسارة: `{sl:.4f}`[span_11](start_span)[span_11](end_span)\n"
+                f" 🎯 الهدف الأول: `{tp1:.4f}`\n"
+                f" 🎯 الهدف الثاني: `{tp2:.4f}`\n"
+                f" 🎯 الهدف الثالث: `{tp3:.4f}`"
+            )
             send_telegram_alert(msg)
-        elif closed_below and high_volume:
-            msg = f"📉 *إشارة SHORT مؤكدة (إغلاق شمعة)*\nالعملة: `{symbol}`\nسعر الدخول: `{close_price}`"
+
+        # إذا حدث هبوط انفجاري واخترق القاع ثم ارتد (فخ هابط -> LONG)
+        elif low_price < recent_low and close_price > recent_low and is_pumping:
+            entry_price = close_price
+            sl = low_price * 0.99
+            tp1 = entry_price * 1.02
+            tp2 = entry_price * 1.05
+            tp3 = entry_price * 1.08
+            
+            msg = (
+                f"🚀 *إشارة PHOENIX LONG مؤكدة*\n"
+                f" العملة: `{symbol}`\n"
+                f" السعر الحالي: `{entry_price}`\n"
+                f" وقف الخسارة: `{sl:.4f}`\n"
+                f" 🎯 الهدف الأول: `{tp1:.4f}`\n"
+                f" 🎯 الهدف الثاني: `{tp2:.4f}`\n"
+                f" 🎯 الهدف الثالث: `{tp3:.4f}`"
+            )
             send_telegram_alert(msg)
 
     except Exception as e:
