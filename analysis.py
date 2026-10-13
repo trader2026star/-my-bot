@@ -1,13 +1,13 @@
 # ==========================================
 # MY EXPERT CRYPTO BOT - STRATEGY ENGINE
-# BREAKOUT + RETEST + EDGE ALGO + SMC + PRICE CHASING FILTER
+# BREAKOUT + RETEST + EDGE ALGO + SMC + PRICE CHASING FILTER + CANDLE QUALITY FILTER
 # ==========================================
 
 import numpy as np
 
 
 class StrategyEngine:
-    """OHLCV-only multi-timeframe strategy with price chasing protection."""
+    """OHLCV-only multi-timeframe strategy with price chasing protection and candle quality filter."""
 
     def __init__(self):
         self.min_candles = 20
@@ -141,7 +141,7 @@ class StrategyEngine:
 
     @classmethod
     def _break_retest(cls, opens, highs, lows, closes, volumes, direction, current_price=None):
-        """Detect breakout/retest with live price chasing protection."""
+        """Detect breakout/retest with live price chasing protection and candle quality filter."""
         o, h, l, c, v = (np.asarray(x, dtype=float) for x in (opens, highs, lows, closes, volumes))
         n = min(map(len, (o, h, l, c, v)))
         if n < 15:
@@ -152,8 +152,23 @@ class StrategyEngine:
         lookback = min(10, n - 7)
         level_high = float(np.max(h[-lookback-1:-1]))
         level_low = float(np.min(l[-lookback-1:-1]))
-        last_range = max(float(h[-1] - l[-1]), float(c[-1]) * 1e-9)
-        body_ratio = abs(float(c[-1] - o[-1])) / last_range
+        
+        # فلتر جودة شمعة الاختراق (تجنب الذيول الطويلة ورفض السعر / الفيك أوت)
+        last_open, last_close = float(o[-1]), float(c[-1])
+        last_high, last_low = float(h[-1]), float(l[-1])
+        candle_total_range = max(last_high - last_low, 1e-12)
+        body_size = abs(last_close - last_open)
+        body_ratio = body_size / candle_total_range
+        
+        upper_wick = last_high - max(last_open, last_close)
+        lower_wick = min(last_open, last_close) - last_low
+        
+        # إذا كان اتجاه صاعد (LONG)، نمنع الدخول إذا كان الذيل العلوي كبيراً (رفض السعر)
+        if direction == "LONG" and upper_wick > body_size * 0.8:
+            return False, level_high, "شمعة الاختراق بها ذيل علوي كبير (رفض السعر / فيك أوت)"
+        # إذا كان اتجاه هابط (SHORT)، نمنع الدخول إذا كان الذيل السفلي كبيراً
+        if direction == "SHORT" and lower_wick > body_size * 0.8:
+            return False, level_low, "شمعة الكسر بها ذيل سفلي كبير (رفض السعر / فيك أوت)"
 
         base_level = level_high if direction == "LONG" else level_low
 
@@ -168,10 +183,10 @@ class StrategyEngine:
                     return False, base_level, "السعر الحالي ابتعد كثيراً عن مستوى الكسر (تجنب المطاردة)"
 
         if direction == "LONG":
-            fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.30
+            fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.40  # تم رفع شرط حجم الجسم لزيادة الصرامة
             extension = (c[-1] - level_high) / max(atr, c[-1] * 1e-9)
             if fresh and extension <= 1.6:
-                return True, level_high, "اختراق صاعد حديث بإغلاق؛ الامتداد ضمن الحد"
+                return True, level_high, "اختراق صاعد حديث بإغلاق قوي؛ الامتداد ضمن الحد"
             if extension > 1.6:
                 return False, level_high, "السعر ممتد بعد الاختراق؛ تجنب مطاردة الحركة"
 
@@ -193,10 +208,10 @@ class StrategyEngine:
             return False, level_high, "لا يوجد اختراق حديث أو إعادة اختبار مؤكدة"
 
         if direction == "SHORT":
-            fresh = c[-1] < level_low and c[-1] < o[-1] and body_ratio >= 0.30
+            fresh = c[-1] < level_low and c[-1] < o[-1] and body_ratio >= 0.40
             extension = (level_low - c[-1]) / max(atr, c[-1] * 1e-9)
             if fresh and extension <= 1.6:
-                return True, level_low, "كسر هابط حديث بإغلاق؛ الامتداد ضمن الحد"
+                return True, level_low, "كسر هابط حديث بإغلاق قوي؛ الامتداد ضمن الحد"
             if extension > 1.6:
                 return False, level_low, "السعر ممتد بعد الكسر؛ تجنب مطاردة الحركة"
 
@@ -272,7 +287,6 @@ class StrategyEngine:
         details["candidate_direction"] = direction
         confirmations.append("توافق الاتجاه على 4H و1H")
         
-        # تمرير سعر السوق الحالي لدالة فحص الاختراق لمنع المطاردة
         br_ok, br_level, br_reason = self._break_retest(o15, h15, l15, c15, v15, direction, current_price=current_price)
         details["break_retest"], details["break_level"], details["retest_advice"] = br_ok, br_level, br_reason
         details["retest_bos_valid"] = bool(br_ok and br_reason.startswith("إعادة اختبار ناجحة"))
