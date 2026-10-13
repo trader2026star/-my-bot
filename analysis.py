@@ -148,71 +148,72 @@ class StrategyEngine:
 
     @classmethod
     def _break_retest(cls, opens, highs, lows, closes, volumes, direction):
-        """Detect either a fresh breakout or a real breakout followed by a retest."""
+        """Detect either a fresh breakout or a retest of a breakout from the last few candles."""
         o, h, l, c, v = (np.asarray(x, dtype=float) for x in (opens, highs, lows, closes, volumes))
         n = min(map(len, (o, h, l, c, v)))
         if n < 15:
-            return False, None, "بيانات غير كافية لاكتشاف الكسر وإعادة الاختبار", False
+            return False, None, "بيانات غير كافية لاكتشاف الكسر وإعادة الاختبار"
         o, h, l, c, v = (x[-n:] for x in (o, h, l, c, v))
         atr = cls.calculate_atr(h, l, c)
-        tolerance = max((atr / max(c[-1], 1e-12)) * 0.25 if atr > 0 else 0, 0.0015)
-        lookback = min(10, n - 2)
+        tolerance = max((atr / max(c[-1], 1e-12)) * 0.25 if atr > 0 else 0, 0.0020)
+        lookback = min(10, n - 7)
         level_high = float(np.max(h[-lookback-1:-1]))
         level_low = float(np.min(l[-lookback-1:-1]))
         last_range = max(float(h[-1] - l[-1]), float(c[-1]) * 1e-9)
         body_ratio = abs(float(c[-1] - o[-1])) / last_range
 
         if direction == "LONG":
-            fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.35
+            fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.30
             extension = (c[-1] - level_high) / max(atr, c[-1] * 1e-9)
-            if fresh and extension <= 1.25:
-                return True, level_high, "اختراق صاعد حديث بإغلاق؛ الامتداد ليس مفرطًا", False
-            # Find a prior confirmed close above its own preceding range, then a later retest.
-            prior_break = False
-            prior_level = None
-            for idx in range(max(10, n - 6), n - 1):
-                left = max(0, idx - 10)
-                if idx - left < 5:
+            if fresh and extension <= 1.6:
+                return True, level_high, "اختراق صاعد حديث بإغلاق؛ الامتداد ضمن الحد"
+            if extension > 1.6:
+                return False, level_high, "السعر ممتد بعد الاختراق؛ تجنب مطاردة الحركة"
+
+            # Look for an actual prior breakout candle. The previous implementation compared
+            # closes with the maximum high of the same window, making the retest test impossible.
+            first_j = max(2, n - 6)
+            for j in range(n - 2, first_j - 1, -1):
+                left = max(0, j - 10)
+                if j - left < 5:
                     continue
-                lvl = float(np.max(h[left:idx]))
-                br_range = max(float(h[idx] - l[idx]), float(c[idx]) * 1e-9)
-                br_body = abs(float(c[idx] - o[idx])) / br_range
-                if c[idx] > lvl and c[idx] > o[idx] and br_body >= 0.30:
-                    prior_break, prior_level = True, lvl
-            if prior_break and prior_level is not None:
-                retest = (l[-1] <= prior_level * (1 + tolerance) and c[-1] >= prior_level
-                          and c[-1] > o[-1] and (c[-1] - prior_level) / c[-1] <= 0.008)
-                if retest:
-                    return True, prior_level, "كسر صاعد سابق ثم إعادة اختبار للمستوى مع إغلاق صاعد", True
-            if extension > 1.25:
-                return False, level_high, "السعر ممتد بعد الاختراق؛ تجنب مطاردة الحركة", False
-            return False, level_high, "لا يوجد اختراق حديث أو إعادة اختبار مؤكدة", False
+                old_level = float(np.max(h[left:j]))
+                broke = c[j] > old_level and c[j] > o[j]
+                if not broke:
+                    continue
+                retest_now = (l[-1] <= old_level * (1 + tolerance)
+                              and c[-1] >= old_level
+                              and c[-1] > o[-1]
+                              and (old_level - l[-1]) / max(old_level, 1e-12) <= 0.012)
+                if retest_now:
+                    return True, old_level, "إعادة اختبار ناجحة لمستوى اختراق سابق"
+            return False, level_high, "لا يوجد اختراق حديث أو إعادة اختبار مؤكدة"
 
         if direction == "SHORT":
-            fresh = c[-1] < level_low and c[-1] < o[-1] and body_ratio >= 0.35
+            fresh = c[-1] < level_low and c[-1] < o[-1] and body_ratio >= 0.30
             extension = (level_low - c[-1]) / max(atr, c[-1] * 1e-9)
-            if fresh and extension <= 1.25:
-                return True, level_low, "كسر هابط حديث بإغلاق؛ الامتداد ليس مفرطًا", False
-            prior_break = False
-            prior_level = None
-            for idx in range(max(10, n - 6), n - 1):
-                left = max(0, idx - 10)
-                if idx - left < 5:
+            if fresh and extension <= 1.6:
+                return True, level_low, "كسر هابط حديث بإغلاق؛ الامتداد ضمن الحد"
+            if extension > 1.6:
+                return False, level_low, "السعر ممتد بعد الكسر؛ تجنب مطاردة الحركة"
+
+            first_j = max(2, n - 6)
+            for j in range(n - 2, first_j - 1, -1):
+                left = max(0, j - 10)
+                if j - left < 5:
                     continue
-                lvl = float(np.min(l[left:idx]))
-                br_range = max(float(h[idx] - l[idx]), float(c[idx]) * 1e-9)
-                br_body = abs(float(c[idx] - o[idx])) / br_range
-                if c[idx] < lvl and c[idx] < o[idx] and br_body >= 0.30:
-                    prior_break, prior_level = True, lvl
-            if prior_break and prior_level is not None:
-                retest = (h[-1] >= prior_level * (1 - tolerance) and c[-1] <= prior_level
-                          and c[-1] < o[-1] and (prior_level - c[-1]) / c[-1] <= 0.008)
-                if retest:
-                    return True, prior_level, "كسر هابط سابق ثم إعادة اختبار للمستوى مع إغلاق هابط", True
-            if extension > 1.25:
-                return False, level_low, "السعر ممتد بعد الكسر؛ تجنب مطاردة الحركة", False
-            return False, level_low, "لا يوجد كسر حديث أو إعادة اختبار مؤكدة", False
-        return False, None, "الاتجاه غير واضح", False
+                old_level = float(np.min(l[left:j]))
+                broke = c[j] < old_level and c[j] < o[j]
+                if not broke:
+                    continue
+                retest_now = (h[-1] >= old_level * (1 - tolerance)
+                              and c[-1] <= old_level
+                              and c[-1] < o[-1]
+                              and (h[-1] - old_level) / max(old_level, 1e-12) <= 0.012)
+                if retest_now:
+                    return True, old_level, "إعادة اختبار ناجحة لمستوى كسر سابق"
+            return False, level_low, "لا يوجد كسر حديث أو إعادة اختبار مؤكدة"
+        return False, None, "الاتجاه غير واضح"
 
     def _storm101_whale_check(self, opens, highs, lows, closes, volumes, direction):
         # OHLCV cannot prove whale/institutional activity; this is a volume/impulse check only.
@@ -237,7 +238,6 @@ class StrategyEngine:
             "volume_ratio": 0.0, "vwap_price": 0.0, "support": None, "resistance": None,
             "retest_advice": "انتظار تأكيد فعلي", "entry_valid": False, "btc_trend": "UNKNOWN",
             "confirmations": [], "reasons_excluded": [], "momentum": False,
-            "retest_bos_valid": False,
         }
         empty = ([], [], [])
         if symbol and not self.is_valid_symbol(symbol):
@@ -268,31 +268,38 @@ class StrategyEngine:
         if trend4 != direction:
             details["reasons_excluded"] = ["اتجاه 4H لا يؤكد اتجاه 1H"]
             return "NEUTRAL", 0, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
+        details["candidate_direction"] = direction
         confirmations.append("توافق الاتجاه على 4H و1H")
-        br_ok, br_level, br_reason, retest_bos_valid = self._break_retest(o15, h15, l15, c15, v15, direction)
+        br_ok, br_level, br_reason = self._break_retest(o15, h15, l15, c15, v15, direction)
         details["break_retest"], details["break_level"], details["retest_advice"] = br_ok, br_level, br_reason
-        details["retest_bos_valid"] = retest_bos_valid
+        details["retest_bos_valid"] = bool(br_ok and br_reason.startswith("إعادة اختبار ناجحة"))
         expected_bos = "BULLISH_BOS" if direction == "LONG" else "BEARISH_BOS"
-        structure_confirmed = details["bos"] == expected_bos or retest_bos_valid
+        structure_ok = details["bos"] == expected_bos or details["retest_bos_valid"]
         if details["bos"] == expected_bos:
             confirmations.append("BOS يؤكد الاتجاه على 15M")
-        elif retest_bos_valid:
-            confirmations.append("كسر سابق مؤكد وإعادة اختبار ناجحة على 15M")
+        elif details["retest_bos_valid"]:
+            confirmations.append("كسر هيكلي سابق ثم إعادة اختبار مؤكدة")
         else:
-            excluded.append("لا يوجد BOS حديث أو كسر سابق يتبعه إعادة اختبار مؤكدة على 15M")
+            excluded.append("لا يوجد BOS حديث أو كسر سابق أعقبه إعادة اختبار")
         if details["mss"] in (("BULLISH_MSS" if direction == "LONG" else "BEARISH_MSS"),):
             confirmations.append("MSS يؤيد التحول الهيكلي")
         if details["sweep"] == ("SELL_SIDE_SWEEP" if direction == "LONG" else "BUY_SIDE_SWEEP"):
             confirmations.append("سحب سيولة متوافق مع الاتجاه")
         if not br_ok:
             excluded.append(br_reason)
-        if volume_ratio >= 1.25:
+        if volume_ratio >= 1.15:
             confirmations.append(f"حجم تداول مرتفع نسبيًا ({volume_ratio}x)")
         else:
             excluded.append(f"حجم التداول دون حد التأكيد ({volume_ratio}x)")
         momentum = False
         if len(c15) >= 5:
             momentum = (c15[-1] > c15[-2] and c15[-1] > c15[-4]) if direction == "LONG" else (c15[-1] < c15[-2] and c15[-1] < c15[-4])
+            # On a valid retest, allow the rejection candle itself to confirm momentum.
+            last_range = max(float(h15[-1] - l15[-1]), float(c15[-1]) * 1e-9)
+            last_body = abs(float(c15[-1] - o15[-1])) / last_range
+            candle_aligned = c15[-1] > o15[-1] if direction == "LONG" else c15[-1] < o15[-1]
+            if br_ok and details["retest_bos_valid"] and candle_aligned and last_body >= 0.30:
+                momentum = True
         details["momentum"] = momentum
         if momentum:
             confirmations.append("الزخم قصير المدى متوافق")
@@ -313,9 +320,9 @@ class StrategyEngine:
             excluded.append(activity_reason)
         # Score is based on distinct evidence; correlated volume checks are capped together.
         score = 20
-        score += 20 if structure_confirmed else 0
+        score += 20 if structure_ok else 0
         score += 15 if br_ok else 0
-        score += 10 if volume_ratio >= 1.25 else 0
+        score += 10 if volume_ratio >= 1.15 else 0
         score += 10 if momentum else 0
         score += 5 if btc_aligned else 0
         score += 5 if details["mss"] != "NONE" else 0
@@ -323,17 +330,20 @@ class StrategyEngine:
         score += 5 if details["fvg"] != "NONE" else 0
         score += 5 if details["ob_zone"] is not None else 0
         # No inflated high score without the core entry setup and several independent confirmations.
-        if not br_ok or not structure_confirmed or volume_ratio < 1.25 or not momentum:
+        if not br_ok or not structure_ok or volume_ratio < 1.15 or not momentum:
             score = min(score, 69)
-        elif len(confirmations) < 4:
+        elif len(confirmations) < 3:
             score = min(score, 74)
         score = int(max(0, min(100, score)))
-        entry_valid = bool(br_ok and structure_confirmed and volume_ratio >= 1.25 and momentum and len(confirmations) >= 4)
+        entry_valid = bool(br_ok and structure_ok and volume_ratio >= 1.15 and momentum and len(confirmations) >= 3)
         if not entry_valid:
             excluded.append("شروط التنفيذ الكاملة غير متحققة؛ لا توجد إشارة تنفيذ")
         details["entry_valid"] = entry_valid
         details["confirmations"] = confirmations
         details["reasons_excluded"] = excluded
+        # Preserve candidate direction for diagnostics; main.py still blocks any entry unless
+        # entry_valid=True and all execution/risk checks pass.
+        details["candidate_direction"] = direction
         return (direction if entry_valid else "NEUTRAL"), score, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
