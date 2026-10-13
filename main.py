@@ -38,6 +38,8 @@ paused_lock = threading.Lock()
 # Count LONG rejection reasons to help diagnose why no LONG messages are delivered.
 long_rejections = {}
 long_rejections_lock = threading.Lock()
+candidate_rejections = {}
+candidate_rejections_lock = threading.Lock()
 
 bingx = ccxt.bingx({
     "enableRateLimit": True,
@@ -173,6 +175,12 @@ def _record_long_rejection(reason):
         long_rejections[reason] = long_rejections.get(reason, 0) + 1
 
 
+def _record_candidate_rejection(direction, reason):
+    key = f"{direction}:{reason}"
+    with candidate_rejections_lock:
+        candidate_rejections[key] = candidate_rejections.get(key, 0) + 1
+
+
 def _is_paused_symbol(symbol):
     with paused_lock:
         return symbol in paused_symbols
@@ -288,18 +296,33 @@ def process_symbol(symbol, engine, btc_ohlcv):
         )
 
         if signal not in ("LONG", "SHORT"):
+            candidate_direction = details.get("candidate_direction")
+            if candidate_direction in ("LONG", "SHORT"):
+                if not details.get("break_retest", False):
+                    reason = "no_breakout_retest"
+                elif not details.get("retest_bos_valid", False) and details.get("bos") not in ("BULLISH_BOS" if candidate_direction == "LONG" else "BEARISH_BOS",):
+                    reason = "no_BOS_or_retest_BOS"
+                elif volume_ratio < 1.15:
+                    reason = "volume_below_1.15x"
+                elif not details.get("momentum", False):
+                    reason = "momentum_not_confirmed"
+                elif len(details.get("confirmations", [])) < 3:
+                    reason = "fewer_than_3_confirmations"
+                else:
+                    reason = "other_entry_filter"
+                _record_candidate_rejection(candidate_direction, reason)
             return
-        if score < 75:
+        if score < 72:
             if signal == "LONG":
-                _record_long_rejection("score_below_75")
+                _record_long_rejection("score_below_72")
             return
         if not details.get("entry_valid", False):
             if signal == "LONG":
                 _record_long_rejection("entry_invalid")
             return
-        if volume_ratio < 1.25:
+        if volume_ratio < 1.15:
             if signal == "LONG":
-                _record_long_rejection("volume_below_1.25x")
+                _record_long_rejection("volume_below_1.15x")
             return
 
         expected_bos = "BULLISH_BOS" if signal == "LONG" else "BEARISH_BOS"
@@ -367,12 +390,16 @@ def process_symbol(symbol, engine, btc_ohlcv):
 
 
 def _log_long_rejection_summary():
+    with candidate_rejections_lock:
+        if candidate_rejections:
+            summary = ", ".join(f"{key}={value}" for key, value in sorted(candidate_rejections.items()))
+            print(f"Candidate rejection summary (cumulative since start): {summary}")
+        else:
+            print("Candidate diagnostics: no aligned 4H/1H directional candidates reached the entry checks yet.")
     with long_rejections_lock:
-        if not long_rejections:
-            print("LONG diagnostics: no LONG candidate was rejected by the post-analysis filters this cycle.")
-            return
-        summary = ", ".join(f"{key}={value}" for key, value in sorted(long_rejections.items()))
-        print(f"LONG rejection summary (cumulative since start): {summary}")
+        if long_rejections:
+            summary = ", ".join(f"{key}={value}" for key, value in sorted(long_rejections.items()))
+            print(f"LONG post-analysis rejection summary (cumulative since start): {summary}")
 
 
 def background_scanner():
@@ -380,7 +407,7 @@ def background_scanner():
     send_telegram_message(
         "🤖 *تم تشغيل استراتيجية Breakout + Retest*\n"
         "الفحص يشترط توافق 4H و1H، كسر وإعادة اختبار 15M، "
-        "BOS في نفس الاتجاه، وفوليوم 1.25x على الأقل، "
+        "BOS في نفس الاتجاه، وفوليوم 1.15x على الأقل، "
         "مع إدارة المخاطر.\n"
         "الإشارات احتمالية وليست ضمانًا للربح."
     )
