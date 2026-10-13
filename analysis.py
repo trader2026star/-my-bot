@@ -1,7 +1,6 @@
 # ==========================================
 # MY EXPERT CRYPTO BOT
 # BREAKOUT + RETEST + EDGE ALGO + SMC
-# File: analysis.py
 # Compatible with existing main.py / BingX / Render
 # ==========================================
 
@@ -9,642 +8,343 @@ import numpy as np
 
 
 class StrategyEngine:
+    """OHLCV-only multi-timeframe strategy. Signals are heuristic, not guarantees."""
+
     def __init__(self):
         self.min_candles = 20
 
     @staticmethod
     def is_valid_symbol(symbol):
-        if not symbol or not isinstance(symbol, str):
+        if not symbol or not isinstance(symbol, str) or len(symbol) > 30:
             return False
-
-        symbol_upper = symbol.upper()
-        blocked = [
-            "AAPL", "TSLA", "GOOG", "AMZN", "MSFT",
-            "NFLX", "NVDA", "META", "TEST", "DEMO",
-            "FAKE", "NCSK"
-        ]
-
-        if any(word in symbol_upper for word in blocked):
-            return False
-
-        if len(symbol_upper) > 30:
-            return False
-
-        return True
+        s = symbol.upper()
+        blocked = ("AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "NFLX", "NVDA",
+                   "META", "TEST", "DEMO", "FAKE", "NCSK")
+        return not any(word in s for word in blocked)
 
     @staticmethod
     def valid_ohlcv(data, minimum=20):
-        if not isinstance(data, (list, tuple)):
+        if not isinstance(data, (list, tuple)) or len(data) < minimum:
             return False
-
-        if len(data) < minimum:
-            return False
-
         try:
-            previous_timestamp = -1
-
+            prev_ts = -1.0
             for candle in data:
                 if len(candle) < 6:
                     return False
-
-                timestamp = float(candle[0])
-                o, h, l, c, v = map(float, candle[1:6])
-
-                values = [timestamp, o, h, l, c, v]
-
-                if not all(np.isfinite(x) for x in values):
+                ts, o, h, l, c, v = map(float, candle[:6])
+                if not all(np.isfinite(x) for x in (ts, o, h, l, c, v)):
                     return False
-
-                if min(o, h, l, c) <= 0 or v < 0:
+                if min(o, h, l, c) <= 0 or v < 0 or h < max(o, c) or l > min(o, c) or h < l:
                     return False
-
-                if h < max(o, c) or l > min(o, c):
+                if ts <= prev_ts:
                     return False
-
-                if h < l:
-                    return False
-
-                if timestamp <= previous_timestamp:
-                    return False
-
-                previous_timestamp = timestamp
-
+                prev_ts = ts
             return True
-
         except (TypeError, ValueError, IndexError):
             return False
 
     @staticmethod
     def arrays(data):
-        opens = np.array([float(x[1]) for x in data], dtype=float)
-        highs = np.array([float(x[2]) for x in data], dtype=float)
-        lows = np.array([float(x[3]) for x in data], dtype=float)
-        closes = np.array([float(x[4]) for x in data], dtype=float)
-        volumes = np.array([max(0.0, float(x[5])) for x in data],
-                           dtype=float)
-
-        return opens, highs, lows, closes, volumes
+        return tuple(np.asarray([float(x[i]) for x in data], dtype=float) for i in (1, 2, 3, 4, 5))
 
     @staticmethod
     def _ema(values, period):
         values = np.asarray(values, dtype=float)
-
         if len(values) < period:
             return None
-
         alpha = 2.0 / (period + 1.0)
         result = float(values[0])
-
         for value in values[1:]:
-            result = alpha * float(value) + (1 - alpha) * result
-
+            result = alpha * float(value) + (1.0 - alpha) * result
         return result
 
     @staticmethod
     def calculate_atr(highs, lows, closes, period=14):
-        highs = np.asarray(highs, dtype=float)
-        lows = np.asarray(lows, dtype=float)
-        closes = np.asarray(closes, dtype=float)
-
-        n = min(len(highs), len(lows), len(closes))
-
+        h, l, c = (np.asarray(x, dtype=float) for x in (highs, lows, closes))
+        n = min(len(h), len(l), len(c))
         if n < 2:
             return 0.0
-
-        highs = highs[-n:]
-        lows = lows[-n:]
-        closes = closes[-n:]
-
-        tr = np.maximum(
-            highs[1:] - lows[1:],
-            np.maximum(
-                np.abs(highs[1:] - closes[:-1]),
-                np.abs(lows[1:] - closes[:-1])
-            )
-        )
-
-        if len(tr) == 0:
-            return 0.0
-
-        return float(np.mean(tr[-period:]))
+        h, l, c = h[-n:], l[-n:], c[-n:]
+        tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+        tr = tr[np.isfinite(tr)]
+        return float(np.mean(tr[-max(1, int(period)):])) if len(tr) else 0.0
 
     @classmethod
     def _trend(cls, highs, lows, closes):
-        """تحديد الاتجاه من بيانات الفريم نفسه."""
-        closes = np.asarray(closes, dtype=float)
-
-        if len(closes) < 20:
+        c = np.asarray(closes, dtype=float)
+        if len(c) < 20:
             return "NEUTRAL"
-
-        fast = cls._ema(closes[-40:], 5)
-        slow = cls._ema(closes[-40:], 20)
-        last = float(closes[-1])
-
-        if fast is None or slow is None:
+        fast, slow = cls._ema(c[-min(40, len(c)):], 8), cls._ema(c[-min(60, len(c)):], 21)
+        atr = cls.calculate_atr(highs, lows, c)
+        if fast is None or slow is None or atr <= 0:
             return "NEUTRAL"
-
-        if fast > slow and last > fast:
+        # Require meaningful EMA separation to reduce noisy trend labels.
+        if fast > slow and c[-1] > fast and (fast - slow) / c[-1] >= 0.0005:
             return "LONG"
-
-        if fast < slow and last < fast:
+        if fast < slow and c[-1] < fast and (slow - fast) / c[-1] >= 0.0005:
             return "SHORT"
-
         return "NEUTRAL"
 
     @staticmethod
     def _volume_ratio(volumes):
-        """مقارنة آخر شمعة مغلقة بمتوسط الشموع السابقة."""
-        volumes = np.asarray(volumes, dtype=float)
-
-        if len(volumes) < 10:
+        v = np.asarray(volumes, dtype=float)
+        if len(v) < 10:
             return 0.0
+        baseline = v[-21:-1] if len(v) >= 21 else v[:-1]
+        avg = float(np.mean(baseline)) if len(baseline) else 0.0
+        return round(float(v[-1] / avg), 2) if avg > 0 else 0.0
 
-        # استبعاد الشمعة الأخيرة من المتوسط المرجعي
-        baseline = volumes[-21:-1] if len(volumes) >= 21 else volumes[:-1]
-
-        if len(baseline) == 0:
-            return 0.0
-
-        avg = float(np.mean(baseline))
-        latest = float(volumes[-1])
-
-        if avg <= 0:
-            return 0.0
-
-        return round(latest / avg, 2)
-
-    @staticmethod
-    def _break_retest(opens, highs, lows, closes, volumes, direction):
-        """
-        اكتشاف اختراق مؤكد أو إعادة اختبار قريبة من المستوى.
-        كل البيانات هنا يجب أن تكون لشموع مغلقة.
-        """
-        n = min(
-            len(opens), len(highs), len(lows),
-            len(closes), len(volumes)
-        )
-
+    @classmethod
+    def _detect_structure(cls, opens, highs, lows, closes):
+        o, h, l, c = (np.asarray(x, dtype=float) for x in (opens, highs, lows, closes))
+        n = min(map(len, (o, h, l, c)))
+        out = {"bos": "NONE", "mss": "NONE", "sweep": "NONE", "fvg": "NONE",
+               "fvg_zone": None, "ob_type": "NONE", "ob_zone": None,
+               "support": None, "resistance": None}
         if n < 12:
-            return False, None, "بيانات غير كافية"
+            return out
+        o, h, l, c = o[-n:], h[-n:], l[-n:], c[-n:]
+        # Compare the latest closed candle with a prior swing window that excludes it.
+        lookback = min(12, n - 2)
+        prior_high = float(np.max(h[-lookback-1:-1]))
+        prior_low = float(np.min(l[-lookback-1:-1]))
+        out["support"], out["resistance"] = prior_low, prior_high
+        last_range = max(float(h[-1] - l[-1]), float(c[-1]) * 1e-9)
+        body_ratio = abs(float(c[-1] - o[-1])) / last_range
+        if c[-1] > prior_high and c[-1] > o[-1] and body_ratio >= 0.35:
+            out["bos"] = "BULLISH_BOS"
+        elif c[-1] < prior_low and c[-1] < o[-1] and body_ratio >= 0.35:
+            out["bos"] = "BEARISH_BOS"
+        # Sweep requires a wick through a prior extreme followed by a close back inside.
+        if l[-1] < prior_low and c[-1] > prior_low:
+            out["sweep"] = "SELL_SIDE_SWEEP"
+        elif h[-1] > prior_high and c[-1] < prior_high:
+            out["sweep"] = "BUY_SIDE_SWEEP"
+        # Three-candle FVG, requiring a non-trivial gap relative to price.
+        if l[-1] > h[-3] and (l[-1] - h[-3]) / c[-1] >= 0.0003:
+            out["fvg"] = "BULLISH_FVG"
+            out["fvg_zone"] = [float(h[-3]), float(l[-1])]
+        elif h[-1] < l[-3] and (l[-3] - h[-1]) / c[-1] >= 0.0003:
+            out["fvg"] = "BEARISH_FVG"
+            out["fvg_zone"] = [float(h[-1]), float(l[-3])]
+        # MSS: local prior direction shifts and price breaks a recent structural level.
+        prev_move = float(c[-3] - c[-7])
+        if prev_move < 0 and out["bos"] == "BULLISH_BOS":
+            out["mss"] = "BULLISH_MSS"
+        elif prev_move > 0 and out["bos"] == "BEARISH_BOS":
+            out["mss"] = "BEARISH_MSS"
+        # OB: nearest opposite candle among the last five before a displacement candle.
+        atr = cls.calculate_atr(h, l, c)
+        displacement = abs(float(c[-1] - o[-1])) >= 1.15 * atr if atr > 0 else False
+        if displacement and out["bos"] != "NONE":
+            for j in range(n - 2, max(-1, n - 7), -1):
+                if out["bos"] == "BULLISH_BOS" and c[j] < o[j]:
+                    out["ob_type"], out["ob_zone"] = "BULLISH_OB", [float(l[j]), float(h[j])]
+                    break
+                if out["bos"] == "BEARISH_BOS" and c[j] > o[j]:
+                    out["ob_type"], out["ob_zone"] = "BEARISH_OB", [float(l[j]), float(h[j])]
+                    break
+        return out
 
-        opens = np.asarray(opens[-n:], dtype=float)
-        highs = np.asarray(highs[-n:], dtype=float)
-        lows = np.asarray(lows[-n:], dtype=float)
-        closes = np.asarray(closes[-n:], dtype=float)
-
-        # الشموع السابقة لتحديد المستوى، دون شمعة الإشارة
-        prior_high = float(np.max(highs[-10:-1]))
-        prior_low = float(np.min(lows[-10:-1]))
-
-        o = float(opens[-1])
-        h = float(highs[-1])
-        l = float(lows[-1])
-        c = float(closes[-1])
-
-        candle_range = max(h - l, c * 0.0001)
-        body_ratio = abs(c - o) / candle_range
-
+    @classmethod
+    def _break_retest(cls, opens, highs, lows, closes, volumes, direction):
+        """Detect a fresh close breakout or a recent breakout retest/reclaim."""
+        o, h, l, c, v = (np.asarray(x, dtype=float) for x in (opens, highs, lows, closes, volumes))
+        n = min(map(len, (o, h, l, c, v)))
+        if n < 12:
+            return False, None, "بيانات غير كافية لاكتشاف الكسر وإعادة الاختبار"
+        o, h, l, c, v = (x[-n:] for x in (o, h, l, c, v))
+        atr = cls.calculate_atr(h, l, c)
+        tolerance = max((atr / c[-1]) * 0.20 if atr > 0 else 0, 0.0015)
+        # Recent structural level before the most recent candle.
+        level_high = float(np.max(h[-11:-1]))
+        level_low = float(np.min(l[-11:-1]))
+        body_ratio = abs(c[-1] - o[-1]) / max(h[-1] - l[-1], c[-1] * 1e-9)
         if direction == "LONG":
-            if c > prior_high and c > o:
-                if body_ratio >= 0.35:
-                    return True, prior_high, "BULLISH_BOS: اختراق مقاومة بإغلاق صاعد"
-
-            # إعادة اختبار محتملة، بشرط أن يكون الإغلاق فوق المستوى
-            distance = abs(c - prior_high) / prior_high
-
-            if (
-                distance <= 0.0025
-                and c >= prior_high
-                and c > o
-            ):
-                return True, prior_high, "إعادة اختبار مقاومة مع ارتداد صاعد"
-
-            return False, prior_high, "لا يوجد اختراق أو إعادة اختبار مؤكدة"
-
+            fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.35
+            retest = (l[-1] <= level_high * (1 + tolerance) and c[-1] >= level_high
+                      and c[-1] > o[-1] and np.max(c[-min(6, n-1):-1]) > level_high)
+            # Avoid chasing a candle that has already travelled far beyond the level.
+            extension = (c[-1] - level_high) / max(atr, c[-1] * 1e-9)
+            if fresh and extension <= 1.25:
+                return True, level_high, "اختراق صاعد بإغلاق؛ الامتداد ليس مفرطًا"
+            if retest and (c[-1] - level_high) / c[-1] <= 0.008:
+                return True, level_high, "إعادة اختبار للمقاومة المكسورة مع إغلاق صاعد"
+            if extension > 1.25:
+                return False, level_high, "السعر ممتد بعد الاختراق؛ تجنب مطاردة الحركة"
+            return False, level_high, "لا يوجد اختراق حديث أو إعادة اختبار مؤكدة"
         if direction == "SHORT":
-            if c < prior_low and c < o:
-                if body_ratio >= 0.35:
-                    return True, prior_low, "BEARISH_BOS: كسر دعم بإغلاق هابط"
-
-            distance = abs(c - prior_low) / prior_low
-
-            if (
-                distance <= 0.0025
-                and c <= prior_low
-                and c < o
-            ):
-                return True, prior_low, "إعادة اختبار دعم مع ارتداد هابط"
-
-            return False, prior_low, "لا يوجد كسر أو إعادة اختبار مؤكدة"
-
+            fresh = c[-1] < level_low and c[-1] < o[-1] and body_ratio >= 0.35
+            retest = (h[-1] >= level_low * (1 - tolerance) and c[-1] <= level_low
+                      and c[-1] < o[-1] and np.min(c[-min(6, n-1):-1]) < level_low)
+            extension = (level_low - c[-1]) / max(atr, c[-1] * 1e-9)
+            if fresh and extension <= 1.25:
+                return True, level_low, "كسر هابط بإغلاق؛ الامتداد ليس مفرطًا"
+            if retest and (level_low - c[-1]) / c[-1] <= 0.008:
+                return True, level_low, "إعادة اختبار للدعم المكسور مع إغلاق هابط"
+            if extension > 1.25:
+                return False, level_low, "السعر ممتد بعد الكسر؛ تجنب مطاردة الحركة"
+            return False, level_low, "لا يوجد كسر حديث أو إعادة اختبار مؤكدة"
         return False, None, "الاتجاه غير واضح"
 
-    @staticmethod
-    def _detect_structure(opens, highs, lows, closes):
-        """اكتشاف مبسط لـ BOS وMSS وعمليات سحب السيولة."""
-        result = {
-            "bos": "NONE",
-            "mss": "NONE",
-            "sweep": "NONE",
-            "fvg": "NONE",
-            "ob_type": "NONE",
-            "ob_zone": None,
-            "support": None,
-            "resistance": None,
-        }
-
-        n = min(len(opens), len(highs), len(lows), len(closes))
-
-        if n < 12:
-            return result
-
-        o = np.asarray(opens[-n:], dtype=float)
-        h = np.asarray(highs[-n:], dtype=float)
-        l = np.asarray(lows[-n:], dtype=float)
-        c = np.asarray(closes[-n:], dtype=float)
-
-        # مستويات الهيكل السابق
-        prior_high = float(np.max(h[-11:-2]))
-        prior_low = float(np.min(l[-11:-2]))
-
-        last_o = float(o[-1])
-        last_h = float(h[-1])
-        last_l = float(l[-1])
-        last_c = float(c[-1])
-
-        result["support"] = prior_low
-        result["resistance"] = prior_high
-
-        if last_c > prior_high and last_c > last_o:
-            result["bos"] = "BULLISH_BOS"
-
-        elif last_c < prior_low and last_c < last_o:
-            result["bos"] = "BEARISH_BOS"
-
-        # سحب السيولة: تجاوز مستوى سابق ثم إغلاق داخله
-        if last_l < prior_low and last_c > prior_low:
-            result["sweep"] = "SELL_SIDE_SWEEP"
-
-        elif last_h > prior_high and last_c < prior_high:
-            result["sweep"] = "BUY_SIDE_SWEEP"
-
-        # FVG: فجوة بين الشمعة الحالية والشمعة التي سبقتها
-        if n >= 3:
-            if l[-1] > h[-3]:
-                result["fvg"] = "BULLISH_FVG"
-
-            elif h[-1] < l[-3]:
-                result["fvg"] = "BEARISH_FVG"
-
-        # MSS مبسط: انعكاس الاتجاه المحلي السابق
-        previous_direction = "NEUTRAL"
-
-        if c[-2] > c[-6]:
-            previous_direction = "LONG"
-        elif c[-2] < c[-6]:
-            previous_direction = "SHORT"
-
-        if (
-            previous_direction == "SHORT"
-            and result["bos"] == "BULLISH_BOS"
-        ):
-            result["mss"] = "BULLISH_MSS"
-
-        elif (
-            previous_direction == "LONG"
-            and result["bos"] == "BEARISH_BOS"
-        ):
-            result["mss"] = "BEARISH_MSS"
-
-        # نطاق تقريبي للشمعة المعاكسة قبل اندفاع سعري
-        if n >= 4:
-            atr = float(np.mean((h[-14:] - l[-14:]))) if n >= 14 else float(np.mean(h - l))
-            candle_move = abs(c[-1] - c[-2])
-
-            if atr > 0 and candle_move >= 1.2 * atr:
-                for j in range(n - 2, max(-1, n - 7), -1):
-                    if result["bos"] == "BULLISH_BOS" and c[j] < o[j]:
-                        result["ob_type"] = "BULLISH_OB"
-                        result["ob_zone"] = [
-                            float(l[j]), float(h[j])
-                        ]
-                        break
-
-                    if result["bos"] == "BEARISH_BOS" and c[j] > o[j]:
-                        result["ob_type"] = "BEARISH_OB"
-                        result["ob_zone"] = [
-                            float(l[j]), float(h[j])
-                        ]
-                        break
-
-        return result
-
-    def _storm101_whale_check(
-        self, opens, highs, lows, closes, volumes, direction
-    ):
-        """
-        فحص نشاط حجم التداول واتساع الشمعة.
-        لا يثبت وجود حيتان؛ يعتمد على OHLCV فقط.
-        """
+    def _storm101_whale_check(self, opens, highs, lows, closes, volumes, direction):
+        # OHLCV cannot prove whale/institutional activity; this is a volume/impulse check only.
         ratio = self._volume_ratio(volumes)
-
         if len(closes) < 10:
-            return False, "بيانات غير كافية لفحص النشاط"
+            return False, "بيانات غير كافية لفحص الحجم والزخم"
+        candle_range = max(float(highs[-1] - lows[-1]), 1e-12)
+        body_ratio = abs(float(closes[-1] - opens[-1])) / candle_range
+        aligned = closes[-1] > opens[-1] if direction == "LONG" else closes[-1] < opens[-1]
+        if ratio >= 1.5 and body_ratio >= 0.45 and aligned:
+            return True, "حجم مرتفع مع شمعة اندفاع متوافقة"
+        if ratio >= 1.25 and aligned and body_ratio >= 0.35:
+            return True, "حجم أعلى من المتوسط مع إغلاق متوافق"
+        return False, "الحجم أو جسم الشمعة لا يقدم تأكيدًا كافيًا"
 
-        candle_range = float(highs[-1] - lows[-1])
-        body = abs(float(closes[-1] - opens[-1]))
-        body_ratio = body / max(candle_range, 1e-12)
-
-        if ratio >= 1.5 and body_ratio >= 0.45:
-            return True, "نشاط تداول مرتفع مع شمعة ذات جسم واضح"
-
-        if ratio >= 1.25:
-            return True, "حجم التداول أعلى من المتوسط"
-
-        return False, "حجم التداول لا يقدم تأكيدًا كافيًا"
-
-    def analyze_multi_timeframe(
-        self,
-        ohlcv_4h,
-        ohlcv_1h,
-        ohlcv_15m,
-        ohlcv_btc_1h=None,
-        symbol=""
-    ):
+    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m,
+                                ohlcv_btc_1h=None, symbol=""):
         details = {
-            "trend_4h": "NEUTRAL",
-            "trend_1h": "NEUTRAL",
-            "break_retest": False,
-            "break_level": None,
-            "bos": "NONE",
-            "mss": "NONE",
-            "sweep": "NONE",
-            "fvg": "NONE",
-            "ob_type": "NONE",
-            "ob_zone": None,
-            "volume_ratio": 0.0,
-            "vwap_price": 0.0,
-            "support": None,
-            "resistance": None,
-            "retest_advice": "انتظار تأكيد فعلي",
-            "entry_valid": False,
-            "btc_trend": "UNKNOWN",
-            "confirmations": [],
-            "reasons_excluded": [],
+            "trend_4h": "NEUTRAL", "trend_1h": "NEUTRAL", "break_retest": False,
+            "break_level": None, "bos": "NONE", "mss": "NONE", "sweep": "NONE",
+            "fvg": "NONE", "fvg_zone": None, "ob_type": "NONE", "ob_zone": None,
+            "volume_ratio": 0.0, "vwap_price": 0.0, "support": None, "resistance": None,
+            "retest_advice": "انتظار تأكيد فعلي", "entry_valid": False, "btc_trend": "UNKNOWN",
+            "confirmations": [], "reasons_excluded": [], "momentum": False,
         }
-
-        empty_arrays = ([], [], [])
-
+        empty = ([], [], [])
         if symbol and not self.is_valid_symbol(symbol):
-            details["reasons_excluded"].append(
-                f"رمز غير صالح: {symbol}"
-            )
-            return "NEUTRAL", 0, 0.0, details, empty_arrays
-
-        for label, data in (
-            ("4H", ohlcv_4h),
-            ("1H", ohlcv_1h),
-            ("15M", ohlcv_15m),
-        ):
+            details["reasons_excluded"] = [f"رمز غير صالح: {symbol}"]
+            return "NEUTRAL", 0, 0.0, details, empty
+        for label, data in (("4H", ohlcv_4h), ("1H", ohlcv_1h), ("15M", ohlcv_15m)):
             if not self.valid_ohlcv(data, 20):
-                details["reasons_excluded"].append(
-                    f"بيانات {label} غير كافية أو غير صالحة"
-                )
-                return "NEUTRAL", 0, 0.0, details, empty_arrays
-
-        # استبعاد آخر شمعة لأنها قد تكون قيد التكوين
-        d4 = ohlcv_4h[:-1]
-        d1 = ohlcv_1h[:-1]
-        d15 = ohlcv_15m[:-1]
-
+                details["reasons_excluded"].append(f"بيانات {label} غير كافية أو غير صالحة")
+                return "NEUTRAL", 0, 0.0, details, empty
+        # Exclude the currently forming candle; the supplied history must include it at the end.
+        d4, d1, d15 = ohlcv_4h[:-1], ohlcv_1h[:-1], ohlcv_15m[:-1]
         o4, h4, l4, c4, v4 = self.arrays(d4)
         o1, h1, l1, c1, v1 = self.arrays(d1)
         o15, h15, l15, c15, v15 = self.arrays(d15)
-
-        trend4 = self._trend(h4, l4, c4)
-        trend1 = self._trend(h1, l1, c1)
-
-        details["trend_4h"] = trend4
-        details["trend_1h"] = trend1
-
-        btc_trend = "UNKNOWN"
-
+        trend4, trend1 = self._trend(h4, l4, c4), self._trend(h1, l1, c1)
+        details["trend_4h"], details["trend_1h"] = trend4, trend1
         if self.valid_ohlcv(ohlcv_btc_1h, 20):
-            btc_closed = ohlcv_btc_1h[:-1]
-            _, bh, bl, bc, _ = self.arrays(btc_closed)
-            btc_trend = self._trend(bh, bl, bc)
-
-        details["btc_trend"] = btc_trend
-
+            _, bh, bl, bc, _ = self.arrays(ohlcv_btc_1h[:-1])
+            details["btc_trend"] = self._trend(bh, bl, bc)
         volume_ratio = self._volume_ratio(v15)
         details["volume_ratio"] = volume_ratio
-
-        structure = self._detect_structure(o15, h15, l15, c15)
-        details.update(structure)
-
-        confirmations = []
-        excluded = []
-
-        # نحتاج إلى اتجاه واضح على فريم الساعة
+        details.update(self._detect_structure(o15, h15, l15, c15))
+        confirmations, excluded = [], []
         direction = trend1
-
         if direction not in ("LONG", "SHORT"):
-            excluded.append("اتجاه الساعة غير واضح")
-            details["reasons_excluded"] = excluded
-            return "NEUTRAL", 0, volume_ratio, details, (
-                h1.tolist(), l1.tolist(), c1.tolist()
-            )
-
-        # لا ندخل عكس اتجاه الأربع ساعات
+            details["reasons_excluded"] = ["اتجاه الساعة غير واضح"]
+            return "NEUTRAL", 0, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
         if trend4 != direction:
-            excluded.append(
-                "اتجاه 4H لا يؤكد اتجاه 1H"
-            )
-            details["reasons_excluded"] = excluded
-            return "NEUTRAL", 0, volume_ratio, details, (
-                h1.tolist(), l1.tolist(), c1.tolist()
-            )
-
-        confirmations.append("اتجاه 4H و1H متوافق")
-
-        br_ok, br_level, br_reason = self._break_retest(
-            o15, h15, l15, c15, v15, direction
-        )
-
-        details["break_retest"] = br_ok
-        details["break_level"] = br_level
-        details["retest_advice"] = br_reason
-
-        expected_bos = (
-            "BULLISH_BOS" if direction == "LONG"
-            else "BEARISH_BOS"
-        )
-
+            details["reasons_excluded"] = ["اتجاه 4H لا يؤكد اتجاه 1H"]
+            return "NEUTRAL", 0, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
+        confirmations.append("توافق الاتجاه على 4H و1H")
+        br_ok, br_level, br_reason = self._break_retest(o15, h15, l15, c15, v15, direction)
+        details["break_retest"], details["break_level"], details["retest_advice"] = br_ok, br_level, br_reason
+        expected_bos = "BULLISH_BOS" if direction == "LONG" else "BEARISH_BOS"
         if details["bos"] == expected_bos:
-            confirmations.append("تأكيد كسر هيكل السوق BOS")
+            confirmations.append("BOS يؤكد الاتجاه على 15M")
         else:
-            excluded.append("لا يوجد BOS مؤكد على 15M")
-
+            excluded.append("لا يوجد BOS حديث مؤكد على 15M")
+        if details["mss"] in (("BULLISH_MSS" if direction == "LONG" else "BEARISH_MSS"),):
+            confirmations.append("MSS يؤيد التحول الهيكلي")
+        if details["sweep"] == ("SELL_SIDE_SWEEP" if direction == "LONG" else "BUY_SIDE_SWEEP"):
+            confirmations.append("سحب سيولة متوافق مع الاتجاه")
         if not br_ok:
             excluded.append(br_reason)
-
         if volume_ratio >= 1.25:
-            confirmations.append(
-                f"حجم التداول أعلى من المتوسط ({volume_ratio}x)"
-            )
+            confirmations.append(f"حجم تداول مرتفع نسبيًا ({volume_ratio}x)")
         else:
-            excluded.append(
-                f"حجم التداول ضعيف نسبيًا ({volume_ratio}x)"
-            )
-
-        # زخم آخر الشموع المغلقة
+            excluded.append(f"حجم التداول دون حد التأكيد ({volume_ratio}x)")
         momentum = False
-
         if len(c15) >= 5:
-            if direction == "LONG":
-                momentum = (
-                    c15[-1] > c15[-2]
-                    and c15[-1] > c15[-4]
-                )
-            else:
-                momentum = (
-                    c15[-1] < c15[-2]
-                    and c15[-1] < c15[-4]
-                )
-
+            momentum = (c15[-1] > c15[-2] and c15[-1] > c15[-4]) if direction == "LONG" else (c15[-1] < c15[-2] and c15[-1] < c15[-4])
+        details["momentum"] = momentum
         if momentum:
-            confirmations.append("الزخم يؤيد اتجاه الصفقة")
+            confirmations.append("الزخم قصير المدى متوافق")
         else:
-            excluded.append("الزخم الحالي غير مؤكد")
-
-        # توافق BTC عامل مساعد وليس إثباتًا لاتجاه العملة
-        btc_aligned = btc_trend == direction
-
+            excluded.append("الزخم قصير المدى غير مؤكد")
+        btc = details["btc_trend"]
+        btc_aligned = btc == direction
         if btc_aligned:
             confirmations.append("اتجاه BTC متوافق")
-        elif btc_trend in ("LONG", "SHORT"):
-            excluded.append("اتجاه BTC غير متوافق")
+        elif btc in ("LONG", "SHORT"):
+            excluded.append("اتجاه BTC معاكس أو غير متوافق")
         else:
             excluded.append("تعذر تحديد اتجاه BTC")
-
-        storm_ok, storm_reason = self._storm101_whale_check(
-            o15, h15, l15, c15, v15, direction
-        )
-
-        if storm_ok:
-            confirmations.append(storm_reason)
+        activity_ok, activity_reason = self._storm101_whale_check(o15, h15, l15, c15, v15, direction)
+        if activity_ok:
+            confirmations.append(activity_reason)
         else:
-            excluded.append(storm_reason)
-
-        # درجة محسوبة من شروط محددة، وليست رقمًا ثابتًا.
-        score = 0
-        score += 20  # توافق 4H و1H
-        score += 25 if details["bos"] == expected_bos else 0
-        score += 20 if br_ok else 0
-        score += 15 if volume_ratio >= 1.25 else 0
+            excluded.append(activity_reason)
+        # Score is based on distinct evidence; correlated volume checks are capped together.
+        score = 20
+        score += 20 if details["bos"] == expected_bos else 0
+        score += 15 if br_ok else 0
+        score += 10 if volume_ratio >= 1.25 else 0
         score += 10 if momentum else 0
         score += 5 if btc_aligned else 0
-        score += 5 if storm_ok else 0
-        score = min(100, score)
-
-        # لا تُرسل إشارة إذا غاب الاختراق الحقيقي أو الفوليوم
-        entry_valid = (
-            br_ok
-            and details["bos"] == expected_bos
-            and volume_ratio >= 1.25
-            and momentum
-            and len(confirmations) >= 4
-        )
-
+        score += 5 if details["mss"] != "NONE" else 0
+        score += 5 if details["sweep"] != "NONE" else 0
+        score += 5 if details["fvg"] != "NONE" else 0
+        score += 5 if details["ob_zone"] is not None else 0
+        # No inflated high score without the core entry setup and several independent confirmations.
+        if not br_ok or details["bos"] != expected_bos or volume_ratio < 1.25 or not momentum:
+            score = min(score, 69)
+        elif len(confirmations) < 4:
+            score = min(score, 74)
+        score = int(max(0, min(100, score)))
+        entry_valid = bool(br_ok and details["bos"] == expected_bos and volume_ratio >= 1.25 and momentum and len(confirmations) >= 4)
         if not entry_valid:
-            excluded.append(
-                "شروط الدخول الكاملة غير متحققة؛ لا توجد إشارة تنفيذ"
-            )
-
-        details["entry_valid"] = bool(entry_valid)
+            excluded.append("شروط التنفيذ الكاملة غير متحققة؛ لا توجد إشارة تنفيذ")
+        details["entry_valid"] = entry_valid
         details["confirmations"] = confirmations
         details["reasons_excluded"] = excluded
+        return (direction if entry_valid else "NEUTRAL"), score, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
 
-        signal = direction if entry_valid else "NEUTRAL"
-
-        return signal, score, volume_ratio, details, (
-            h1.tolist(), l1.tolist(), c1.tolist()
-        )
-
-    def calculate_risk_management(
-        self, entry_price, direction, highs, lows, closes=None
-    ):
+    def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
         entry = float(entry_price)
         direction = str(direction).upper()
-
-        highs = np.asarray(highs, dtype=float)
-        lows = np.asarray(lows, dtype=float)
-
+        highs, lows = np.asarray(highs, dtype=float), np.asarray(lows, dtype=float)
         if closes is None:
             closes = (highs + lows) / 2.0
-
         closes = np.asarray(closes, dtype=float)
-
         n = min(len(highs), len(lows), len(closes))
-
         if not np.isfinite(entry) or entry <= 0 or n < 5:
             raise ValueError("Invalid entry price or insufficient candles")
-
-        highs = highs[-n:]
-        lows = lows[-n:]
-        closes = closes[-n:]
-
-        if not (
-            np.all(np.isfinite(highs))
-            and np.all(np.isfinite(lows))
-            and np.all(np.isfinite(closes))
-        ):
+        highs, lows, closes = highs[-n:], lows[-n:], closes[-n:]
+        if not (np.all(np.isfinite(highs)) and np.all(np.isfinite(lows)) and np.all(np.isfinite(closes))):
             raise ValueError("Invalid OHLC values")
-
+        if np.any(highs <= 0) or np.any(lows <= 0) or np.any(highs < lows):
+            raise ValueError("Invalid high/low values")
         atr = self.calculate_atr(highs, lows, closes)
-
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * 0.01
-
-        # تجنب وقف شديد الضيق أو غير متناسب مع السعر
-        risk_distance = max(1.5 * atr, entry * 0.005)
-
+        # Combine ATR buffer with recent swing structure; cap is validated by main.py as well.
+        recent_low = float(np.min(lows[-10:]))
+        recent_high = float(np.max(highs[-10:]))
         if direction in ("LONG", "BUY"):
-            stop = entry - risk_distance
+            structural_stop = recent_low - 0.15 * atr
+            stop = min(entry - 1.2 * atr, structural_stop) if structural_stop < entry else entry - 1.5 * atr
             risk = entry - stop
-
-            tp1 = entry + 1.5 * risk
-            tp2 = entry + 2.5 * risk
-            tp3 = entry + 4.0 * risk
-
+            if risk <= 0:
+                raise ValueError("Invalid long stop distance")
+            tp1, tp2, tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
         elif direction in ("SHORT", "SELL"):
-            stop = entry + risk_distance
+            structural_stop = recent_high + 0.15 * atr
+            stop = max(entry + 1.2 * atr, structural_stop) if structural_stop > entry else entry + 1.5 * atr
             risk = stop - entry
-
-            tp1 = entry - 1.5 * risk
-            tp2 = entry - 2.5 * risk
-            tp3 = entry - 4.0 * risk
-
+            if risk <= 0:
+                raise ValueError("Invalid short stop distance")
+            tp1, tp2, tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
             if tp3 <= 0:
-                raise ValueError(
-                    "Calculated short target is non-positive"
-                )
-
+                raise ValueError("Calculated short target is non-positive")
         else:
             raise ValueError("Direction must be LONG or SHORT")
-
-        sl_pct = abs(entry - stop) / entry * 100
-        tp1_pct = abs(tp1 - entry) / entry * 100
-        rr = (tp1 - entry) / risk if direction in (
-            "LONG", "BUY"
-        ) else (entry - tp1) / risk
-
-        return (
-            round(float(stop), 10),
-            round(float(tp1), 10),
-            round(float(tp2), 10),
-            round(float(tp3), 10),
-            round(float(sl_pct), 3),
-            round(float(tp1_pct), 3),
-            round(float(rr), 2),
-        )
+        sl_pct = abs(entry-stop)/entry*100.0
+        tp1_pct = abs(tp1-entry)/entry*100.0
+        rr = abs(tp1-entry)/abs(entry-stop)
+        return (round(float(stop), 10), round(float(tp1), 10), round(float(tp2), 10),
+                round(float(tp3), 10), round(float(sl_pct), 3), round(float(tp1_pct), 3), round(float(rr), 2))
