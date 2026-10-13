@@ -2,6 +2,7 @@
 # MY EXPERT CRYPTO BOT
 # BREAKOUT + RETEST SCANNER
 # File: main.py
+# Rate-limit retry + graceful recovery
 # ==========================================
 
 import os
@@ -18,8 +19,16 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "7200"))
 
+# Rate-limit safety settings. Can be adjusted in Render Environment.
+API_MIN_INTERVAL_SECONDS = max(0.0, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.35")))
+SYMBOL_PAUSE_SECONDS = max(0.0, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.35")))
+MAX_API_RETRIES = max(0, min(5, int(os.environ.get("MAX_API_RETRIES", "3"))))
+
 signal_history = {}
 history_lock = threading.Lock()
+api_lock = threading.Lock()
+_last_api_request = 0.0
+_api_cooldown_until = 0.0
 
 bingx = ccxt.bingx({
     "enableRateLimit": True,
@@ -80,8 +89,8 @@ def is_candidate_market(symbol, market):
 def valid_price(value):
     try:
         number = float(value)
-        return number > 0 and number == number
-    except (TypeError, ValueError):
+        return number > 0 and number == number and number not in (float("inf"), float("-inf"))
+    except (TypeError, ValueError, OverflowError):
         return False
 
 
@@ -102,6 +111,61 @@ def recent_signal(symbol, signal):
 def mark_signal(symbol, signal):
     with history_lock:
         signal_history[f"{symbol}_{signal}"] = time.time()
+
+
+def _is_temporary_api_error(exc):
+    """Identify retryable BingX throttling/transient errors without hiding permanent errors."""
+    message = str(exc).lower()
+    return (
+        isinstance(exc, (ccxt.RateLimitExceeded, ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeNotAvailable))
+        or "100410" in message
+        or "请稍后重试" in message
+        or "try again later" in message
+        or "too many requests" in message
+        or "rate limit" in message
+        or "temporarily unavailable" in message
+    )
+
+
+def bingx_call(method_name, *args, **kwargs):
+    """Call CCXT with a small global pause and bounded exponential retry."""
+    global _last_api_request, _api_cooldown_until
+    method = getattr(bingx, method_name)
+    last_exc = None
+
+    for attempt in range(MAX_API_RETRIES + 1):
+        # Serialize request scheduling and honor any exchange-wide cooldown.
+        with api_lock:
+            now = time.monotonic()
+            wait_for = max(
+                0.0,
+                API_MIN_INTERVAL_SECONDS - (now - _last_api_request),
+                _api_cooldown_until - now,
+            )
+            if wait_for > 0:
+                time.sleep(wait_for)
+            _last_api_request = time.monotonic()
+
+        try:
+            return method(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= MAX_API_RETRIES or not _is_temporary_api_error(exc):
+                raise
+
+            # Backoff: 2s, 5s, 12s, then cap at 20s for additional retries.
+            delay = min(20.0, (2.0, 5.0, 12.0)[min(attempt, 2)])
+            # A 100410 response asks the client to try again later. Pause all
+            # subsequent API calls, not just this particular symbol.
+            with api_lock:
+                _api_cooldown_until = max(_api_cooldown_until, time.monotonic() + delay)
+            print(
+                f"Temporary BingX API error in {method_name}; "
+                f"retry {attempt + 1}/{MAX_API_RETRIES} after {delay:.0f}s: {str(exc)[:220]}"
+            )
+            # The next loop iteration observes _api_cooldown_until and waits once.
+
+    raise last_exc
 
 
 def build_message(symbol, signal, score, volume_ratio, entry,
@@ -141,9 +205,9 @@ def build_message(symbol, signal, score, volume_ratio, entry,
 
 def process_symbol(symbol, engine, btc_ohlcv):
     try:
-        ohlcv_4h = bingx.fetch_ohlcv(symbol, timeframe="4h", limit=40)
-        ohlcv_1h = bingx.fetch_ohlcv(symbol, timeframe="1h", limit=60)
-        ohlcv_15m = bingx.fetch_ohlcv(symbol, timeframe="15m", limit=40)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=40)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=60)
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=40)
 
         signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
             ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv
@@ -160,9 +224,10 @@ def process_symbol(symbol, engine, btc_ohlcv):
         if recent_signal(symbol, signal):
             return
 
-        ticker = bingx.fetch_ticker(symbol)
+        ticker = bingx_call("fetch_ticker", symbol)
         entry = ticker.get("last") or ticker.get("close")
         if not valid_price(entry):
+            print(f"Skipped {symbol}: BingX returned an invalid last/close price")
             return
         entry = float(entry)
 
@@ -192,9 +257,9 @@ def process_symbol(symbol, engine, btc_ohlcv):
             print(f"Sent {symbol} {signal}; score={score}, RR={rr}")
 
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-        print(f"BingX error for {symbol}: {exc}")
+        print(f"BingX error for {symbol}: {str(exc)[:300]}")
     except Exception as exc:
-        print(f"Processing error for {symbol}: {exc}")
+        print(f"Processing error for {symbol}: {str(exc)[:300]}")
 
 
 def background_scanner():
@@ -210,7 +275,7 @@ def background_scanner():
 
     while True:
         try:
-            markets = bingx.load_markets()
+            markets = bingx_call("load_markets")
             symbols = [
                 symbol for symbol, market in markets.items()
                 if is_candidate_market(symbol, market)
@@ -219,20 +284,24 @@ def background_scanner():
 
             btc_ohlcv = []
             try:
-                btc_ohlcv = bingx.fetch_ohlcv(
-                    "BTC/USDT:USDT", timeframe="1h", limit=30
+                btc_ohlcv = bingx_call(
+                    "fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=30
                 )
             except Exception as exc:
-                print(f"BTC context unavailable: {exc}")
+                print(f"BTC context unavailable after retries: {str(exc)[:250]}")
 
-            for symbol in symbols:
+            for index, symbol in enumerate(symbols, start=1):
                 process_symbol(symbol, engine, btc_ohlcv)
-                time.sleep(0.35)
+                if SYMBOL_PAUSE_SECONDS > 0:
+                    time.sleep(SYMBOL_PAUSE_SECONDS)
+                if index % 50 == 0:
+                    print(f"Scan progress: {index}/{len(symbols)} markets")
 
+            print("Scan cycle completed; waiting 180 seconds.")
             time.sleep(180)
 
         except Exception as exc:
-            print(f"Scanner loop error: {exc}")
+            print(f"Scanner loop error: {str(exc)[:300]}")
             time.sleep(60)
 
 
