@@ -7,7 +7,8 @@ import numpy as np
 
 
 class StrategyEngine:
-    """Ultra-selective multi-timeframe strategy targeting high-precision trades."""
+    """Ultra-selective multi-timeframe strategy incorporating SMC, Orderflow, 
+    and Technical Indicators (RSI, MACD, EMA, ADX) for maximum confluence."""
 
     def __init__(self):
         self.min_candles = 20
@@ -67,6 +68,60 @@ class StrategyEngine:
         tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
         tr = tr[np.isfinite(tr)]
         return float(np.mean(tr[-max(1, int(period)):])) if len(tr) else 0.0
+
+    @classmethod
+    def _calculate_rsi(cls, closes, period=14):
+        c = np.asarray(closes, dtype=float)
+        if len(c) < period + 1:
+            return 50.0
+        deltas = np.diff(c)
+        gains = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+        avg_gain = np.mean(gains[:period])
+        avg_loss = np.mean(losses[:period])
+        for i in range(period, len(deltas)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return round(float(100.0 - (100.0 / (1.0 + rs))), 2)
+
+    @classmethod
+    def _calculate_macd(cls, closes):
+        c = np.asarray(closes, dtype=float)
+        if len(c) < 26:
+            return 0.0, 0.0, "NEUTRAL"
+        ema12 = cls._ema(c, 12)
+        ema26 = cls._ema(c, 26)
+        if ema12 is None or ema26 is None:
+            return 0.0, 0.0, "NEUTRAL"
+        macd_line = ema12 - ema26
+        # تقريب خط الإشارة والهستوجرام
+        signal_line = macd_line * 0.8 
+        histogram = macd_line - signal_line
+        status = "BULLISH" if histogram > 0 and macd_line > signal_line else "BEARISH"
+        return macd_line, histogram, status
+
+    @classmethod
+    def _calculate_adx(cls, highs, lows, closes, period=14):
+        h, l, c = (np.asarray(x, dtype=float) for x in (highs, lows, closes))
+        if len(c) < period + 5:
+            return 25.0, False
+        atr = cls.calculate_atr(h, l, c, period)
+        if atr <= 0:
+            return 20.0, False
+        up_move = h[-1] - h[-2]
+        down_move = l[-2] - l[-1]
+        plus_dm = up_move if (up_move > down_move and up_move > 0) else 0.0
+        minus_dm = down_move if (down_move > up_move and down_move > 0) else 0.0
+        plus_di = 100 * (plus_dm / atr)
+        minus_di = 100 * (minus_dm / atr)
+        di_diff = abs(plus_di - minus_di)
+        di_sum = max(plus_di + minus_di, 1e-12)
+        adx_val = round(float(100 * (di_diff / di_sum)), 1)
+        strong_trend = adx_val >= 25.0
+        return adx_val, strong_trend
 
     @classmethod
     def _trend(cls, highs, lows, closes):
@@ -150,7 +205,6 @@ class StrategyEngine:
         upper_wick = last_high - max(last_open, last_close)
         lower_wick = min(last_open, last_close) - last_low
         
-        # فلتر صارم جداً للذيول (منع الفيك أوت نهائياً)
         if direction == "LONG" and (upper_wick > body_size * 0.4 or body_ratio < 0.50):
             return False, level_high, "شمعة غير نظيفة أو بها رفض علوي"
         if direction == "SHORT" and (lower_wick > body_size * 0.4 or body_ratio < 0.50):
@@ -187,7 +241,6 @@ class StrategyEngine:
         baseline = v[-21:-1] if len(v) >= 21 else v[:-1]
         avg = float(np.mean(baseline)) if len(baseline) else 0.0
         ratio = round(float(v[-1] / avg), 2) if avg > 0 else 0.0
-        # اشتراط حجم تداول قوي جداً (أعلى من الضعف) لاكتشاف دخول الحيتان
         return ratio >= 2.0, ratio
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m,
@@ -199,6 +252,7 @@ class StrategyEngine:
             "volume_ratio": 0.0, "vwap_price": 0.0, "support": None, "resistance": None,
             "retest_advice": "انتظار فرصة ذهبية", "entry_valid": False, "btc_trend": "UNKNOWN",
             "confirmations": [], "reasons_excluded": [], "momentum": False,
+            "rsi": 50.0, "macd_status": "NEUTRAL", "adx": 0.0, "ema50_above": False
         }
         empty = ([], [], [])
         if symbol and not self.is_valid_symbol(symbol):
@@ -226,6 +280,18 @@ class StrategyEngine:
         details["volume_ratio"] = volume_ratio
         details.update(self._detect_structure(o15, h15, l15, c15))
         
+        # مؤشرات التحليل الفني المضافة (مطابقة للوحة التحليل)
+        rsi = self._calculate_rsi(c15)
+        _, macd_hist, macd_status = self._calculate_macd(c15)
+        adx_val, adx_strong = self._calculate_adx(h15, l15, c15)
+        ema50 = self._ema(c15, min(50, len(c15)))
+        ema50_above = c15[-1] > ema50 if ema50 else False
+        
+        details["rsi"] = rsi
+        details["macd_status"] = macd_status
+        details["adx"] = adx_val
+        details["ema50_above"] = ema50_above
+        
         confirmations, excluded = [], []
         direction = trend1
         
@@ -235,41 +301,45 @@ class StrategyEngine:
             
         confirmations.append("توافق الاتجاه المطلق بين 4H و1H")
         
+        # تأكيدات المؤشرات
+        if direction == "LONG":
+            if macd_status == "BULLISH": confirmations.append("MACD هيستوجرام إيجابي (زخم صاعد)")
+            else: excluded.append("MACD غير إيجابي")
+            if ema50_above: confirmations.append("السعر فوق EMA50")
+            else: excluded.append("السعر تحت EMA50")
+        elif direction == "SHORT":
+            if macd_status == "BEARISH": confirmations.append("MACD هيستوجرام سلبي (زخم هابط)")
+            else: excluded.append("MACD غير سلبي")
+            if not ema50_above: confirmations.append("السعر تحت EMA50")
+            else: excluded.append("السعر فوق EMA50")
+            
+        if adx_strong: confirmations.append(f"ADX {adx_val} — اتجاه قوي")
+        else: excluded.append(f"ADX ضعيف ({adx_val})")
+
         br_ok, br_level, br_reason = self._break_retest(o15, h15, l15, c15, v15, direction, current_price=current_price)
         details["break_retest"], details["break_level"], details["retest_advice"] = br_ok, br_level, br_reason
         
         expected_bos = "BULLISH_BOS" if direction == "LONG" else "BEARISH_BOS"
         structure_ok = details["bos"] == expected_bos
         
-        if structure_ok:
-            confirmations.append("هيكل السوق يدعم الإشارة بقوة")
-        else:
-            excluded.append("الهيكل الفني غير مكتمل")
+        if structure_ok: confirmations.append("هيكل السوق يدعم الإشارة بقوة")
+        else: excluded.append("الهيكل الفني غير مكتمل")
             
-        if not br_ok:
-            excluded.append(br_reason)
-        else:
-            confirmations.append("شمعة كسر نظيفة وبجسم مسيطر")
+        if not br_ok: excluded.append(br_reason)
+        else: confirmations.append("شمعة كسر نظيفة وبجسم مسيطر")
             
-        if volume_ok:
-            confirmations.append(f"حجم تداول مؤسسي ضخم ({volume_ratio}x)")
-        else:
-            excluded.append(f"حجم التداول لا يعكس سيولة حيتان ({volume_ratio}x)")
-            
-        btc_aligned = details["btc_trend"] == direction
-        if btc_aligned:
-            confirmations.append("اتجاه البيتكوين داعم للصفقة")
-        else:
-            excluded.append("اتجاه البيتكوين غير مساند")
+        if volume_ok: confirmations.append(f"حجم تداول مؤسسي ضخم ({volume_ratio}x)")
+        else: excluded.append(f"حجم التداول لا يعكس سيولة حيتان ({volume_ratio}x)")
 
         # حساب نقاط التقييم بدقة صارمة
-        score = 40
-        score += 25 if structure_ok else 0
+        score = 30
+        score += 20 if structure_ok else 0
         score += 20 if br_ok else 0
         score += 15 if volume_ok else 0
+        score += 15 if macd_status == ("BULLISH" if direction == "LONG" else "BEARISH") else 0
+        score += 10 if adx_strong else 0
         score = int(max(0, min(100, score)))
         
-        # الشرط الحاسم: عدم قبول أي صفقة تقل عن تقييم 90/100
         entry_valid = bool(br_ok and structure_ok and volume_ok and score >= 90 and len(excluded) == 0)
         
         if not entry_valid and "شروط التصفية القصوى غير متحققة" not in excluded:
