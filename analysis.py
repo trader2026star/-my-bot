@@ -1,14 +1,13 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT
-# BREAKOUT + RETEST + EDGE ALGO + SMC
-# Compatible with existing main.py / BingX / Render
+# MY EXPERT CRYPTO BOT - STRATEGY ENGINE
+# BREAKOUT + RETEST + EDGE ALGO + SMC + PRICE CHASING FILTER
 # ==========================================
 
 import numpy as np
 
 
 class StrategyEngine:
-    """OHLCV-only multi-timeframe strategy. Signals are heuristic, not guarantees."""
+    """OHLCV-only multi-timeframe strategy with price chasing protection."""
 
     def __init__(self):
         self.min_candles = 20
@@ -78,7 +77,6 @@ class StrategyEngine:
         atr = cls.calculate_atr(highs, lows, c)
         if fast is None or slow is None or atr <= 0:
             return "NEUTRAL"
-        # Require meaningful EMA separation to reduce noisy trend labels.
         if fast > slow and c[-1] > fast and (fast - slow) / c[-1] >= 0.0005:
             return "LONG"
         if fast < slow and c[-1] < fast and (slow - fast) / c[-1] >= 0.0005:
@@ -104,7 +102,6 @@ class StrategyEngine:
         if n < 12:
             return out
         o, h, l, c = o[-n:], h[-n:], l[-n:], c[-n:]
-        # Compare the latest closed candle with a prior swing window that excludes it.
         lookback = min(12, n - 2)
         prior_high = float(np.max(h[-lookback-1:-1]))
         prior_low = float(np.min(l[-lookback-1:-1]))
@@ -115,25 +112,21 @@ class StrategyEngine:
             out["bos"] = "BULLISH_BOS"
         elif c[-1] < prior_low and c[-1] < o[-1] and body_ratio >= 0.35:
             out["bos"] = "BEARISH_BOS"
-        # Sweep requires a wick through a prior extreme followed by a close back inside.
         if l[-1] < prior_low and c[-1] > prior_low:
             out["sweep"] = "SELL_SIDE_SWEEP"
         elif h[-1] > prior_high and c[-1] < prior_high:
             out["sweep"] = "BUY_SIDE_SWEEP"
-        # Three-candle FVG, requiring a non-trivial gap relative to price.
         if l[-1] > h[-3] and (l[-1] - h[-3]) / c[-1] >= 0.0003:
             out["fvg"] = "BULLISH_FVG"
             out["fvg_zone"] = [float(h[-3]), float(l[-1])]
         elif h[-1] < l[-3] and (l[-3] - h[-1]) / c[-1] >= 0.0003:
             out["fvg"] = "BEARISH_FVG"
             out["fvg_zone"] = [float(h[-1]), float(l[-3])]
-        # MSS: local prior direction shifts and price breaks a recent structural level.
         prev_move = float(c[-3] - c[-7])
         if prev_move < 0 and out["bos"] == "BULLISH_BOS":
             out["mss"] = "BULLISH_MSS"
         elif prev_move > 0 and out["bos"] == "BEARISH_BOS":
             out["mss"] = "BEARISH_MSS"
-        # OB: nearest opposite candle among the last five before a displacement candle.
         atr = cls.calculate_atr(h, l, c)
         displacement = abs(float(c[-1] - o[-1])) >= 1.15 * atr if atr > 0 else False
         if displacement and out["bos"] != "NONE":
@@ -147,8 +140,8 @@ class StrategyEngine:
         return out
 
     @classmethod
-    def _break_retest(cls, opens, highs, lows, closes, volumes, direction):
-        """Detect either a fresh breakout or a retest of a breakout from the last few candles."""
+    def _break_retest(cls, opens, highs, lows, closes, volumes, direction, current_price=None):
+        """Detect breakout/retest with live price chasing protection."""
         o, h, l, c, v = (np.asarray(x, dtype=float) for x in (opens, highs, lows, closes, volumes))
         n = min(map(len, (o, h, l, c, v)))
         if n < 15:
@@ -162,6 +155,18 @@ class StrategyEngine:
         last_range = max(float(h[-1] - l[-1]), float(c[-1]) * 1e-9)
         body_ratio = abs(float(c[-1] - o[-1])) / last_range
 
+        base_level = level_high if direction == "LONG" else level_low
+
+        # فلتر منع مطاردة السعر الممتد بناءً على السعر الحي الحالي
+        if current_price is not None and current_price > 0:
+            curr = float(current_price)
+            if direction == "LONG" and curr > base_level:
+                if (curr - base_level) / base_level > 0.015:
+                    return False, base_level, "السعر الحالي ابتعد كثيراً عن مستوى الكسر (تجنب المطاردة)"
+            elif direction == "SHORT" and curr < base_level:
+                if (base_level - curr) / base_level > 0.015:
+                    return False, base_level, "السعر الحالي ابتعد كثيراً عن مستوى الكسر (تجنب المطاردة)"
+
         if direction == "LONG":
             fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.30
             extension = (c[-1] - level_high) / max(atr, c[-1] * 1e-9)
@@ -170,8 +175,6 @@ class StrategyEngine:
             if extension > 1.6:
                 return False, level_high, "السعر ممتد بعد الاختراق؛ تجنب مطاردة الحركة"
 
-            # Look for an actual prior breakout candle. The previous implementation compared
-            # closes with the maximum high of the same window, making the retest test impossible.
             first_j = max(2, n - 6)
             for j in range(n - 2, first_j - 1, -1):
                 left = max(0, j - 10)
@@ -216,7 +219,6 @@ class StrategyEngine:
         return False, None, "الاتجاه غير واضح"
 
     def _storm101_whale_check(self, opens, highs, lows, closes, volumes, direction):
-        # OHLCV cannot prove whale/institutional activity; this is a volume/impulse check only.
         ratio = self._volume_ratio(volumes)
         if len(closes) < 10:
             return False, "بيانات غير كافية لفحص الحجم والزخم"
@@ -230,7 +232,7 @@ class StrategyEngine:
         return False, "الحجم أو جسم الشمعة لا يقدم تأكيدًا كافيًا"
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m,
-                                ohlcv_btc_1h=None, symbol=""):
+                                ohlcv_btc_1h=None, symbol="", current_price=None):
         details = {
             "trend_4h": "NEUTRAL", "trend_1h": "NEUTRAL", "break_retest": False,
             "break_level": None, "bos": "NONE", "mss": "NONE", "sweep": "NONE",
@@ -247,7 +249,6 @@ class StrategyEngine:
             if not self.valid_ohlcv(data, 20):
                 details["reasons_excluded"].append(f"بيانات {label} غير كافية أو غير صالحة")
                 return "NEUTRAL", 0, 0.0, details, empty
-        # Exclude the currently forming candle; the supplied history must include it at the end.
         d4, d1, d15 = ohlcv_4h[:-1], ohlcv_1h[:-1], ohlcv_15m[:-1]
         o4, h4, l4, c4, v4 = self.arrays(d4)
         o1, h1, l1, c1, v1 = self.arrays(d1)
@@ -270,7 +271,9 @@ class StrategyEngine:
             return "NEUTRAL", 0, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
         details["candidate_direction"] = direction
         confirmations.append("توافق الاتجاه على 4H و1H")
-        br_ok, br_level, br_reason = self._break_retest(o15, h15, l15, c15, v15, direction)
+        
+        # تمرير سعر السوق الحالي لدالة فحص الاختراق لمنع المطاردة
+        br_ok, br_level, br_reason = self._break_retest(o15, h15, l15, c15, v15, direction, current_price=current_price)
         details["break_retest"], details["break_level"], details["retest_advice"] = br_ok, br_level, br_reason
         details["retest_bos_valid"] = bool(br_ok and br_reason.startswith("إعادة اختبار ناجحة"))
         expected_bos = "BULLISH_BOS" if direction == "LONG" else "BEARISH_BOS"
@@ -294,7 +297,6 @@ class StrategyEngine:
         momentum = False
         if len(c15) >= 5:
             momentum = (c15[-1] > c15[-2] and c15[-1] > c15[-4]) if direction == "LONG" else (c15[-1] < c15[-2] and c15[-1] < c15[-4])
-            # On a valid retest, allow the rejection candle itself to confirm momentum.
             last_range = max(float(h15[-1] - l15[-1]), float(c15[-1]) * 1e-9)
             last_body = abs(float(c15[-1] - o15[-1])) / last_range
             candle_aligned = c15[-1] > o15[-1] if direction == "LONG" else c15[-1] < o15[-1]
@@ -318,7 +320,6 @@ class StrategyEngine:
             confirmations.append(activity_reason)
         else:
             excluded.append(activity_reason)
-        # Score is based on distinct evidence; correlated volume checks are capped together.
         score = 20
         score += 20 if structure_ok else 0
         score += 15 if br_ok else 0
@@ -329,7 +330,6 @@ class StrategyEngine:
         score += 5 if details["sweep"] != "NONE" else 0
         score += 5 if details["fvg"] != "NONE" else 0
         score += 5 if details["ob_zone"] is not None else 0
-        # No inflated high score without the core entry setup and several independent confirmations.
         if not br_ok or not structure_ok or volume_ratio < 1.15 or not momentum:
             score = min(score, 69)
         elif len(confirmations) < 3:
@@ -341,8 +341,6 @@ class StrategyEngine:
         details["entry_valid"] = entry_valid
         details["confirmations"] = confirmations
         details["reasons_excluded"] = excluded
-        # Preserve candidate direction for diagnostics; main.py still blocks any entry unless
-        # entry_valid=True and all execution/risk checks pass.
         details["candidate_direction"] = direction
         return (direction if entry_valid else "NEUTRAL"), score, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
 
@@ -364,7 +362,6 @@ class StrategyEngine:
         atr = self.calculate_atr(highs, lows, closes)
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * 0.01
-        # Combine ATR buffer with recent swing structure; cap is validated by main.py as well.
         recent_low = float(np.min(lows[-10:]))
         recent_high = float(np.max(highs[-10:]))
         if direction in ("LONG", "BUY"):
