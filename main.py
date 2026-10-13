@@ -1,8 +1,7 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT
-# BREAKOUT + RETEST SCANNER
+# MY EXPERT CRYPTO BOT - MAIN SERVER
+# BREAKOUT + RETEST SCANNER + PRICE CHASING PROTECTION
 # File: main.py
-# Crypto-market filtering + safe BingX retry + LONG diagnostics
 # ==========================================
 
 import os
@@ -20,7 +19,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "7200"))
 
-# Conservative defaults: reduce API pressure. These can be overridden in Render.
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50")))
 SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.50")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
@@ -31,11 +29,9 @@ api_lock = threading.Lock()
 _last_api_request = 0.0
 _api_cooldown_until = 0.0
 
-# Symbols rejected by BingX as paused/invalid are skipped for the rest of this process.
 paused_symbols = set()
 paused_lock = threading.Lock()
 
-# Count LONG rejection reasons to help diagnose why no LONG messages are delivered.
 long_rejections = {}
 long_rejections_lock = threading.Lock()
 candidate_rejections = {}
@@ -50,7 +46,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - Breakout Retest Scanner is running!"
+    return "My Expert Crypto Bot - Breakout Retest Scanner with Price Chasing Protection is running!"
 
 
 @app.route("/health")
@@ -87,7 +83,6 @@ def send_telegram_message(message):
 
 
 def _market_status_looks_paused(market):
-    """Reject markets whose metadata explicitly describes a paused/suspended state."""
     if market.get("active") is False:
         return True
     info = market.get("info") or {}
@@ -101,25 +96,19 @@ def _market_status_looks_paused(market):
 
 
 def _looks_like_non_crypto_underlying(base):
-    """Filter known BingX stock/FX-style synthetic symbols seen in API error logs."""
     value = str(base or "").upper().strip()
     if not value:
         return True
-
-    # BingX stock-style contract namespace and FX-style pairs seen in the user's logs.
     if value.startswith(("NCSK", "NCFX")):
         return True
     if "USD2" in value or re.search(r"2(?:USD|TWD|IDR|ARS|EUR|GBP|AUD|CAD|CHF|JPY|NZD)$", value):
         return True
-
-    # Very long or punctuation-heavy bases are not normal crypto tickers.
     if len(value) > 24 or not re.fullmatch(r"[A-Z0-9]+", value):
         return True
     return False
 
 
 def is_candidate_market(symbol, market):
-    """Allow active, linear USDT-settled USDT perpetual swaps only."""
     if not isinstance(market, dict) or _market_status_looks_paused(market):
         return False
     if not market.get("swap", False):
@@ -135,7 +124,6 @@ def is_candidate_market(symbol, market):
     if _looks_like_non_crypto_underlying(base):
         return False
 
-    # Exclude obvious fiat/FX base symbols.
     if str(base).upper() in {
         "USD", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF", "JPY", "TWD", "IDR", "ARS", "HKD", "SGD", "KRW", "CNY", "INR", "FX"
     }:
@@ -213,7 +201,6 @@ def _is_temporary_api_error(exc):
 
 
 def bingx_call(method_name, *args, **kwargs):
-    """Rate-limit all CCXT requests and retry only transient errors with backoff."""
     global _last_api_request, _api_cooldown_until
     method = getattr(bingx, method_name)
     last_exc = None
@@ -287,12 +274,21 @@ def process_symbol(symbol, engine, btc_ohlcv):
     if _is_paused_symbol(symbol):
         return
     try:
+        # جلب السعر الحي أولاً لتمريره وتجنب مطاردة السعر الممتد أثناء التحليل
+        ticker = bingx_call("fetch_ticker", symbol)
+        entry = ticker.get("last") or ticker.get("close")
+        if not valid_price(entry):
+            print(f"Skipped {symbol}: BingX returned an invalid last/close price")
+            return
+        entry = float(entry)
+
         ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=40)
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=60)
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=40)
 
+        # تمرير سعر السوق الحالي (`current_price`) لمحرك التحليل
         signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol, current_price=entry
         )
 
         if signal not in ("LONG", "SHORT"):
@@ -329,24 +325,11 @@ def process_symbol(symbol, engine, btc_ohlcv):
         if details.get("bos") != expected_bos and not details.get("retest_bos_valid", False):
             if signal == "LONG":
                 _record_long_rejection("bos_retest_filter")
-            print(
-                f"BOS/retest filter rejected {symbol}: signal={signal} "
-                f"BOS={details.get('bos')} retest={details.get('retest_bos_valid')}"
-            )
             return
         if recent_signal(symbol, signal):
             if signal == "LONG":
                 _record_long_rejection("cooldown")
             return
-
-        ticker = bingx_call("fetch_ticker", symbol)
-        entry = ticker.get("last") or ticker.get("close")
-        if not valid_price(entry):
-            if signal == "LONG":
-                _record_long_rejection("invalid_ticker_price")
-            print(f"Skipped {symbol}: BingX returned an invalid last/close price")
-            return
-        entry = float(entry)
 
         highs, lows, closes = arrays
         sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
@@ -365,7 +348,6 @@ def process_symbol(symbol, engine, btc_ohlcv):
         if sl_pct <= 0 or sl_pct > 7 or rr < 1.0:
             if signal == "LONG":
                 _record_long_rejection("risk_filter")
-            print(f"Risk filter rejected {symbol} {signal}: SL={sl_pct}% RR={rr}")
             return
 
         message = build_message(
@@ -393,22 +375,21 @@ def _log_long_rejection_summary():
     with candidate_rejections_lock:
         if candidate_rejections:
             summary = ", ".join(f"{key}={value}" for key, value in sorted(candidate_rejections.items()))
-            print(f"Candidate rejection summary (cumulative since start): {summary}")
+            print(f"Candidate rejection summary: {summary}")
         else:
-            print("Candidate diagnostics: no aligned 4H/1H directional candidates reached the entry checks yet.")
+            print("Candidate diagnostics: no aligned candidates reached entry checks yet.")
     with long_rejections_lock:
         if long_rejections:
             summary = ", ".join(f"{key}={value}" for key, value in sorted(long_rejections.items()))
-            print(f"LONG post-analysis rejection summary (cumulative since start): {summary}")
+            print(f"LONG post-analysis rejection summary: {summary}")
 
 
 def background_scanner():
     time.sleep(10)
     send_telegram_message(
-        "🤖 *تم تشغيل استراتيجية Breakout + Retest*\n"
+        "🤖 *تم تشغيل استراتيجية Breakout + Retest مع حماية مطاردة السعر*\n"
         "الفحص يشترط توافق 4H و1H، كسر وإعادة اختبار 15M، "
-        "BOS في نفس الاتجاه، وفوليوم 1.15x على الأقل، "
-        "مع إدارة المخاطر.\n"
+        "BOS متوافق، فوليوم 1.15x، والتحقق الفوري من عدم امتداد السعر.\n"
         "الإشارات احتمالية وليست ضمانًا للربح."
     )
     engine = StrategyEngine()
