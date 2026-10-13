@@ -1,13 +1,13 @@
 # ==========================================
 # MY EXPERT CRYPTO BOT - STRATEGY ENGINE
-# BREAKOUT + RETEST + EDGE ALGO + SMC + PRICE CHASING FILTER + CANDLE QUALITY FILTER
+# BREAKOUT + RETEST + EDGE ALGO + SMC + PRICE CHASING FILTER + STRICT WARNING FILTER
 # ==========================================
 
 import numpy as np
 
 
 class StrategyEngine:
-    """OHLCV-only multi-timeframe strategy with price chasing protection and candle quality filter."""
+    """OHLCV-only multi-timeframe strategy with price chasing protection and strict warning filters."""
 
     def __init__(self):
         self.min_candles = 20
@@ -141,7 +141,7 @@ class StrategyEngine:
 
     @classmethod
     def _break_retest(cls, opens, highs, lows, closes, volumes, direction, current_price=None):
-        """Detect breakout/retest with live price chasing protection and candle quality filter."""
+        """Detect breakout/retest with live price chasing protection and strict candle quality filters."""
         o, h, l, c, v = (np.asarray(x, dtype=float) for x in (opens, highs, lows, closes, volumes))
         n = min(map(len, (o, h, l, c, v)))
         if n < 15:
@@ -153,7 +153,6 @@ class StrategyEngine:
         level_high = float(np.max(h[-lookback-1:-1]))
         level_low = float(np.min(l[-lookback-1:-1]))
         
-        # فلتر جودة شمعة الاختراق (تجنب الذيول الطويلة ورفض السعر / الفيك أوت)
         last_open, last_close = float(o[-1]), float(c[-1])
         last_high, last_low = float(h[-1]), float(l[-1])
         candle_total_range = max(last_high - last_low, 1e-12)
@@ -163,16 +162,13 @@ class StrategyEngine:
         upper_wick = last_high - max(last_open, last_close)
         lower_wick = min(last_open, last_close) - last_low
         
-        # إذا كان اتجاه صاعد (LONG)، نمنع الدخول إذا كان الذيل العلوي كبيراً (رفض السعر)
         if direction == "LONG" and upper_wick > body_size * 0.8:
             return False, level_high, "شمعة الاختراق بها ذيل علوي كبير (رفض السعر / فيك أوت)"
-        # إذا كان اتجاه هابط (SHORT)، نمنع الدخول إذا كان الذيل السفلي كبيراً
         if direction == "SHORT" and lower_wick > body_size * 0.8:
             return False, level_low, "شمعة الكسر بها ذيل سفلي كبير (رفض السعر / فيك أوت)"
 
         base_level = level_high if direction == "LONG" else level_low
 
-        # فلتر منع مطاردة السعر الممتد بناءً على السعر الحي الحالي
         if current_price is not None and current_price > 0:
             curr = float(current_price)
             if direction == "LONG" and curr > base_level:
@@ -183,7 +179,7 @@ class StrategyEngine:
                     return False, base_level, "السعر الحالي ابتعد كثيراً عن مستوى الكسر (تجنب المطاردة)"
 
         if direction == "LONG":
-            fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.40  # تم رفع شرط حجم الجسم لزيادة الصرامة
+            fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.40
             extension = (c[-1] - level_high) / max(atr, c[-1] * 1e-9)
             if fresh and extension <= 1.6:
                 return True, level_high, "اختراق صاعد حديث بإغلاق قوي؛ الامتداد ضمن الحد"
@@ -348,10 +344,22 @@ class StrategyEngine:
             score = min(score, 69)
         elif len(confirmations) < 3:
             score = min(score, 74)
-        score = int(max(0, min(100, score)))
-        entry_valid = bool(br_ok and structure_ok and volume_ratio >= 1.15 and momentum and len(confirmations) >= 3)
-        if not entry_valid:
-            excluded.append("شروط التنفيذ الكاملة غير متحققة؛ لا توجد إشارة تنفيذ")
+            
+        # شرط صارم جداً: منع الموافقة إذا وُجدت أي ملاحظة أو تحذير فني سلبي
+        has_warnings = len(excluded) > 0 and not any("إعادة اختبار" in x for x in confirmations)
+        
+        entry_valid = bool(
+            br_ok 
+            and structure_ok 
+            and volume_ratio >= 1.15 
+            and momentum 
+            and len(confirmations) >= 3 
+            and not has_warnings
+        )
+        
+        if not entry_valid and "شروط التنفيذ الكاملة غير متحققة؛ لا توجد إشارة تنفيذ" not in excluded:
+            excluded.append("شروط التنفيذ الكاملة غير متحققة أو توجد تحذيرات فنية؛ لا توجد إشارة تنفيذ")
+            
         details["entry_valid"] = entry_valid
         details["confirmations"] = confirmations
         details["reasons_excluded"] = excluded
