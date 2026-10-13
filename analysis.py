@@ -148,44 +148,71 @@ class StrategyEngine:
 
     @classmethod
     def _break_retest(cls, opens, highs, lows, closes, volumes, direction):
-        """Detect a fresh close breakout or a recent breakout retest/reclaim."""
+        """Detect either a fresh breakout or a real breakout followed by a retest."""
         o, h, l, c, v = (np.asarray(x, dtype=float) for x in (opens, highs, lows, closes, volumes))
         n = min(map(len, (o, h, l, c, v)))
-        if n < 12:
-            return False, None, "بيانات غير كافية لاكتشاف الكسر وإعادة الاختبار"
+        if n < 15:
+            return False, None, "بيانات غير كافية لاكتشاف الكسر وإعادة الاختبار", False
         o, h, l, c, v = (x[-n:] for x in (o, h, l, c, v))
         atr = cls.calculate_atr(h, l, c)
-        tolerance = max((atr / c[-1]) * 0.20 if atr > 0 else 0, 0.0015)
-        # Recent structural level before the most recent candle.
-        level_high = float(np.max(h[-11:-1]))
-        level_low = float(np.min(l[-11:-1]))
-        body_ratio = abs(c[-1] - o[-1]) / max(h[-1] - l[-1], c[-1] * 1e-9)
+        tolerance = max((atr / max(c[-1], 1e-12)) * 0.25 if atr > 0 else 0, 0.0015)
+        lookback = min(10, n - 2)
+        level_high = float(np.max(h[-lookback-1:-1]))
+        level_low = float(np.min(l[-lookback-1:-1]))
+        last_range = max(float(h[-1] - l[-1]), float(c[-1]) * 1e-9)
+        body_ratio = abs(float(c[-1] - o[-1])) / last_range
+
         if direction == "LONG":
             fresh = c[-1] > level_high and c[-1] > o[-1] and body_ratio >= 0.35
-            retest = (l[-1] <= level_high * (1 + tolerance) and c[-1] >= level_high
-                      and c[-1] > o[-1] and np.max(c[-min(6, n-1):-1]) > level_high)
-            # Avoid chasing a candle that has already travelled far beyond the level.
             extension = (c[-1] - level_high) / max(atr, c[-1] * 1e-9)
             if fresh and extension <= 1.25:
-                return True, level_high, "اختراق صاعد بإغلاق؛ الامتداد ليس مفرطًا"
-            if retest and (c[-1] - level_high) / c[-1] <= 0.008:
-                return True, level_high, "إعادة اختبار للمقاومة المكسورة مع إغلاق صاعد"
+                return True, level_high, "اختراق صاعد حديث بإغلاق؛ الامتداد ليس مفرطًا", False
+            # Find a prior confirmed close above its own preceding range, then a later retest.
+            prior_break = False
+            prior_level = None
+            for idx in range(max(10, n - 6), n - 1):
+                left = max(0, idx - 10)
+                if idx - left < 5:
+                    continue
+                lvl = float(np.max(h[left:idx]))
+                br_range = max(float(h[idx] - l[idx]), float(c[idx]) * 1e-9)
+                br_body = abs(float(c[idx] - o[idx])) / br_range
+                if c[idx] > lvl and c[idx] > o[idx] and br_body >= 0.30:
+                    prior_break, prior_level = True, lvl
+            if prior_break and prior_level is not None:
+                retest = (l[-1] <= prior_level * (1 + tolerance) and c[-1] >= prior_level
+                          and c[-1] > o[-1] and (c[-1] - prior_level) / c[-1] <= 0.008)
+                if retest:
+                    return True, prior_level, "كسر صاعد سابق ثم إعادة اختبار للمستوى مع إغلاق صاعد", True
             if extension > 1.25:
-                return False, level_high, "السعر ممتد بعد الاختراق؛ تجنب مطاردة الحركة"
-            return False, level_high, "لا يوجد اختراق حديث أو إعادة اختبار مؤكدة"
+                return False, level_high, "السعر ممتد بعد الاختراق؛ تجنب مطاردة الحركة", False
+            return False, level_high, "لا يوجد اختراق حديث أو إعادة اختبار مؤكدة", False
+
         if direction == "SHORT":
             fresh = c[-1] < level_low and c[-1] < o[-1] and body_ratio >= 0.35
-            retest = (h[-1] >= level_low * (1 - tolerance) and c[-1] <= level_low
-                      and c[-1] < o[-1] and np.min(c[-min(6, n-1):-1]) < level_low)
             extension = (level_low - c[-1]) / max(atr, c[-1] * 1e-9)
             if fresh and extension <= 1.25:
-                return True, level_low, "كسر هابط بإغلاق؛ الامتداد ليس مفرطًا"
-            if retest and (level_low - c[-1]) / c[-1] <= 0.008:
-                return True, level_low, "إعادة اختبار للدعم المكسور مع إغلاق هابط"
+                return True, level_low, "كسر هابط حديث بإغلاق؛ الامتداد ليس مفرطًا", False
+            prior_break = False
+            prior_level = None
+            for idx in range(max(10, n - 6), n - 1):
+                left = max(0, idx - 10)
+                if idx - left < 5:
+                    continue
+                lvl = float(np.min(l[left:idx]))
+                br_range = max(float(h[idx] - l[idx]), float(c[idx]) * 1e-9)
+                br_body = abs(float(c[idx] - o[idx])) / br_range
+                if c[idx] < lvl and c[idx] < o[idx] and br_body >= 0.30:
+                    prior_break, prior_level = True, lvl
+            if prior_break and prior_level is not None:
+                retest = (h[-1] >= prior_level * (1 - tolerance) and c[-1] <= prior_level
+                          and c[-1] < o[-1] and (prior_level - c[-1]) / c[-1] <= 0.008)
+                if retest:
+                    return True, prior_level, "كسر هابط سابق ثم إعادة اختبار للمستوى مع إغلاق هابط", True
             if extension > 1.25:
-                return False, level_low, "السعر ممتد بعد الكسر؛ تجنب مطاردة الحركة"
-            return False, level_low, "لا يوجد كسر حديث أو إعادة اختبار مؤكدة"
-        return False, None, "الاتجاه غير واضح"
+                return False, level_low, "السعر ممتد بعد الكسر؛ تجنب مطاردة الحركة", False
+            return False, level_low, "لا يوجد كسر حديث أو إعادة اختبار مؤكدة", False
+        return False, None, "الاتجاه غير واضح", False
 
     def _storm101_whale_check(self, opens, highs, lows, closes, volumes, direction):
         # OHLCV cannot prove whale/institutional activity; this is a volume/impulse check only.
@@ -210,6 +237,7 @@ class StrategyEngine:
             "volume_ratio": 0.0, "vwap_price": 0.0, "support": None, "resistance": None,
             "retest_advice": "انتظار تأكيد فعلي", "entry_valid": False, "btc_trend": "UNKNOWN",
             "confirmations": [], "reasons_excluded": [], "momentum": False,
+            "retest_bos_valid": False,
         }
         empty = ([], [], [])
         if symbol and not self.is_valid_symbol(symbol):
@@ -241,13 +269,17 @@ class StrategyEngine:
             details["reasons_excluded"] = ["اتجاه 4H لا يؤكد اتجاه 1H"]
             return "NEUTRAL", 0, volume_ratio, details, (h1.tolist(), l1.tolist(), c1.tolist())
         confirmations.append("توافق الاتجاه على 4H و1H")
-        br_ok, br_level, br_reason = self._break_retest(o15, h15, l15, c15, v15, direction)
+        br_ok, br_level, br_reason, retest_bos_valid = self._break_retest(o15, h15, l15, c15, v15, direction)
         details["break_retest"], details["break_level"], details["retest_advice"] = br_ok, br_level, br_reason
+        details["retest_bos_valid"] = retest_bos_valid
         expected_bos = "BULLISH_BOS" if direction == "LONG" else "BEARISH_BOS"
+        structure_confirmed = details["bos"] == expected_bos or retest_bos_valid
         if details["bos"] == expected_bos:
             confirmations.append("BOS يؤكد الاتجاه على 15M")
+        elif retest_bos_valid:
+            confirmations.append("كسر سابق مؤكد وإعادة اختبار ناجحة على 15M")
         else:
-            excluded.append("لا يوجد BOS حديث مؤكد على 15M")
+            excluded.append("لا يوجد BOS حديث أو كسر سابق يتبعه إعادة اختبار مؤكدة على 15M")
         if details["mss"] in (("BULLISH_MSS" if direction == "LONG" else "BEARISH_MSS"),):
             confirmations.append("MSS يؤيد التحول الهيكلي")
         if details["sweep"] == ("SELL_SIDE_SWEEP" if direction == "LONG" else "BUY_SIDE_SWEEP"):
@@ -281,7 +313,7 @@ class StrategyEngine:
             excluded.append(activity_reason)
         # Score is based on distinct evidence; correlated volume checks are capped together.
         score = 20
-        score += 20 if details["bos"] == expected_bos else 0
+        score += 20 if structure_confirmed else 0
         score += 15 if br_ok else 0
         score += 10 if volume_ratio >= 1.25 else 0
         score += 10 if momentum else 0
@@ -291,12 +323,12 @@ class StrategyEngine:
         score += 5 if details["fvg"] != "NONE" else 0
         score += 5 if details["ob_zone"] is not None else 0
         # No inflated high score without the core entry setup and several independent confirmations.
-        if not br_ok or details["bos"] != expected_bos or volume_ratio < 1.25 or not momentum:
+        if not br_ok or not structure_confirmed or volume_ratio < 1.25 or not momentum:
             score = min(score, 69)
         elif len(confirmations) < 4:
             score = min(score, 74)
         score = int(max(0, min(100, score)))
-        entry_valid = bool(br_ok and details["bos"] == expected_bos and volume_ratio >= 1.25 and momentum and len(confirmations) >= 4)
+        entry_valid = bool(br_ok and structure_confirmed and volume_ratio >= 1.25 and momentum and len(confirmations) >= 4)
         if not entry_valid:
             excluded.append("شروط التنفيذ الكاملة غير متحققة؛ لا توجد إشارة تنفيذ")
         details["entry_valid"] = entry_valid
