@@ -1,8 +1,7 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT
-# BREAKOUT + RETEST SCANNER
+# MY EXPERT CRYPTO BOT - PREDICTIVE EDITION
 # File: main.py
-# Crypto-market filtering + safe BingX retry + LONG diagnostics
+# Predictive Divergence + Fvg + Limit Entry Scanner
 # ==========================================
 
 import os
@@ -20,7 +19,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "7200"))
 
-# Conservative defaults: reduce API pressure. These can be overridden in Render.
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50")))
 SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.50")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
@@ -32,15 +30,8 @@ api_lock = threading.Lock()
 _last_api_request = 0.0
 _api_cooldown_until = 0.0
 
-# Symbols rejected by BingX as paused/invalid are skipped for the rest of this process.
 paused_symbols = set()
 paused_lock = threading.Lock()
-
-# Count LONG rejection reasons to help diagnose why no LONG messages are delivered.
-long_rejections = {}
-long_rejections_lock = threading.Lock()
-candidate_rejections = {}
-candidate_rejections_lock = threading.Lock()
 
 bingx = ccxt.bingx({
     "enableRateLimit": True,
@@ -51,7 +42,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - Breakout Retest Scanner is running!"
+    return "My Expert Crypto Bot - Predictive FVG & Divergence Scanner is running!"
 
 
 @app.route("/health")
@@ -88,7 +79,6 @@ def send_telegram_message(message):
 
 
 def _market_status_looks_paused(market):
-    """Reject markets whose metadata explicitly describes a paused/suspended state."""
     if market.get("active") is False:
         return True
     info = market.get("info") or {}
@@ -102,44 +92,25 @@ def _market_status_looks_paused(market):
 
 
 def _looks_like_non_crypto_underlying(base):
-    """Filter known BingX stock/FX-style synthetic symbols seen in API error logs."""
     value = str(base or "").upper().strip()
-    if not value:
+    if not value or value.startswith(("NCSK", "NCFX")) or "USD2" in value:
         return True
-
-    # BingX stock-style contract namespace and FX-style pairs seen in the user's logs.
-    if value.startswith(("NCSK", "NCFX")):
-        return True
-    if "USD2" in value or re.search(r"2(?:USD|TWD|IDR|ARS|EUR|GBP|AUD|CAD|CHF|JPY|NZD)$", value):
-        return True
-
-    # Very long or punctuation-heavy bases are not normal crypto tickers.
     if len(value) > 24 or not re.fullmatch(r"[A-Z0-9]+", value):
         return True
     return False
 
 
 def is_candidate_market(symbol, market):
-    """Allow active, linear USDT-settled USDT perpetual swaps only."""
     if not isinstance(market, dict) or _market_status_looks_paused(market):
         return False
-    if not market.get("swap", False):
-        return False
-    if market.get("linear") is False:
+    if not market.get("swap", False) or market.get("linear") is False:
         return False
     if market.get("quote") != "USDT" or market.get("settle") != "USDT":
         return False
     if not symbol.endswith("/USDT:USDT"):
         return False
-
     base = market.get("base") or symbol.split("/", 1)[0]
     if _looks_like_non_crypto_underlying(base):
-        return False
-
-    # Exclude obvious fiat/FX base symbols.
-    if str(base).upper() in {
-        "USD", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF", "JPY", "TWD", "IDR", "ARS", "HKD", "SGD", "KRW", "CNY", "INR", "FX"
-    }:
         return False
     return True
 
@@ -171,17 +142,6 @@ def mark_signal(symbol, signal):
         signal_history[f"{symbol}_{signal}"] = time.time()
 
 
-def _record_long_rejection(reason):
-    with long_rejections_lock:
-        long_rejections[reason] = long_rejections.get(reason, 0) + 1
-
-
-def _record_candidate_rejection(direction, reason):
-    key = f"{direction}:{reason}"
-    with candidate_rejections_lock:
-        candidate_rejections[key] = candidate_rejections.get(key, 0) + 1
-
-
 def _is_paused_symbol(symbol):
     with paused_lock:
         return symbol in paused_symbols
@@ -189,10 +149,7 @@ def _is_paused_symbol(symbol):
 
 def _mark_paused_symbol(symbol):
     with paused_lock:
-        already_seen = symbol in paused_symbols
         paused_symbols.add(symbol)
-    if not already_seen:
-        print(f"Skipping BingX paused/invalid contract for this process: {symbol}")
 
 
 def _is_paused_contract_error(exc):
@@ -204,17 +161,11 @@ def _is_temporary_api_error(exc):
     message = str(exc).lower()
     return (
         isinstance(exc, (ccxt.RateLimitExceeded, ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeNotAvailable))
-        or "100410" in message
-        or "请稍后重试" in message
-        or "try again later" in message
-        or "too many requests" in message
-        or "rate limit" in message
-        or "temporarily unavailable" in message
+        or "100410" in message or "try again later" in message or "rate limit" in message
     )
 
 
 def bingx_call(method_name, *args, **kwargs):
-    """Rate-limit all CCXT requests and retry only transient errors with backoff."""
     global _last_api_request, _api_cooldown_until
     method = getattr(bingx, method_name)
     last_exc = None
@@ -222,11 +173,7 @@ def bingx_call(method_name, *args, **kwargs):
     for attempt in range(MAX_API_RETRIES + 1):
         with api_lock:
             now = time.monotonic()
-            wait_for = max(
-                0.0,
-                API_MIN_INTERVAL_SECONDS - (now - _last_api_request),
-                _api_cooldown_until - now,
-            )
+            wait_for = max(0.0, API_MIN_INTERVAL_SECONDS - (now - _last_api_request), _api_cooldown_until - now)
             if wait_for > 0:
                 time.sleep(wait_for)
             _last_api_request = time.monotonic()
@@ -237,102 +184,53 @@ def bingx_call(method_name, *args, **kwargs):
             last_exc = exc
             if _is_paused_contract_error(exc) or attempt >= MAX_API_RETRIES or not _is_temporary_api_error(exc):
                 raise
-
             delay = (2.0, 5.0, 12.0)[min(attempt, 2)]
             with api_lock:
                 _api_cooldown_until = max(_api_cooldown_until, time.monotonic() + delay)
-            print(
-                f"Temporary BingX API error in {method_name}; retry {attempt + 1}/{MAX_API_RETRIES} "
-                f"after {delay:.0f}s: {str(exc)[:180]}"
-            )
 
     raise last_exc
 
 
 def get_market_context():
-    """Fetch broad crypto-market context once per scan cycle. This is a market-cap proxy, not TradingView TOTAL1."""
     global _market_context_previous
     try:
         response = requests.get("https://api.coingecko.com/api/v3/global", timeout=8)
         if response.status_code != 200:
-            print(f"Global market context unavailable: HTTP {response.status_code}")
-            return {"source": "unavailable", "note": "CoinGecko global snapshot unavailable"}
+            return {"source": "unavailable"}
         data = (response.json() or {}).get("data") or {}
         total = float(((data.get("total_market_cap") or {}).get("usd")) or 0)
         btc_dom = float((data.get("market_cap_percentage") or {}).get("btc") or 0)
         day_change = data.get("market_cap_change_percentage_24h_usd")
         day_change = float(day_change) if day_change is not None else None
-        previous = _market_context_previous
-        dom_change = None
-        if previous and previous.get("btc_dominance") is not None:
-            dom_change = round(btc_dom - previous["btc_dominance"], 5)
         _market_context_previous = {"total_market_cap": total, "btc_dominance": btc_dom, "time": time.time()}
-        return {"source": "CoinGecko global (market-cap proxy; not literal TOTAL1)",
-                "total_market_cap_usd": total, "btc_dominance_pct": btc_dom,
-                "market_cap_change_pct": day_change, "btc_dominance_change_pct": dom_change,
-                "large_trade_usd": float(os.environ.get("LARGE_TRADE_USD", "10000"))}
-    except Exception as exc:
-        print(f"Global market context error: {str(exc)[:180]}")
-        return {"source": "unavailable", "note": "Market-wide data unavailable"}
+        return {"source": "CoinGecko global", "total_market_cap_usd": total, "btc_dominance_pct": btc_dom, "market_cap_change_pct": day_change}
+    except Exception:
+        return {"source": "unavailable"}
 
 
-def fetch_liquidity_data(symbol):
-    """Best-effort live order book and recent public trades. Large prints are a proxy, not verified whale identities."""
-    order_book = None
-    trades = None
-    try:
-        order_book = bingx_call("fetch_order_book", symbol, limit=20)
-    except Exception as exc:
-        print(f"Order book unavailable for {symbol}: {str(exc)[:120]}")
-    try:
-        trades = bingx_call("fetch_trades", symbol, limit=100)
-    except Exception as exc:
-        print(f"Recent trades unavailable for {symbol}: {str(exc)[:120]}")
-    return order_book, trades
-
-
-def build_message(symbol, signal, score, volume_ratio, entry,
-                  sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
-    confirmations = "\n".join(
-        f"• {x}" for x in details.get("confirmations", [])
-    ) or "• لا توجد تأكيدات إضافية"
-    exclusions = "\n".join(
-        f"• {x}" for x in details.get("reasons_excluded", [])
-    ) or "• لا توجد ملاحظات إضافية"
+def build_predictive_message(symbol, signal, score, volume_ratio, entry, predictive_entry,
+                               sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
+    confirmations = "\n".join(f"• {x}" for x in details.get("confirmations", [])) or "• لا توجد تأكيدات"
+    exclusions = "\n".join(f"• {x}" for x in details.get("reasons_excluded", [])) or "• لا توجد ملاحظات"
+    div = details.get("divergence", "NONE")
 
     return (
-        "📊 *إشارة كسر وإعادة اختبار — ليست ضمانًا للربح*\n\n"
+        "🎯 *إشارة توقعية استباقية (دايفرجنس ومناطق معلقة)*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
-        f"⚖️ *الاتجاه:* `{signal}`\n"
-        f"⭐ *التقييم:* `{score}/100`\n"
-        f"📈 *فوليوم 15M:* `{volume_ratio}x`\n"
-        f"💵 *سعر السوق المرجعي:* `{fmt(entry)}`\n"
-        f"🧱 *مستوى الكسر:* `{fmt(details.get('break_level'))}`\n\n"
+        f"⚖️ *الاتجاه المتوقع:* `{signal}`\n"
+        f"⭐ *التقييم الاستباقي:* `{score}/100`\n"
+        f"🔍 *نوع الاستباق (دايفرجنس):* `{div}`\n"
+        f"💵 *سعر السوق الحالي:* `{fmt(entry)}`\n"
+        f"🎯 *سعر الدخول المقترح (Limit):* `{fmt(predictive_entry)}`\n\n"
         f"🛑 *وقف الخسارة:* `{fmt(sl)}` ({sl_pct}%)\n"
         f"🎯 *TP1:* `{fmt(tp1)}` ({tp1_pct}%)\n"
         f"🎯 *TP2:* `{fmt(tp2)}`\n"
         f"🎯 *TP3:* `{fmt(tp3)}`\n"
         f"⚖️ *R:R تقديري:* `{rr}`\n\n"
-        f"🧭 *اتجاه 4H:* `{details.get('trend_4h')}` | "
-        f"*اتجاه 1H:* `{details.get('trend_1h')}`\n"
-        f"₿ *اتجاه BTC:* `{details.get('btc_trend')}`\n"
-        f"🧱 *BOS:* `{details.get('bos')}`\n"
-        f"💧 *Liquidity Sweep:* `{details.get('sweep')}`\n"
-        f"🟦 *FVG:* `{details.get('fvg')}` | *OB:* `{details.get('ob_type')}`\n"
-        f"📉 *EMA Stack:* `{(details.get('indicators') or {}).get('ema_stack', 'N/A')}` | "
-        f"*SuperTrend:* `{(details.get('indicators') or {}).get('supertrend_direction', 'N/A')}`\n"
-        f"📊 *RSI 6/14:* `{(details.get('indicators') or {}).get('rsi6', 'N/A')}` / `{(details.get('indicators') or {}).get('rsi14', 'N/A')}` | "
-        f"*MACD Hist:* `{fmt((details.get('indicators') or {}).get('macd', {}).get('hist', 0))}`\n"
-        f"💹 *VWAP:* `{fmt(details.get('vwap_price', 0))}` | *ADX:* `{(details.get('indicators') or {}).get('adx', 'N/A')}`\n"
-        f"🐋 *تدفق الصفقات الكبيرة:* `{(details.get('liquidity') or {}).get('whale_flow', 'UNAVAILABLE')}` | "
-        f"*دفتر الأوامر:* `{(details.get('liquidity') or {}).get('orderbook_imbalance', 'N/A')}`\n"
-        f"🌐 *السوق العام:* `{(details.get('market_context') or {}).get('source', 'N/A')}` | "
-        f"*تغير القيمة السوقية 24h:* `{(details.get('market_context') or {}).get('market_cap_change_pct', 'N/A')}`% | "
-        f"*هيمنة BTC:* `{(details.get('market_context') or {}).get('btc_dominance_pct', 'N/A')}`%\n\n"
-        f"✅ *التأكيدات:*\n{confirmations}\n\n"
-        f"⚠️ *الملاحظات:*\n{exclusions}\n\n"
-        "راجع السبريد والرافعة وحجم الصفقة قبل التنفيذ. "
-        "قد يتغير السعر قبل وصول الإشعار."
+        f"🧭 *اتجاه 4H:* `{details.get('trend_4h')}` | *اتجاه 1H:* `{details.get('trend_1h')}`\n"
+        f"✅ *أسباب الاستباق والتأكيدات:*\n{confirmations}\n\n"
+        f"⚠️ *ملاحظات الفلترة:*\n{exclusions}\n\n"
+        "هذه إشارة استباقية تعتمد على مناطق الارتداد المتوقعة، يرجى الالتزام بإدارة المخاطر."
     )
 
 
@@ -345,201 +243,82 @@ def process_symbol(symbol, engine, btc_ohlcv, market_context=None):
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=220)
 
         signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol,
-            market_context=market_context
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol, market_context=market_context
         )
-        # Only request the extra live feeds for technically plausible candidates to limit API load.
-        candidate_direction = details.get("candidate_direction")
-        if candidate_direction in ("LONG", "SHORT") and score >= 45:
-            order_book, recent_trades = fetch_liquidity_data(symbol)
-            signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-                ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol,
-                market_context=market_context, order_book=order_book, trades=recent_trades
-            )
 
-        if signal not in ("LONG", "SHORT"):
-            candidate_direction = details.get("candidate_direction")
-            if candidate_direction in ("LONG", "SHORT"):
-                if not details.get("break_retest", False):
-                    reason = "no_breakout_retest"
-                elif not details.get("retest_bos_valid", False) and details.get("bos") not in ("BULLISH_BOS" if candidate_direction == "LONG" else "BEARISH_BOS",):
-                    reason = "no_BOS_or_retest_BOS"
-                elif volume_ratio < 1.15:
-                    reason = "volume_below_1.15x"
-                elif not details.get("momentum", False):
-                    reason = "momentum_not_confirmed"
-                elif len(details.get("confirmations", [])) < 3:
-                    reason = "fewer_than_3_confirmations"
-                else:
-                    reason = "other_entry_filter"
-                _record_candidate_rejection(candidate_direction, reason)
-            return
-        if score < 72:
-            if signal == "LONG":
-                _record_long_rejection("score_below_72")
-            return
-        if not details.get("entry_valid", False):
-            if signal == "LONG":
-                _record_long_rejection("entry_invalid")
-            return
-        if volume_ratio < 1.15:
-            if signal == "LONG":
-                _record_long_rejection("volume_below_1.15x")
+        if signal not in ("LONG", "SHORT") or score < 75:
             return
 
-        expected_bos = "BULLISH_BOS" if signal == "LONG" else "BEARISH_BOS"
-        if details.get("bos") != expected_bos and not details.get("retest_bos_valid", False):
-            if signal == "LONG":
-                _record_long_rejection("bos_retest_filter")
-            print(
-                f"BOS/retest filter rejected {symbol}: signal={signal} "
-                f"BOS={details.get('bos')} retest={details.get('retest_bos_valid')}"
-            )
-            return
         if recent_signal(symbol, signal):
-            if signal == "LONG":
-                _record_long_rejection("cooldown")
             return
 
         ticker = bingx_call("fetch_ticker", symbol)
         entry = ticker.get("last") or ticker.get("close")
         if not valid_price(entry):
-            if signal == "LONG":
-                _record_long_rejection("invalid_ticker_price")
-            print(f"Skipped {symbol}: BingX returned an invalid last/close price")
             return
         entry = float(entry)
-        break_level = details.get("break_level")
-        if valid_price(break_level):
-            level = float(break_level)
-            atr = float((details.get("indicators") or {}).get("atr") or 0)
-            if signal == "LONG" and entry < level:
-                print(f"Skipped {symbol}: live price {entry} is below bullish breakout level {level}")
-                return
-            if signal == "SHORT" and entry > level:
-                print(f"Skipped {symbol}: live price {entry} is above bearish breakdown level {level}")
-                return
-            if atr > 0 and abs(entry-level) > 1.8*atr:
-                print(f"Skipped {symbol}: live price is too extended from breakout level")
-                return
+        predictive_entry = details.get("predictive_entry", entry)
 
         highs, lows, closes = arrays
         sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
-            entry, signal, highs, lows, closes
+            predictive_entry, signal, highs, lows, closes
         )
 
-        if not all(valid_price(x) for x in (sl, tp1, tp2, tp3)):
-            if signal == "LONG":
-                _record_long_rejection("invalid_risk_levels")
-            return
-        if signal == "LONG" and not (sl < entry < tp1 < tp2 < tp3):
-            _record_long_rejection("long_target_order")
-            return
-        if signal == "SHORT" and not (tp3 < tp2 < tp1 < entry < sl):
-            return
-        if sl_pct <= 0 or sl_pct > 7 or rr < 1.0:
-            if signal == "LONG":
-                _record_long_rejection("risk_filter")
-            print(f"Risk filter rejected {symbol} {signal}: SL={sl_pct}% RR={rr}")
+        if not all(valid_price(x) for x in (sl, tp1, tp2, tp3)) or rr < 1.0:
             return
 
-        message = build_message(
-            symbol, signal, score, volume_ratio, entry,
+        message = build_predictive_message(
+            symbol, signal, score, volume_ratio, entry, predictive_entry,
             sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details
         )
 
         if send_telegram_message(message):
             mark_signal(symbol, signal)
-            print(f"Sent {symbol} {signal}; score={score}, RR={rr}")
+            print(f"Sent predictive signal {symbol} {signal}; score={score}")
 
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
         if _is_paused_contract_error(exc):
             _mark_paused_symbol(symbol)
-            return
-        print(f"BingX error for {symbol}: {str(exc)[:240]}")
     except Exception as exc:
         if _is_paused_contract_error(exc):
             _mark_paused_symbol(symbol)
-            return
-        print(f"Processing error for {symbol}: {str(exc)[:240]}")
-
-
-def _log_long_rejection_summary():
-    with candidate_rejections_lock:
-        if candidate_rejections:
-            summary = ", ".join(f"{key}={value}" for key, value in sorted(candidate_rejections.items()))
-            print(f"Candidate rejection summary (cumulative since start): {summary}")
-        else:
-            print("Candidate diagnostics: no aligned 4H/1H directional candidates reached the entry checks yet.")
-    with long_rejections_lock:
-        if long_rejections:
-            summary = ", ".join(f"{key}={value}" for key, value in sorted(long_rejections.items()))
-            print(f"LONG post-analysis rejection summary (cumulative since start): {summary}")
 
 
 def background_scanner():
     time.sleep(10)
     send_telegram_message(
-        "🤖 *تم تشغيل استراتيجية Multi-Indicator + SMC + Liquidity*\n"
-        "التحليل يحسب EMA 7/25/50/99/120/200 حسب توفر الشموع، SuperTrend 10,3، RSI6/14، MACD، VWAP، Volume MA، ADX، وSMC.\n"
-        "بيانات دفتر الأوامر والصفقات الكبيرة والسوق العام عوامل إضافية عند توفرها، وليست ضمانًا أو إثباتًا لهوية الحيتان.\n"
-        "الإشارات احتمالية وليست ضمانًا للربح."
+        "🤖 *تم تفعيل بوت التحليل التوقعي الاستباقي (Divergence & FVG Scanner)*\n"
+        "يعمل البوت الآن على رصد الانعكاسات المبكرة وتحديد أوامر الحد المعلقة بدلاً من مطاردة السعر المتأخر."
     )
     engine = StrategyEngine()
 
     while True:
         try:
             markets = bingx_call("load_markets")
-            eligible = []
-            rejected_market_count = 0
-            for symbol, market in markets.items():
-                if is_candidate_market(symbol, market):
-                    eligible.append(symbol)
-                else:
-                    rejected_market_count += 1
-
-            symbols = [symbol for symbol in eligible if not _is_paused_symbol(symbol)]
-            with paused_lock:
-                paused_count = len(paused_symbols)
-            print(
-                f"Scan started: {len(symbols)} eligible crypto USDT swaps; "
-                f"filtered markets={rejected_market_count}; paused/invalid cached={paused_count}"
-            )
+            eligible = [symbol for symbol, market in markets.items() if is_candidate_market(symbol, market)]
+            symbols = [s for s in eligible if not _is_paused_symbol(s)]
 
             btc_ohlcv = []
             try:
-                btc_ohlcv = bingx_call(
-                    "fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=220
-                )
-            except Exception as exc:
-                print(f"BTC context unavailable after retries: {str(exc)[:200]}")
+                btc_ohlcv = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=220)
+            except Exception:
+                pass
             market_context = get_market_context()
-            print(f"Market context source: {market_context.get('source')} | market cap 24h={market_context.get('market_cap_change_pct')} | BTC dominance={market_context.get('btc_dominance_pct')}")
 
             for index, symbol in enumerate(symbols, start=1):
                 process_symbol(symbol, engine, btc_ohlcv, market_context)
                 if SYMBOL_PAUSE_SECONDS > 0:
                     time.sleep(SYMBOL_PAUSE_SECONDS)
-                if index % 50 == 0:
-                    print(f"Scan progress: {index}/{len(symbols)} markets")
 
-            _log_long_rejection_summary()
-            print("Scan cycle completed; waiting 180 seconds.")
             time.sleep(180)
-
-        except Exception as exc:
-            print(f"Scanner loop error: {str(exc)[:250]}")
+        except Exception:
             time.sleep(60)
 
 
 def start_scanner_once():
     if not getattr(app, "_scanner_started", False):
         app._scanner_started = True
-        threading.Thread(
-            target=background_scanner,
-            daemon=True,
-            name="bingx-scanner"
-        ).start()
+        threading.Thread(target=background_scanner, daemon=True, name="predictive-scanner").start()
 
 
 start_scanner_once()
