@@ -1,7 +1,8 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MAIN SERVER
-# BREAKOUT + RETEST SCANNER + PRICE CHASING PROTECTION
+# MY EXPERT CRYPTO BOT
+# BREAKOUT + RETEST SCANNER
 # File: main.py
+# Crypto-market filtering + safe BingX retry + LONG diagnostics
 # ==========================================
 
 import os
@@ -19,6 +20,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "7200"))
 
+# Conservative defaults: reduce API pressure. These can be overridden in Render.
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50")))
 SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.50")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
@@ -29,9 +31,11 @@ api_lock = threading.Lock()
 _last_api_request = 0.0
 _api_cooldown_until = 0.0
 
+# Symbols rejected by BingX as paused/invalid are skipped for the rest of this process.
 paused_symbols = set()
 paused_lock = threading.Lock()
 
+# Count LONG rejection reasons to help diagnose why no LONG messages are delivered.
 long_rejections = {}
 long_rejections_lock = threading.Lock()
 candidate_rejections = {}
@@ -46,7 +50,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - Breakout Retest Scanner with Price Chasing Protection is running!"
+    return "My Expert Crypto Bot - Breakout Retest Scanner is running!"
 
 
 @app.route("/health")
@@ -83,6 +87,7 @@ def send_telegram_message(message):
 
 
 def _market_status_looks_paused(market):
+    """Reject markets whose metadata explicitly describes a paused/suspended state."""
     if market.get("active") is False:
         return True
     info = market.get("info") or {}
@@ -96,19 +101,25 @@ def _market_status_looks_paused(market):
 
 
 def _looks_like_non_crypto_underlying(base):
+    """Filter known BingX stock/FX-style synthetic symbols seen in API error logs."""
     value = str(base or "").upper().strip()
     if not value:
         return True
+
+    # BingX stock-style contract namespace and FX-style pairs seen in the user's logs.
     if value.startswith(("NCSK", "NCFX")):
         return True
     if "USD2" in value or re.search(r"2(?:USD|TWD|IDR|ARS|EUR|GBP|AUD|CAD|CHF|JPY|NZD)$", value):
         return True
+
+    # Very long or punctuation-heavy bases are not normal crypto tickers.
     if len(value) > 24 or not re.fullmatch(r"[A-Z0-9]+", value):
         return True
     return False
 
 
 def is_candidate_market(symbol, market):
+    """Allow active, linear USDT-settled USDT perpetual swaps only."""
     if not isinstance(market, dict) or _market_status_looks_paused(market):
         return False
     if not market.get("swap", False):
@@ -124,6 +135,7 @@ def is_candidate_market(symbol, market):
     if _looks_like_non_crypto_underlying(base):
         return False
 
+    # Exclude obvious fiat/FX base symbols.
     if str(base).upper() in {
         "USD", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF", "JPY", "TWD", "IDR", "ARS", "HKD", "SGD", "KRW", "CNY", "INR", "FX"
     }:
@@ -201,6 +213,7 @@ def _is_temporary_api_error(exc):
 
 
 def bingx_call(method_name, *args, **kwargs):
+    """Rate-limit all CCXT requests and retry only transient errors with backoff."""
     global _last_api_request, _api_cooldown_until
     method = getattr(bingx, method_name)
     last_exc = None
@@ -244,11 +257,13 @@ def build_message(symbol, signal, score, volume_ratio, entry,
         f"• {x}" for x in details.get("reasons_excluded", [])
     ) or "• لا توجد ملاحظات إضافية"
 
+    fvg_zone = details.get("fvg_zone")
+    ob_zone = details.get("ob_zone")
     return (
-        "📊 *إشارة كسر وإعادة اختبار — ليست ضمانًا للربح*\n\n"
+        "📊 *إشارة Smart Money + Liquidity — ليست ضمانًا للربح*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
         f"⚖️ *الاتجاه:* `{signal}`\n"
-        f"⭐ *التقييم:* `{score}/100`\n"
+        f"⭐ *التوافق الفني:* `{score}/100` *(مش نسبة نجاح)*\n"
         f"📈 *فوليوم 15M:* `{volume_ratio}x`\n"
         f"💵 *سعر السوق المرجعي:* `{fmt(entry)}`\n"
         f"🧱 *مستوى الكسر:* `{fmt(details.get('break_level'))}`\n\n"
@@ -262,7 +277,12 @@ def build_message(symbol, signal, score, volume_ratio, entry,
         f"₿ *اتجاه BTC:* `{details.get('btc_trend')}`\n"
         f"🧱 *BOS:* `{details.get('bos')}`\n"
         f"💧 *Liquidity Sweep:* `{details.get('sweep')}`\n"
-        f"🟦 *FVG:* `{details.get('fvg')}`\n\n"
+        f"🟦 *FVG:* `{details.get('fvg')}` | *المنطقة:* `{fvg_zone if fvg_zone else '—'}`\n"
+        f"🧱 *Order Block:* `{details.get('ob_type')}` | *المنطقة:* `{ob_zone if ob_zone else '—'}`\n"
+        f"📐 *VWAP:* `{fmt(details.get('vwap_price'))}` | *RSI:* `{fmt(details.get('rsi'))}`\n"
+        f"📊 *MACD:* `{details.get('macd')}` | *ADX:* `{fmt(details.get('adx'))}`\n"
+        f"📚 *ضغط دفتر الأوامر:* `{details.get('orderbook_pressure')}` | *نسبة العمق:* `{fmt(details.get('orderbook_imbalance'))}x`\n"
+        f"🔎 *نوع الإعداد:* `{details.get('setup_type')}` | *الدعم:* `{fmt(details.get('support'))}` | *المقاومة:* `{fmt(details.get('resistance'))}`\n\n"
         f"✅ *التأكيدات:*\n{confirmations}\n\n"
         f"⚠️ *الملاحظات:*\n{exclusions}\n\n"
         "راجع السبريد والرافعة وحجم الصفقة قبل التنفيذ. "
@@ -274,21 +294,12 @@ def process_symbol(symbol, engine, btc_ohlcv):
     if _is_paused_symbol(symbol):
         return
     try:
-        # جلب السعر الحي أولاً لتمريره وتجنب مطاردة السعر الممتد أثناء التحليل
-        ticker = bingx_call("fetch_ticker", symbol)
-        entry = ticker.get("last") or ticker.get("close")
-        if not valid_price(entry):
-            print(f"Skipped {symbol}: BingX returned an invalid last/close price")
-            return
-        entry = float(entry)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=60)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=80)
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=60)
 
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=40)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=60)
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=40)
-
-        # تمرير سعر السوق الحالي (`current_price`) لمحرك التحليل
         signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol, current_price=entry
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol
         )
 
         if signal not in ("LONG", "SHORT"):
@@ -298,8 +309,8 @@ def process_symbol(symbol, engine, btc_ohlcv):
                     reason = "no_breakout_retest"
                 elif not details.get("retest_bos_valid", False) and details.get("bos") not in ("BULLISH_BOS" if candidate_direction == "LONG" else "BEARISH_BOS",):
                     reason = "no_BOS_or_retest_BOS"
-                elif volume_ratio < 1.15:
-                    reason = "volume_below_1.15x"
+                elif volume_ratio < 1.20:
+                    reason = "volume_below_1.20x"
                 elif not details.get("momentum", False):
                     reason = "momentum_not_confirmed"
                 elif len(details.get("confirmations", [])) < 3:
@@ -316,7 +327,7 @@ def process_symbol(symbol, engine, btc_ohlcv):
             if signal == "LONG":
                 _record_long_rejection("entry_invalid")
             return
-        if volume_ratio < 1.15:
+        if volume_ratio < 1.20:
             if signal == "LONG":
                 _record_long_rejection("volume_below_1.15x")
             return
@@ -325,10 +336,50 @@ def process_symbol(symbol, engine, btc_ohlcv):
         if details.get("bos") != expected_bos and not details.get("retest_bos_valid", False):
             if signal == "LONG":
                 _record_long_rejection("bos_retest_filter")
+            print(
+                f"BOS/retest filter rejected {symbol}: signal={signal} "
+                f"BOS={details.get('bos')} retest={details.get('retest_bos_valid')}"
+            )
             return
         if recent_signal(symbol, signal):
             if signal == "LONG":
                 _record_long_rejection("cooldown")
+            return
+
+        ticker = bingx_call("fetch_ticker", symbol)
+        entry = ticker.get("last") or ticker.get("close")
+        if not valid_price(entry):
+            if signal == "LONG":
+                _record_long_rejection("invalid_ticker_price")
+            print(f"Skipped {symbol}: BingX returned an invalid last/close price")
+            return
+        entry = float(entry)
+
+        # Candidate-only order-book snapshot: adds real bid/ask depth context without
+        # adding another request for every coin in the full-market scan.
+        order_book = None
+        try:
+            order_book = bingx_call("fetch_order_book", symbol, limit=20)
+        except Exception as book_exc:
+            print(f"Order-book context unavailable for {symbol}: {str(book_exc)[:120]}")
+
+        # Re-check against the live ticker. A LONG must still hold above its level;
+        # a SHORT must still hold below it.
+        signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv,
+            symbol=symbol, current_price=entry, order_book=order_book
+        )
+        if signal not in ("LONG", "SHORT") or not details.get("entry_valid", False):
+            print(f"Live-price confirmation rejected {symbol}: {details.get('retest_advice')} | score={score}")
+            if details.get("candidate_direction") == "LONG":
+                _record_long_rejection("live_price_confirmation")
+            return
+        if score < 72 or volume_ratio < 1.20:
+            if signal == "LONG":
+                _record_long_rejection("live_recheck_score_or_volume")
+            return
+        expected_bos = "BULLISH_BOS" if signal == "LONG" else "BEARISH_BOS"
+        if details.get("bos") != expected_bos and not details.get("retest_bos_valid", False):
             return
 
         highs, lows, closes = arrays
@@ -348,6 +399,7 @@ def process_symbol(symbol, engine, btc_ohlcv):
         if sl_pct <= 0 or sl_pct > 7 or rr < 1.0:
             if signal == "LONG":
                 _record_long_rejection("risk_filter")
+            print(f"Risk filter rejected {symbol} {signal}: SL={sl_pct}% RR={rr}")
             return
 
         message = build_message(
@@ -375,21 +427,21 @@ def _log_long_rejection_summary():
     with candidate_rejections_lock:
         if candidate_rejections:
             summary = ", ".join(f"{key}={value}" for key, value in sorted(candidate_rejections.items()))
-            print(f"Candidate rejection summary: {summary}")
+            print(f"Candidate rejection summary (cumulative since start): {summary}")
         else:
-            print("Candidate diagnostics: no aligned candidates reached entry checks yet.")
+            print("Candidate diagnostics: no aligned 4H/1H directional candidates reached the entry checks yet.")
     with long_rejections_lock:
         if long_rejections:
             summary = ", ".join(f"{key}={value}" for key, value in sorted(long_rejections.items()))
-            print(f"LONG post-analysis rejection summary: {summary}")
+            print(f"LONG post-analysis rejection summary (cumulative since start): {summary}")
 
 
 def background_scanner():
     time.sleep(10)
     send_telegram_message(
-        "🤖 *تم تشغيل استراتيجية Breakout + Retest مع حماية مطاردة السعر*\n"
-        "الفحص يشترط توافق 4H و1H، كسر وإعادة اختبار 15M، "
-        "BOS متوافق، فوليوم 1.15x، والتحقق الفوري من عدم امتداد السعر.\n"
+        "🤖 *تم تشغيل Smart Money + Liquidity Engine*\n"
+        "الفحص يجمع توافق 4H/1H، هيكل BOS/MSS، Liquidity Sweep، FVG/OB، "
+        "حجم التداول والزخم وMACD وVWAP وعمق دفتر الأوامر عند توفره، مع إعادة فحص السعر الحي وإدارة المخاطر.\n"
         "الإشارات احتمالية وليست ضمانًا للربح."
     )
     engine = StrategyEngine()
@@ -416,7 +468,7 @@ def background_scanner():
             btc_ohlcv = []
             try:
                 btc_ohlcv = bingx_call(
-                    "fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=30
+                    "fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=50
                 )
             except Exception as exc:
                 print(f"BTC context unavailable after retries: {str(exc)[:200]}")
