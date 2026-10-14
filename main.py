@@ -1,7 +1,7 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - PREDICTIVE EDITION
+# MY EXPERT CRYPTO BOT - ICT OTE EDITION
 # File: main.py
-# Predictive Divergence + Fvg + Limit Entry Scanner
+# Fibonacci OTE (61.8% - 78.6%) + FVG / OB Scanner
 # ==========================================
 
 import os
@@ -42,7 +42,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - Predictive FVG & Divergence Scanner is running!"
+    return "My Expert Crypto Bot - ICT OTE Strategy Scanner is running!"
 
 
 @app.route("/health")
@@ -208,29 +208,28 @@ def get_market_context():
         return {"source": "unavailable"}
 
 
-def build_predictive_message(symbol, signal, score, volume_ratio, entry, predictive_entry,
-                               sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
+def build_ote_message(symbol, signal, score, entry, ote_target,
+                      sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
     confirmations = "\n".join(f"• {x}" for x in details.get("confirmations", [])) or "• لا توجد تأكيدات"
     exclusions = "\n".join(f"• {x}" for x in details.get("reasons_excluded", [])) or "• لا توجد ملاحظات"
-    div = details.get("divergence", "NONE")
+    ote_zone = details.get("ote_zone", [0, 0])
 
     return (
-        "🎯 *إشارة توقعية استباقية (دايفرجنس ومناطق معلقة)*\n\n"
+        "🎯 *إشارة صيد مناطق OTE المثالية (مدرسة ICT)*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
-        f"⚖️ *الاتجاه المتوقع:* `{signal}`\n"
-        f"⭐ *التقييم الاستباقي:* `{score}/100`\n"
-        f"🔍 *نوع الاستباق (دايفرجنس):* `{div}`\n"
+        f"⚖️ *الاتجاه:* `{signal}`\n"
+        f"⭐ *التقييم:* `{score}/100`\n"
+        f"📏 *نطاق القمة والقاع:* `[{fmt(ote_zone[0])} - {fmt(ote_zone[1])}]`\n"
         f"💵 *سعر السوق الحالي:* `{fmt(entry)}`\n"
-        f"🎯 *سعر الدخول المقترح (Limit):* `{fmt(predictive_entry)}`\n\n"
+        f"🎯 *سعر الدخول المثالي (OTE Target):* `{fmt(ote_target)}`\n\n"
         f"🛑 *وقف الخسارة:* `{fmt(sl)}` ({sl_pct}%)\n"
         f"🎯 *TP1:* `{fmt(tp1)}` ({tp1_pct}%)\n"
         f"🎯 *TP2:* `{fmt(tp2)}`\n"
         f"🎯 *TP3:* `{fmt(tp3)}`\n"
         f"⚖️ *R:R تقديري:* `{rr}`\n\n"
-        f"🧭 *اتجاه 4H:* `{details.get('trend_4h')}` | *اتجاه 1H:* `{details.get('trend_1h')}`\n"
-        f"✅ *أسباب الاستباق والتأكيدات:*\n{confirmations}\n\n"
+        f"✅ *تفاصيل منطقة التصحيح (61.8% - 78.6%):*\n{confirmations}\n\n"
         f"⚠️ *ملاحظات الفلترة:*\n{exclusions}\n\n"
-        "هذه إشارة استباقية تعتمد على مناطق الارتداد المتوقعة، يرجى الالتزام بإدارة المخاطر."
+        "تم رصد التصحيح العميق بدقة، يرجى الالتزام بإدارة المخاطر ووضع الأوامر المعلقة في مناطق OTE."
     )
 
 
@@ -238,91 +237,3 @@ def process_symbol(symbol, engine, btc_ohlcv, market_context=None):
     if _is_paused_symbol(symbol):
         return
     try:
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=220)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=220)
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=220)
-
-        signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol, market_context=market_context
-        )
-
-        if signal not in ("LONG", "SHORT") or score < 75:
-            return
-
-        if recent_signal(symbol, signal):
-            return
-
-        ticker = bingx_call("fetch_ticker", symbol)
-        entry = ticker.get("last") or ticker.get("close")
-        if not valid_price(entry):
-            return
-        entry = float(entry)
-        predictive_entry = details.get("predictive_entry", entry)
-
-        highs, lows, closes = arrays
-        sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
-            predictive_entry, signal, highs, lows, closes
-        )
-
-        if not all(valid_price(x) for x in (sl, tp1, tp2, tp3)) or rr < 1.0:
-            return
-
-        message = build_predictive_message(
-            symbol, signal, score, volume_ratio, entry, predictive_entry,
-            sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details
-        )
-
-        if send_telegram_message(message):
-            mark_signal(symbol, signal)
-            print(f"Sent predictive signal {symbol} {signal}; score={score}")
-
-    except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-        if _is_paused_contract_error(exc):
-            _mark_paused_symbol(symbol)
-    except Exception as exc:
-        if _is_paused_contract_error(exc):
-            _mark_paused_symbol(symbol)
-
-
-def background_scanner():
-    time.sleep(10)
-    send_telegram_message(
-        "🤖 *تم تفعيل بوت التحليل التوقعي الاستباقي (Divergence & FVG Scanner)*\n"
-        "يعمل البوت الآن على رصد الانعكاسات المبكرة وتحديد أوامر الحد المعلقة بدلاً من مطاردة السعر المتأخر."
-    )
-    engine = StrategyEngine()
-
-    while True:
-        try:
-            markets = bingx_call("load_markets")
-            eligible = [symbol for symbol, market in markets.items() if is_candidate_market(symbol, market)]
-            symbols = [s for s in eligible if not _is_paused_symbol(s)]
-
-            btc_ohlcv = []
-            try:
-                btc_ohlcv = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=220)
-            except Exception:
-                pass
-            market_context = get_market_context()
-
-            for index, symbol in enumerate(symbols, start=1):
-                process_symbol(symbol, engine, btc_ohlcv, market_context)
-                if SYMBOL_PAUSE_SECONDS > 0:
-                    time.sleep(SYMBOL_PAUSE_SECONDS)
-
-            time.sleep(180)
-        except Exception:
-            time.sleep(60)
-
-
-def start_scanner_once():
-    if not getattr(app, "_scanner_started", False):
-        app._scanner_started = True
-        threading.Thread(target=background_scanner, daemon=True, name="predictive-scanner").start()
-
-
-start_scanner_once()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
