@@ -26,6 +26,7 @@ SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
 
 signal_history = {}
+_market_context_previous = None
 history_lock = threading.Lock()
 api_lock = threading.Lock()
 _last_api_request = 0.0
@@ -248,6 +249,48 @@ def bingx_call(method_name, *args, **kwargs):
     raise last_exc
 
 
+def get_market_context():
+    """Fetch broad crypto-market context once per scan cycle. This is a market-cap proxy, not TradingView TOTAL1."""
+    global _market_context_previous
+    try:
+        response = requests.get("https://api.coingecko.com/api/v3/global", timeout=8)
+        if response.status_code != 200:
+            print(f"Global market context unavailable: HTTP {response.status_code}")
+            return {"source": "unavailable", "note": "CoinGecko global snapshot unavailable"}
+        data = (response.json() or {}).get("data") or {}
+        total = float(((data.get("total_market_cap") or {}).get("usd")) or 0)
+        btc_dom = float((data.get("market_cap_percentage") or {}).get("btc") or 0)
+        day_change = data.get("market_cap_change_percentage_24h_usd")
+        day_change = float(day_change) if day_change is not None else None
+        previous = _market_context_previous
+        dom_change = None
+        if previous and previous.get("btc_dominance") is not None:
+            dom_change = round(btc_dom - previous["btc_dominance"], 5)
+        _market_context_previous = {"total_market_cap": total, "btc_dominance": btc_dom, "time": time.time()}
+        return {"source": "CoinGecko global (market-cap proxy; not literal TOTAL1)",
+                "total_market_cap_usd": total, "btc_dominance_pct": btc_dom,
+                "market_cap_change_pct": day_change, "btc_dominance_change_pct": dom_change,
+                "large_trade_usd": float(os.environ.get("LARGE_TRADE_USD", "10000"))}
+    except Exception as exc:
+        print(f"Global market context error: {str(exc)[:180]}")
+        return {"source": "unavailable", "note": "Market-wide data unavailable"}
+
+
+def fetch_liquidity_data(symbol):
+    """Best-effort live order book and recent public trades. Large prints are a proxy, not verified whale identities."""
+    order_book = None
+    trades = None
+    try:
+        order_book = bingx_call("fetch_order_book", symbol, limit=20)
+    except Exception as exc:
+        print(f"Order book unavailable for {symbol}: {str(exc)[:120]}")
+    try:
+        trades = bingx_call("fetch_trades", symbol, limit=100)
+    except Exception as exc:
+        print(f"Recent trades unavailable for {symbol}: {str(exc)[:120]}")
+    return order_book, trades
+
+
 def build_message(symbol, signal, score, volume_ratio, entry,
                   sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
     confirmations = "\n".join(
@@ -257,13 +300,11 @@ def build_message(symbol, signal, score, volume_ratio, entry,
         f"• {x}" for x in details.get("reasons_excluded", [])
     ) or "• لا توجد ملاحظات إضافية"
 
-    fvg_zone = details.get("fvg_zone")
-    ob_zone = details.get("ob_zone")
     return (
-        "📊 *إشارة Smart Money + Liquidity — ليست ضمانًا للربح*\n\n"
+        "📊 *إشارة كسر وإعادة اختبار — ليست ضمانًا للربح*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
         f"⚖️ *الاتجاه:* `{signal}`\n"
-        f"⭐ *التوافق الفني:* `{score}/100` *(مش نسبة نجاح)*\n"
+        f"⭐ *التقييم:* `{score}/100`\n"
         f"📈 *فوليوم 15M:* `{volume_ratio}x`\n"
         f"💵 *سعر السوق المرجعي:* `{fmt(entry)}`\n"
         f"🧱 *مستوى الكسر:* `{fmt(details.get('break_level'))}`\n\n"
@@ -277,12 +318,17 @@ def build_message(symbol, signal, score, volume_ratio, entry,
         f"₿ *اتجاه BTC:* `{details.get('btc_trend')}`\n"
         f"🧱 *BOS:* `{details.get('bos')}`\n"
         f"💧 *Liquidity Sweep:* `{details.get('sweep')}`\n"
-        f"🟦 *FVG:* `{details.get('fvg')}` | *المنطقة:* `{fvg_zone if fvg_zone else '—'}`\n"
-        f"🧱 *Order Block:* `{details.get('ob_type')}` | *المنطقة:* `{ob_zone if ob_zone else '—'}`\n"
-        f"📐 *VWAP:* `{fmt(details.get('vwap_price'))}` | *RSI:* `{fmt(details.get('rsi'))}`\n"
-        f"📊 *MACD:* `{details.get('macd')}` | *ADX:* `{fmt(details.get('adx'))}`\n"
-        f"📚 *ضغط دفتر الأوامر:* `{details.get('orderbook_pressure')}` | *نسبة العمق:* `{fmt(details.get('orderbook_imbalance'))}x`\n"
-        f"🔎 *نوع الإعداد:* `{details.get('setup_type')}` | *الدعم:* `{fmt(details.get('support'))}` | *المقاومة:* `{fmt(details.get('resistance'))}`\n\n"
+        f"🟦 *FVG:* `{details.get('fvg')}` | *OB:* `{details.get('ob_type')}`\n"
+        f"📉 *EMA Stack:* `{(details.get('indicators') or {}).get('ema_stack', 'N/A')}` | "
+        f"*SuperTrend:* `{(details.get('indicators') or {}).get('supertrend_direction', 'N/A')}`\n"
+        f"📊 *RSI 6/14:* `{(details.get('indicators') or {}).get('rsi6', 'N/A')}` / `{(details.get('indicators') or {}).get('rsi14', 'N/A')}` | "
+        f"*MACD Hist:* `{fmt((details.get('indicators') or {}).get('macd', {}).get('hist', 0))}`\n"
+        f"💹 *VWAP:* `{fmt(details.get('vwap_price', 0))}` | *ADX:* `{(details.get('indicators') or {}).get('adx', 'N/A')}`\n"
+        f"🐋 *تدفق الصفقات الكبيرة:* `{(details.get('liquidity') or {}).get('whale_flow', 'UNAVAILABLE')}` | "
+        f"*دفتر الأوامر:* `{(details.get('liquidity') or {}).get('orderbook_imbalance', 'N/A')}`\n"
+        f"🌐 *السوق العام:* `{(details.get('market_context') or {}).get('source', 'N/A')}` | "
+        f"*تغير القيمة السوقية 24h:* `{(details.get('market_context') or {}).get('market_cap_change_pct', 'N/A')}`% | "
+        f"*هيمنة BTC:* `{(details.get('market_context') or {}).get('btc_dominance_pct', 'N/A')}`%\n\n"
         f"✅ *التأكيدات:*\n{confirmations}\n\n"
         f"⚠️ *الملاحظات:*\n{exclusions}\n\n"
         "راجع السبريد والرافعة وحجم الصفقة قبل التنفيذ. "
@@ -290,17 +336,26 @@ def build_message(symbol, signal, score, volume_ratio, entry,
     )
 
 
-def process_symbol(symbol, engine, btc_ohlcv):
+def process_symbol(symbol, engine, btc_ohlcv, market_context=None):
     if _is_paused_symbol(symbol):
         return
     try:
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=60)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=80)
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=60)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=220)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=220)
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=220)
 
         signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol,
+            market_context=market_context
         )
+        # Only request the extra live feeds for technically plausible candidates to limit API load.
+        candidate_direction = details.get("candidate_direction")
+        if candidate_direction in ("LONG", "SHORT") and score >= 45:
+            order_book, recent_trades = fetch_liquidity_data(symbol)
+            signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
+                ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv, symbol=symbol,
+                market_context=market_context, order_book=order_book, trades=recent_trades
+            )
 
         if signal not in ("LONG", "SHORT"):
             candidate_direction = details.get("candidate_direction")
@@ -309,8 +364,8 @@ def process_symbol(symbol, engine, btc_ohlcv):
                     reason = "no_breakout_retest"
                 elif not details.get("retest_bos_valid", False) and details.get("bos") not in ("BULLISH_BOS" if candidate_direction == "LONG" else "BEARISH_BOS",):
                     reason = "no_BOS_or_retest_BOS"
-                elif volume_ratio < 1.20:
-                    reason = "volume_below_1.20x"
+                elif volume_ratio < 1.15:
+                    reason = "volume_below_1.15x"
                 elif not details.get("momentum", False):
                     reason = "momentum_not_confirmed"
                 elif len(details.get("confirmations", [])) < 3:
@@ -327,7 +382,7 @@ def process_symbol(symbol, engine, btc_ohlcv):
             if signal == "LONG":
                 _record_long_rejection("entry_invalid")
             return
-        if volume_ratio < 1.20:
+        if volume_ratio < 1.15:
             if signal == "LONG":
                 _record_long_rejection("volume_below_1.15x")
             return
@@ -354,33 +409,19 @@ def process_symbol(symbol, engine, btc_ohlcv):
             print(f"Skipped {symbol}: BingX returned an invalid last/close price")
             return
         entry = float(entry)
-
-        # Candidate-only order-book snapshot: adds real bid/ask depth context without
-        # adding another request for every coin in the full-market scan.
-        order_book = None
-        try:
-            order_book = bingx_call("fetch_order_book", symbol, limit=20)
-        except Exception as book_exc:
-            print(f"Order-book context unavailable for {symbol}: {str(book_exc)[:120]}")
-
-        # Re-check against the live ticker. A LONG must still hold above its level;
-        # a SHORT must still hold below it.
-        signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv,
-            symbol=symbol, current_price=entry, order_book=order_book
-        )
-        if signal not in ("LONG", "SHORT") or not details.get("entry_valid", False):
-            print(f"Live-price confirmation rejected {symbol}: {details.get('retest_advice')} | score={score}")
-            if details.get("candidate_direction") == "LONG":
-                _record_long_rejection("live_price_confirmation")
-            return
-        if score < 72 or volume_ratio < 1.20:
-            if signal == "LONG":
-                _record_long_rejection("live_recheck_score_or_volume")
-            return
-        expected_bos = "BULLISH_BOS" if signal == "LONG" else "BEARISH_BOS"
-        if details.get("bos") != expected_bos and not details.get("retest_bos_valid", False):
-            return
+        break_level = details.get("break_level")
+        if valid_price(break_level):
+            level = float(break_level)
+            atr = float((details.get("indicators") or {}).get("atr") or 0)
+            if signal == "LONG" and entry < level:
+                print(f"Skipped {symbol}: live price {entry} is below bullish breakout level {level}")
+                return
+            if signal == "SHORT" and entry > level:
+                print(f"Skipped {symbol}: live price {entry} is above bearish breakdown level {level}")
+                return
+            if atr > 0 and abs(entry-level) > 1.8*atr:
+                print(f"Skipped {symbol}: live price is too extended from breakout level")
+                return
 
         highs, lows, closes = arrays
         sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
@@ -439,9 +480,9 @@ def _log_long_rejection_summary():
 def background_scanner():
     time.sleep(10)
     send_telegram_message(
-        "🤖 *تم تشغيل Smart Money + Liquidity Engine*\n"
-        "الفحص يجمع توافق 4H/1H، هيكل BOS/MSS، Liquidity Sweep، FVG/OB، "
-        "حجم التداول والزخم وMACD وVWAP وعمق دفتر الأوامر عند توفره، مع إعادة فحص السعر الحي وإدارة المخاطر.\n"
+        "🤖 *تم تشغيل استراتيجية Multi-Indicator + SMC + Liquidity*\n"
+        "التحليل يحسب EMA 7/25/50/99/120/200 حسب توفر الشموع، SuperTrend 10,3، RSI6/14، MACD، VWAP، Volume MA، ADX، وSMC.\n"
+        "بيانات دفتر الأوامر والصفقات الكبيرة والسوق العام عوامل إضافية عند توفرها، وليست ضمانًا أو إثباتًا لهوية الحيتان.\n"
         "الإشارات احتمالية وليست ضمانًا للربح."
     )
     engine = StrategyEngine()
@@ -468,13 +509,15 @@ def background_scanner():
             btc_ohlcv = []
             try:
                 btc_ohlcv = bingx_call(
-                    "fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=50
+                    "fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=220
                 )
             except Exception as exc:
                 print(f"BTC context unavailable after retries: {str(exc)[:200]}")
+            market_context = get_market_context()
+            print(f"Market context source: {market_context.get('source')} | market cap 24h={market_context.get('market_cap_change_pct')} | BTC dominance={market_context.get('btc_dominance_pct')}")
 
             for index, symbol in enumerate(symbols, start=1):
-                process_symbol(symbol, engine, btc_ohlcv)
+                process_symbol(symbol, engine, btc_ohlcv, market_context)
                 if SYMBOL_PAUSE_SECONDS > 0:
                     time.sleep(SYMBOL_PAUSE_SECONDS)
                 if index % 50 == 0:
