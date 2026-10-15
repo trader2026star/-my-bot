@@ -24,7 +24,6 @@ SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
 
 signal_history = {}
-_market_context_previous = None
 history_lock = threading.Lock()
 api_lock = threading.Lock()
 _last_api_request = 0.0
@@ -42,7 +41,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - ICT OTE Strategy Scanner is running!"
+    return "My Expert Crypto Bot - ICT OTE Strategy Scanner is active!"
 
 
 @app.route("/health")
@@ -65,81 +64,10 @@ def send_telegram_message(message):
             },
             timeout=15
         )
-        if response.status_code != 200:
-            print(f"Telegram HTTP error: {response.status_code} {response.text[:300]}")
-            return False
-        result = response.json()
-        if not result.get("ok"):
-            print(f"Telegram API error: {result}")
-            return False
-        return True
+        return response.status_code == 200
     except Exception as exc:
-        print(f"Telegram error: {str(exc)[:250]}")
+        print(f"Telegram error: {str(exc)[:150]}")
         return False
-
-
-def _market_status_looks_paused(market):
-    if market.get("active") is False:
-        return True
-    info = market.get("info") or {}
-    for key in ("status", "contractStatus", "state", "tradeStatus", "tradingStatus"):
-        value = info.get(key)
-        if isinstance(value, str) and value.strip().lower() in {
-            "paused", "pause", "suspended", "suspend", "offline", "delisted", "disabled", "closed"
-        }:
-            return True
-    return False
-
-
-def _looks_like_non_crypto_underlying(base):
-    value = str(base or "").upper().strip()
-    if not value or value.startswith(("NCSK", "NCFX")) or "USD2" in value:
-        return True
-    if len(value) > 24 or not re.fullmatch(r"[A-Z0-9]+", value):
-        return True
-    return False
-
-
-def is_candidate_market(symbol, market):
-    if not isinstance(market, dict) or _market_status_looks_paused(market):
-        return False
-    if not market.get("swap", False) or market.get("linear") is False:
-        return False
-    if market.get("quote") != "USDT" or market.get("settle") != "USDT":
-        return False
-    if not symbol.endswith("/USDT:USDT"):
-        return False
-    base = market.get("base") or symbol.split("/", 1)[0]
-    if _looks_like_non_crypto_underlying(base):
-        return False
-    return True
-
-
-def valid_price(value):
-    try:
-        number = float(value)
-        return number > 0 and number == number and number not in (float("inf"), float("-inf"))
-    except (TypeError, ValueError, OverflowError):
-        return False
-
-
-def fmt(value):
-    try:
-        return f"{float(value):.10g}"
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def recent_signal(symbol, signal):
-    key = f"{symbol}_{signal}"
-    with history_lock:
-        previous = signal_history.get(key, 0)
-        return time.time() - previous < SIGNAL_COOLDOWN_SECONDS
-
-
-def mark_signal(symbol, signal):
-    with history_lock:
-        signal_history[f"{symbol}_{signal}"] = time.time()
 
 
 def _is_paused_symbol(symbol):
@@ -152,23 +80,9 @@ def _mark_paused_symbol(symbol):
         paused_symbols.add(symbol)
 
 
-def _is_paused_contract_error(exc):
-    message = str(exc).lower()
-    return "109415" in message or "is pause currently" in message or "paused" in message
-
-
-def _is_temporary_api_error(exc):
-    message = str(exc).lower()
-    return (
-        isinstance(exc, (ccxt.RateLimitExceeded, ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeNotAvailable))
-        or "100410" in message or "try again later" in message or "rate limit" in message
-    )
-
-
 def bingx_call(method_name, *args, **kwargs):
     global _last_api_request, _api_cooldown_until
     method = getattr(bingx, method_name)
-    last_exc = None
 
     for attempt in range(MAX_API_RETRIES + 1):
         with api_lock:
@@ -181,37 +95,22 @@ def bingx_call(method_name, *args, **kwargs):
         try:
             return method(*args, **kwargs)
         except Exception as exc:
-            last_exc = exc
-            if _is_paused_contract_error(exc) or attempt >= MAX_API_RETRIES or not _is_temporary_api_error(exc):
+            if attempt >= MAX_API_RETRIES:
                 raise
-            delay = (2.0, 5.0, 12.0)[min(attempt, 2)]
-            with api_lock:
-                _api_cooldown_until = max(_api_cooldown_until, time.monotonic() + delay)
+            time.sleep(2.0)
 
-    raise last_exc
+    raise Exception("Max retries reached")
 
 
-def get_market_context():
-    global _market_context_previous
+def fmt(value):
     try:
-        response = requests.get("https://api.coingecko.com/api/v3/global", timeout=8)
-        if response.status_code != 200:
-            return {"source": "unavailable"}
-        data = (response.json() or {}).get("data") or {}
-        total = float(((data.get("total_market_cap") or {}).get("usd")) or 0)
-        btc_dom = float((data.get("market_cap_percentage") or {}).get("btc") or 0)
-        day_change = data.get("market_cap_change_percentage_24h_usd")
-        day_change = float(day_change) if day_change is not None else None
-        _market_context_previous = {"total_market_cap": total, "btc_dominance": btc_dom, "time": time.time()}
-        return {"source": "CoinGecko global", "total_market_cap_usd": total, "btc_dominance_pct": btc_dom, "market_cap_change_pct": day_change}
+        return f"{float(value):.10g}"
     except Exception:
-        return {"source": "unavailable"}
+        return str(value)
 
 
-def build_ote_message(symbol, signal, score, entry, ote_target,
-                      sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
+def build_ote_message(symbol, signal, score, entry, ote_target, sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
     confirmations = "\n".join(f"• {x}" for x in details.get("confirmations", [])) or "• لا توجد تأكيدات"
-    exclusions = "\n".join(f"• {x}" for x in details.get("reasons_excluded", [])) or "• لا توجد ملاحظات"
     ote_zone = details.get("ote_zone", [0, 0])
 
     return (
@@ -227,13 +126,74 @@ def build_ote_message(symbol, signal, score, entry, ote_target,
         f"🎯 *TP2:* `{fmt(tp2)}`\n"
         f"🎯 *TP3:* `{fmt(tp3)}`\n"
         f"⚖️ *R:R تقديري:* `{rr}`\n\n"
-        f"✅ *تفاصيل منطقة التصحيح (61.8% - 78.6%):*\n{confirmations}\n\n"
-        f"⚠️ *ملاحظات الفلترة:*\n{exclusions}\n\n"
-        "تم رصد التصحيح العميق بدقة، يرجى الالتزام بإدارة المخاطر ووضع الأوامر المعلقة في مناطق OTE."
+        f"✅ *تفاصيل التداول:*\n{confirmations}\n\n"
+        "الالتزام الصارم بإدارة المخاطر ووضع الأوامر المعلقة في مناطق OTE."
     )
 
 
-def process_symbol(symbol, engine, btc_ohlcv, market_context=None):
+def process_symbol(symbol, engine):
     if _is_paused_symbol(symbol):
         return
     try:
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=100)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=100)
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=100)
+
+        signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, symbol=symbol
+        )
+
+        if signal not in ("LONG", "SHORT") or score < 75:
+            return
+
+        ticker = bingx_call("fetch_ticker", symbol)
+        entry = float(ticker.get("last") or ticker.get("close") or 0)
+        if entry <= 0:
+            return
+
+        ote_target = details.get("predictive_entry", entry)
+        highs, lows, closes = arrays
+        sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
+            ote_target, signal, highs, lows, closes
+        )
+
+        message = build_ote_message(
+            symbol, signal, score, entry, ote_target,
+            sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details
+        )
+
+        if send_telegram_message(message):
+            print(f"Sent OTE signal for {symbol} successfully.")
+
+    except Exception as exc:
+        if "paused" in str(exc).lower():
+            _mark_paused_symbol(symbol)
+
+
+def background_scanner():
+    # الانتظار 15 ثانية حتى ينتهي السيرفر من الإقلاع تماماً بدون تعليق
+    time.sleep(15)
+    send_telegram_message("🤖 *تم تفعيل بوت ICT OTE على السيرفر بنجاح*")
+    engine = StrategyEngine()
+
+    while True:
+        try:
+            markets = bingx_call("load_markets")
+            symbols = [s for s, m in markets.items() if m.get("swap") and m.get("linear") and s.endswith("/USDT:USDT")]
+
+            for symbol in symbols:
+                process_symbol(symbol, engine)
+                time.sleep(SYMBOL_PAUSE_SECONDS)
+
+            time.sleep(180)
+        except Exception as exc:
+            print(f"Scanner error: {str(exc)[:150]}")
+            time.sleep(60)
+
+
+# تشغيل البوت في مسار منفصل لضمان عدم منع Render من الربط بالبورت
+threading.Thread(target=background_scanner, daemon=True, name="ote-scanner").start()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
