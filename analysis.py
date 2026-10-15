@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT — ICT OTE Strategy Engine
-# Fibonacci OTE (61.8% - 78.6%) + FVG + Order Blocks
+# MY EXPERT CRYPTO BOT — ICT OTE + Elliot Structure Engine
+# Fibonacci OTE (61.8% - 78.6%) + FVG + Market Structure Filter
 # ==========================================
 import numpy as np
 
@@ -13,7 +13,7 @@ class StrategyEngine:
         if not symbol or not isinstance(symbol, str) or len(symbol) > 30:
             return False
         s = symbol.upper()
-        return not any(x in s for x in ("AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "NFLX", "NVDA", "META", "TEST", "DEMO", "FAKE", "NCSK"))
+        return not any(x in s for x in ("AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "NFLX", "NVDA", "META", "TEST", "DEMO", "FAKE", "NCSK", "BULL", "BEAR"))
 
     @staticmethod
     def valid_ohlcv(data, minimum=20):
@@ -45,12 +45,28 @@ class StrategyEngine:
         return float(np.mean(tr[-min(int(period),len(tr)):]))
 
     @classmethod
+    def _detect_htf_trend(cls, closes_4h, closes_1h):
+        """تحديد الاتجاه الهيكلي العام (فلسفة الاتجاه الكلي - Wave Context)"""
+        if len(closes_4h) < 20 or len(closes_1h) < 20:
+            return "NEUTRAL"
+        
+        c4_now, c4_prev = closes_4h[-1], closes_4h[-10]
+        c1_now, c1_prev = closes_1h[-1], closes_1h[-10]
+        
+        if c4_now > c4_prev and c1_now > c1_prev:
+            return "LONG"
+        elif c4_now < c4_prev and c1_now < c1_prev:
+            return "SHORT"
+        
+        return "NEUTRAL"
+
+    @classmethod
     def _detect_ict_ote(cls, highs, lows, closes):
         """
         تطبيق استراتيجية ICT OTE (Optimal Trade Entry):
-        1. تحديد قمة وقاع الموجة (Swing High / Swing Low)[span_3](start_span)[span_3](end_span)[span_4](start_span)[span_4](end_span).
-        2. حساب مستويات الفيبوناتشي لتصحيح OTE (بين 61.8% و 78.6%)[span_5](start_span)[span_5](end_span)[span_6](start_span)[span_6](end_span).
-        3. التحقق مما إذا كان السعر الحالي قد صحح إلى داخل منطقة الدخول المثالية.
+        1. تحديد قمة وقاع الموجة (Swing High / Swing Low).
+        2. حساب مستويات الفيبوناتشي لتصحيح OTE (بين 61.8% و 78.6%).
+        3. التحقق مما إذا كان السعر الحالي داخل منطقة الدخول المثالية.
         """
         h = np.asarray(highs, dtype=float)
         l = np.asarray(lows, dtype=float)
@@ -59,29 +75,26 @@ class StrategyEngine:
         if len(c) < 30:
             return "NEUTRAL", None, 0.0, 0.0
 
-        # تحديد أقصى قمة وأدنى قاع في اخر 30 شمعة (موجة الدفعة)
         swing_high = float(np.max(h[-30:]))
         swing_low = float(np.min(l[-30:]))
         current_price = float(c[-1])
         
         diff = swing_high - swing_low
-        if diff <= 0:
+        if diff <= 0 or (diff / current_price) < 0.008: # استبعاد الموجات الضعيفة جداً
             return "NEUTRAL", None, swing_low, swing_high
 
-        # حساب مستويات فيبوناتشي لـ OTE
-        # في حالة الصعود (Bullish OTE): التصحيح من القمة إلى القاع
+        # مستويات الفيبوناتشي
         ote_618_bull = swing_high - (diff * 0.618)
         ote_786_bull = swing_high - (diff * 0.786)
 
-        # في حالة الهبوط (Bearish OTE): التصحيح من القاع إلى القمة
         ote_618_bear = swing_low + (diff * 0.618)
         ote_786_bear = swing_low + (diff * 0.786)
 
-        # التحقق هل السعر الحالي داخل منطقة OTE الشرائية (بين 61.8 و 78.6 صعوداً)
+        # منطقة الشراء (Long OTE)
         if ote_786_bull <= current_price <= ote_618_bull:
             return "LONG", float((ote_618_bull + ote_786_bull) / 2), swing_low, swing_high
 
-        # التحقق هل السعر الحالي داخل منطقة OTE البيعية (بين 61.8 و 78.6 هبوطاً)
+        # منطقة البيع (Short OTE)
         if ote_618_bear <= current_price <= ote_786_bear:
             return "SHORT", float((ote_618_bear + ote_786_bear) / 2), swing_low, swing_high
 
@@ -89,7 +102,7 @@ class StrategyEngine:
 
     @classmethod
     def _detect_fvg_ob(cls, opens, highs, lows, closes, direction):
-        """تأكيد الدخول عبر رصد الفجوات السعرية (FVG) أو كتل الأوامر (OB) في منطقة OTE[span_7](start_span)[span_7](end_span)"""
+        """تأكيد الدخول عبر الفجوات السعرية (FVG) وبداية ارتداد الهيكل السعري"""
         o = np.asarray(opens, dtype=float)
         h = np.asarray(highs, dtype=float)
         l = np.asarray(lows, dtype=float)
@@ -98,11 +111,13 @@ class StrategyEngine:
         if len(c) < 5:
             return False, "لا يوجد توافق مع FVG/OB"
 
-        # فحص الفجوة السعرية (Fair Value Gap)
-        if direction == 'LONG' and l[-1] > h[-3]:
-            return True, "تم التأكيد بوجود FVG صاعد في منطقة OTE"
-        elif direction == 'SHORT' and h[-1] < l[-3]:
-            return True, "تم التأكيد بوجود FVG هابط في منطقة OTE"
+        # فحص وجود FVG صاعد أو هابط
+        if direction == 'LONG':
+            if l[-1] > h[-3] or c[-1] > o[-1]: # وجود FVG أو شمعة انعكاسية صاعدة
+                return True, "تم التأكيد بوجود FVG واكتشفت إشارة ارتداد صاعدة"
+        elif direction == 'SHORT':
+            if h[-1] < l[-3] or c[-1] < o[-1]: # وجود FVG أو شمعة انعكاسية هابطة
+                return True, "تم التأكيد بوجود FVG واكتشفت إشارة ارتداد هابطة"
 
         return True, "تم دخول منطقة OTE المثالية بنجاح"
 
@@ -124,29 +139,38 @@ class StrategyEngine:
         o1, h1, l1, c1, v1 = self.arrays(ohlcv_1h[:-1])
         o, h, l, c, v = self.arrays(ohlcv_15m[:-1])
 
-        # تطبيق خوارزمية ICT OTE على فريم الـ 15 دقيقة والـ 1 ساعة
+        # 1. التناغم الهيكلي مع الفريمات الكبيرة (Elliot Wave / Trend Context)
+        htf_trend = self._detect_htf_trend(c4, c1)
+
+        # 2. خوارزمية ICT OTE على فريم الـ 15 دقيقة
         direction, ote_target, swing_low, swing_high = self._detect_ict_ote(h, l, c)
         
         if direction == "NEUTRAL":
             d['reasons_excluded'].append("السعر لم يصل بعد إلى منطقة التصحيح المثالية OTE (61.8% - 78.6%)")
             return "NEUTRAL", 30, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
 
-        # تأكيد إضافي عبر الفجوات أو كتل الأوامر
+        # فلترة الدخول: التأكد من التوافق مع الاتجاه الكلي
+        if htf_trend != "NEUTRAL" and direction != htf_trend:
+            d['reasons_excluded'].append(f"الاتجاه الكلي الهيكلي ينصح بـ {htf_trend}، تم استبعاد الصفقة المعاكسة.")
+            return "NEUTRAL", 40, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
+
+        # 3. التأكيد بالفجوات السعرية أو الارتداد الهيكلي
         confirmed, conf_msg = self._detect_fvg_ob(o, h, l, c, direction)
         if not confirmed:
             d['reasons_excluded'].append("لم يتم تأكيد الارتداد عبر FVG أو OB")
-            return "NEUTRAL", 40, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
+            return "NEUTRAL", 50, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
 
         confirmations = [
-            f"تم تحديد القمة ({swing_high}) والقاع ({swing_low}) بدقة[span_8](start_span)[span_8](end_span)[span_9](start_span)[span_9](end_span)",
-            f"السعر صحح بنجاح داخل نطاق الفيبوناتشي الذهبي OTE (61.8% - 78.6%)[span_10](start_span)[span_10](end_span)[span_11](start_span)[span_11](end_span)",
+            f"التناغم الهيكلي ممتاذ مع اتجاه الفريمات الكبرى ({htf_trend})",
+            f"تم تحديد القمة ({swing_high}) والقاع ({swing_low}) بدقة",
+            f"السعر صحح بنجاح داخل نطاق الفيبوناتشي الذهبي OTE (61.8% - 78.6%)",
             conf_msg
         ]
 
         d['predictive_entry'] = ote_target
         d['ote_zone'] = [swing_low, swing_high]
 
-        score = 90
+        score = 92
         entry_valid = True
         d.update(entry_valid=entry_valid, confirmations=confirmations, candidate_direction=direction)
         return direction, score, 1.2, d, (h.tolist(), l.tolist(), c.tolist())
@@ -169,7 +193,6 @@ class StrategyEngine:
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * .01
 
-        # في استراتيجية ICT OTE، يتم وضع وقف الخسارة خلف القاع أو القمة الرئيسية للموجة بأمان تام
         recent_low = float(np.min(lows[-15:]))
         recent_high = float(np.max(highs[-15:]))
         buffer = 0.2 * atr
