@@ -134,6 +134,15 @@ def build_ote_message(symbol, signal, score, entry, ote_target, sl, tp1, tp2, tp
 def process_symbol(symbol, engine):
     if _is_paused_symbol(symbol):
         return
+    
+    # فحص الـ Cooldown لمنع إرسال نفس الإشارة مراراً وتكراراً
+    global signal_history
+    now_time = time.time()
+    with history_lock:
+        last_time = signal_history.get(symbol, 0)
+        if now_time - last_time < SIGNAL_COOLDOWN_SECONDS:
+            return
+
     try:
         ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=100)
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=100)
@@ -163,15 +172,18 @@ def process_symbol(symbol, engine):
         )
 
         if send_telegram_message(message):
+            with history_lock:
+                signal_history[symbol] = time.time()
             print(f"Sent OTE signal for {symbol} successfully.")
 
     except Exception as exc:
         if "paused" in str(exc).lower():
             _mark_paused_symbol(symbol)
+        else:
+            print(f"Error processing {symbol}: {str(exc)[:100]}")
 
 
 def background_scanner():
-    # الانتظار 15 ثانية حتى ينتهي السيرفر من الإقلاع تماماً بدون تعليق
     time.sleep(15)
     send_telegram_message("🤖 *تم تفعيل بوت ICT OTE على السيرفر بنجاح*")
     engine = StrategyEngine()
@@ -191,7 +203,6 @@ def background_scanner():
             time.sleep(60)
 
 
-# تشغيل البوت في مسار منفصل لضمان عدم منع Render من الربط بالبورت
 threading.Thread(target=background_scanner, daemon=True, name="ote-scanner").start()
 
 if __name__ == "__main__":
