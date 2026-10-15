@@ -135,7 +135,6 @@ def process_symbol(symbol, engine):
     if _is_paused_symbol(symbol):
         return
     
-    # فحص الـ Cooldown لمنع إرسال نفس الإشارة مراراً وتكراراً
     global signal_history
     now_time = time.time()
     with history_lock:
@@ -191,7 +190,13 @@ def background_scanner():
     while True:
         try:
             markets = bingx_call("load_markets")
-            symbols = [s for s, m in markets.items() if m.get("swap") and m.get("linear") and s.endswith("/USDT:USDT")]
+            # فلترة العملات الوهمية والاختبارية بشكل قاطع هنا:
+            symbols = [
+                s for s, m in markets.items() 
+                if m.get("swap") and m.get("linear") and s.endswith("/USDT:USDT") 
+                and not any(x in s.upper() for x in ("TEST", "DEMO", "FAKE", "NCSK", "BULL", "BEAR"))
+                and m.get("active", True)
+            ]
 
             for symbol in symbols:
                 process_symbol(symbol, engine)
