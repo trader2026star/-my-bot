@@ -1,6 +1,4 @@
-
+flask
 ccxt
 numpy
-flask
 requests
-gunicorn
