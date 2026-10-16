@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT — Advanced Protection Engine (V2)
-# Enhanced ICT OTE + Volatility Filter + ATR Buffer Guard
+# MY EXPERT CRYPTO BOT — Liquidity Sweep & Stop Hunt Engine
+# Anti-Trap Strategy: Trading After Classical/ICT/SMC Stop Hunts
 # ==========================================
 import numpy as np
 
@@ -45,58 +45,41 @@ class StrategyEngine:
         return float(np.mean(tr[-min(int(period),len(tr)):]))
 
     @classmethod
-    def _detect_ict_ote(cls, highs, lows, closes):
+    def _detect_liquidity_sweep(cls, highs, lows, closes, opens):
+        """
+        خوارزمية سحب السيولة (Liquidity Sweep / Stop Hunt):
+        رصد اختراق وهمي (ذيل شمعة) لأحدث قمة أو قاع (مناطق وقف خسارة المتداولين)
+        ثم الإغلاق بعكس الاتجاه لتفعيل الدخول الحقيقي لصانع السوق.
+        """
         h = np.asarray(highs, dtype=float)
         l = np.asarray(lows, dtype=float)
         c = np.asarray(closes, dtype=float)
-        
-        if len(c) < 35:
-            return "NEUTRAL", None, 0.0, 0.0, 0.0
-
-        swing_high = float(np.max(h[-35:]))
-        swing_low = float(np.min(l[-35:]))
-        current_price = float(c[-1])
-        
-        diff = swing_high - swing_low
-        if diff <= 0:
-            return "NEUTRAL", None, swing_low, swing_high, 0.0
-
-        volatility_ratio = diff / current_price
-        if volatility_ratio > 0.40:
-            return "NEUTRAL", None, swing_low, swing_high, volatility_ratio
-
-        ote_618_bull = swing_high - (diff * 0.618)
-        ote_786_bull = swing_high - (diff * 0.786)
-
-        ote_618_bear = swing_low + (diff * 0.618)
-        ote_786_bear = swing_low + (diff * 0.786)
-
-        if ote_786_bull <= current_price <= ote_618_bull:
-            return "LONG", float((ote_618_bull + ote_786_bull) / 2), swing_low, swing_high, volatility_ratio
-
-        if ote_618_bear <= current_price <= ote_786_bear:
-            return "SHORT", float((ote_618_bear + ote_786_bear) / 2), swing_low, swing_high, volatility_ratio
-
-        return "NEUTRAL", None, swing_low, swing_high, volatility_ratio
-
-    @classmethod
-    def _detect_strong_confirmation(cls, opens, highs, lows, closes, direction):
         o = np.asarray(opens, dtype=float)
-        h = np.asarray(highs, dtype=float)
-        l = np.asarray(lows, dtype=float)
-        c = np.asarray(closes, dtype=float)
         
-        if len(c) < 5:
-            return False, "بيانات غير كافية للتأكيد"
+        if len(c) < 40:
+            return "NEUTRAL", 0.0, 0.0, 0.0
 
-        if direction == 'LONG':
-            if c[-1] > o[-1] and c[-1] > c[-2]:
-                return True, "تم تأكيد الارتداد بشمعة صاعدة قوية داخل نطاق OTE"
-        elif direction == 'SHORT':
-            if c[-1] < o[-1] and c[-1] < c[-2]:
-                return True, "تم تأكيد الارتداد بشمعة هابطة قوية داخل نطاق OTE"
+        # تحديد القمم والقעان السابقة (التي يضع عندها المتداولون وقوف خسائرهم)
+        recent_high = float(np.max(h[-30:-3]))
+        recent_low = float(np.min(l[-30:-3]))
+        current_price = float(c[-1])
 
-        return False, "لم يتم تأكيد شمعة الانعكاس بعد"
+        # 1. فحص سحب سيولة تحت القاع (Bullish Sweep / Stop Hunt Low) -> فرصة شراء LONG
+        # الذيل كسر القاع السابق لكن الإغلاق صعد فوقه أو تم رفض الكسر بشمعة قوية
+        is_sweep_low = (l[-1] < recent_low or l[-2] < recent_low) and (c[-1] > o[-1])
+        
+        # 2. فحص سحب سيولة فوق القمة (Bearish Sweep / Stop Hunt High) -> فرصة بيع SHORT
+        is_sweep_high = (h[-1] > recent_high or h[-2] > recent_high) and (c[-1] < o[-1])
+
+        if is_sweep_low:
+            entry_target = current_price
+            return "LONG", entry_target, recent_low, recent_high
+
+        if is_sweep_high:
+            entry_target = current_price
+            return "SHORT", entry_target, recent_low, recent_high
+
+        return "NEUTRAL", 0.0, recent_low, recent_high
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None,
                                 symbol="", market_context=None, order_book=None, trades=None):
@@ -116,31 +99,26 @@ class StrategyEngine:
         o1, h1, l1, c1, v1 = self.arrays(ohlcv_1h[:-1])
         o, h, l, c, v = self.arrays(ohlcv_15m[:-1])
 
-        direction, ote_target, swing_low, swing_high, vol_ratio = self._detect_ict_ote(h, l, c)
+        # تطبيق استراتيجية سحب السيولة واصطياد الوقف
+        direction, entry_target, swing_low, swing_high = self._detect_liquidity_sweep(h, l, c, o)
         
         if direction == "NEUTRAL":
-            d['reasons_excluded'].append("السعر لم يصل لمنطقة OTE أو التذبذب غير مناسب")
+            d['reasons_excluded'].append("لم يحدث سحب سيولة (Stop Hunt) بعد")
             return "NEUTRAL", 30, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
 
-        confirmed, conf_msg = self._detect_strong_confirmation(o, h, l, c, direction)
-        if not confirmed:
-            d['reasons_excluded'].append(conf_msg)
-            return "NEUTRAL", 40, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
-
         confirmations = [
-            f"معدل تذبذب الموجة مستقر وآمن ({round(vol_ratio * 100, 1)}%)",
-            f"تحديد القمة ({swing_high}) والقاع ({swing_low}) بنجاح",
-            f"تم تأكيد الارتداد داخل منطقة فيبوناتشي الذهبي OTE (61.8% - 78.6%)",
-            conf_msg
+            "تم رصد عملية سحب سيولة واصطياد وقوف الخسارة (Stop Hunt Sweep)",
+            f"كسر وهمي للمستويات السابقة والارتداد منها بنجاح",
+            "الدخول في اتجاه صانع السوق بعد خروج المتداولين التقليدية"
         ]
 
-        d['predictive_entry'] = ote_target
+        d['predictive_entry'] = entry_target
         d['ote_zone'] = [swing_low, swing_high]
 
-        score = 95
+        score = 96
         entry_valid = True
         d.update(entry_valid=entry_valid, confirmations=confirmations, candidate_direction=direction)
-        return direction, score, 1.2, d, (h.tolist(), l.tolist(), c.tolist())
+        return direction, score, 1.3, d, (h.tolist(), l.tolist(), c.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
         entry = float(entry_price)
@@ -160,16 +138,17 @@ class StrategyEngine:
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * .01
 
-        recent_low = float(np.min(lows[-20:]))
-        recent_high = float(np.max(highs[-20:]))
-        buffer = 0.5 * atr  # مسافة الأمان لحماية الوقف
+        # وقف خسارة محصن خلف ذيل شمعة سحب السيولة مباشرة مع مساحة أمان كافية
+        recent_low = float(np.min(lows[-15:]))
+        recent_high = float(np.max(highs[-15:]))
+        buffer = 0.6 * atr
 
         if direction in ('LONG', 'BUY'):
-            stop = min(entry - 2.5 * atr, recent_low - buffer)
+            stop = min(entry - 2.0 * atr, recent_low - buffer)
             risk = entry - stop
             t1, t2, t3 = entry + 2.0 * risk, entry + 3.5 * risk, entry + 5.0 * risk
         else:
-            stop = max(entry + 2.5 * atr, recent_high + buffer)
+            stop = max(entry + 2.0 * atr, recent_high + buffer)
             risk = stop - entry
             t1, t2, t3 = entry - 2.0 * risk, entry - 3.5 * risk, entry - 5.0 * risk
 
