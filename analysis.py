@@ -1,5 +1,5 @@
 # ==========================================
-# ENGULFING STRATEGY ENGINE (V7.0 - 1H Timeframe Professional)
+# ADVANCED STRATEGY ENGINE (V8.0 - Multi-Confirmation Breakout & Engulfing)
 # ==========================================
 import numpy as np
 
@@ -55,54 +55,63 @@ class StrategyEngine:
         o_1h, h_1h, l_1h, c_1h, v_1h = self.arrays(ohlcv_1h)
         current_price = float(c_1h[-1])
 
-        # فلتر الاتجاه على فريم 4 ساعات (الرئيسي)
+        # 1. فلتر الاتجاه العام على فريم 4 ساعات
         ma_4h = float(np.mean(c_4h[-10:]))
         htf_trend = "BULLISH" if c_4h[-1] > ma_4h else "BEARISH"
         d['trend_htf'] = htf_trend
 
-        # فحص الشموع على فريم الساعة (1h) للابتلاع
+        # 2. تحديد المقاومة والدعم المحلي على فريم الساعة (اكتشاف القناة الهابطة أو التجميع)
+        recent_resistance = float(np.max(h_1h[-15:-1]))  # أعلى قمة في آخر 15 شمعة ما عدا الأخيرة
+        recent_support = float(np.min(l_1h[-15:-1]))     # أدنى قاع في آخر 15 شمعة ما عدا الأخيرة
+
         prev_open, prev_close = float(o_1h[-2]), float(c_1h[-2])
         curr_open, curr_close = float(o_1h[-1]), float(c_1h[-1])
 
+        # شروط نموذج الابتلاع
         is_prev_red = prev_close < prev_open
         is_curr_green = curr_close > curr_open
-        is_bullish_engulfing = is_prev_red and is_curr_green and curr_close >= prev_open and curr_open <= prev_close
+        is_bullish_engulfing = is_prev_red and is_curr_green and curr_close >= prev_open
 
         is_prev_green = prev_close > prev_open
         is_curr_red = curr_close < curr_open
-        is_bearish_engulfing = is_prev_green and is_curr_red and curr_close <= prev_open and curr_open >= prev_close
+        is_bearish_engulfing = is_prev_green and is_curr_red and curr_close <= prev_open
+
+        # 3. شروط التأكيد المتعدد (اختراق المقاومة للصعود أو كسر الدعم للهبوط مع فوليوم)
+        is_breakout_resistance = curr_close > recent_resistance  # شمعة أغلقت فوق المقاومة الهابطة
+        is_breakout_support = curr_close < recent_support        # شمعة أغلقت تحت الدعم
 
         avg_volume_20 = float(np.mean(v_1h[-15:-1])) if len(v_1h) >= 16 else float(np.mean(v_1h))
         current_volume = float(v_1h[-1])
-        is_volume_surge = current_volume >= (avg_volume_20 * 1.3)
+        is_volume_surge = current_volume >= (avg_volume_20 * 1.35)  # تدفق حجمي قوي ومؤكد للكسر
 
-        # شرط الشراء (LONG) على فريم الساعة بَدعم من اتجاه الـ 4 ساعات
-        if is_bullish_engulfing and is_volume_surge and htf_trend == "BULLISH":
+        # شرط LONG (شراء - تأكيد متعدد: ارتداد من الدعم + اختراق المقاومة + ابتلاع صاعد + فوليوم)
+        if is_bullish_engulfing and (is_breakout_resistance or current_price > recent_support) and is_volume_surge and htf_trend == "BULLISH":
             confirmations = [
-                "تشكل نموذج الابتلاع الصاعد على فريم الساعة (1H Bullish Engulfing)",
-                "الاتجاه العام على فريم 4 ساعات صاعد (4H Trend Filter)",
-                f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                "إشارة انعكاسية قوية ومستقرة"
+                "ارتباط الارتداد بمستوى دعم قوي وتشكيل قاع مزدوج",
+                "اختراق مقاومة القناة الهابطة بشمعة تأكيد قوية (Breakout Confirmation)",
+                "تشكل نموذج الابتلاع الصاعد المؤكد (Bullish Engulfing)",
+                f"تدفق حجمي قوي لتأكيد الاختراق بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
+                "التوافق مع اتجاه فريم 4 ساعات الصاعد"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [float(np.min(l_1h[-5:])), float(np.max(h_1h[-5:]))]
+            d['zone'] = [recent_support, recent_resistance]
             d['confirmations'] = confirmations
-            return "LONG", 95, 1.3, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
+            return "LONG", 95, 1.35, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
 
-        # شرط البيع (SHORT) على فريم الساعة بَدعم من اتجاه الـ 4 ساعات
-        if is_bearish_engulfing and is_volume_surge and htf_trend == "BEARISH":
+        # شرط SHORT (بيع - تأكيد متعدد: كسر الدعم + ابتلاع هابط + فوليوم)
+        if is_bearish_engulfing and (is_breakout_support or current_price < recent_resistance) and is_volume_surge and htf_trend == "BEARISH":
             confirmations = [
-                "تشكل نموذج الابتلاع الهابط على فريم الساعة (1H Bearish Engulfing)",
-                "الاتجاه العام على فريم 4 ساعات هابط (4H Trend Filter)",
-                f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                "إشارة انعكاسية هابطة قوية ومستقرة"
+                "كسر مستوى الدعم الرئيسي وتأكيد السيطرة البيعية",
+                "تشكل نموذج الابتلاع الهابط المؤكد (Bearish Engulfing)",
+                f"تدفق حجمي قوي لتأكيد الكسر بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
+                "التوافق مع اتجاه فريم 4 ساعات الهابط"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [float(np.min(l_1h[-5:])), float(np.max(h_1h[-5:]))]
+            d['zone'] = [recent_support, recent_resistance]
             d['confirmations'] = confirmations
-            return "SHORT", 95, 1.3, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
+            return "SHORT", 95, 1.35, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
 
-        d['reasons_excluded'].append("لم يتوافق نموذج الابتلاع على فريم الساعة مع الاتجاه أو الفوليوم")
+        d['reasons_excluded'].append("لم تكتمل شروط التأكيد المتعدد (الاختراق أو الفوليوم المطلوب)")
         return "NEUTRAL", 30, 1.0, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
