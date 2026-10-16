@@ -1,7 +1,7 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - ICT OTE EDITION
+# MY EXPERT CRYPTO BOT - LIQUIDITY SWEEP EDITION
 # File: main.py
-# Fibonacci OTE (61.8% - 78.6%) + FVG / OB Scanner
+# Anti-Trap Strategy: Stop Hunt & Liquidity Sweep Scanner
 # ==========================================
 
 import os
@@ -41,7 +41,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - ICT OTE Strategy Scanner is active!"
+    return "My Expert Crypto Bot - Liquidity Sweep Strategy Scanner is active!"
 
 
 @app.route("/health")
@@ -109,25 +109,24 @@ def fmt(value):
         return str(value)
 
 
-def build_ote_message(symbol, signal, score, entry, ote_target, sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
+def build_sweep_message(symbol, signal, score, entry, sweep_target, sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
     confirmations = "\n".join(f"• {x}" for x in details.get("confirmations", [])) or "• لا توجد تأكيدات"
-    ote_zone = details.get("ote_zone", [0, 0])
+    zone = details.get("ote_zone", [0, 0])
 
     return (
-        "🎯 *إشارة صيد مناطق OTE المثالية (مدرسة ICT)*\n\n"
+        "🚨 *إشارة سحب سيولة واصطياد الوقف (Stop Hunt Sweep)*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
-        f"⚖️ *الاتجاه:* `{signal}`\n"
+        f"⚖️ *الاتجاه الجديد (عكس القطيع):* `{signal}`\n"
         f"⭐ *التقييم:* `{score}/100`\n"
-        f"📏 *نطاق القمة والقاع:* `[{fmt(ote_zone[0])} - {fmt(ote_zone[1])}]`\n"
-        f"💵 *سعر السوق الحالي:* `{fmt(entry)}`\n"
-        f"🎯 *سعر الدخول المثالي (OTE Target):* `{fmt(ote_target)}`\n\n"
-        f"🛑 *وقف الخسارة:* `{fmt(sl)}` ({sl_pct}%)\n"
+        f"📏 *نطاق السيولة المسحوبة (القمة/القاع):* `[{fmt(zone[0])} - {fmt(zone[1])}]`\n"
+        f"💵 *سعر الدخول الحالي:* `{fmt(entry)}`\n\n"
+        f"🛑 *وقف الخسارة المحصن:* `{fmt(sl)}` ({sl_pct}%)\n"
         f"🎯 *TP1:* `{fmt(tp1)}` ({tp1_pct}%)\n"
         f"🎯 *TP2:* `{fmt(tp2)}`\n"
         f"🎯 *TP3:* `{fmt(tp3)}`\n"
         f"⚖️ *R:R تقديري:* `{rr}`\n\n"
-        f"✅ *تفاصيل التداول:*\n{confirmations}\n\n"
-        "الالتزام الصارم بإدارة المخاطر ووضع الأوامر المعلقة في مناطق OTE."
+        f"✅ *تفاصيل الانعكاس:*\n{confirmations}\n\n"
+        "تم رصد كسر وقوف الخسارة للمتداولين التقليديين والدخول مع صانع السوق."
     )
 
 
@@ -159,21 +158,21 @@ def process_symbol(symbol, engine):
         if entry <= 0:
             return
 
-        ote_target = details.get("predictive_entry", entry)
+        sweep_target = details.get("predictive_entry", entry)
         highs, lows, closes = arrays
         sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
-            ote_target, signal, highs, lows, closes
+            sweep_target, signal, highs, lows, closes
         )
 
-        message = build_ote_message(
-            symbol, signal, score, entry, ote_target,
+        message = build_sweep_message(
+            symbol, signal, score, entry, sweep_target,
             sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details
         )
 
         if send_telegram_message(message):
             with history_lock:
                 signal_history[symbol] = time.time()
-            print(f"Sent OTE signal for {symbol} successfully.")
+            print(f"Sent Liquidity Sweep signal for {symbol} successfully.")
 
     except Exception as exc:
         if "paused" in str(exc).lower():
@@ -184,13 +183,12 @@ def process_symbol(symbol, engine):
 
 def background_scanner():
     time.sleep(15)
-    send_telegram_message("🤖 *تم تفعيل بوت ICT OTE على السيرفر بنجاح*")
+    send_telegram_message("🤖 *تم تفعيل بوت سحب السيولة (Stop Hunt Engine) بنجاح*")
     engine = StrategyEngine()
 
     while True:
         try:
             markets = bingx_call("load_markets")
-            # فلترة العملات الوهمية والاختبارية بشكل قاطع هنا:
             symbols = [
                 s for s, m in markets.items() 
                 if m.get("swap") and m.get("linear") and s.endswith("/USDT:USDT") 
@@ -208,7 +206,7 @@ def background_scanner():
             time.sleep(60)
 
 
-threading.Thread(target=background_scanner, daemon=True, name="ote-scanner").start()
+threading.Thread(target=background_scanner, daemon=True, name="sweep-scanner").start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
