@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT — CISD & Liquidity Rejection Engine
-# Anti-Trap Strategy: Swept Liquidity (xxx) + CISD Confirmation
+# MY EXPERT CRYPTO BOT — CISD & RB Liquidity Engine
+# Anti-Trap Strategy: RB Zone (Rejection Block) + 0.5 Fib + CISD
 # ==========================================
 import numpy as np
 
@@ -45,47 +45,40 @@ class StrategyEngine:
         return float(np.mean(tr[-min(int(period),len(tr)):]))
 
     @classmethod
-    def _detect_liquidity_rejection_cisd(cls, opens, highs, lows, closes):
+    def _detect_rb_liquidity_strategy(cls, opens, highs, lows, closes):
         """
-        خوارزمية رفض السيولة وتغير حالة التسليم (CISD):
-        1. رصد اختراق القمم/القيعان ثم الرفض السريع (Liquidity Rejection).
-        2. التحقق من تكون شمعة CISD عاكسة تلغي افتتاح/إغلاق الشمعة السابقة.
+        خوارزمية نطاق الرفض (Rejection Block - RB) واختبار الفيبوناتشي (0.5):
+        1. تحديد كتلة الرفض (RB) السابقة.
+        2. انتظار سحب السيولة والعودة لاختبار النطاق أو مستوى 0.5.
+        3. تأكيد الإغلاق بشمعة CISD عكسية صحيحة.
         """
         o = np.asarray(opens, dtype=float)
         h = np.asarray(highs, dtype=float)
         l = np.asarray(lows, dtype=float)
         c = np.asarray(closes, dtype=float)
         
-        if len(c) < 35:
+        if len(c) < 40:
             return "NEUTRAL", 0.0, 0.0, 0.0
 
-        # تحديد القمم والقيعان السابقة التي تراكمت عندها السيولة (xxx)
-        recent_high = float(np.max(h[-30:-2]))
-        recent_low = float(np.min(l[-30:-2]))
+        # تحديد منطقة الـ RB (آخر قمة/قاع تسبب في كسر هيكلي أو سحب سيولة)
+        rb_high = float(np.max(h[-30:-5]))
+        rb_low = float(np.min(l[-30:-5]))
         current_price = float(c[-1])
 
-        # حساب نسبة الذيل لشمعة الرفض الأخيرة (Wick Ratio)
-        candle_range = h[-1] - l[-1]
-        lower_wick = (min(o[-1], c[-1]) - l[-1]) if candle_range > 0 else 0
-        upper_wick = (h[-1] - max(o[-1], c[-1])) if candle_range > 0 else 0
+        # منتصف النطاق (مستوى 0.5 الموضح في الشرح)
+        mid_level = (rb_high + rb_low) / 2
 
-        # 1. حالة الرفض الصاعد (Bullish Rejection - رفض الاستمرار أسفل القيعان) -> LONG
-        # شرط سحب السيولة أسفل القاع + إغلاق صاعد أعلى قمة الشمعة السابقة (تأكيد CISD)
-        is_bullish_sweep = (l[-2] < recent_low or l[-1] < recent_low)
-        is_cisd_long = (c[-1] > o[-1]) and (c[-1] > o[-2]) and (lower_wick / candle_range > 0.35 if candle_range > 0 else False)
+        # شروط التأكيد والرفض
+        is_bullish_rb_reaction = (l[-1] <= mid_level or l[-2] <= rb_low) and (c[-1] > o[-1]) and (c[-1] > c[-2])
+        is_bearish_rb_reaction = (h[-1] >= mid_level or h[-2] >= rb_high) and (c[-1] < o[-1]) and (c[-1] < c[-2])
 
-        # 2. حالة الرفض الهابط (Bearish Rejection - رفض الاستمرار أعلى القمم) -> SHORT
-        # شرط سحب السيولة أعلى القمة + إغلاق هابط أسفل قاع الشمعة السابقة (تأكيد CISD)
-        is_bearish_sweep = (h[-2] > recent_high or h[-1] > recent_high)
-        is_cisd_short = (c[-1] < o[-1]) and (c[-1] < o[-2]) and (upper_wick / candle_range > 0.35 if candle_range > 0 else False)
+        if is_bullish_rb_reaction and current_price >= rb_low:
+            return "LONG", current_price, rb_low, rb_high
 
-        if is_bullish_sweep and is_cisd_long:
-            return "LONG", current_price, recent_low, recent_high
+        if is_bearish_rb_reaction and current_price <= rb_high:
+            return "SHORT", current_price, rb_low, rb_high
 
-        if is_bearish_sweep and is_cisd_short:
-            return "SHORT", current_price, recent_low, recent_high
-
-        return "NEUTRAL", 0.0, recent_low, recent_high
+        return "NEUTRAL", 0.0, rb_low, rb_high
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None,
                                 symbol="", market_context=None, order_book=None, trades=None):
@@ -101,30 +94,27 @@ class StrategyEngine:
                 d['reasons_excluded'].append(f"بيانات {label} غير كافية")
                 return "NEUTRAL", 0, 0.0, d, empty
 
-        o4, h4, l4, c4, v4 = self.arrays(ohlcv_4h[:-1])
-        o1, h1, l1, c1, v1 = self.arrays(ohlcv_11h[:-1] if False else ohlcv_1h[:-1])
-        o, h, l, c, v = self.arrays(ohlcv_15m[:-1])
+        o, h, l, c = self.arrays(ohlcv_15m[:-1])[0], self.arrays(ohlcv_15m[:-1])[1], self.arrays(ohlcv_15m[:-1])[2], self.arrays(ohlcv_15m[:-1])[3]
 
-        # تطبيق خوارزمية رفض السيولة وCISD
-        direction, entry_target, swing_low, swing_high = self._detect_liquidity_rejection_cisd(o, h, l, c)
+        direction, entry_target, rb_low, rb_high = self._detect_rb_liquidity_strategy(o, h, l, c)
         
         if direction == "NEUTRAL":
-            d['reasons_excluded'].append("لم يتحقق شرط رفض السيولة وتأكيد شمعة CISD بعد")
+            d['reasons_excluded'].append("لم يتم الوصول لمنطقة RB أو اختبار مستوى 0.5 والتأكيد بعد")
             return "NEUTRAL", 30, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
 
         confirmations = [
-            "تم ضرب السيولة (xxx) والارتداد بنجاح (Liquidity Rejection)",
-            "تأكيد نموذج تغير حالة التسليم (CISD) بشمعة انعكاسية قوية",
-            "رفض السعر للاستمرار خارج نطاق القمم/القيعان والدخول مع صانع السوق"
+            "تم احترام نطاق الرفض (Rejection Block - RB) بنجاح",
+            "اختبار منطقة السيولة ومستوى 0.5 فيبوناتشي بدقة",
+            "تأكيد الانعكاس وإغلاق شمعة CISD في اتجاه صانع السوق"
         ]
 
         d['predictive_entry'] = entry_target
-        d['ote_zone'] = [swing_low, swing_high]
+        d['ote_zone'] = [rb_low, rb_high]
 
-        score = 98
+        score = 99
         entry_valid = True
         d.update(entry_valid=entry_valid, confirmations=confirmations, candidate_direction=direction)
-        return direction, score, 1.3, d, (h.tolist(), l.tolist(), c.tolist())
+        return direction, score, 1.4, d, (h.tolist(), l.tolist(), c.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
         entry = float(entry_price)
@@ -144,19 +134,18 @@ class StrategyEngine:
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * .01
 
-        # الوقف يكون محصناً خلف ذيل شمعة الرفض الأخيرة مباشرة
         recent_low = float(np.min(lows[-10:]))
         recent_high = float(np.max(highs[-10:]))
-        buffer = 0.4 * atr
+        buffer = 0.5 * atr
 
         if direction in ('LONG', 'BUY'):
             stop = min(entry - 2.0 * atr, recent_low - buffer)
             risk = entry - stop
-            t1, t2, t3 = entry + 2.0 * risk, entry + 3.5 * risk, entry + 5.0 * risk
+            t1, t2, t3 = entry + 2.5 * risk, entry + 4.0 * risk, entry + 6.0 * risk
         else:
             stop = max(entry + 2.0 * atr, recent_high + buffer)
             risk = stop - entry
-            t1, t2, t3 = entry - 2.0 * risk, entry - 3.5 * risk, entry - 5.0 * risk
+            t1, t2, t3 = entry - 2.5 * risk, entry - 4.0 * risk, entry - 6.0 * risk
 
         return (
             round(float(stop), 10),
