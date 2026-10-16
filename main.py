@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V5.2 - Safe & Filtered)
+# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V5.3 - All Requested Assets)
 # ==========================================
 
 import os
@@ -33,6 +33,7 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"}
 })
 
+# قائمة جميع العملات التي طلبتها بالكامل
 SELECTED_SYMBOLS = [
     "BTC/USDT:USDT",
     "PYTH/USDT:USDT",
@@ -43,13 +44,16 @@ SELECTED_SYMBOLS = [
     "FF/USDT:USDT",
     "ZK/USDT:USDT",
     "LYN/USDT:USDT",
-    "TIA/USDT:USDT"
+    "TIA/USDT:USDT",
+    "GPS/USDT:USDT",
+    "WCT/USDT:USDT",
+    "AGT/USDT:USDT"
 ]
 
 
 @app.route("/")
 def home():
-    return "Custom 10-Assets Institutional Liquidity Bot is active!"
+    return "Full Custom Assets Institutional Liquidity Bot is active!"
 
 
 @app.route("/health")
@@ -92,7 +96,6 @@ def bingx_call(method_name, *args, **kwargs):
         try:
             return method(*args, **kwargs)
         except Exception as exc:
-            # تجاهل أخطاء العملات المتوقفة في المنصة لكي لا يتوقف البوت أبداً
             err_str = str(exc)
             if "pause" in err_str or "109415" in err_str or "invalid" in err_str.lower():
                 print(f"Skipping paused/invalid symbol error: {err_str[:80]}")
@@ -114,7 +117,7 @@ def fmt(value):
 def notify_trade_executed(symbol, signal, entry, sl, tp1, tp3, confirmations):
     conf_text = "\n".join(f"• {x}" for x in confirmations)
     msg = (
-        "🏦 *إشارة تحليل سيولة بنكية مؤسسية (Custom Focus)*\n\n"
+        "🏦 *إشارة تحليل سيولة بنكية مؤسسية (Full Custom Focus)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{signal}`\n"
         f"💵 سعر الدخول: `{fmt(entry)}`\n"
@@ -242,9 +245,9 @@ def process_symbol(symbol, engine):
 
 
 def background_scanner():
-    print("Custom 10-Assets Safe Scanner thread started...", flush=True)
+    print("Full Custom Assets Safe Scanner thread started...", flush=True)
     time.sleep(10)
-    send_telegram_message("🤖 *تم تفعيل بوت السيولة المؤسسية بأمان تام على العملات العشر المخصصة*")
+    send_telegram_message("🤖 *تم تحديث البوت وفحص جميع عملاتك المطلوبة بنجاح تامة*")
     engine = StrategyEngine()
 
     while True:
@@ -259,7 +262,7 @@ def background_scanner():
             time.sleep(20)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="safe-custom-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="full-custom-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
