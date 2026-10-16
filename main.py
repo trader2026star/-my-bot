@@ -1,5 +1,5 @@
 # ==========================================
-# ENGULFING STRATEGY BOT - MAIN (V6.0 - Engulfing Hybrid)
+# ENGULFING STRATEGY BOT - MAIN (V7.0 - All Market Scanner)
 # ==========================================
 
 import os
@@ -17,7 +17,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "3600"))
 
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50")))
-SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.30")))
+SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.20")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
 
 signal_history = {}
@@ -33,28 +33,10 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"}
 })
 
-# قائمة العملات المراقبة (تمت إضافة GTC بنجاح)
-SELECTED_SYMBOLS = [
-    "BTC/USDT:USDT",
-    "GTC/USDT:USDT",
-    "PYTH/USDT:USDT",
-    "STRK/USDT:USDT",
-    "ZEREBRO/USDT:USDT",
-    "LDO/USDT:USDT",
-    "RLC/USDT:USDT",
-    "FF/USDT:USDT",
-    "ZK/USDT:USDT",
-    "LYN/USDT:USDT",
-    "TIA/USDT:USDT",
-    "GPS/USDT:USDT",
-    "WCT/USDT:USDT",
-    "AGT/USDT:USDT"
-]
-
 
 @app.route("/")
 def home():
-    return "Engulfing Strategy Bot is active!"
+    return "Engulfing Strategy Bot (All Market) is active!"
 
 
 @app.route("/health")
@@ -108,6 +90,27 @@ def bingx_call(method_name, *args, **kwargs):
     return None
 
 
+def get_all_usdt_symbols():
+    """جلب جميع أزواج العملات التي تنتهي بـ USDT:USDT من المنصة تلقائياً"""
+    try:
+        markets = bingx_call("load_markets")
+        if not markets:
+            return []
+        
+        symbols = []
+        for symbol, market in markets.items():
+            if market.get("linear", False) and market.get("quote") == "USDT" and market.get("active", True):
+                # التأكد من الصيغة الصحيحة لعقود السواب في بينجكس
+                if "/USDT:USDT" in symbol:
+                    symbols.append(symbol)
+        
+        print(f"Loaded {len(symbols)} symbols from the market.", flush=True)
+        return symbols
+    except Exception as exc:
+        print(f"Error loading markets: {str(exc)[:100]}", flush=True)
+        return []
+
+
 def fmt(value):
     try:
         return f"{float(value):.10g}"
@@ -119,7 +122,7 @@ def notify_trade_executed(symbol, signal, entry, sl, tp1, tp2, tp3, confirmation
     conf_text = "\n".join(f"• {x}" for x in confirmations)
 
     msg = (
-        "🚀 *إشارة صفقة جديدة (Engulfing Pattern)*\n\n"
+        "🚀 *إشارة صفقة جديدة (1H Engulfing Market Scan)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{signal}`\n"
         f"💵 سعر الدخول: `{fmt(entry)}`\n"
@@ -129,7 +132,7 @@ def notify_trade_executed(symbol, signal, entry, sl, tp1, tp2, tp3, confirmation
         f"• الهدف الثاني: `{fmt(tp2)}`\n"
         f"• الهدف الثالث (النهائي 1:3): `{fmt(tp3)}`\n\n"
         f"✅ *تفاصيل النموذج السعري:*\n{conf_text}\n\n"
-        "⚡ *تم رصد النمط وتفعيل المتابعة اللحظية.*"
+        "⚡ *تم رصد النمط على فريم الساعة وتفعيل المتابعة.*"
     )
     send_telegram_message(msg)
 
@@ -212,16 +215,17 @@ def process_symbol(symbol, engine):
             if now_time - last_time < SIGNAL_COOLDOWN_SECONDS:
                 return
 
+        # جلب فريم 4 ساعات للاتجاه وفريم الساعة للنموذج
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
-        ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=30)
-        if not ohlcv_1h or not ohlcv_5m:
+        if not ohlcv_4h or not ohlcv_1h:
             return
 
         signal, score, volume_ratio, details, arrays = engine.analyze_institutional_setup(
-            ohlcv_1h, ohlcv_5m, symbol=symbol
+            ohlcv_4h, ohlcv_1h, symbol=symbol
         )
 
-        if signal not in ("LONG", "SHORT") or score < 80:
+        if signal not in ("LONG", "SHORT") or score < 90:
             return
 
         target_price = details.get("predictive_entry", current_price)
@@ -252,24 +256,31 @@ def process_symbol(symbol, engine):
 
 
 def background_scanner():
-    print("Engulfing Strategy Scanner started...", flush=True)
+    print("All Market Engulfing Strategy Scanner started...", flush=True)
     time.sleep(5)
-    send_telegram_message("🤖 *تم تفعيل بوت النماذج الابتلاعية (Engulfing Bot) بنجاح وقيد العمل*")
+    send_telegram_message("🤖 *تم تفعيل بوت مسح السوق بالكامل (All-Market 1H Engulfing Bot) بنجاح*")
     engine = StrategyEngine()
 
     while True:
         try:
-            for symbol in SELECTED_SYMBOLS:
+            # تحديث جلب العملات كل دورة لضمان شمول السوق بالكامل
+            symbols = get_all_usdt_symbols()
+            if not symbols:
+                time.sleep(30)
+                continue
+
+            for symbol in symbols:
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
-            time.sleep(20)
+            # استراحة قصيرة بعد الانتهاء من مسح السوق بالكامل
+            time.sleep(60)
         except Exception as exc:
             print(f"Scanner error: {str(exc)[:150]}", flush=True)
-            time.sleep(20)
+            time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="engulfing-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="all-market-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
