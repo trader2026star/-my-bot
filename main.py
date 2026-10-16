@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V6.0 - Technical + Burn/News Hybrid)
+# ENGULFING STRATEGY BOT - MAIN (V6.0 - Engulfing Hybrid)
 # ==========================================
 
 import os
@@ -22,7 +22,6 @@ MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
 
 signal_history = {}
 active_trades = {}
-burn_events_cache = {}  # تخزين مؤقت لأخبار ومحفزات الحرق
 history_lock = threading.Lock()
 api_lock = threading.Lock()
 _last_api_request = 0.0
@@ -53,29 +52,12 @@ SELECTED_SYMBOLS = [
 
 @app.route("/")
 def home():
-    return "Hybrid Technical + Burn Fundamental Liquidity Bot is active!"
+    return "Engulfing Strategy Bot is active!"
 
 
 @app.route("/health")
 def health():
     return {"status": "healthy", "service": "active"}, 200
-
-
-def check_fundamental_burn_news(symbol):
-    """فحص محفزات الحرق والأخبار الأساسية للعملة"""
-    base_asset = symbol.split("/")[0].upper()
-    
-    # فحص مؤشر الحرق والتضخم التلقائي (Deflationary Model / Burn Check)
-    # يمكن تحديث الكاش دورياً بناءً على بيانات أحداث الحرق المجدولة
-    burn_keywords = ["BURN", "DEFLATIONARY", "BUYBACK", "HURQ"]
-    
-    # إذا كانت العملة معروفة بوجود برامج حرق نشطة أو حرق دوري
-    known_burn_tokens = ["BTC", "LDO", "TIA", "PYTH", "STRK", "RLC", "ZK"]
-    
-    if base_asset in known_burn_tokens or burn_events_cache.get(base_asset):
-        return f"🔥 محفز أساسي قوي: حرق دوري وتقليل المعروض (Deflationary Burn Mechanism)"
-    
-    return None
 
 
 def send_telegram_message(message):
@@ -131,24 +113,21 @@ def fmt(value):
         return str(value)
 
 
-def notify_trade_executed(symbol, signal, entry, sl, tp1, tp3, confirmations, burn_info=None):
+def notify_trade_executed(symbol, signal, entry, sl, tp1, tp2, tp3, confirmations):
     conf_text = "\n".join(f"• {x}" for x in confirmations)
-    
-    burn_section = ""
-    if burn_info:
-        burn_section = f"\n\n{burn_info}"
 
     msg = (
-        "🏦 *إشارة تحليل سيولة بنكية هجينة (Technical + Burn Catalyst)*\n\n"
+        "🚀 *إشارة صفقة جديدة (Engulfing Pattern)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{signal}`\n"
         f"💵 سعر الدخول: `{fmt(entry)}`\n"
-        f"🛑 وقف الخسارة: `{fmt(sl)}`\n"
-        f"🛡️ نقطة تأمين الوقف (Break-even): `{fmt(tp1)}`\n"
-        f"🎯 الهدف النهائي (1:3): `{fmt(tp3)}`\n\n"
-        f"✅ *تفاصيل التحليل الفني ومسح السيولة:*\n{conf_text}"
-        f"{burn_section}\n\n"
-        "⚡ *تم تفعيل الصفقة ومراقبة الحركة لحظياً.*"
+        f"🛑 وقف الخسارة (الإبطال): `{fmt(sl)}`\n\n"
+        f"🎯 *الأهداف المستهدفة:*\n"
+        f"• الهدف الأول (تأمين وبداية جني أرباح): `{fmt(tp1)}`\n"
+        f"• الهدف الثاني: `{fmt(tp2)}`\n"
+        f"• الهدف الثالث (النهائي 1:3): `{fmt(tp3)}`\n\n"
+        f"✅ *تفاصيل النموذج السعري:*\n{conf_text}\n\n"
+        "⚡ *تم رصد النمط وتفعيل المتابعة اللحظية.*"
     )
     send_telegram_message(msg)
 
@@ -157,15 +136,15 @@ def notify_breakeven(symbol, entry):
     msg = (
         "🛡️ *تحديث حماية الصفقة (Break-even)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"🔒 تم نقل الوقف تلقائياً إلى سعر الدخول: `{fmt(entry)}`\n"
-        "✨ *الصفقة أصبحت خالية من المخاطر تماماً!*"
+        f"🔒 تم بلوغ الهدف الأول ونقل وقف الخسارة لسعر الدخول: `{fmt(entry)}`\n"
+        "✨ *الصفقة أصبحت آمنة تماماً!*"
     )
     send_telegram_message(msg)
 
 
 def notify_trade_closed(symbol, result_type, exit_price):
     icon = "🎯" if result_type == "TARGET" else "🛑"
-    title = "تم تحقيق الهدف النهائي بنجاح (1:3)!" if result_type == "TARGET" else "تم ضرب وقف الخسارة المؤمّن."
+    title = "تم تحقيق الهدف النهائي بنجاح!" if result_type == "TARGET" else "تم ضرب وقف الخسارة."
     msg = (
         f"{icon} *إغلاق الصفقة: {title}*\n\n"
         f"🔹 العملة: `{symbol}`\n"
@@ -180,10 +159,10 @@ def monitor_active_trades(symbol, current_price):
 
     trade = active_trades[symbol]
     signal = trade["signal"]
-    entry = trade["entry"]
     sl = trade["sl"]
     tp1 = trade["tp1"]
     tp3 = trade["tp3"]
+    entry = trade["entry"]
     be_triggered = trade["be_triggered"]
 
     if signal == "LONG":
@@ -231,8 +210,8 @@ def process_symbol(symbol, engine):
             if now_time - last_time < SIGNAL_COOLDOWN_SECONDS:
                 return
 
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=50)
-        ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
+        ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=30)
         if not ohlcv_1h or not ohlcv_5m:
             return
 
@@ -240,7 +219,7 @@ def process_symbol(symbol, engine):
             ohlcv_1h, ohlcv_5m, symbol=symbol
         )
 
-        if signal not in ("LONG", "SHORT") or score < 75:
+        if signal not in ("LONG", "SHORT") or score < 80:
             return
 
         target_price = details.get("predictive_entry", current_price)
@@ -249,12 +228,9 @@ def process_symbol(symbol, engine):
             target_price, signal, highs, lows, closes
         )
 
-        # فحص وجود محفز أخبار وحرق للعملة
-        burn_info = check_fundamental_burn_news(symbol)
-
         notify_trade_executed(
-            symbol, signal, current_price, sl, tp1, tp3, 
-            details.get("confirmations", []), burn_info=burn_info
+            symbol, signal, current_price, sl, tp1, tp2, tp3, 
+            details.get("confirmations", [])
         )
 
         active_trades[symbol] = {
@@ -274,9 +250,9 @@ def process_symbol(symbol, engine):
 
 
 def background_scanner():
-    print("Hybrid Technical + Burn Scanner started...", flush=True)
-    time.sleep(10)
-    send_telegram_message("🤖 *تم تفعيل البوت المطور بنجاح (دمج مسح السيولة + تتبع أحداث الحرق والأخبار)*")
+    print("Engulfing Strategy Scanner started...", flush=True)
+    time.sleep(5)
+    send_telegram_message("🤖 *تم تفعيل بوت النماذج الابتلاعية (Engulfing Bot) بنجاح وقيد العمل*")
     engine = StrategyEngine()
 
     while True:
@@ -285,13 +261,13 @@ def background_scanner():
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
-            time.sleep(30)
+            time.sleep(20)
         except Exception as exc:
             print(f"Scanner error: {str(exc)[:150]}", flush=True)
             time.sleep(20)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="hybrid-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="engulfing-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
