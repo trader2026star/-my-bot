@@ -33,8 +33,10 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"}
 })
 
+# قائمة العملات المراقبة (تمت إضافة GTC بنجاح)
 SELECTED_SYMBOLS = [
     "BTC/USDT:USDT",
+    "GTC/USDT:USDT",
     "PYTH/USDT:USDT",
     "STRK/USDT:USDT",
     "ZEREBRO/USDT:USDT",
