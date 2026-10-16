@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT — Liquidity Sweep & Stop Hunt Engine
-# Anti-Trap Strategy: Trading After Classical/ICT/SMC Stop Hunts
+# MY EXPERT CRYPTO BOT — CISD & Liquidity Rejection Engine
+# Anti-Trap Strategy: Swept Liquidity (xxx) + CISD Confirmation
 # ==========================================
 import numpy as np
 
@@ -45,39 +45,45 @@ class StrategyEngine:
         return float(np.mean(tr[-min(int(period),len(tr)):]))
 
     @classmethod
-    def _detect_liquidity_sweep(cls, highs, lows, closes, opens):
+    def _detect_liquidity_rejection_cisd(cls, opens, highs, lows, closes):
         """
-        خوارزمية سحب السيولة (Liquidity Sweep / Stop Hunt):
-        رصد اختراق وهمي (ذيل شمعة) لأحدث قمة أو قاع (مناطق وقف خسارة المتداولين)
-        ثم الإغلاق بعكس الاتجاه لتفعيل الدخول الحقيقي لصانع السوق.
+        خوارزمية رفض السيولة وتغير حالة التسليم (CISD):
+        1. رصد اختراق القمم/القيعان ثم الرفض السريع (Liquidity Rejection).
+        2. التحقق من تكون شمعة CISD عاكسة تلغي افتتاح/إغلاق الشمعة السابقة.
         """
+        o = np.asarray(opens, dtype=float)
         h = np.asarray(highs, dtype=float)
         l = np.asarray(lows, dtype=float)
         c = np.asarray(closes, dtype=float)
-        o = np.asarray(opens, dtype=float)
         
-        if len(c) < 40:
+        if len(c) < 35:
             return "NEUTRAL", 0.0, 0.0, 0.0
 
-        # تحديد القمم والقעان السابقة (التي يضع عندها المتداولون وقوف خسائرهم)
-        recent_high = float(np.max(h[-30:-3]))
-        recent_low = float(np.min(l[-30:-3]))
+        # تحديد القمم والقيعان السابقة التي تراكمت عندها السيولة (xxx)
+        recent_high = float(np.max(h[-30:-2]))
+        recent_low = float(np.min(l[-30:-2]))
         current_price = float(c[-1])
 
-        # 1. فحص سحب سيولة تحت القاع (Bullish Sweep / Stop Hunt Low) -> فرصة شراء LONG
-        # الذيل كسر القاع السابق لكن الإغلاق صعد فوقه أو تم رفض الكسر بشمعة قوية
-        is_sweep_low = (l[-1] < recent_low or l[-2] < recent_low) and (c[-1] > o[-1])
-        
-        # 2. فحص سحب سيولة فوق القمة (Bearish Sweep / Stop Hunt High) -> فرصة بيع SHORT
-        is_sweep_high = (h[-1] > recent_high or h[-2] > recent_high) and (c[-1] < o[-1])
+        # حساب نسبة الذيل لشمعة الرفض الأخيرة (Wick Ratio)
+        candle_range = h[-1] - l[-1]
+        lower_wick = (min(o[-1], c[-1]) - l[-1]) if candle_range > 0 else 0
+        upper_wick = (h[-1] - max(o[-1], c[-1])) if candle_range > 0 else 0
 
-        if is_sweep_low:
-            entry_target = current_price
-            return "LONG", entry_target, recent_low, recent_high
+        # 1. حالة الرفض الصاعد (Bullish Rejection - رفض الاستمرار أسفل القيعان) -> LONG
+        # شرط سحب السيولة أسفل القاع + إغلاق صاعد أعلى قمة الشمعة السابقة (تأكيد CISD)
+        is_bullish_sweep = (l[-2] < recent_low or l[-1] < recent_low)
+        is_cisd_long = (c[-1] > o[-1]) and (c[-1] > o[-2]) and (lower_wick / candle_range > 0.35 if candle_range > 0 else False)
 
-        if is_sweep_high:
-            entry_target = current_price
-            return "SHORT", entry_target, recent_low, recent_high
+        # 2. حالة الرفض الهابط (Bearish Rejection - رفض الاستمرار أعلى القمم) -> SHORT
+        # شرط سحب السيولة أعلى القمة + إغلاق هابط أسفل قاع الشمعة السابقة (تأكيد CISD)
+        is_bearish_sweep = (h[-2] > recent_high or h[-1] > recent_high)
+        is_cisd_short = (c[-1] < o[-1]) and (c[-1] < o[-2]) and (upper_wick / candle_range > 0.35 if candle_range > 0 else False)
+
+        if is_bullish_sweep and is_cisd_long:
+            return "LONG", current_price, recent_low, recent_high
+
+        if is_bearish_sweep and is_cisd_short:
+            return "SHORT", current_price, recent_low, recent_high
 
         return "NEUTRAL", 0.0, recent_low, recent_high
 
@@ -96,26 +102,26 @@ class StrategyEngine:
                 return "NEUTRAL", 0, 0.0, d, empty
 
         o4, h4, l4, c4, v4 = self.arrays(ohlcv_4h[:-1])
-        o1, h1, l1, c1, v1 = self.arrays(ohlcv_1h[:-1])
+        o1, h1, l1, c1, v1 = self.arrays(ohlcv_11h[:-1] if False else ohlcv_1h[:-1])
         o, h, l, c, v = self.arrays(ohlcv_15m[:-1])
 
-        # تطبيق استراتيجية سحب السيولة واصطياد الوقف
-        direction, entry_target, swing_low, swing_high = self._detect_liquidity_sweep(h, l, c, o)
+        # تطبيق خوارزمية رفض السيولة وCISD
+        direction, entry_target, swing_low, swing_high = self._detect_liquidity_rejection_cisd(o, h, l, c)
         
         if direction == "NEUTRAL":
-            d['reasons_excluded'].append("لم يحدث سحب سيولة (Stop Hunt) بعد")
+            d['reasons_excluded'].append("لم يتحقق شرط رفض السيولة وتأكيد شمعة CISD بعد")
             return "NEUTRAL", 30, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
 
         confirmations = [
-            "تم رصد عملية سحب سيولة واصطياد وقوف الخسارة (Stop Hunt Sweep)",
-            f"كسر وهمي للمستويات السابقة والارتداد منها بنجاح",
-            "الدخول في اتجاه صانع السوق بعد خروج المتداولين التقليدية"
+            "تم ضرب السيولة (xxx) والارتداد بنجاح (Liquidity Rejection)",
+            "تأكيد نموذج تغير حالة التسليم (CISD) بشمعة انعكاسية قوية",
+            "رفض السعر للاستمرار خارج نطاق القمم/القيعان والدخول مع صانع السوق"
         ]
 
         d['predictive_entry'] = entry_target
         d['ote_zone'] = [swing_low, swing_high]
 
-        score = 96
+        score = 98
         entry_valid = True
         d.update(entry_valid=entry_valid, confirmations=confirmations, candidate_direction=direction)
         return direction, score, 1.3, d, (h.tolist(), l.tolist(), c.tolist())
@@ -138,10 +144,10 @@ class StrategyEngine:
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * .01
 
-        # وقف خسارة محصن خلف ذيل شمعة سحب السيولة مباشرة مع مساحة أمان كافية
-        recent_low = float(np.min(lows[-15:]))
-        recent_high = float(np.max(highs[-15:]))
-        buffer = 0.6 * atr
+        # الوقف يكون محصناً خلف ذيل شمعة الرفض الأخيرة مباشرة
+        recent_low = float(np.min(lows[-10:]))
+        recent_high = float(np.max(highs[-10:]))
+        buffer = 0.4 * atr
 
         if direction in ('LONG', 'BUY'):
             stop = min(entry - 2.0 * atr, recent_low - buffer)
