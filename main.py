@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V5.1 - Clean)
+# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V5.2 - Safe & Filtered)
 # ==========================================
 
 import os
@@ -92,11 +92,16 @@ def bingx_call(method_name, *args, **kwargs):
         try:
             return method(*args, **kwargs)
         except Exception as exc:
+            # تجاهل أخطاء العملات المتوقفة في المنصة لكي لا يتوقف البوت أبداً
+            err_str = str(exc)
+            if "pause" in err_str or "109415" in err_str or "invalid" in err_str.lower():
+                print(f"Skipping paused/invalid symbol error: {err_str[:80]}")
+                return None
             if attempt >= MAX_API_RETRIES:
                 raise
             time.sleep(2.0)
 
-    raise Exception("Max retries reached")
+    return None
 
 
 def fmt(value):
@@ -183,6 +188,8 @@ def monitor_active_trades(symbol, current_price):
 def process_symbol(symbol, engine):
     try:
         ticker = bingx_call("fetch_ticker", symbol)
+        if not ticker:
+            return
         current_price = float(ticker.get("last") or ticker.get("close") or 0)
         if current_price <= 0:
             return
@@ -200,6 +207,8 @@ def process_symbol(symbol, engine):
 
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=50)
         ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
+        if not ohlcv_1h or not ohlcv_5m:
+            return
 
         signal, score, volume_ratio, details, arrays = engine.analyze_institutional_setup(
             ohlcv_1h, ohlcv_5m, symbol=symbol
@@ -233,9 +242,9 @@ def process_symbol(symbol, engine):
 
 
 def background_scanner():
-    print("Custom 10-Assets scanner thread started...", flush=True)
+    print("Custom 10-Assets Safe Scanner thread started...", flush=True)
     time.sleep(10)
-    send_telegram_message("🤖 *تم تفعيل بوت التركيز المخصص على العملات العشر بنجاح*")
+    send_telegram_message("🤖 *تم تفعيل بوت السيولة المؤسسية بأمان تام على العملات العشر المخصصة*")
     engine = StrategyEngine()
 
     while True:
@@ -244,13 +253,13 @@ def background_scanner():
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
-            time.sleep(45)
+            time.sleep(30)
         except Exception as exc:
             print(f"Scanner error: {str(exc)[:150]}", flush=True)
-            time.sleep(30)
+            time.sleep(20)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="custom-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="safe-custom-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
