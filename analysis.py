@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V3.2 - Optimized)
+# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V5 - Custom Assets & Deep Analysis)
 # ==========================================
 import numpy as np
 
@@ -11,8 +11,7 @@ class StrategyEngine:
     def is_valid_symbol(symbol):
         if not symbol or not isinstance(symbol, str) or len(symbol) > 30:
             return False
-        s = symbol.upper()
-        return not any(x in s for x in ("AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "NFLX", "NVDA", "META", "TEST", "DEMO", "FAKE", "NCSK", "BULL", "BEAR"))
+        return True
 
     @staticmethod
     def valid_ohlcv(data, minimum=20):
@@ -48,63 +47,61 @@ class StrategyEngine:
         d = {"trend_htf": "NEUTRAL", "predictive_entry": None, "zone": [], "reasons_excluded": [], "confirmations": []}
         empty = ([], [], [])
 
-        if symbol and not self.is_valid_symbol(symbol):
-            d['reasons_excluded'] = ["رمز غير صالح"]
-            return "NEUTRAL", 0, 0.0, d, empty
-
         if not self.valid_ohlcv(ohlcv_1h, 20) or not self.valid_ohlcv(ohlcv_5m, 20):
-            d['reasons_excluded'] = ["بيانات غير كافية"]
+            d['reasons_excluded'] = ["بيانات غير كافية للتحليل العميق"]
             return "NEUTRAL", 0, 0.0, d, empty
 
+        # تحليل فريم الساعة (HTF) للدعوم، المقاومة، ومناطق السيولة الكبرى
         o_1h, h_1h, l_1h, c_1h, v_1h = self.arrays(ohlcv_1h)
-        htf_high = float(np.max(h_1h[-20:]))
-        htf_low = float(np.min(l_1h[-20:]))
-        equilibrium_50 = (htf_high + htf_low) / 2
+        support_htf = float(np.min(l_1h[-24:]))
+        resistance_htf = float(np.max(h_1h[-24:]))
+        equilibrium_50 = (resistance_htf + support_htf) / 2
 
+        # تحليل فريم 5 دقائق (LTF) للفجوات (FVG) ومسح السيولة
         o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
         current_price = float(c_5m[-1])
 
         avg_volume_20 = float(np.mean(v_5m[-15:-1])) if len(v_5m) >= 16 else float(np.mean(v_5m))
         current_volume = float(v_5m[-1])
-        
-        # تخفيض شرط الحجم قليلاً إلى 150% بدلاً من 200% لالتقاط فرص أكثر
         is_volume_surge = current_volume >= (avg_volume_20 * 1.5)
 
         if not is_volume_surge:
-            d['reasons_excluded'].append("الحجم دون المتوسط المطلوب")
+            d['reasons_excluded'].append("السيولة الحجمية دون المعدل المؤسسي المطلوب")
             return "NEUTRAL", 20, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        is_sweep_low = l_5m[-1] < htf_low or l_5m[-2] < htf_low
-        is_bullish_break = c_5m[-1] > o_5m[-1]
-        
-        if is_sweep_low and is_bullish_break and current_price < equilibrium_50:
+        # كشف سحب السيولة من الدعم/المقاومة الرئيسية
+        is_sweep_support = l_5m[-1] < support_htf or l_5m[-2] < support_htf
+        is_bullish_fvg_reaction = c_5m[-1] > o_5m[-1] and c_5m[-1] > c_5m[-2]
+
+        if is_sweep_support and is_bullish_reaction := is_bullish_fvg_reaction and current_price < equilibrium_50:
             confirmations = [
-                f"مسح القاع على فريم الساعة ({htf_low})",
-                f"تدفق حجمي مرتفع ({round(current_volume / avg_volume_20 * 100, 1)}%)",
-                "السعر في منطقة الخصم (تحت 50% Equilibrium)",
-                "تأكيد الارتداد الصاعد"
+                f"تم مسح السيولة واختبار الدعم الرئيسي (HTF Support): {support_htf}",
+                f"تدفق حجمي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
+                f"السعر يقع في مصفوفة الخصم (تحت خط الـ 50% Equilibrium عند {round(equilibrium_50, 4)})",
+                "تأكيد تشكل الفجوة العادلة الصاعدة (Bullish FVG)"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [htf_low, htf_high]
+            d['zone'] = [support_htf, resistance_htf]
             d['confirmations'] = confirmations
-            return "LONG", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "LONG", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        is_sweep_high = h_5m[-1] > htf_high or h_5m[-2] > htf_high
-        is_bearish_break = c_5m[-1] < o_5m[-1]
+        is_sweep_resistance = h_5m[-1] > resistance_htf or h_5m[-2] > resistance_htf
+        is_bearish_fvg_reaction = c_5m[-1] < o_5m[-1] and c_5m[-1] < c_5m[-2]
 
-        if is_sweep_high and is_bearish_break and current_price > equilibrium_50:
+        if is_sweep_resistance and is_bearish_fvg_reaction and current_price > equilibrium_50:
             confirmations = [
-                f"مسح القمة على فريم الساعة ({htf_high})",
-                f"تدفق حجمي مرتفع ({round(current_volume / avg_volume_20 * 100, 1)}%)",
-                "السعر في منطقة الغلاء (فوق 50% Equilibrium)",
-                "تأكيد الارتداد الهابط"
+                f"تم مسح السيولة واختبار المقاومة الرئيسية (HTF Resistance): {resistance_htf}",
+                f"تدفق حجمي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
+                f"السعر يقع في مصفوفة الغلاء (فوق خط الـ 50% Equilibrium عند {round(equilibrium_50, 4)})",
+                "تأكيد تشكل الفجوة العادلة الهابطة (Bearish FVG)"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [htf_low, htf_high]
+            d['zone'] = [support_htf, resistance_htf]
             d['confirmations'] = confirmations
-            return "SHORT", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "SHORT", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        d['reasons_excluded'].append("لم تتحقق شروط السيولة تماماً")
+لم تحقق العملة الشروط الكاملة لمسح السيولة وتأكيد الفجوة
+        d['reasons_excluded'].append("لم تحقق العملة الشروط الكاملة لمسح السيولة وتأكيد الفجوة")
         return "NEUTRAL", 30, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
