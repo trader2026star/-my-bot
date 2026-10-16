@@ -1,7 +1,6 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V3)
+# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V3.1 FIXED)
 # File: main.py
-# Engine: HTF + LTF + Volume Surge + Discount/Premium + 1:3 R:R + Break-Even
 # ==========================================
 
 import os
@@ -69,16 +68,6 @@ def send_telegram_message(message):
         return False
 
 
-def _is_paused_symbol(symbol):
-    with paused_lock:
-        return symbol in paused_symbols
-
-
-def _mark_paused_symbol(symbol):
-    with paused_lock:
-        paused_symbols.add(symbol)
-
-
 def bingx_call(method_name, *args, **kwargs):
     global _last_api_request, _api_cooldown_until
     method = getattr(bingx, method_name)
@@ -129,7 +118,7 @@ def build_institutional_message(symbol, signal, score, entry, target, sl, tp1, t
 
 
 def process_symbol(symbol, engine):
-    if _is_paused_symbol(symbol):
+    if symbol in paused_symbols:
         return
     
     global signal_history
@@ -140,9 +129,9 @@ def process_symbol(symbol, engine):
             return
 
     try:
-        # جلب بيانات فريم الساعة (HTF) وفريم 5 دقائق (LTF)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=100)
-        ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=100)
+        print(f"Analyzing {symbol}...")
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=50)
+        ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
 
         signal, score, volume_ratio, details, arrays = engine.analyze_institutional_setup(
             ohlcv_1h, ohlcv_5m, symbol=symbol
@@ -170,22 +159,21 @@ def process_symbol(symbol, engine):
         if send_telegram_message(message):
             with history_lock:
                 signal_history[symbol] = time.time()
-            print(f"Sent Institutional Liquidity signal for {symbol} successfully.")
+            print(f">>> Sent Institutional signal for {symbol} successfully!")
 
     except Exception as exc:
-        if "paused" in str(exc).lower():
-            _mark_paused_symbol(symbol)
-        else:
-            print(f"Error processing {symbol}: {str(exc)[:100]}")
+        print(f"Error processing {symbol}: {str(exc)[:100]}", flush=True)
 
 
 def background_scanner():
-    time.sleep(15)
+    print("Background scanner thread started...", flush=True)
+    time.sleep(10)
     send_telegram_message("🤖 *تم تفعيل بوت السيولة البنكية المتقدمة (V3) بنجاح*")
     engine = StrategyEngine()
 
     while True:
         try:
+            print("Loading markets from BingX...", flush=True)
             markets = bingx_call("load_markets")
             symbols = [
                 s for s, m in markets.items() 
@@ -193,18 +181,23 @@ def background_scanner():
                 and not any(x in s.upper() for x in ("TEST", "DEMO", "FAKE", "NCSK", "BULL", "BEAR"))
                 and m.get("active", True)
             ]
+            print(f"Loaded {len(symbols)} active swap symbols. Starting scan...", flush=True)
 
             for symbol in symbols:
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
+            print("Scanner cycle completed. Sleeping for 180 seconds...", flush=True)
             time.sleep(180)
         except Exception as exc:
-            print(f"Scanner error: {str(exc)[:150]}")
+            print(f"Scanner error: {str(exc)[:150]}", flush=True)
             time.sleep(60)
 
 
-threading.Thread(target=background_scanner, daemon=True, name="institutional-scanner").start()
+# تشغيل الماسح في الخلفية بشكل آمن
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="institutional-scanner")
+scanner_thread.start()
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
