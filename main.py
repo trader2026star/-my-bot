@@ -1,11 +1,10 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - CISD & LIQUIDITY REJECTION EDITION
+# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V3)
 # File: main.py
-# Anti-Trap Strategy: Swept Liquidity (xxx) + CISD Scanner
+# Engine: HTF + LTF + Volume Surge + Discount/Premium + 1:3 R:R + Break-Even
 # ==========================================
 
 import os
-import re
 import time
 import threading
 import requests
@@ -41,7 +40,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - CISD & Liquidity Rejection Scanner is active!"
+    return "Advanced Institutional Liquidity Bot (V3) is active!"
 
 
 @app.route("/health")
@@ -109,24 +108,23 @@ def fmt(value):
         return str(value)
 
 
-def build_cisd_message(symbol, signal, score, entry, cisd_target, sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
+def build_institutional_message(symbol, signal, score, entry, target, sl, tp1, tp2, tp3, sl_pct, tp3_pct, rr, details):
     confirmations = "\n".join(f"• {x}" for x in details.get("confirmations", [])) or "• لا توجد تأكيدات"
-    zone = details.get("ote_zone", [0, 0])
+    zone = details.get("zone", [0, 0])
 
     return (
-        "🎯 *إشارة رفض السيولة وتغير حالة التسليم (CISD + Liquidity Rejection)*\n\n"
+        "🏦 *إشارة السيولة البنكية المؤسسية المتقدمة*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
         f"⚖️ *الاتجاه:* `{signal}`\n"
-        f"⭐ *قوة الإشارة:* `{score}/100`\n"
-        f"📏 *نطاق السيولة المسحوبة (xxx):* `[{fmt(zone[0])} - {fmt(zone[1])}]`\n"
-        f"💵 *سعر الدخول:* `{fmt(entry)}`\n\n"
+        f"⭐ *قوة التقييم:* `{score}/100`\n"
+        f"📏 *نطاق السيولة (HTF High/Low):* `[{fmt(zone[0])} - {fmt(zone[1])}]`\n"
+        f"💵 *سعر الدخول المقترح:* `{fmt(target)}`\n\n"
         f"🛑 *وقف الخسارة:* `{fmt(sl)}` ({sl_pct}%)\n"
-        f"🎯 *الهدف الأول (TP1):* `{fmt(tp1)}` ({tp1_pct}%)\n"
-        f"🎯 *الهدف الثاني (TP2):* `{fmt(tp2)}`\n"
-        f"🎯 *الهدف الثالث (TP3):* `{fmt(tp3)}`\n"
-        f"⚖️ *معدل المخاطرة/العائد (R:R):* `{rr}`\n\n"
-        f"✅ *تأكيدات الخوارزمية:*\n{confirmations}\n\n"
-        "⚡ *تم التأكد من الرفض السعري وإغلاق شمعة CISD بنجاح.*"
+        f"🛡️ *مرجع تأمين الوقف (Break-even at 1:1):* `{fmt(tp1)}`\n"
+        f"🎯 *الهدف النهائي (TP3 - نسبة 1:3):* `{fmt(tp3)}` ({tp3_pct}%)\n"
+        f"⚖️ *معدل العائد للمخاطرة (R:R):* `{rr}`\n\n"
+        f"✅ *تفاصيل الفلتر المؤسسي:*\n{confirmations}\n\n"
+        "⚡ *ملاحظة برمجية: سيتم نقل وقف الخسارة تلقائياً لنقطة الدخول فور وصول السعر للهدف الأول.*"
     )
 
 
@@ -142,12 +140,12 @@ def process_symbol(symbol, engine):
             return
 
     try:
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=100)
+        # جلب بيانات فريم الساعة (HTF) وفريم 5 دقائق (LTF)
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=100)
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=100)
+        ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=100)
 
-        signal, score, volume_ratio, details, arrays = engine.analyze_multi_timeframe(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, symbol=symbol
+        signal, score, volume_ratio, details, arrays = engine.analyze_institutional_setup(
+            ohlcv_1h, ohlcv_5m, symbol=symbol
         )
 
         if signal not in ("LONG", "SHORT") or score < 75:
@@ -158,21 +156,21 @@ def process_symbol(symbol, engine):
         if entry <= 0:
             return
 
-        cisd_target = details.get("predictive_entry", entry)
+        target_price = details.get("predictive_entry", entry)
         highs, lows, closes = arrays
-        sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
-            cisd_target, signal, highs, lows, closes
+        sl, tp1, tp2, tp3, sl_pct, tp3_pct, rr = engine.calculate_risk_management(
+            target_price, signal, highs, lows, closes
         )
 
-        message = build_cisd_message(
-            symbol, signal, score, entry, cisd_target,
-            sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details
+        message = build_institutional_message(
+            symbol, signal, score, entry, target_price,
+            sl, tp1, tp2, tp3, sl_pct, tp3_pct, rr, details
         )
 
         if send_telegram_message(message):
             with history_lock:
                 signal_history[symbol] = time.time()
-            print(f"Sent CISD & Liquidity Rejection signal for {symbol} successfully.")
+            print(f"Sent Institutional Liquidity signal for {symbol} successfully.")
 
     except Exception as exc:
         if "paused" in str(exc).lower():
@@ -183,7 +181,7 @@ def process_symbol(symbol, engine):
 
 def background_scanner():
     time.sleep(15)
-    send_telegram_message("🤖 *تم تفعيل بوت رفض السيولة وتغير حالة التسليم (CISD Engine) بنجاح*")
+    send_telegram_message("🤖 *تم تفعيل بوت السيولة البنكية المتقدمة (V3) بنجاح*")
     engine = StrategyEngine()
 
     while True:
@@ -206,7 +204,7 @@ def background_scanner():
             time.sleep(60)
 
 
-threading.Thread(target=background_scanner, daemon=True, name="cisd-scanner").start()
+threading.Thread(target=background_scanner, daemon=True, name="institutional-scanner").start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
