@@ -55,12 +55,10 @@ class StrategyEngine:
         o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
         current_price = float(c_5m[-1])
 
-        # تحديد الاتجاه العام على فريم الساعة (1h Trend) باستخدام المتوسط البسيط أو مقارنة الإغلاق بمنتصف المدة
         ma_1h = float(np.mean(c_1h[-10:]))
         htf_trend = "BULLISH" if c_1h[-1] > ma_1h else "BEARISH"
         d['trend_htf'] = htf_trend
 
-        # فحص الشموع الأخيرة على فريم 5 دقائق للابتلاع
         prev_open, prev_close = float(o_5m[-2]), float(c_5m[-2])
         curr_open, curr_close = float(o_5m[-1]), float(c_5m[-1])
 
@@ -74,13 +72,12 @@ class StrategyEngine:
 
         avg_volume_20 = float(np.mean(v_5m[-15:-1])) if len(v_5m) >= 16 else float(np.mean(v_5m))
         current_volume = float(v_5m[-1])
-        is_volume_surge = current_volume >= (avg_volume_20 * 1.3)  # رفع شرط الفوليوم قليلاً لزيادة الدقة
+        is_volume_surge = current_volume >= (avg_volume_20 * 1.3)
 
-        # شرط LONG: يجب أن يكون الابتلاع صاعداً + فوليوم قوي + الاتجاه العام على الساعة صاعداً
         if is_bullish_engulfing and is_volume_surge and htf_trend == "BULLISH":
             confirmations = [
                 "تشكل نموذج الابتلاع الصاعد (Bullish Engulfing) المؤكد",
-                f"الاتجاه العام على فريم الساعة صاعد (BULLISH Trend Filter)",
+                "الاتجاه العام على فريم الساعة صاعد (BULLISH Trend Filter)",
                 f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
                 "التوافق الكامل بين الفريم الصغير والكبير للشراء"
             ]
@@ -89,11 +86,10 @@ class StrategyEngine:
             d['confirmations'] = confirmations
             return "LONG", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        # شرط SHORT: يجب أن يكون الابتلاع هابطاً + فوليوم قوي + الاتجاه العام على الساعة هابطاً
         if is_bearish_engulfing and is_volume_surge and htf_trend == "BEARISH":
             confirmations = [
                 "تشكل نموذج الابتلاع الهابط (Bearish Engulfing) المؤكد",
-                f"الاتجاه العام على فريم الساعة هابط (BEARISH Trend Filter)",
+                "الاتجاه العام على فريم الساعة هابط (BEARISH Trend Filter)",
                 f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
                 "التوافق الكامل بين الفريم الصغير والكبير للبيع"
             ]
