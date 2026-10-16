@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V5 - Custom 10 Assets Focus)
+# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V5.1 - Clean)
 # ==========================================
 
 import os
@@ -33,7 +33,6 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"}
 })
 
-# قائمة العملات العشر المخصصة حصرياً للتركيز والفحص السريع
 SELECTED_SYMBOLS = [
     "BTC/USDT:USDT",
     "PYTH/USDT:USDT",
@@ -236,7 +235,7 @@ def process_symbol(symbol, engine):
 def background_scanner():
     print("Custom 10-Assets scanner thread started...", flush=True)
     time.sleep(10)
-    send_telegram_message("🤖 *تم تفعيل بوت التركيز المخصص على العملات العشر (BTC, PYTH, STRK, ...) بنجاح*")
+    send_telegram_message("🤖 *تم تفعيل بوت التركيز المخصص على العملات العشر بنجاح*")
     engine = StrategyEngine()
 
     while True:
@@ -245,7 +244,7 @@ def background_scanner():
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
-            time.sleep(45)  # دورة فحص سريعة جداً نظراً لقلة العملات المختارة
+            time.sleep(45)
         except Exception as exc:
             print(f"Scanner error: {str(exc)[:150]}", flush=True)
             time.sleep(30)
