@@ -1,6 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V4 - Full Telegram Alerts)
-# Focus: STRK/USDT & PYTH/USDT + Full Lifecycle Notifications
+# ADVANCED INSTITUTIONAL LIQUIDITY BOT - MAIN (V5 - Custom 10 Assets Focus)
 # ==========================================
 
 import os
@@ -18,11 +17,11 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "3600"))
 
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50")))
-SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.50")))
+SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.30")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
 
 signal_history = {}
-active_trades = {}  # لتتبع الصفقات المفتوحة وإدارة الـ Break-even والأهداف
+active_trades = {}
 history_lock = threading.Lock()
 api_lock = threading.Lock()
 _last_api_request = 0.0
@@ -34,13 +33,24 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"}
 })
 
-# قائمة العملات المستهدفة حصرياً أو فحص السوق كله
-TARGET_SYMBOLS = ["STRK/USDT:USDT", "PYTH/USDT:USDT"]
+# قائمة العملات العشر المخصصة حصرياً للتركيز والفحص السريع
+SELECTED_SYMBOLS = [
+    "BTC/USDT:USDT",
+    "PYTH/USDT:USDT",
+    "STRK/USDT:USDT",
+    "ZEREBRO/USDT:USDT",
+    "LDO/USDT:USDT",
+    "RLC/USDT:USDT",
+    "FF/USDT:USDT",
+    "ZK/USDT:USDT",
+    "LYN/USDT:USDT",
+    "TIA/USDT:USDT"
+]
 
 
 @app.route("/")
 def home():
-    return "Advanced Institutional Liquidity Bot (V4 with Full Alerts) is active!"
+    return "Custom 10-Assets Institutional Liquidity Bot is active!"
 
 
 @app.route("/health")
@@ -50,7 +60,6 @@ def health():
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.")
         return False
     try:
         response = requests.post(
@@ -98,39 +107,27 @@ def fmt(value):
         return str(value)
 
 
-def notify_order_setup(symbol, signal, entry, sl, tp3):
+def notify_trade_executed(symbol, signal, entry, sl, tp1, tp3, confirmations):
+    conf_text = "\n".join(f"• {x}" for x in confirmations)
     msg = (
-        "🔍 *1. رصد مسح سيولة وتجهيز أمر معلق*\n\n"
+        "🏦 *إشارة تحليل سيولة بنكية مؤسسية (Custom Focus)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{signal}`\n"
-        f"💵 سعر الدخول المقترح: `{fmt(entry)}`\n"
-        f"🛑 وقف الخسارة المقترح: `{fmt(sl)}`\n"
-        f"🎯 الهدف المقترح (1:3): `{fmt(tp3)}`\n\n"
-        "⏳ *جاري مراقبة التفعيل اللحظي للسعر...*"
-    )
-    send_telegram_message(msg)
-
-
-def notify_trade_executed(symbol, signal, entry, sl, tp1, tp3):
-    msg = (
-        "🚀 *2. تم تفعيل الصفقة بنجاح في السوق!*\n\n"
-        f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ النوع: `{signal}`\n"
-        f"💵 سعر التفعيل الفعلي: `{fmt(entry)}`\n"
+        f"💵 سعر الدخول: `{fmt(entry)}`\n"
         f"🛑 وقف الخسارة: `{fmt(sl)}`\n"
         f"🛡️ نقطة تأمين الوقف (Break-even): `{fmt(tp1)}`\n"
         f"🎯 الهدف النهائي (1:3): `{fmt(tp3)}`\n\n"
-        "⚡ *الصفقة تسير وفق الخوارزمية المؤسسية.*"
+        f"✅ *تفاصيل الدعوم/المقاومات والفجوات:*\n{conf_text}\n\n"
+        "⚡ *تم تفعيل الصفقة ومراقبة الحركة لحظياً.*"
     )
     send_telegram_message(msg)
 
 
 def notify_breakeven(symbol, entry):
     msg = (
-        "🛡️ *3. تحديث حماية الصفقة (Break-even)*\n\n"
+        "🛡️ *تحديث حماية الصفقة (Break-even)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"✅ تم تحقيق الهدف الأول ووصول السعر لمنطقة التأمين.\n"
-        f"🔒 تم نقل وقف الخسارة تلقائياً إلى سعر الدخول: `{fmt(entry)}`\n"
+        f"🔒 تم نقل الوقف تلقائياً إلى سعر الدخول: `{fmt(entry)}`\n"
         "✨ *الصفقة أصبحت خالية من المخاطر تماماً!*"
     )
     send_telegram_message(msg)
@@ -138,18 +135,16 @@ def notify_breakeven(symbol, entry):
 
 def notify_trade_closed(symbol, result_type, exit_price):
     icon = "🎯" if result_type == "TARGET" else "🛑"
-    title = "تم تحقيق الهدف النهائي بنجاح!" if result_type == "TARGET" else "تم ضرب وقف الخسارة المؤمّن."
+    title = "تم تحقيق الهدف النهائي بنجاح (1:3)!" if result_type == "TARGET" else "تم ضرب وقف الخسارة المؤمّن."
     msg = (
-        f"{icon} *4. إغلاق الصفقة: {title}*\n\n"
+        f"{icon} *إغلاق الصفقة: {title}*\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"🏁 سعر الخروج: `{fmt(exit_price)}`\n"
-        "📊 *سيتم البحث عن فرصة جديدة قريباً.*"
+        f"🏁 سعر الخروج: `{fmt(exit_price)}`"
     )
     send_telegram_message(msg)
 
 
 def monitor_active_trades(symbol, current_price):
-    """مراقبة الصفقات المفتوحة لتفعيل الBreak-even أو إغلاقها عند الأهداف"""
     if symbol not in active_trades:
         return
 
@@ -162,35 +157,25 @@ def monitor_active_trades(symbol, current_price):
     be_triggered = trade["be_triggered"]
 
     if signal == "LONG":
-        # فحص Break-even عند الوصول للهدف الأول TP1
         if not be_triggered and current_price >= tp1:
             active_trades[symbol]["be_triggered"] = True
-            active_trades[symbol]["sl"] = entry  # نقل الـ SL لسعر الدخول
+            active_trades[symbol]["sl"] = entry
             notify_breakeven(symbol, entry)
-        
-        # فحص ضرب الهدف النهائي TP3
         elif current_price >= tp3:
             notify_trade_closed(symbol, "TARGET", current_price)
             del active_trades[symbol]
-        
-        # فحص ضرب وقف الخسارة SL
         elif current_price <= sl:
             notify_trade_closed(symbol, "STOP", current_price)
             del active_trades[symbol]
 
     elif signal == "SHORT":
-        # فحص Break-even عند الهبوط للهدف الأول TP1
         if not be_triggered and current_price <= tp1:
             active_trades[symbol]["be_triggered"] = True
             active_trades[symbol]["sl"] = entry
             notify_breakeven(symbol, entry)
-        
-        # فحص ضرب الهدف النهائي TP3
         elif current_price <= tp3:
             notify_trade_closed(symbol, "TARGET", current_price)
             del active_trades[symbol]
-        
-        # فحص ضرب وقف الخسارة SL
         elif current_price >= sl:
             notify_trade_closed(symbol, "STOP", current_price)
             del active_trades[symbol]
@@ -203,7 +188,6 @@ def process_symbol(symbol, engine):
         if current_price <= 0:
             return
 
-        # إذا كانت الصفقة مفتوحة ومُتتبعة، افحص حالتها أولاً
         if symbol in active_trades:
             monitor_active_trades(symbol, current_price)
             return
@@ -215,7 +199,6 @@ def process_symbol(symbol, engine):
             if now_time - last_time < SIGNAL_COOLDOWN_SECONDS:
                 return
 
-        # جلب البيانات والتحليل
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=50)
         ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
 
@@ -232,13 +215,8 @@ def process_symbol(symbol, engine):
             target_price, signal, highs, lows, closes
         )
 
-        # 1. إرسال تنبيه رصد الفرصة وتجهيز الأمر
-        notify_order_setup(symbol, signal, target_price, sl, tp3)
+        notify_trade_executed(symbol, signal, current_price, sl, tp1, tp3, details.get("confirmations", []))
 
-        # 2. إرسال تنبيه تفعيل الصفقة فوراً
-        notify_trade_executed(symbol, signal, current_price, sl, tp1, tp3)
-
-        # تسجيل الصفقة في قائمة المتابعة الحية
         active_trades[symbol] = {
             "signal": signal,
             "entry": current_price,
@@ -256,36 +234,24 @@ def process_symbol(symbol, engine):
 
 
 def background_scanner():
-    print("Background scanner thread with Full Telegram Alerts started...", flush=True)
+    print("Custom 10-Assets scanner thread started...", flush=True)
     time.sleep(10)
-    send_telegram_message("🤖 *تم تفعيل بوت السيولة البنكية المتقدمة (V4) مع الإشعارات التلقائية الكاملة بنجاح*")
+    send_telegram_message("🤖 *تم تفعيل بوت التركيز المخصص على العملات العشر (BTC, PYTH, STRK, ...) بنجاح*")
     engine = StrategyEngine()
 
     while True:
         try:
-            # دمج العملات المستهدفة (STRK, PYTH) مع فحص الأسواق النشطة
-            markets = bingx_call("load_markets")
-            all_symbols = [
-                s for s, m in markets.items() 
-                if m.get("swap") and m.get("linear") and s.endswith("/USDT:USDT") 
-                and not any(x in s.upper() for x in ("TEST", "DEMO", "FAKE", "NCSK", "BULL", "BEAR"))
-                and m.get("active", True)
-            ]
-            
-            # التأكد من إعطاء الأولوية للعملات المطلوبة STRK و PYTH وضمن القائمة النشطة
-            symbols_to_scan = list(set(TARGET_SYMBOLS + all_symbols))
-
-            for symbol in symbols_to_scan:
+            for symbol in SELECTED_SYMBOLS:
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
-            time.sleep(120)
+            time.sleep(45)  # دورة فحص سريعة جداً نظراً لقلة العملات المختارة
         except Exception as exc:
             print(f"Scanner error: {str(exc)[:150]}", flush=True)
-            time.sleep(60)
+            time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="institutional-scanner-v4")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="custom-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
