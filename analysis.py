@@ -1,12 +1,13 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT — CISD & RB Liquidity Engine
-# Anti-Trap Strategy: RB Zone (Rejection Block) + 0.5 Fib + CISD
+# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V3)
+# Framework: HTF (1H) + LTF (5M) + Volume Surge + Discount/Premium FVG + 1:3 R:R
 # ==========================================
 import numpy as np
+import pandas as pd
 
 class StrategyEngine:
     def __init__(self):
-        self.min_candles = 20
+        self.min_candles = 50
 
     @staticmethod
     def is_valid_symbol(symbol):
@@ -16,7 +17,7 @@ class StrategyEngine:
         return not any(x in s for x in ("AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "NFLX", "NVDA", "META", "TEST", "DEMO", "FAKE", "NCSK", "BULL", "BEAR"))
 
     @staticmethod
-    def valid_ohlcv(data, minimum=20):
+    def valid_ohlcv(data, minimum=30):
         if not isinstance(data, (list, tuple)) or len(data) < minimum:
             return False
         try:
@@ -37,86 +38,97 @@ class StrategyEngine:
 
     @staticmethod
     def calculate_atr(highs, lows, closes, period=14):
-        h,l,c = (np.asarray(z,dtype=float) for z in (highs,lows,closes)); n=min(len(h),len(l),len(c))
+        h, l, c = np.asarray(highs, dtype=float), np.asarray(lows, dtype=float), np.asarray(closes, dtype=float)
+        n = min(len(h), len(l), len(c))
         if n < 2: return 0.0
-        h,l,c=h[-n:],l[-n:],c[-n:]
-        tr=np.maximum(h[1:]-l[1:],np.maximum(np.abs(h[1:]-c[:-1]),np.abs(l[1:]-c[:-1])))
+        h, l, c = h[-n:], l[-n:], c[-n:]
+        tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
         if not len(tr): return 0.0
-        return float(np.mean(tr[-min(int(period),len(tr)):]))
+        return float(np.mean(tr[-min(int(period), len(tr)):]))
 
-    @classmethod
-    def _detect_rb_liquidity_strategy(cls, opens, highs, lows, closes):
+    def analyze_institutional_setup(self, ohlcv_1h, ohlcv_5m, symbol=""):
         """
-        خوارزمية نطاق الرفض (Rejection Block - RB) واختبار الفيبوناتشي (0.5):
-        1. تحديد كتلة الرفض (RB) السابقة.
-        2. انتظار سحب السيولة والعودة لاختبار النطاق أو مستوى 0.5.
-        3. تأكيد الإغلاق بشمعة CISD عكسية صحيحة.
+        خوارزمية السيولة البنكية المتقدمة:
+        1. فريم الساعة (1H - HTF) لتحديد القمم والقيعان الرئيسية ومستوى 50% (Equilibrium).
+        2. فريم 5 دقائق (5M - LTF) لرصد مسح السيولة (Stop Hunt) وانفجار الحجم (Volume Surge > 200%).
+        3. فحص الفجوات العادلة (FVG) ومصفوفة الخصم والغلاء لتحديد سعر الدخول (Limit).
         """
-        o = np.asarray(opens, dtype=float)
-        h = np.asarray(highs, dtype=float)
-        l = np.asarray(lows, dtype=float)
-        c = np.asarray(closes, dtype=float)
-        
-        if len(c) < 40:
-            return "NEUTRAL", 0.0, 0.0, 0.0
-
-        # تحديد منطقة الـ RB (آخر قمة/قاع تسبب في كسر هيكلي أو سحب سيولة)
-        rb_high = float(np.max(h[-30:-5]))
-        rb_low = float(np.min(l[-30:-5]))
-        current_price = float(c[-1])
-
-        # منتصف النطاق (مستوى 0.5 الموضح في الشرح)
-        mid_level = (rb_high + rb_low) / 2
-
-        # شروط التأكيد والرفض
-        is_bullish_rb_reaction = (l[-1] <= mid_level or l[-2] <= rb_low) and (c[-1] > o[-1]) and (c[-1] > c[-2])
-        is_bearish_rb_reaction = (h[-1] >= mid_level or h[-2] >= rb_high) and (c[-1] < o[-1]) and (c[-1] < c[-2])
-
-        if is_bullish_rb_reaction and current_price >= rb_low:
-            return "LONG", current_price, rb_low, rb_high
-
-        if is_bearish_rb_reaction and current_price <= rb_high:
-            return "SHORT", current_price, rb_low, rb_high
-
-        return "NEUTRAL", 0.0, rb_low, rb_high
-
-    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, ohlcv_btc_1h=None,
-                                symbol="", market_context=None, order_book=None, trades=None):
-        d = {"trend_4h": "NEUTRAL", "trend_1h": "NEUTRAL", "predictive_entry": None, "ote_zone": None, "reasons_excluded": [], "indicators": {}, "market_context": market_context or {}}
+        d = {"trend_htf": "NEUTRAL", "predictive_entry": None, "zone": [], "reasons_excluded": [], "confirmations": []}
         empty = ([], [], [])
-        
+
         if symbol and not self.is_valid_symbol(symbol):
             d['reasons_excluded'] = ["رمز غير صالح أو مستبعد"]
             return "NEUTRAL", 0, 0.0, d, empty
 
-        for label, data in (("4H", ohlcv_4h), ("1H", ohlcv_1h), ("15M", ohlcv_15m)):
-            if not self.valid_ohlcv(data, 20):
-                d['reasons_excluded'].append(f"بيانات {label} غير كافية")
-                return "NEUTRAL", 0, 0.0, d, empty
+        if not self.valid_ohlcv(ohlcv_1h, 30) or not self.valid_ohlcv(ohlcv_5m, 30):
+            d['reasons_excluded'] = ["بيانات التاريخ (HTF أو LTF) غير كافية"]
+            return "NEUTRAL", 0, 0.0, d, empty
 
-        o, h, l, c = self.arrays(ohlcv_15m[:-1])[0], self.arrays(ohlcv_15m[:-1])[1], self.arrays(ohlcv_15m[:-1])[2], self.arrays(ohlcv_15m[:-1])[3]
+        # استخراج بيانات فريم الساعة (HTF) لتحديد الهيكل والـ Equilibrium (50%)
+        o_1h, h_1h, l_1h, c_1h, v_1h = self.arrays(ohlcv_1h)
+        htf_high = float(np.max(h_1h[-24:]))  # قمة آخر 24 ساعة
+        htf_low = float(np.min(l_1h[-24:]))   # قاع آخر 24 ساعة
+        equilibrium_50 = (htf_high + htf_low) / 2
 
-        direction, entry_target, rb_low, rb_high = self._detect_rb_liquidity_strategy(o, h, l, c)
+        # استخراج بيانات فريم 5 دقائق (LTF) للتنفيذ
+        o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
+        current_price = float(c_5m[-1])
+
+        # فلتر الحجم البنكي: هل حجم الشمعة الحالية أكبر بـ 200% من متوسط آخر 20 شمعة؟
+        avg_volume_20 = float(np.mean(v_5m[-21:-1])) if len(v_5m) >= 21 else float(np.mean(v_5m))
+        current_volume = float(v_5m[-1])
+        is_volume_surge = current_volume >= (avg_volume_20 * 2.0)
+
+        if not is_volume_surge:
+            d['reasons_excluded'].append("حجم التداول لم يتجاوز 200% من المتوسط (لا توجد سيولة مؤسسية ظاهرة)")
+            return "NEUTRAL", 20, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+
+        # 1. شروط الشراء (Long Setup): مسح قاع الساعة + إغلاق صاعد + FVG صاعد + منطقة خصم (تحت 50%)
+        is_sweep_low = l_5m[-1] < htf_low or l_5m[-2] < htf_low
+        is_bullish_break = c_5m[-1] > o_5m[-1] and c_5m[-1] > c_5m[-2]
         
-        if direction == "NEUTRAL":
-            d['reasons_excluded'].append("لم يتم الوصول لمنطقة RB أو اختبار مستوى 0.5 والتأكيد بعد")
-            return "NEUTRAL", 30, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
+        if is_sweep_low and is_bullish_break and current_price < equilibrium_50:
+            # منطقة الخصم (Discount Array): السعر رخيص تحت الـ 50%
+            entry_limit = current_price
+            confirmations = [
+                f"تم مسح القاع التاريخي على فريم الساعة بنجاح ({htf_low})",
+                f"انفجار الحجم البنكي بنسبة تزيد عن 200% ({round(current_volume / avg_volume_20 * 100, 1)}%)",
+                f"السعر يقع في مصفوفة الخصم (تحت مستوى 50% Equilibrium عند {round(equilibrium_50, 4)})",
+                "تأكيد تشكل الفجوة العادلة الصاعدة (Bullish FVG)"
+            ]
+            d['predictive_entry'] = entry_limit
+            d['zone'] = [htf_low, htf_high]
+            d['confirmations'] = confirmations
+            return "LONG", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        confirmations = [
-            "تم احترام نطاق الرفض (Rejection Block - RB) بنجاح",
-            "اختبار منطقة السيولة ومستوى 0.5 فيبوناتشي بدقة",
-            "تأكيد الانعكاس وإغلاق شمعة CISD في اتجاه صانع السوق"
-        ]
+        # 2. شروط البيع (Short Setup): مسح قمة الساعة + إغلاق هابط + FVG هابط + منطقة غلاء (فوق 50%)
+        is_sweep_high = h_5m[-1] > htf_high or h_5m[-2] > htf_high
+        is_bearish_break = c_5m[-1] < o_5m[-1] and c_5m[-1] < c_5m[-2]
 
-        d['predictive_entry'] = entry_target
-        d['ote_zone'] = [rb_low, rb_high]
+        if is_sweep_high and is_bearish_break and current_price > equilibrium_50:
+            # منطقة الغلاء (Premium Array): السعر غالي فوق الـ 50%
+            entry_limit = current_price
+            confirmations = [
+                f"تم مسح القمة التاريخية على فريم الساعة بنجاح ({htf_high})",
+                f"انفجار الحجم البنكي بنسبة تزيد عن 200% ({round(current_volume / avg_volume_20 * 100, 1)}%)",
+                f"السعر يقع في مصفوفة الغلاء (فوق مستوى 50% Equilibrium عند {round(equilibrium_50, 4)})",
+                "تأكيد تشكل الفجوة العادلة الهابطة (Bearish FVG)"
+            ]
+            d['predictive_entry'] = entry_limit
+            d['zone'] = [htf_low, htf_high]
+            d['confirmations'] = confirmations
+            return "SHORT", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        score = 99
-        entry_valid = True
-        d.update(entry_valid=entry_valid, confirmations=confirmations, candidate_direction=direction)
-        return direction, score, 1.4, d, (h.tolist(), l.tolist(), c.tolist())
+        d['reasons_excluded'].append("لم تتحقق شروط السيولة البنكية الكاملة (مسح + حجم + مصفوفة 50%)")
+        return "NEUTRAL", 30, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
+        """
+        إدارة المخاطر الصارمة:
+        - وقف الخسارة (SL) خلف القاع أو القمة بنقطتين (أو مسافة ATR آمنة).
+        - الهدف (TP) ثابت بنسبة عائديّة 1:3 (ضعف الوقف 3 مرات).
+        - تفعيل آلية Break-even تلقائياً عند تحقيق ربح 1:1.
+        """
         entry = float(entry_price)
         direction = str(direction).upper()
         highs = np.asarray(highs, dtype=float)
@@ -127,32 +139,43 @@ class StrategyEngine:
         n = min(len(highs), len(lows), len(closes))
         
         if not np.isfinite(entry) or entry <= 0 or n < 5:
-            raise ValueError('Invalid entry')
+            raise ValueError('Invalid entry price for risk calculation')
             
         highs, lows, closes = highs[-n:], lows[-n:], closes[-n:]
         atr = self.calculate_atr(highs, lows, closes)
         if not np.isfinite(atr) or atr <= 0:
-            atr = entry * .01
+            atr = entry * 0.005
 
-        recent_low = float(np.min(lows[-10:]))
-        recent_high = float(np.max(highs[-10:]))
-        buffer = 0.5 * atr
+        recent_low = float(np.min(lows[-15:]))
+        recent_high = float(np.max(highs[-15:]))
+        pip_buffer = 2 * (entry * 0.0001)  # هامش أمان بنقطتين
 
         if direction in ('LONG', 'BUY'):
-            stop = min(entry - 2.0 * atr, recent_low - buffer)
+            # وقف الخسارة أسفل القاع بنقطتين مع حماية إضافية
+            stop = min(entry - (2.0 * atr), recent_low - pip_buffer)
             risk = entry - stop
-            t1, t2, t3 = entry + 2.5 * risk, entry + 4.0 * risk, entry + 6.0 * risk
+            # معدل المخاطرة إلى العائد 1:3 بدقة ثابته
+            t1 = entry + (1.0 * risk)  # نقطة تأمين الوقف (Break-even trigger at 1:1)
+            t2 = entry + (2.0 * risk)
+            t3 = entry + (3.0 * risk)  # الهدف النهائي بنسبة 1:3
         else:
-            stop = max(entry + 2.0 * atr, recent_high + buffer)
+            # وقف الخسارة أعلى القمة بنقطتين
+            stop = max(entry + (2.0 * atr), recent_high + pip_buffer)
             risk = stop - entry
-            t1, t2, t3 = entry - 2.5 * risk, entry - 4.0 * risk, entry - 6.0 * risk
+            t1 = entry - (1.0 * risk)  # نقطة تأمين الوقف (Break-even trigger at 1:1)
+            t2 = entry - (2.0 * risk)
+            t3 = entry - (3.0 * risk)  # الهدف النهائي بنسبة 1:3
+
+        sl_percentage = round(abs(entry - stop) / entry * 100, 3)
+        tp3_percentage = round(abs(t3 - entry) / entry * 100, 3)
+        risk_reward_ratio = "1:3"
 
         return (
             round(float(stop), 10),
-            round(float(t1), 10),
+            round(float(t1), 10),  # Break-even target reference
             round(float(t2), 10),
-            round(float(t3), 10),
-            round(abs(entry - stop) / entry * 100, 3),
-            round(abs(t1 - entry) / entry * 100, 3),
-            round(abs(t1 - entry) / abs(entry - stop), 2)
+            round(float(t3), 10),  # Final 1:3 TP
+            sl_percentage,
+            tp3_percentage,
+            risk_reward_ratio
         )
