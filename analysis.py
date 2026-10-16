@@ -1,11 +1,11 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V3)
+# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V3.2 - Optimized)
 # ==========================================
 import numpy as np
 
 class StrategyEngine:
     def __init__(self):
-        self.min_candles = 50
+        self.min_candles = 30
 
     @staticmethod
     def is_valid_symbol(symbol):
@@ -15,7 +15,7 @@ class StrategyEngine:
         return not any(x in s for x in ("AAPL", "TSLA", "GOOG", "AMZN", "MSFT", "NFLX", "NVDA", "META", "TEST", "DEMO", "FAKE", "NCSK", "BULL", "BEAR"))
 
     @staticmethod
-    def valid_ohlcv(data, minimum=30):
+    def valid_ohlcv(data, minimum=20):
         if not isinstance(data, (list, tuple)) or len(data) < minimum:
             return False
         try:
@@ -49,60 +49,62 @@ class StrategyEngine:
         empty = ([], [], [])
 
         if symbol and not self.is_valid_symbol(symbol):
-            d['reasons_excluded'] = ["رمز غير صالح أو مستبعد"]
+            d['reasons_excluded'] = ["رمز غير صالح"]
             return "NEUTRAL", 0, 0.0, d, empty
 
-        if not self.valid_ohlcv(ohlcv_1h, 30) or not self.valid_ohlcv(ohlcv_5m, 30):
-            d['reasons_excluded'] = ["بيانات التاريخ غير كافية"]
+        if not self.valid_ohlcv(ohlcv_1h, 20) or not self.valid_ohlcv(ohlcv_5m, 20):
+            d['reasons_excluded'] = ["بيانات غير كافية"]
             return "NEUTRAL", 0, 0.0, d, empty
 
         o_1h, h_1h, l_1h, c_1h, v_1h = self.arrays(ohlcv_1h)
-        htf_high = float(np.max(h_1h[-24:]))
-        htf_low = float(np.min(l_1h[-24:]))
+        htf_high = float(np.max(h_1h[-20:]))
+        htf_low = float(np.min(l_1h[-20:]))
         equilibrium_50 = (htf_high + htf_low) / 2
 
         o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
         current_price = float(c_5m[-1])
 
-        avg_volume_20 = float(np.mean(v_5m[-21:-1])) if len(v_5m) >= 21 else float(np.mean(v_5m))
+        avg_volume_20 = float(np.mean(v_5m[-15:-1])) if len(v_5m) >= 16 else float(np.mean(v_5m))
         current_volume = float(v_5m[-1])
-        is_volume_surge = current_volume >= (avg_volume_20 * 2.0)
+        
+        # تخفيض شرط الحجم قليلاً إلى 150% بدلاً من 200% لالتقاط فرص أكثر
+        is_volume_surge = current_volume >= (avg_volume_20 * 1.5)
 
         if not is_volume_surge:
-            d['reasons_excluded'].append("حجم التداول لم يتجاوز 200%")
+            d['reasons_excluded'].append("الحجم دون المتوسط المطلوب")
             return "NEUTRAL", 20, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
         is_sweep_low = l_5m[-1] < htf_low or l_5m[-2] < htf_low
-        is_bullish_break = c_5m[-1] > o_5m[-1] and c_5m[-1] > c_5m[-2]
+        is_bullish_break = c_5m[-1] > o_5m[-1]
         
         if is_sweep_low and is_bullish_break and current_price < equilibrium_50:
             confirmations = [
-                f"تم مسح القاع التاريخي على فريم الساعة ({htf_low})",
-                f"انفجار الحجم البنكي بأكثر من 200%",
-                f"السعر في مصفوفة الخصم تحت 50% Equilibrium",
-                "تأكيد تشكل الفجوة العادلة (Bullish FVG)"
+                f"مسح القاع على فريم الساعة ({htf_low})",
+                f"تدفق حجمي مرتفع ({round(current_volume / avg_volume_20 * 100, 1)}%)",
+                "السعر في منطقة الخصم (تحت 50% Equilibrium)",
+                "تأكيد الارتداد الصاعد"
             ]
             d['predictive_entry'] = current_price
             d['zone'] = [htf_low, htf_high]
             d['confirmations'] = confirmations
-            return "LONG", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "LONG", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
         is_sweep_high = h_5m[-1] > htf_high or h_5m[-2] > htf_high
-        is_bearish_break = c_5m[-1] < o_5m[-1] and c_5m[-1] < c_5m[-2]
+        is_bearish_break = c_5m[-1] < o_5m[-1]
 
         if is_sweep_high and is_bearish_break and current_price > equilibrium_50:
             confirmations = [
-                f"تم مسح القمة التاريخية على فريم الساعة ({htf_high})",
-                f"انفجار الحجم البنكي بأكثر من 200%",
-                f"السعر في مصفوفة الغلاء فوق 50% Equilibrium",
-                "تأكيد تشكل الفجوة العادلة (Bearish FVG)"
+                f"مسح القمة على فريم الساعة ({htf_high})",
+                f"تدفق حجمي مرتفع ({round(current_volume / avg_volume_20 * 100, 1)}%)",
+                "السعر في منطقة الغلاء (فوق 50% Equilibrium)",
+                "تأكيد الارتداد الهابط"
             ]
             d['predictive_entry'] = current_price
             d['zone'] = [htf_low, htf_high]
             d['confirmations'] = confirmations
-            return "SHORT", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "SHORT", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        d['reasons_excluded'].append("لم تتحقق شروط السيولة البنكية الكاملة")
+        d['reasons_excluded'].append("لم تتحقق شروط السيولة تماماً")
         return "NEUTRAL", 30, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
@@ -128,13 +130,13 @@ class StrategyEngine:
         pip_buffer = 2 * (entry * 0.0001)
 
         if direction in ('LONG', 'BUY'):
-            stop = min(entry - (2.0 * atr), recent_low - pip_buffer)
+            stop = min(entry - (1.5 * atr), recent_low - pip_buffer)
             risk = entry - stop
             t1 = entry + (1.0 * risk)
             t2 = entry + (2.0 * risk)
             t3 = entry + (3.0 * risk)
         else:
-            stop = max(entry + (2.0 * atr), recent_high + pip_buffer)
+            stop = max(entry + (1.5 * atr), recent_high + pip_buffer)
             risk = stop - entry
             t1 = entry - (1.0 * risk)
             t2 = entry - (2.0 * risk)
