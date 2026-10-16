@@ -1,5 +1,5 @@
 # ==========================================
-# ENGULFING STRATEGY ENGINE (V6.0 - Engulfing Patterns)
+# ENGULFING STRATEGY ENGINE (V6.1 - Filtered Trend Engulfing)
 # ==========================================
 import numpy as np
 
@@ -55,50 +55,54 @@ class StrategyEngine:
         o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
         current_price = float(c_5m[-1])
 
-        # فحص الشموع الأخيرة لتحديد الابتلاع (Engulfing Pattern)
-        # الشمعة الحالية [-1] والسابقة [-2] على فريم 5 دقائق
+        # تحديد الاتجاه العام على فريم الساعة (1h Trend) باستخدام المتوسط البسيط أو مقارنة الإغلاق بمنتصف المدة
+        ma_1h = float(np.mean(c_1h[-10:]))
+        htf_trend = "BULLISH" if c_1h[-1] > ma_1h else "BEARISH"
+        d['trend_htf'] = htf_trend
+
+        # فحص الشموع الأخيرة على فريم 5 دقائق للابتلاع
         prev_open, prev_close = float(o_5m[-2]), float(c_5m[-2])
         curr_open, curr_close = float(o_5m[-1]), float(c_5m[-1])
 
-        # الشمعة السابقة حمراء والحالية خضراء أكبر منها (Bullish Engulfing)
         is_prev_red = prev_close < prev_open
         is_curr_green = curr_close > curr_open
         is_bullish_engulfing = is_prev_red and is_curr_green and curr_close >= prev_open and curr_open <= prev_close
 
-        # الشمعة السابقة خضراء والحالية حمراء أكبر منها (Bearish Engulfing)
         is_prev_green = prev_close > prev_open
         is_curr_red = curr_close < curr_open
         is_bearish_engulfing = is_prev_green and is_curr_red and curr_close <= prev_open and curr_open >= prev_close
 
         avg_volume_20 = float(np.mean(v_5m[-15:-1])) if len(v_5m) >= 16 else float(np.mean(v_5m))
         current_volume = float(v_5m[-1])
-        is_volume_surge = current_volume >= (avg_volume_20 * 1.2)
+        is_volume_surge = current_volume >= (avg_volume_20 * 1.3)  # رفع شرط الفوليوم قليلاً لزيادة الدقة
 
-        if is_bullish_engulfing and is_volume_surge:
+        # شرط LONG: يجب أن يكون الابتلاع صاعداً + فوليوم قوي + الاتجاه العام على الساعة صاعداً
+        if is_bullish_engulfing and is_volume_surge and htf_trend == "BULLISH":
             confirmations = [
-                "تشكل نموذج الابتلاع الصاعد (Bullish Engulfing) بوضوح",
-                f"جسم الشمعة الحالية يبتلع الشمعة السابقة بالكامل",
+                "تشكل نموذج الابتلاع الصاعد (Bullish Engulfing) المؤكد",
+                f"الاتجاه العام على فريم الساعة صاعد (BULLISH Trend Filter)",
                 f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                "سيطرة شرائية مفاجئة وانعكاس إيجابي"
+                "التوافق الكامل بين الفريم الصغير والكبير للشراء"
             ]
             d['predictive_entry'] = current_price
             d['zone'] = [float(np.min(l_5m[-5:])), float(np.max(h_5m[-5:]))]
             d['confirmations'] = confirmations
             return "LONG", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        if is_bearish_engulfing and is_volume_surge:
+        # شرط SHORT: يجب أن يكون الابتلاع هابطاً + فوليوم قوي + الاتجاه العام على الساعة هابطاً
+        if is_bearish_engulfing and is_volume_surge and htf_trend == "BEARISH":
             confirmations = [
-                "تشكل نموذج الابتلاع الهابط (Bearish Engulfing) بوضوح",
-                f"جسم الشمعة الحالية الحمراء يبتلع جسم الشمعة الخضراء السابقة",
+                "تشكل نموذج الابتلاع الهابط (Bearish Engulfing) المؤكد",
+                f"الاتجاه العام على فريم الساعة هابط (BEARISH Trend Filter)",
                 f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                "سيطرة بيعية مفاجئة وانعكاس سلبي"
+                "التوافق الكامل بين الفريم الصغير والكبير للبيع"
             ]
             d['predictive_entry'] = current_price
             d['zone'] = [float(np.min(l_5m[-5:])), float(np.max(h_5m[-5:]))]
             d['confirmations'] = confirmations
             return "SHORT", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        d['reasons_excluded'].append("لم يتحقق نموذج الابتلاع المطلوب مع فوليوم كافي")
+        d['reasons_excluded'].append("لم يتوافق نموذج الابتلاع مع اتجاه فريم الساعة أو شروط الفوليوم")
         return "NEUTRAL", 30, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
