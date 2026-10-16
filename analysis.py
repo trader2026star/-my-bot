@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V5.1 - Clean)
+# ENGULFING STRATEGY ENGINE (V6.0 - Engulfing Patterns)
 # ==========================================
 import numpy as np
 
@@ -48,56 +48,57 @@ class StrategyEngine:
         empty = ([], [], [])
 
         if not self.valid_ohlcv(ohlcv_1h, 20) or not self.valid_ohlcv(ohlcv_5m, 20):
-            d['reasons_excluded'] = ["بيانات غير كافية للتحليل العميق"]
+            d['reasons_excluded'] = ["بيانات غير كافية للتحليل"]
             return "NEUTRAL", 0, 0.0, d, empty
 
         o_1h, h_1h, l_1h, c_1h, v_1h = self.arrays(ohlcv_1h)
-        support_htf = float(np.min(l_1h[-24:]))
-        resistance_htf = float(np.max(h_1h[-24:]))
-        equilibrium_50 = (resistance_htf + support_htf) / 2
-
         o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
         current_price = float(c_5m[-1])
 
+        # فحص الشموع الأخيرة لتحديد الابتلاع (Engulfing Pattern)
+        # الشمعة الحالية [-1] والسابقة [-2] على فريم 5 دقائق
+        prev_open, prev_close = float(o_5m[-2]), float(c_5m[-2])
+        curr_open, curr_close = float(o_5m[-1]), float(c_5m[-1])
+
+        # الشمعة السابقة حمراء والحالية خضراء أكبر منها (Bullish Engulfing)
+        is_prev_red = prev_close < prev_open
+        is_curr_green = curr_close > curr_open
+        is_bullish_engulfing = is_prev_red and is_curr_green and curr_close >= prev_open and curr_open <= prev_close
+
+        # الشمعة السابقة خضراء والحالية حمراء أكبر منها (Bearish Engulfing)
+        is_prev_green = prev_close > prev_open
+        is_curr_red = curr_close < curr_open
+        is_bearish_engulfing = is_prev_green and is_curr_red and curr_close <= prev_open and curr_open >= prev_close
+
         avg_volume_20 = float(np.mean(v_5m[-15:-1])) if len(v_5m) >= 16 else float(np.mean(v_5m))
         current_volume = float(v_5m[-1])
-        is_volume_surge = current_volume >= (avg_volume_20 * 1.5)
+        is_volume_surge = current_volume >= (avg_volume_20 * 1.2)
 
-        if not is_volume_surge:
-            d['reasons_excluded'].append("السيولة الحجمية دون المعدل المؤسسي المطلوب")
-            return "NEUTRAL", 20, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
-
-        is_sweep_support = l_5m[-1] < support_htf or l_5m[-2] < support_htf
-        is_bullish_fvg_reaction = c_5m[-1] > o_5m[-1] and c_5m[-1] > c_5m[-2]
-
-        if is_sweep_support and is_bullish_fvg_reaction and current_price < equilibrium_50:
+        if is_bullish_engulfing and is_volume_surge:
             confirmations = [
-                f"تم مسح السيولة واختبار الدعم الرئيسي (HTF Support): {support_htf}",
-                f"تدفق حجمي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                f"السعر يقع في مصفوفة الخصم (تحت خط الـ 50% Equilibrium عند {round(equilibrium_50, 4)})",
-                "تأكيد تشكل الفجوة العادلة الصاعدة (Bullish FVG)"
+                "تشكل نموذج الابتلاع الصاعد (Bullish Engulfing) بوضوح",
+                f"جسم الشمعة الحالية يبتلع الشمعة السابقة بالكامل",
+                f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
+                "سيطرة شرائية مفاجئة وانعكاس إيجابي"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [support_htf, resistance_htf]
+            d['zone'] = [float(np.min(l_5m[-5:])), float(np.max(h_5m[-5:]))]
             d['confirmations'] = confirmations
-            return "LONG", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "LONG", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        is_sweep_resistance = h_5m[-1] > resistance_htf or h_5m[-2] > resistance_htf
-        is_bearish_fvg_reaction = c_5m[-1] < o_5m[-1] and c_5m[-1] < c_5m[-2]
-
-        if is_sweep_resistance and is_bearish_fvg_reaction and current_price > equilibrium_50:
+        if is_bearish_engulfing and is_volume_surge:
             confirmations = [
-                f"تم مسح السيولة واختبار المقاومة الرئيسية (HTF Resistance): {resistance_htf}",
-                f"تدفق حجمي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                f"السعر يقع في مصفوفة الغلاء (فوق خط الـ 50% Equilibrium عند {round(equilibrium_50, 4)})",
-                "تأكيد تشكل الفجوة العادلة الهابطة (Bearish FVG)"
+                "تشكل نموذج الابتلاع الهابط (Bearish Engulfing) بوضوح",
+                f"جسم الشمعة الحالية الحمراء يبتلع جسم الشمعة الخضراء السابقة",
+                f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
+                "سيطرة بيعية مفاجئة وانعكاس سلبي"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [support_htf, resistance_htf]
+            d['zone'] = [float(np.min(l_5m[-5:])), float(np.max(h_5m[-5:]))]
             d['confirmations'] = confirmations
-            return "SHORT", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "SHORT", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        d['reasons_excluded'].append("لم تحقق العملة الشروط الكاملة لمسح السيولة وتأكيد الفجوة")
+        d['reasons_excluded'].append("لم يتحقق نموذج الابتلاع المطلوب مع فوليوم كافي")
         return "NEUTRAL", 30, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
@@ -118,18 +119,18 @@ class StrategyEngine:
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * 0.005
 
-        recent_low = float(np.min(lows[-15:]))
-        recent_high = float(np.max(highs[-15:]))
-        pip_buffer = 2 * (entry * 0.0001)
+        recent_low = float(np.min(lows[-5:]))
+        recent_high = float(np.max(highs[-5:]))
+        pip_buffer = entry * 0.0005
 
         if direction in ('LONG', 'BUY'):
-            stop = min(entry - (1.5 * atr), recent_low - pip_buffer)
+            stop = min(entry - (1.2 * atr), recent_low - pip_buffer)
             risk = entry - stop
             t1 = entry + (1.0 * risk)
             t2 = entry + (2.0 * risk)
             t3 = entry + (3.0 * risk)
         else:
-            stop = max(entry + (1.5 * atr), recent_high + pip_buffer)
+            stop = max(entry + (1.2 * atr), recent_high + pip_buffer)
             risk = stop - entry
             t1 = entry - (1.0 * risk)
             t2 = entry - (2.0 * risk)
