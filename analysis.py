@@ -1,5 +1,5 @@
 # ==========================================
-# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V5 - Custom Assets & Deep Analysis)
+# ADVANCED INSTITUTIONAL LIQUIDITY ENGINE (V5.1 - Clean)
 # ==========================================
 import numpy as np
 
@@ -51,13 +51,11 @@ class StrategyEngine:
             d['reasons_excluded'] = ["بيانات غير كافية للتحليل العميق"]
             return "NEUTRAL", 0, 0.0, d, empty
 
-        # تحليل فريم الساعة (HTF) للدعوم، المقاومة، ومناطق السيولة الكبرى
         o_1h, h_1h, l_1h, c_1h, v_1h = self.arrays(ohlcv_1h)
         support_htf = float(np.min(l_1h[-24:]))
         resistance_htf = float(np.max(h_1h[-24:]))
         equilibrium_50 = (resistance_htf + support_htf) / 2
 
-        # تحليل فريم 5 دقائق (LTF) للفجوات (FVG) ومسح السيولة
         o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
         current_price = float(c_5m[-1])
 
@@ -69,11 +67,10 @@ class StrategyEngine:
             d['reasons_excluded'].append("السيولة الحجمية دون المعدل المؤسسي المطلوب")
             return "NEUTRAL", 20, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-        # كشف سحب السيولة من الدعم/المقاومة الرئيسية
         is_sweep_support = l_5m[-1] < support_htf or l_5m[-2] < support_htf
         is_bullish_fvg_reaction = c_5m[-1] > o_5m[-1] and c_5m[-1] > c_5m[-2]
 
-        if is_sweep_support and is_bullish_reaction := is_bullish_fvg_reaction and current_price < equilibrium_50:
+        if is_sweep_support and is_bullish_fvg_reaction and current_price < equilibrium_50:
             confirmations = [
                 f"تم مسح السيولة واختبار الدعم الرئيسي (HTF Support): {support_htf}",
                 f"تدفق حجمي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
@@ -100,7 +97,6 @@ class StrategyEngine:
             d['confirmations'] = confirmations
             return "SHORT", 95, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
-لم تحقق العملة الشروط الكاملة لمسح السيولة وتأكيد الفجوة
         d['reasons_excluded'].append("لم تحقق العملة الشروط الكاملة لمسح السيولة وتأكيد الفجوة")
         return "NEUTRAL", 30, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
 
