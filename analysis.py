@@ -46,10 +46,6 @@ class StrategyEngine:
 
     @classmethod
     def _detect_ict_ote(cls, highs, lows, closes):
-        """
-        خوارزمية OTE المطورة:
-        تحديد Swing دقيق وفحص أن النطاق السعري يسمح بالدخول الآمن بدون تذبذب مدمر.
-        """
         h = np.asarray(highs, dtype=float)
         l = np.asarray(lows, dtype=float)
         c = np.asarray(closes, dtype=float)
@@ -57,7 +53,6 @@ class StrategyEngine:
         if len(c) < 35:
             return "NEUTRAL", None, 0.0, 0.0, 0.0
 
-        # توسيع نطاق الفحص قليلاً لاحتواء القمم الحقيقية (اخر 35 شمعة)
         swing_high = float(np.max(h[-35:]))
         swing_low = float(np.min(l[-35:]))
         current_price = float(c[-1])
@@ -66,19 +61,16 @@ class StrategyEngine:
         if diff <= 0:
             return "NEUTRAL", None, swing_low, swing_high, 0.0
 
-        # حساب نسبة التذبذب للموجة لمنع الدخول في عملات ذات حركة عشوائية مفرطة
         volatility_ratio = diff / current_price
-        if volatility_ratio > 0.40:  # استبعاد العملات التي تتحرك بأكثر من 40% بشكل عشوائي خطر
+        if volatility_ratio > 0.40:
             return "NEUTRAL", None, swing_low, swing_high, volatility_ratio
 
-        # مستويات فيبوناتشي OTE
         ote_618_bull = swing_high - (diff * 0.618)
         ote_786_bull = swing_high - (diff * 0.786)
 
         ote_618_bear = swing_low + (diff * 0.618)
         ote_786_bear = swing_low + (diff * 0.786)
 
-        # التحقق من مناطق الشراء والبيع المثالية بدقة
         if ote_786_bull <= current_price <= ote_618_bull:
             return "LONG", float((ote_618_bull + ote_786_bull) / 2), swing_low, swing_high, volatility_ratio
 
@@ -89,7 +81,6 @@ class StrategyEngine:
 
     @classmethod
     def _detect_strong_confirmation(cls, opens, highs, lows, closes, direction):
-        """تأكيد إضافي يمنع الدخول الخاطئ عبر فحص إغلاق الشمعات الأخيرة"""
         o = np.asarray(opens, dtype=float)
         h = np.asarray(highs, dtype=float)
         l = np.asarray(lows, dtype=float)
@@ -98,7 +89,6 @@ class StrategyEngine:
         if len(c) < 5:
             return False, "بيانات غير كافية للتأكيد"
 
-        # شرط انعكاسي قوي: الشمعة الأخيرة أغلقت في اتجاه الصفقة
         if direction == 'LONG':
             if c[-1] > o[-1] and c[-1] > c[-2]:
                 return True, "تم تأكيد الارتداد بشمعة صاعدة قوية داخل نطاق OTE"
@@ -126,14 +116,12 @@ class StrategyEngine:
         o1, h1, l1, c1, v1 = self.arrays(ohlcv_1h[:-1])
         o, h, l, c, v = self.arrays(ohlcv_15m[:-1])
 
-        # تطبيق الخوارزمية المطورة
         direction, ote_target, swing_low, swing_high, vol_ratio = self._detect_ict_ote(h, l, c)
         
         if direction == "NEUTRAL":
             d['reasons_excluded'].append("السعر لم يصل لمنطقة OTE أو التذبذب غير مناسب")
             return "NEUTRAL", 30, 1.0, d, (h.tolist(), l.tolist(), c.tolist())
 
-        # التأكيد القوي للشموع
         confirmed, conf_msg = self._detect_strong_confirmation(o, h, l, c, direction)
         if not confirmed:
             d['reasons_excluded'].append(conf_msg)
@@ -172,13 +160,12 @@ class StrategyEngine:
         if not np.isfinite(atr) or atr <= 0:
             atr = entry * .01
 
-        # توسيع مسافة الأمان ووقف الخسارة لتجنب ضرب الوقف بالذيول السعرية الوهيمة (Wicks Protection)
         recent_low = float(np.min(lows[-20:]))
         recent_high = float(np.max(highs[-20:]))
-        buffer = 0.5 * atr  *# زيادة معامل الأمان*
+        buffer = 0.5 * atr  # مسافة الأمان لحماية الوقف
 
         if direction in ('LONG', 'BUY'):
-            stop = min(entry - 2.5 * atr, recent_low - buffer) # مسافة أبعد قليلاً لحماية الوقف
+            stop = min(entry - 2.5 * atr, recent_low - buffer)
             risk = entry - stop
             t1, t2, t3 = entry + 2.0 * risk, entry + 3.5 * risk, entry + 5.0 * risk
         else:
