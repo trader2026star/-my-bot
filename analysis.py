@@ -1,5 +1,5 @@
 # ==========================================
-# ENGULFING STRATEGY ENGINE (V6.1 - Filtered Trend Engulfing)
+# ENGULFING STRATEGY ENGINE (V7.0 - 1H Timeframe Professional)
 # ==========================================
 import numpy as np
 
@@ -43,24 +43,26 @@ class StrategyEngine:
         if not len(tr): return 0.0
         return float(np.mean(tr[-min(int(period), len(tr)):]))
 
-    def analyze_institutional_setup(self, ohlcv_1h, ohlcv_5m, symbol=""):
+    def analyze_institutional_setup(self, ohlcv_4h, ohlcv_1h, symbol=""):
         d = {"trend_htf": "NEUTRAL", "predictive_entry": None, "zone": [], "reasons_excluded": [], "confirmations": []}
         empty = ([], [], [])
 
-        if not self.valid_ohlcv(ohlcv_1h, 20) or not self.valid_ohlcv(ohlcv_5m, 20):
+        if not self.valid_ohlcv(ohlcv_4h, 20) or not self.valid_ohlcv(ohlcv_1h, 20):
             d['reasons_excluded'] = ["بيانات غير كافية للتحليل"]
             return "NEUTRAL", 0, 0.0, d, empty
 
+        o_4h, h_4h, l_4h, c_4h, v_4h = self.arrays(ohlcv_4h)
         o_1h, h_1h, l_1h, c_1h, v_1h = self.arrays(ohlcv_1h)
-        o_5m, h_5m, l_5m, c_5m, v_5m = self.arrays(ohlcv_5m)
-        current_price = float(c_5m[-1])
+        current_price = float(c_1h[-1])
 
-        ma_1h = float(np.mean(c_1h[-10:]))
-        htf_trend = "BULLISH" if c_1h[-1] > ma_1h else "BEARISH"
+        # فلتر الاتجاه على فريم 4 ساعات (الرئيسي)
+        ma_4h = float(np.mean(c_4h[-10:]))
+        htf_trend = "BULLISH" if c_4h[-1] > ma_4h else "BEARISH"
         d['trend_htf'] = htf_trend
 
-        prev_open, prev_close = float(o_5m[-2]), float(c_5m[-2])
-        curr_open, curr_close = float(o_5m[-1]), float(c_5m[-1])
+        # فحص الشموع على فريم الساعة (1h) للابتلاع
+        prev_open, prev_close = float(o_1h[-2]), float(c_1h[-2])
+        curr_open, curr_close = float(o_1h[-1]), float(c_1h[-1])
 
         is_prev_red = prev_close < prev_open
         is_curr_green = curr_close > curr_open
@@ -70,36 +72,38 @@ class StrategyEngine:
         is_curr_red = curr_close < curr_open
         is_bearish_engulfing = is_prev_green and is_curr_red and curr_close <= prev_open and curr_open >= prev_close
 
-        avg_volume_20 = float(np.mean(v_5m[-15:-1])) if len(v_5m) >= 16 else float(np.mean(v_5m))
-        current_volume = float(v_5m[-1])
+        avg_volume_20 = float(np.mean(v_1h[-15:-1])) if len(v_1h) >= 16 else float(np.mean(v_1h))
+        current_volume = float(v_1h[-1])
         is_volume_surge = current_volume >= (avg_volume_20 * 1.3)
 
+        # شرط الشراء (LONG) على فريم الساعة بَدعم من اتجاه الـ 4 ساعات
         if is_bullish_engulfing and is_volume_surge and htf_trend == "BULLISH":
             confirmations = [
-                "تشكل نموذج الابتلاع الصاعد (Bullish Engulfing) المؤكد",
-                "الاتجاه العام على فريم الساعة صاعد (BULLISH Trend Filter)",
+                "تشكل نموذج الابتلاع الصاعد على فريم الساعة (1H Bullish Engulfing)",
+                "الاتجاه العام على فريم 4 ساعات صاعد (4H Trend Filter)",
                 f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                "التوافق الكامل بين الفريم الصغير والكبير للشراء"
+                "إشارة انعكاسية قوية ومستقرة"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [float(np.min(l_5m[-5:])), float(np.max(h_5m[-5:]))]
+            d['zone'] = [float(np.min(l_1h[-5:])), float(np.max(h_1h[-5:]))]
             d['confirmations'] = confirmations
-            return "LONG", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "LONG", 95, 1.3, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
 
+        # شرط البيع (SHORT) على فريم الساعة بَدعم من اتجاه الـ 4 ساعات
         if is_bearish_engulfing and is_volume_surge and htf_trend == "BEARISH":
             confirmations = [
-                "تشكل نموذج الابتلاع الهابط (Bearish Engulfing) المؤكد",
-                "الاتجاه العام على فريم الساعة هابط (BEARISH Trend Filter)",
+                "تشكل نموذج الابتلاع الهابط على فريم الساعة (1H Bearish Engulfing)",
+                "الاتجاه العام على فريم 4 ساعات هابط (4H Trend Filter)",
                 f"تدفق حجمي قوي بنسبة: {round(current_volume / avg_volume_20 * 100, 1)}%",
-                "التوافق الكامل بين الفريم الصغير والكبير للبيع"
+                "إشارة انعكاسية هابطة قوية ومستقرة"
             ]
             d['predictive_entry'] = current_price
-            d['zone'] = [float(np.min(l_5m[-5:])), float(np.max(h_5m[-5:]))]
+            d['zone'] = [float(np.min(l_1h[-5:])), float(np.max(h_1h[-5:]))]
             d['confirmations'] = confirmations
-            return "SHORT", 90, 1.3, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+            return "SHORT", 95, 1.3, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
 
-        d['reasons_excluded'].append("لم يتوافق نموذج الابتلاع مع اتجاه فريم الساعة أو شروط الفوليوم")
-        return "NEUTRAL", 30, 1.0, d, (h_5m.tolist(), l_5m.tolist(), c_5m.tolist())
+        d['reasons_excluded'].append("لم يتوافق نموذج الابتلاع على فريم الساعة مع الاتجاه أو الفوليوم")
+        return "NEUTRAL", 30, 1.0, d, (h_1h.tolist(), l_1h.tolist(), c_1h.tolist())
 
     def calculate_risk_management(self, entry_price, direction, highs, lows, closes=None):
         entry = float(entry_price)
@@ -124,13 +128,13 @@ class StrategyEngine:
         pip_buffer = entry * 0.0005
 
         if direction in ('LONG', 'BUY'):
-            stop = min(entry - (1.2 * atr), recent_low - pip_buffer)
+            stop = min(entry - (1.5 * atr), recent_low - pip_buffer)
             risk = entry - stop
             t1 = entry + (1.0 * risk)
             t2 = entry + (2.0 * risk)
             t3 = entry + (3.0 * risk)
         else:
-            stop = max(entry + (1.2 * atr), recent_high + pip_buffer)
+            stop = max(entry + (1.5 * atr), recent_high + pip_buffer)
             risk = stop - entry
             t1 = entry - (1.0 * risk)
             t2 = entry - (2.0 * risk)
