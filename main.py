@@ -1,7 +1,7 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - LIQUIDITY SWEEP EDITION
+# MY EXPERT CRYPTO BOT - CISD & LIQUIDITY REJECTION EDITION
 # File: main.py
-# Anti-Trap Strategy: Stop Hunt & Liquidity Sweep Scanner
+# Anti-Trap Strategy: Swept Liquidity (xxx) + CISD Scanner
 # ==========================================
 
 import os
@@ -41,7 +41,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - Liquidity Sweep Strategy Scanner is active!"
+    return "My Expert Crypto Bot - CISD & Liquidity Rejection Scanner is active!"
 
 
 @app.route("/health")
@@ -109,24 +109,24 @@ def fmt(value):
         return str(value)
 
 
-def build_sweep_message(symbol, signal, score, entry, sweep_target, sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
+def build_cisd_message(symbol, signal, score, entry, cisd_target, sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details):
     confirmations = "\n".join(f"• {x}" for x in details.get("confirmations", [])) or "• لا توجد تأكيدات"
     zone = details.get("ote_zone", [0, 0])
 
     return (
-        "🚨 *إشارة سحب سيولة واصطياد الوقف (Stop Hunt Sweep)*\n\n"
+        "🎯 *إشارة رفض السيولة وتغير حالة التسليم (CISD + Liquidity Rejection)*\n\n"
         f"🔹 *العملة:* `{symbol}`\n"
-        f"⚖️ *الاتجاه الجديد (عكس القطيع):* `{signal}`\n"
-        f"⭐ *التقييم:* `{score}/100`\n"
-        f"📏 *نطاق السيولة المسحوبة (القمة/القاع):* `[{fmt(zone[0])} - {fmt(zone[1])}]`\n"
-        f"💵 *سعر الدخول الحالي:* `{fmt(entry)}`\n\n"
-        f"🛑 *وقف الخسارة المحصن:* `{fmt(sl)}` ({sl_pct}%)\n"
-        f"🎯 *TP1:* `{fmt(tp1)}` ({tp1_pct}%)\n"
-        f"🎯 *TP2:* `{fmt(tp2)}`\n"
-        f"🎯 *TP3:* `{fmt(tp3)}`\n"
-        f"⚖️ *R:R تقديري:* `{rr}`\n\n"
-        f"✅ *تفاصيل الانعكاس:*\n{confirmations}\n\n"
-        "تم رصد كسر وقوف الخسارة للمتداولين التقليديين والدخول مع صانع السوق."
+        f"⚖️ *الاتجاه:* `{signal}`\n"
+        f"⭐ *قوة الإشارة:* `{score}/100`\n"
+        f"📏 *نطاق السيولة المسحوبة (xxx):* `[{fmt(zone[0])} - {fmt(zone[1])}]`\n"
+        f"💵 *سعر الدخول:* `{fmt(entry)}`\n\n"
+        f"🛑 *وقف الخسارة:* `{fmt(sl)}` ({sl_pct}%)\n"
+        f"🎯 *الهدف الأول (TP1):* `{fmt(tp1)}` ({tp1_pct}%)\n"
+        f"🎯 *الهدف الثاني (TP2):* `{fmt(tp2)}`\n"
+        f"🎯 *الهدف الثالث (TP3):* `{fmt(tp3)}`\n"
+        f"⚖️ *معدل المخاطرة/العائد (R:R):* `{rr}`\n\n"
+        f"✅ *تأكيدات الخوارزمية:*\n{confirmations}\n\n"
+        "⚡ *تم التأكد من الرفض السعري وإغلاق شمعة CISD بنجاح.*"
     )
 
 
@@ -158,21 +158,21 @@ def process_symbol(symbol, engine):
         if entry <= 0:
             return
 
-        sweep_target = details.get("predictive_entry", entry)
+        cisd_target = details.get("predictive_entry", entry)
         highs, lows, closes = arrays
         sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr = engine.calculate_risk_management(
-            sweep_target, signal, highs, lows, closes
+            cisd_target, signal, highs, lows, closes
         )
 
-        message = build_sweep_message(
-            symbol, signal, score, entry, sweep_target,
+        message = build_cisd_message(
+            symbol, signal, score, entry, cisd_target,
             sl, tp1, tp2, tp3, sl_pct, tp1_pct, rr, details
         )
 
         if send_telegram_message(message):
             with history_lock:
                 signal_history[symbol] = time.time()
-            print(f"Sent Liquidity Sweep signal for {symbol} successfully.")
+            print(f"Sent CISD & Liquidity Rejection signal for {symbol} successfully.")
 
     except Exception as exc:
         if "paused" in str(exc).lower():
@@ -183,7 +183,7 @@ def process_symbol(symbol, engine):
 
 def background_scanner():
     time.sleep(15)
-    send_telegram_message("🤖 *تم تفعيل بوت سحب السيولة (Stop Hunt Engine) بنجاح*")
+    send_telegram_message("🤖 *تم تفعيل بوت رفض السيولة وتغير حالة التسليم (CISD Engine) بنجاح*")
     engine = StrategyEngine()
 
     while True:
@@ -206,7 +206,7 @@ def background_scanner():
             time.sleep(60)
 
 
-threading.Thread(target=background_scanner, daemon=True, name="sweep-scanner").start()
+threading.Thread(target=background_scanner, daemon=True, name="cisd-scanner").start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
