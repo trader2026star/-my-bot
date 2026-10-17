@@ -1,5 +1,6 @@
 # ==========================================
 # MAIN BOT ENGINE (BingX & Telegram Connected)
+# Advanced SMC & Live Trades Tracker Integrated
 # ==========================================
 import os
 import time
@@ -20,8 +21,9 @@ SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "3"))))
 
 signal_history = {}
-active_trades = {}
+active_trades = {}  # قاموس لتتبع الصفقات المفتوحة لحساب الأهداف والوقف
 history_lock = threading.Lock()
+trades_lock = threading.Lock()
 api_lock = threading.Lock()
 _last_api_request = 0.0
 _api_cooldown_until = 0.0
@@ -35,7 +37,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Crypto Full Bot (On-Chain + Technical + Risk) is active!"
+    return "Crypto SMC & Breakout Bot is active!"
 
 @app.route("/health")
 def health():
@@ -98,17 +100,20 @@ def get_all_usdt_symbols():
     except Exception:
         return []
 
-def notify_trade_executed(symbol, data):
-    rm = data["risk_management"]
+def notify_trade_executed(symbol, direction, entry_price, details):
+    rm = details["risk_management"]
+    direction_emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    
     msg = (
-        "🚀 *إشارة صفقة جديدة (Advanced Bot Filter)*\n\n"
+        f"🚀 *إشارة صفقة جديدة (SMC Breakout & Retest)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `LONG`\n"
-        f"💵 سعر الدخول: `{data['entry_price']}`\n"
-        f"🛑 وقف الخسارة: `{data['stop_loss']}`\n"
-        f"🎯 الهدف المقترح (1:2): `{rm['take_profit_target']}`\n"
-        f"💰 القيمة المخاطر بها: `${rm['allowed_risk_usd']}`\n"
-        "✅ *اجتاز الفلاتر الفنية، الحيتان، وإدارة المخاطر بنجاح.*"
+        f"⚖️ الاتجاه: `{direction_emoji}`\n"
+        f"💵 سعر الدخول: `{entry_price}`\n"
+        f"🛑 وقف الخسارة: `{details['stop_loss']}`\n"
+        f"🎯 الهدف المقترح: `{rm['take_profit_target']}`\n"
+        f"💰 المخاطرة المحسوبة: `${rm['allowed_risk_usd']}` (2%)\n"
+        f"📊 النمط: `{details.get('setup', 'SMC 15M Setup')}`\n\n"
+        "✅ *تم فحص اتجاه 4H/1H، الهيكل، والزخم بنجاح.*"
     )
     send_telegram_message(msg)
 
@@ -128,31 +133,126 @@ def process_symbol(symbol, engine):
             if now_time - last_time < SIGNAL_COOLDOWN_SECONDS:
                 return
 
-        # جلب تاريخ الأسعار لفحص المؤشرات الفنية
-        ohlcv = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=220)
-        if not ohlcv or len(ohlcv) < 50:
+        # جلب البيانات متعددة الفريمات لتطبيق الاستراتيجية الجديدة
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=40)
+
+        if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
             return
 
-        closes = [row[4] for row in ohlcv]
-        lows = [row[3] for row in ohlcv]
-        
-        # تحديد نقطة وقف الخسارة تحت أدنى قاع حديث تلقائياً
-        stop_loss_price = float(min(lows[-10:])) * 0.995
+        # فحص الاستراتيجية الجديدة (SMC + 4H/1H Trend + 15M Breakout/Retest)
+        direction, entry_price, details = engine.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m)
 
-        # تنفيذ فحص استراتيجية الفلاتر المتسلسلة الجديدة
-        result = engine.execute_bot_logic(symbol, closes, stop_loss_price)
+        if direction in ("LONG", "SHORT"):
+            notify_trade_executed(symbol, direction, entry_price, details)
+            
+            # تسجيل الصفقة في المتابعة الحية لتتبع الأهداف والاستوب
+            with trades_lock:
+                active_trades[symbol] = {
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "stop_loss": details["stop_loss"],
+                    "take_profit": details["risk_management"]["take_profit_target"],
+                    "timestamp": time.time()
+                }
 
-        if result.get("status") == "EXECUTE_LONG_TRADE":
-            notify_trade_executed(symbol, result)
             with history_lock:
                 signal_history[symbol] = time.time()
 
     except Exception as exc:
         print(f"Error processing {symbol}: {str(exc)[:100]}", flush=True)
 
+# ==========================================
+# نظام تتبع الصفقات الحي (TP / SL Tracker)
+# ==========================================
+def live_trade_tracker():
+    """تتبع حركة الصفقات النشطة وإرسال إشعارات الأهداف والوقف فور تحققها"""
+    while True:
+        try:
+            time.sleep(15)
+            with trades_lock:
+                if not active_trades:
+                    continue
+
+                symbols_to_check = list(active_trades.keys())
+
+            for symbol in symbols_to_check:
+                ticker = bingx_call("fetch_ticker", symbol)
+                if not ticker:
+                    continue
+                current_price = float(ticker.get("last") or ticker.get("close") or 0)
+                if current_price <= 0:
+                    continue
+
+                with trades_lock:
+                    trade = active_trades.get(symbol)
+                    if not trade:
+                        continue
+
+                    direction = trade["direction"]
+                    tp = trade["take_profit"]
+                    sl = trade["stop_loss"]
+
+                    # فحص صفقات الـ LONG
+                    if direction == "LONG":
+                        if current_price >= tp:
+                            msg = (
+                                f"🎯 *تم تحقيق الهدف بنجاح! (Take Profit)*\n\n"
+                                f"🔹 العملة: `{symbol}`\n"
+                                f"📈 الاتجاه: `LONG`\n"
+                                f"💵 سعر الدخول: `{trade['entry_price']}`\n"
+                                f"🎯 السعر الحالي: `{current_price}` (وصل للهدف: `{tp}`)\n"
+                                f"🎉 *صفقة رابحة وفقاً لإدارة المخاطر!*"
+                            )
+                            send_telegram_message(msg)
+                            del active_trades[symbol]
+                        elif current_price <= sl:
+                            msg = (
+                                f"🛑 *تم ضرب وقف الخسارة (Stop Loss)*\n\n"
+                                f"🔹 العملة: `{symbol}`\n"
+                                f"📈 الاتجاه: `LONG`\n"
+                                f"💵 سعر الدخول: `{trade['entry_price']}`\n"
+                                f"🛑 السعر الحالي: `{current_price}` (ضرب الاستوب: `{sl}`)\n"
+                                f"🛡️ *خسارة منضبطة ضمن نطاق المخاطرة 2%*"
+                            )
+                            send_telegram_message(msg)
+                            del active_trades[symbol]
+
+                    # فحص صفقات الـ SHORT
+                    elif direction == "SHORT":
+                        if current_price <= tp:
+                            msg = (
+                                f"🎯 *تم تحقيق الهدف بنجاح! (Take Profit)*\n\n"
+                                f"🔹 العملة: `{symbol}`\n"
+                                f"📉 الاتجاه: `SHORT`\n"
+                                f"💵 سعر الدخول: `{trade['entry_price']}`\n"
+                                f"🎯 السعر الحالي: `{current_price}` (وصل للهدف: `{tp}`)\n"
+                                f"🎉 *صفقة رابحة وفقاً لإدارة المخاطر!*"
+                            )
+                            send_telegram_message(msg)
+                            del active_trades[symbol]
+                        elif current_price >= sl:
+                            msg = (
+                                f"🛑 *تم ضرب وقف الخسارة (Stop Loss)*\n\n"
+                                f"🔹 العملة: `{symbol}`\n"
+                                f"📉 الاتجاه: `SHORT`\n"
+                                f"💵 سعر الدخول: `{trade['entry_price']}`\n"
+                                f"🛑 السعر الحالي: `{current_price}` (ضرب الاستوب: `{sl}`)\n"
+                                f"🛡️ *خسارة منضبطة ضمن نطاق المخاطرة 2%*"
+                            )
+                            send_telegram_message(msg)
+                            del active_trades[symbol]
+
+                time.sleep(SYMBOL_PAUSE_SECONDS)
+
+        except Exception as exc:
+            print(f"Tracker error: {str(exc)[:150]}", flush=True)
+            time.sleep(10)
+
 def background_scanner():
     time.sleep(5)
-    send_telegram_message("🤖 *تم تفعيل بوت التداول المتقدم (Multi-Filter & Risk Management) بنجاح*")
+    send_telegram_message("🤖 *تم تفعيل بوت التداول المتقدم (SMC + Multi-Timeframe + Risk Management) بنجاح*")
     engine = StrategyEngine(capital=10000, risk_per_trade=0.02, reward_ratio=2.0)
 
     while True:
@@ -171,8 +271,12 @@ def background_scanner():
             print(f"Scanner error: {str(exc)[:150]}", flush=True)
             time.sleep(30)
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="full-bot-scanner")
+# تشغيل الفاحص وخيط التتبع في الخلفية
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="smc-bot-scanner")
+tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
+
 scanner_thread.start()
+tracker_thread.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
