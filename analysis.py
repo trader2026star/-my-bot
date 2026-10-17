@@ -1,108 +1,343 @@
 # ==========================================
-# SMC & BREAKOUT/RETEST STRATEGY ENGINE (V9.0)
+# MY EXPERT CRYPTO BOT - SELECTIVE ENGINE V12
+# SMC + BOS/MSS + LIQUIDITY SWEEP + FVG/OB
+# Breakout/Retest + MTF + Volume/Momentum + ATR risk
 # ==========================================
 import numpy as np
 
+
 class StrategyEngine:
-    def __init__(self, capital=10000, risk_per_trade=0.02, reward_ratio=2.0):
-        self.total_capital = capital
-        self.risk_per_trade = risk_per_trade
-        self.reward_ratio = reward_ratio
+    def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.0):
+        self.total_capital = float(capital)
+        self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
+        self.reward_ratio = max(float(reward_ratio), 1.0)
+
+    @staticmethod
+    def _array(data, minimum=25):
+        try:
+            a = np.asarray(data, dtype=float)
+            if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
+                return None
+            a = a[:, :6]
+            if not np.all(np.isfinite(a)):
+                return None
+            if np.any(a[:, 1:5] <= 0) or np.any(a[:, 5] < 0):
+                return None
+            if np.any(a[:, 2] < a[:, 3]):
+                return None
+            if np.any(a[:, 4] < a[:, 3]) or np.any(a[:, 4] > a[:, 2]):
+                return None
+            return a
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    @staticmethod
+    def _round(value):
+        value = float(value)
+        if not np.isfinite(value) or value <= 0:
+            return value
+        decimals = max(2, min(12, int(-np.floor(np.log10(value))) + 3))
+        return round(value, decimals)
+
+    @staticmethod
+    def _ema(values, period):
+        values = np.asarray(values, dtype=float)
+        if len(values) < period:
+            return None
+        alpha = 2.0 / (period + 1.0)
+        result = float(values[0])
+        for value in values[1:]:
+            result = alpha * float(value) + (1.0 - alpha) * result
+        return result
 
     def calculate_atr(self, highs, lows, closes, period=14):
-        h, l, c = np.asarray(highs, dtype=float), np.asarray(lows, dtype=float), np.asarray(closes, dtype=float)
+        h, l, c = (np.asarray(x, dtype=float) for x in (highs, lows, closes))
         n = min(len(h), len(l), len(c))
-        if n < 2: return 0.0
+        if n < 2:
+            return 0.0
         h, l, c = h[-n:], l[-n:], c[-n:]
         tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
-        if not len(tr): return 0.0
-        return float(np.mean(tr[-min(int(period), len(tr)):]))
+        return float(np.mean(tr[-min(int(period), len(tr)):])) if len(tr) else 0.0
 
     def calculate_position_size(self, entry_price, stop_loss_price, direction="LONG"):
-        if direction == "LONG" and entry_price <= stop_loss_price:
+        try:
+            entry, stop = float(entry_price), float(stop_loss_price)
+            direction = str(direction).upper()
+        except (TypeError, ValueError):
             return None
-        if direction == "SHORT" and entry_price >= stop_loss_price:
+        if not np.isfinite(entry) or not np.isfinite(stop) or entry <= 0 or stop <= 0:
             return None
-            
-        risk_amount_usd = self.total_capital * self.risk_per_trade
-        risk_per_token = abs(entry_price - stop_loss_price)
-        
-        if risk_per_token == 0:
+        if direction not in ("LONG", "SHORT") or self.total_capital <= 0:
             return None
-
-        position_size_tokens = risk_amount_usd / risk_per_token
-        total_trade_value = position_size_tokens * entry_price
-        
-        if direction == "LONG":
-            take_profit_price = entry_price + (risk_per_token * self.reward_ratio)
-        else:
-            take_profit_price = entry_price - (risk_per_token * self.reward_ratio)
-        
+        if direction == "LONG" and stop >= entry:
+            return None
+        if direction == "SHORT" and stop <= entry:
+            return None
+        distance = abs(entry - stop)
+        if distance <= 0 or not 0 < self.risk_per_trade <= 0.02:
+            return None
+        risk_usd = self.total_capital * self.risk_per_trade
+        qty = risk_usd / distance
+        notional = qty * entry
+        target = entry + distance * self.reward_ratio if direction == "LONG" else entry - distance * self.reward_ratio
+        if target <= 0 or not np.isfinite(notional):
+            return None
         return {
-            "allowed_risk_usd": risk_amount_usd,
-            "tokens_to_buy": round(position_size_tokens, 4),
-            "total_trade_value_usd": round(total_trade_value, 2),
-            "take_profit_target": round(take_profit_price, 2)
+            "allowed_risk_usd": round(risk_usd, 2),
+            "tokens_to_buy": round(qty, 8),
+            "total_trade_value_usd": round(notional, 2),
+            "take_profit_target": self._round(target),
+            "reward_ratio": self.reward_ratio,
+            "risk_percent": round(self.risk_per_trade * 100, 3),
         }
 
-    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m):
-        """
-        تطبيق استراتيجية: الاتجاه العام (4H/1H) + هيكل SMC (BOS/MSS/FVG/OB) + دخول (Breakout + Retest على 15M)
-        """
-        if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m or len(ohlcv_15m) < 20:
-            return "NEUTRAL", 0, {}
+    def calculate_risk_management(self, entry_price, stop_loss_price, direction="LONG"):
+        return self.calculate_position_size(entry_price, stop_loss_price, direction)
 
-        c_4h = np.array([row[4] for row in ohlcv_4h])
-        c_1h = np.array([row[4] for row in ohlcv_1h])
-        h_15m = np.array([row[2] for row in ohlcv_15m])
-        l_15m = np.array([row[3] for row in ohlcv_15m])
-        c_15m = np.array([row[4] for row in ohlcv_15m])
-        v_15m = np.array([row[5] for row in ohlcv_15m])
+    def _trend(self, candles):
+        closes = candles[:, 4]
+        if len(closes) < 25:
+            return "NEUTRAL"
+        fast = self._ema(closes[-30:], 8)
+        slow = self._ema(closes[-30:], 21)
+        prior = self._ema(closes[-31:-1], 8) if len(closes) >= 31 else fast
+        if fast is None or slow is None:
+            return "NEUTRAL"
+        if fast > slow and closes[-1] > slow and fast >= prior:
+            return "BULLISH"
+        if fast < slow and closes[-1] < slow and fast <= prior:
+            return "BEARISH"
+        return "NEUTRAL"
 
-        # 1. تحديد الاتجاه العام (4H & 1H)
-        trend_4h = "BULLISH" if c_4h[-1] > np.mean(c_4h[-10:]) else "BEARISH"
-        trend_1h = "BULLISH" if c_1h[-1] > np.mean(c_1h[-10:]) else "BEARISH"
+    @staticmethod
+    def _rsi(closes, period=14):
+        d = np.diff(np.asarray(closes, dtype=float))
+        if len(d) < period:
+            return 50.0
+        gains, losses = np.maximum(d, 0), np.maximum(-d, 0)
+        ag, al = float(np.mean(gains[-period:])), float(np.mean(losses[-period:]))
+        if al == 0:
+            return 100.0 if ag > 0 else 50.0
+        return float(100 - 100 / (1 + ag / al))
 
-        if trend_4h != trend_1h:
-            return "NEUTRAL", 0, {"reason": "HTF Trend Mismatch between 4H and 1H"}
+    @staticmethod
+    def _volume_ratio(volumes, period=14):
+        v = np.asarray(volumes, dtype=float)
+        if len(v) < period + 1:
+            return 0.0
+        baseline = float(np.mean(v[-period-1:-1]))
+        return float(v[-1] / baseline) if baseline > 0 else 0.0
 
-        # 2. هيكل SMC ومناطق الاهتمام (Order Block / FVG / Liquidity) على فريم 15M
-        recent_resistance = float(np.max(h_15m[-20:-3]))
-        recent_support = float(np.min(l_15m[-20:-3]))
-        
-        current_price = float(c_15m[-1])
-        prev_price = float(c_15m[-2])
+    @staticmethod
+    def _pivots(highs, lows, left=2, right=2):
+        ph, pl = [], []
+        for i in range(left, len(highs) - right):
+            if highs[i] >= np.max(highs[i-left:i+right+1]) and highs[i] > np.max(highs[i-left:i]):
+                ph.append((i, float(highs[i])))
+            if lows[i] <= np.min(lows[i-left:i+right+1]) and lows[i] < np.min(lows[i-left:i]):
+                pl.append((i, float(lows[i])))
+        return ph, pl
 
-        # مؤشر الزخم والفوليوم للتأكيد
-        avg_vol = float(np.mean(v_15m[-15:-1]))
-        curr_vol = float(v_15m[-1])
-        is_volume_confirmed = curr_vol >= (avg_vol * 1.2)
+    @staticmethod
+    def _find_fvgs(candles):
+        zones = []
+        # Three-candle imbalance: candle i leaves a gap against candle i-2.
+        for i in range(2, len(candles)):
+            older_high = float(candles[i-2, 2])
+            older_low = float(candles[i-2, 3])
+            newer_high = float(candles[i, 2])
+            newer_low = float(candles[i, 3])
+            if newer_low > older_high:
+                zones.append({"type": "BULLISH", "low": older_high, "high": newer_low, "index": i})
+            elif newer_high < older_low:
+                zones.append({"type": "BEARISH", "low": newer_high, "high": older_low, "index": i})
+        return zones
 
-        # 3. إشارة الدخول: Breakout + Retest على 15M
-        # شرط للـ LONG: السعر اخترق المقاومة سابقاً وعاد لاختبارها (Retest) ثم ارتد صعوداً
-        is_breakout_long = prev_price > recent_resistance or current_price >= recent_resistance
-        is_retest_long = current_price <= recent_resistance * 1.002 and current_price >= recent_support
+    @staticmethod
+    def _find_order_block(candles, direction, break_index, lookback=8):
+        # Last opposing candle before the confirmed break; bounded to recent history.
+        start = max(0, break_index - lookback)
+        for i in range(break_index - 1, start - 1, -1):
+            op, hi, lo, cl = map(float, candles[i, 1:5])
+            if direction == "LONG" and cl < op:
+                return {"low": lo, "high": hi, "index": i}
+            if direction == "SHORT" and cl > op:
+                return {"low": lo, "high": hi, "index": i}
+        return None
 
-        if trend_4h == "BULLISH" and is_volume_confirmed and (is_breakout_long or current_price > recent_support):
-            stop_loss = float(np.min(l_15m[-5:]) * 0.995)
-            risk_profile = self.calculate_position_size(current_price, stop_loss, "LONG")
-            if risk_profile:
-                return "LONG", current_price, {
-                    "stop_loss": stop_loss,
-                    "risk_management": risk_profile,
-                    "setup": "SMC Breakout + Retest (15M) with Volume Surge"
-                }
+    @staticmethod
+    def _zone_near_price(zone, price, atr, max_atr=1.5):
+        if not zone:
+            return False
+        if zone["low"] <= price <= zone["high"]:
+            return True
+        distance = min(abs(price - zone["low"]), abs(price - zone["high"]))
+        return distance <= atr * max_atr
 
-        # شرط للـ SHORT: كسر الدعم وإعادة الاختبار
-        is_breakout_short = prev_price < recent_support or current_price <= recent_support
-        if trend_4h == "BEARISH" and is_volume_confirmed and is_breakout_short:
-            stop_loss = float(np.max(h_15m[-5:]) * 1.005)
-            risk_profile = self.calculate_position_size(current_price, stop_loss, "SHORT")
-            if risk_profile:
-                return "SHORT", current_price, {
-                    "stop_loss": stop_loss,
-                    "risk_management": risk_profile,
-                    "setup": "SMC Breakdown + Retest (15M) with Volume Surge"
-                }
+    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
+        neutral = ("NEUTRAL", 0, {})
+        raw4 = self._array(ohlcv_4h, 27)
+        raw1 = self._array(ohlcv_1h, 27)
+        raw15 = self._array(ohlcv_15m, 36)
+        if raw4 is None or raw1 is None or raw15 is None:
+            return "NEUTRAL", 0, {"reason": "Insufficient or invalid OHLCV data"}
 
-        return "NEUTRAL", 0, {}
+        try:
+            # Drop the last candle because exchange OHLCV usually includes an open candle.
+            c4, c1, c15 = raw4[:-1], raw1[:-1], raw15[:-1]
+            if min(len(c4), len(c1), len(c15)) < 25:
+                return "NEUTRAL", 0, {"reason": "Not enough closed candles"}
+
+            trend4, trend1 = self._trend(c4), self._trend(c1)
+            if trend4 == "NEUTRAL" or trend1 == "NEUTRAL" or trend4 != trend1:
+                return "NEUTRAL", 0, {"reason": "Higher timeframe trend unclear or conflicting", "trend_4h": trend4, "trend_1h": trend1}
+
+            btc_trend = "NOT_PROVIDED"
+            if btc_ohlcv_1h is not None:
+                raw_btc = self._array(btc_ohlcv_1h, 27)
+                if raw_btc is None:
+                    return "NEUTRAL", 0, {"reason": "BTC context unavailable/invalid"}
+                btc_trend = self._trend(raw_btc[:-1])
+                if btc_trend == "NEUTRAL" or btc_trend != trend1:
+                    return "NEUTRAL", 0, {"reason": "BTC trend conflicts with setup", "btc_trend": btc_trend, "trend_1h": trend1}
+
+            op, hi, lo, cl, vol = c15[:, 1], c15[:, 2], c15[:, 3], c15[:, 4], c15[:, 5]
+            entry = float(cl[-1])
+            atr = self.calculate_atr(hi, lo, cl, 14)
+            if entry <= 0 or atr <= 0 or not np.isfinite(atr):
+                return "NEUTRAL", 0, {"reason": "Invalid price or ATR"}
+
+            atr_pct = atr / entry
+            volume_ratio = self._volume_ratio(vol, 14)
+            rsi = self._rsi(cl, 14)
+            piv_hi, piv_lo = self._pivots(hi, lo)
+            if len(piv_hi) < 2 or len(piv_lo) < 2:
+                return "NEUTRAL", 0, {"reason": "Not enough confirmed swing points"}
+
+            # Only use pivots that are confirmed before the last few candles.
+            eligible_hi = [(i, p) for i, p in piv_hi if i < len(cl) - 4]
+            eligible_lo = [(i, p) for i, p in piv_lo if i < len(cl) - 4]
+            if not eligible_hi or not eligible_lo:
+                return neutral
+            swing_high_i, swing_high = eligible_hi[-1]
+            swing_low_i, swing_low = eligible_lo[-1]
+            prior_high = eligible_hi[-2][1] if len(eligible_hi) >= 2 else swing_high
+            prior_low = eligible_lo[-2][1] if len(eligible_lo) >= 2 else swing_low
+
+            direction = "LONG" if trend1 == "BULLISH" else "SHORT"
+            level = swing_high if direction == "LONG" else swing_low
+            lookback_start = max(1, len(cl) - 7)
+            break_index = None
+            bos = False
+            mss = False
+            for i in range(lookback_start, len(cl) - 1):
+                if direction == "LONG" and cl[i] > swing_high and cl[i-1] <= swing_high:
+                    break_index, bos = i, True
+                    # MSS is meaningful if recent structure had bearish lower swing sequence.
+                    mss = swing_high < prior_high and cl[i] > swing_high
+                elif direction == "SHORT" and cl[i] < swing_low and cl[i-1] >= swing_low:
+                    break_index, bos = i, True
+                    mss = swing_low > prior_low and cl[i] < swing_low
+
+            if not bos or break_index is None or break_index >= len(cl) - 1:
+                return "NEUTRAL", 0, {"reason": "No recent closed-candle BOS", "trend_4h": trend4, "trend_1h": trend1}
+
+            # Liquidity sweep: a wick through a prior swing followed by a close back inside.
+            sweep_low = bool(lo[-1] < swing_low and cl[-1] > swing_low)
+            sweep_high = bool(hi[-1] > swing_high and cl[-1] < swing_high)
+            liquidity_sweep = sweep_low if direction == "LONG" else sweep_high
+
+            tolerance = min(0.003, max(0.0005, atr_pct * 0.20))
+            if direction == "LONG":
+                retest = lo[-1] <= level * (1 + tolerance) and cl[-1] > level and cl[-1] > op[-1] and cl[-1] >= cl[-2]
+                momentum_ok = 52 <= rsi <= 70
+            else:
+                retest = hi[-1] >= level * (1 - tolerance) and cl[-1] < level and cl[-1] < op[-1] and cl[-1] <= cl[-2]
+                momentum_ok = 30 <= rsi <= 48
+
+            if not retest:
+                return "NEUTRAL", 0, {"reason": "BOS found but retest/rejection not confirmed", "breakout_level": self._round(level)}
+            if volume_ratio < 1.25:
+                return "NEUTRAL", 0, {"reason": "Volume confirmation failed", "volume_ratio": round(volume_ratio, 2)}
+            if not momentum_ok:
+                return "NEUTRAL", 0, {"reason": "Momentum filter failed", "rsi": round(rsi, 1)}
+
+            fvg_zones = self._find_fvgs(c15)
+            expected_zone = "BULLISH" if direction == "LONG" else "BEARISH"
+            fvg = next((z for z in reversed(fvg_zones) if z["type"] == expected_zone and z["index"] >= break_index - 2), None)
+            ob = self._find_order_block(c15, direction, break_index)
+            fvg_ok = self._zone_near_price(fvg, entry, atr, 1.5)
+            ob_ok = self._zone_near_price(ob, entry, atr, 1.5)
+
+            # Require at least one nearby, direction-aligned SMC zone.
+            if not (fvg_ok or ob_ok):
+                return "NEUTRAL", 0, {"reason": "No nearby aligned FVG/Order Block", "volume_ratio": round(volume_ratio, 2)}
+
+            # ATR + structural stop; reject excessive risk instead of widening indefinitely.
+            if direction == "LONG":
+                recent_structural_low = float(np.min(lo[-6:]))
+                stop = min(recent_structural_low, entry - 1.2 * atr) - 0.1 * atr
+            else:
+                recent_structural_high = float(np.max(hi[-6:]))
+                stop = max(recent_structural_high, entry + 1.2 * atr) + 0.1 * atr
+
+            distance = abs(entry - stop)
+            risk_pct = distance / entry
+            if distance <= 0 or distance > 3.5 * atr or risk_pct > 0.05:
+                return "NEUTRAL", 0, {"reason": "Stop distance unsuitable", "risk_percent": round(risk_pct * 100, 2)}
+
+            risk = self.calculate_position_size(entry, stop, direction)
+            if not risk:
+                return "NEUTRAL", 0, {"reason": "Risk management rejected setup"}
+
+            # Score is a setup-quality heuristic, not a win probability.
+            score = 65 + 8 + 5  # aligned 4H/1H + confirmed BOS/retest
+            if volume_ratio >= 1.5:
+                score += 5
+            if volume_ratio >= 2.0:
+                score += 3
+            if fvg_ok:
+                score += 5
+            if ob_ok:
+                score += 5
+            if liquidity_sweep:
+                score += 3
+            if mss:
+                score += 2
+            if btc_trend == trend1:
+                score += 4
+            score = min(score, 95)
+
+            details = {
+                "stop_loss": self._round(stop),
+                "risk_management": risk,
+                "setup": "Selective SMC + BOS + Breakout/Retest",
+                "score": int(score),
+                "trend_4h": trend4,
+                "trend_1h": trend1,
+                "btc_trend": btc_trend,
+                "bos": bool(bos),
+                "mss": bool(mss),
+                "liquidity_sweep": bool(liquidity_sweep),
+                "volume_ratio": round(volume_ratio, 2),
+                "rsi": round(rsi, 1),
+                "atr": self._round(atr),
+                "atr_percent": round(atr_pct * 100, 3),
+                "breakout_level": self._round(level),
+                "support": self._round(swing_low),
+                "resistance": self._round(swing_high),
+                "fvg": ({"type": fvg["type"], "low": self._round(fvg["low"]), "high": self._round(fvg["high"])} if fvg else None),
+                "fvg_confirmed_near_price": bool(fvg_ok),
+                "order_block": ({"low": self._round(ob["low"]), "high": self._round(ob["high"])} if ob else None),
+                "order_block_confirmed_near_price": bool(ob_ok),
+                "risk_percent": round(risk_pct * 100, 3),
+                "signal_type": "CLOSED_CANDLE_CONFIRMED",
+                "note": "Score is a heuristic, not a probability of profit. Paper-test before live use."
+            }
+            return direction, self._round(entry), details
+
+        except (ValueError, TypeError, IndexError, FloatingPointError) as exc:
+            return "NEUTRAL", 0, {"reason": "Analysis validation error", "error": str(exc)[:120]}
+
+    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
+        return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h)
