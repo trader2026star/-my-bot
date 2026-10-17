@@ -1,6 +1,7 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - SELECTIVE ENGINE V13
-# SMC + BOS/MSS + LIQUIDITY SWEEP + FVG/OB + LIQUIDATIONS FILTER
+# MY EXPERT CRYPTO BOT - SELECTIVE ENGINE V15
+# SMC + TWO-WAY LIQUIDITY SQUEEZE ENGINE (LONG & SHORT)
+# BOS/MSS + FVG/OB + LIQUIDATIONS + VOLUME SURGE
 # ==========================================
 import numpy as np
 
@@ -136,17 +137,12 @@ class StrategyEngine:
 
     @staticmethod
     def calculate_liquidation_levels(swing_price, direction="LONG", leverages=[25, 50, 100]):
-        """
-        حساب مستويات التصفيات الإجبارية المتوقعة بناءً على القمم/القيعان والروافع المالية الشائعة
-        """
         liq_levels = []
         for lev in leverages:
-            maintenance_margin = 0.005  # 0.5% هامش صيانة تقريبي
+            maintenance_margin = 0.005
             if direction == "LONG":
-                # تصفيات المتداولين داخل صفقات الشراء تكون تحت القاع
                 liq = swing_price * (1 - (1 / lev) + maintenance_margin)
             else:
-                # تصفيات المتداولين داخل صفقات البيع تكون فوق القمة
                 liq = swing_price * (1 + (1 / lev) - maintenance_margin)
             liq_levels.append({"leverage": f"{lev}x", "price": liq})
         return liq_levels
@@ -251,14 +247,13 @@ class StrategyEngine:
                 return "NEUTRAL", 0, {"reason": "No recent closed-candle BOS", "trend_4h": trend4, "trend_1h": trend1}
 
             # ----------------------------------------------------
-            # مؤشر التصفيات الإجبارية (Liquidation Sweep Indicator)
+            # 1. فحص التصفيات الإجبارية للطرفين (Long/Short Liquidations)
             # ----------------------------------------------------
             liq_levels = self.calculate_liquidation_levels(swing_low if direction == "LONG" else swing_high, direction)
             sweep_low = bool(lo[-1] < swing_low and cl[-1] > swing_low)
             sweep_high = bool(hi[-1] > swing_high and cl[-1] < swing_high)
             liquidity_sweep = sweep_low if direction == "LONG" else sweep_high
 
-            # التحقق من ضرب أحد مستويات التصفيات الإجبارية للمضاربين (25x, 50x, 100x)
             hit_liq_zone = False
             for l_info in liq_levels:
                 l_price = l_info["price"]
@@ -269,6 +264,19 @@ class StrategyEngine:
                     hit_liq_zone = True
                     break
 
+            # ----------------------------------------------------
+            # 2. فحص السكويز بالاتجاهين (Short Squeeze & Long Liquidation Cascade)
+            # ----------------------------------------------------
+            is_squeeze_triggered = False
+            if direction == "LONG":
+                # Short Squeeze: كسر المقاومة مع اندفاع سيولة وفوليوم لضغط صفقات البيع
+                if cl[-1] > swing_high and volume_ratio >= 1.5 and rsi >= 55:
+                    is_squeeze_triggered = True
+            elif direction == "SHORT":
+                # Long Cascade / Squeeze: كسر الدعم مع اندفاع سيولة لضغط صفقات الشراء
+                if cl[-1] < swing_low and volume_ratio >= 1.5 and rsi <= 45:
+                    is_squeeze_triggered = True
+
             tolerance = min(0.003, max(0.0005, atr_pct * 0.20))
             if direction == "LONG":
                 retest = lo[-1] <= level * (1 + tolerance) and cl[-1] > level and cl[-1] > op[-1] and cl[-1] >= cl[-2]
@@ -277,8 +285,8 @@ class StrategyEngine:
                 retest = hi[-1] >= level * (1 - tolerance) and cl[-1] < level and cl[-1] < op[-1] and cl[-1] <= cl[-2]
                 momentum_ok = 30 <= rsi <= 48
 
-            if not retest:
-                return "NEUTRAL", 0, {"reason": "BOS found but retest/rejection not confirmed", "breakout_level": self._round(level)}
+            if not retest and not is_squeeze_triggered:
+                return "NEUTRAL", 0, {"reason": "BOS found but retest or squeeze confirmation failed", "breakout_level": self._round(level)}
             if volume_ratio < 1.25:
                 return "NEUTRAL", 0, {"reason": "Volume confirmation failed", "volume_ratio": round(volume_ratio, 2)}
             if not momentum_ok:
@@ -291,8 +299,8 @@ class StrategyEngine:
             fvg_ok = self._zone_near_price(fvg, entry, atr, 1.5)
             ob_ok = self._zone_near_price(ob, entry, atr, 1.5)
 
-            if not (fvg_ok or ob_ok):
-                return "NEUTRAL", 0, {"reason": "No nearby aligned FVG/Order Block", "volume_ratio": round(volume_ratio, 2)}
+            if not (fvg_ok or ob_ok or is_squeeze_triggered):
+                return "NEUTRAL", 0, {"reason": "No nearby aligned FVG/Order Block or Squeeze trigger", "volume_ratio": round(volume_ratio, 2)}
 
             if direction == "LONG":
                 recent_structural_low = float(np.min(lo[-6:]))
@@ -310,35 +318,39 @@ class StrategyEngine:
             if not risk:
                 return "NEUTRAL", 0, {"reason": "Risk management rejected setup"}
 
-            # احتساب نقاط التقييم مع إضافة وزن لمؤشر التصفيات
+            # احتساب النقاط وتصنيف نمط الإشارة (LONG/SHORT Liquidity Squeeze)
             score = 65 + 8 + 5
             if volume_ratio >= 1.5:
                 score += 5
             if fvg_ok:
-                score += 5
+                score += 4
             if ob_ok:
-                score += 5
+                score += 4
             if liquidity_sweep:
                 score += 4
             if hit_liq_zone:
-                score += 6  # إضافة نقاط إضافية عند تأكيد ضرب حوض تصفيات إجبارية (Liquidation Pool)
+                score += 5
+            if is_squeeze_triggered:
+                score += 5
             if btc_trend == trend1:
                 score += 4
             score = min(score, 98)
 
+            squeeze_type = "Short Squeeze (Buying Surge)" if direction == "LONG" else "Long Cascade (Selling Surge)"
+
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": "Selective SMC + Liquidation Sweep + Breakout/Retest",
+                "setup": f"SMC + {squeeze_type}",
                 "score": int(score),
                 "trend_4h": trend4,
                 "trend_1h": trend1,
                 "btc_trend": btc_trend,
                 "bos": bool(bos),
                 "mss": bool(mss),
+                "squeeze_triggered": bool(is_squeeze_triggered),
                 "liquidity_sweep": bool(liquidity_sweep),
                 "hit_liquidation_zone": bool(hit_liq_zone),
-                "liquidation_levels": [{"lever": x["leverage"], "price": self._round(x["price"])} for x in liq_levels],
                 "volume_ratio": round(volume_ratio, 2),
                 "rsi": round(rsi, 1),
                 "atr": self._round(atr),
@@ -351,3 +363,6 @@ class StrategyEngine:
 
         except (ValueError, TypeError, IndexError, FloatingPointError) as exc:
             return "NEUTRAL", 0, {"reason": "Analysis validation error", "error": str(exc)[:120]}
+
+    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
+        return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h)
