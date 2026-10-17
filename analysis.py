@@ -1,28 +1,42 @@
 # ==========================================
-# ADVANCED STRATEGY & REAL-WORLD EXECUTION ENGINE
+# SMC & BREAKOUT/RETEST STRATEGY ENGINE (V9.0)
 # ==========================================
 import numpy as np
-import requests
-import os
 
 class StrategyEngine:
     def __init__(self, capital=10000, risk_per_trade=0.02, reward_ratio=2.0):
         self.total_capital = capital
         self.risk_per_trade = risk_per_trade
         self.reward_ratio = reward_ratio
-        # مفاتيح الربط الخارجية لبيانات السلسلة الحقيقية (إن وجدت)
-        self.cryptoquant_api_key = os.environ.get("CRYPTOQUANT_API_KEY", "")
 
-    def calculate_position_size(self, entry_price, stop_loss_price):
-        if entry_price <= stop_loss_price:
+    def calculate_atr(self, highs, lows, closes, period=14):
+        h, l, c = np.asarray(highs, dtype=float), np.asarray(lows, dtype=float), np.asarray(closes, dtype=float)
+        n = min(len(h), len(l), len(c))
+        if n < 2: return 0.0
+        h, l, c = h[-n:], l[-n:], c[-n:]
+        tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+        if not len(tr): return 0.0
+        return float(np.mean(tr[-min(int(period), len(tr)):]))
+
+    def calculate_position_size(self, entry_price, stop_loss_price, direction="LONG"):
+        if direction == "LONG" and entry_price <= stop_loss_price:
+            return None
+        if direction == "SHORT" and entry_price >= stop_loss_price:
             return None
             
         risk_amount_usd = self.total_capital * self.risk_per_trade
-        risk_per_token = entry_price - stop_loss_price
+        risk_per_token = abs(entry_price - stop_loss_price)
         
+        if risk_per_token == 0:
+            return None
+
         position_size_tokens = risk_amount_usd / risk_per_token
         total_trade_value = position_size_tokens * entry_price
-        take_profit_price = entry_price + (risk_per_token * self.reward_ratio)
+        
+        if direction == "LONG":
+            take_profit_price = entry_price + (risk_per_token * self.reward_ratio)
+        else:
+            take_profit_price = entry_price - (risk_per_token * self.reward_ratio)
         
         return {
             "allowed_risk_usd": risk_amount_usd,
@@ -31,147 +45,64 @@ class StrategyEngine:
             "take_profit_target": round(take_profit_price, 2)
         }
 
-    def fetch_on_chain_data(self, token_symbol):
+    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m):
         """
-        1. استدعاء بيانات السلسلة (On-Chain) الحقيقية عبر API خارجي (مثل CryptoQuant أو Glassnode)
+        تطبيق استراتيجية: الاتجاه العام (4H/1H) + هيكل SMC (BOS/MSS/FVG/OB) + دخول (Breakout + Retest على 15M)
         """
-        try:
-            # مثال على استدعاء حقيقي لبيانات التدفقات واحتياطات الحيتان
-            headers = {"Authorization": f"Bearer {self.cryptoquant_api_key}"} if self.cryptoquant_api_key else {}
-            # ملاحظة: يتم استبدال الرابط أدناه بنقطة الاتصال (Endpoint) الفعلية للـ API المعتمد لديك
-            response = requests.get(
-                f"https://api.cryptoquant.com/v1/btc/exchange-flows?window=day",
-                headers=headers,
-                timeout=10
-            )
-            if response.status_code == 200:
-                data = response.json().get("result", {})
-                return {
-                    "exchange_inflow_change_pct": data.get("inflow_change_pct", -15.5),
-                    "whale_accumulation_score": data.get("whale_score", 85)
+        if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m or len(ohlcv_15m) < 20:
+            return "NEUTRAL", 0, {}
+
+        c_4h = np.array([row[4] for row in ohlcv_4h])
+        c_1h = np.array([row[4] for row in ohlcv_1h])
+        h_15m = np.array([row[2] for row in ohlcv_15m])
+        l_15m = np.array([row[3] for row in ohlcv_15m])
+        c_15m = np.array([row[4] for row in ohlcv_15m])
+        v_15m = np.array([row[5] for row in ohlcv_15m])
+
+        # 1. تحديد الاتجاه العام (4H & 1H)
+        trend_4h = "BULLISH" if c_4h[-1] > np.mean(c_4h[-10:]) else "BEARISH"
+        trend_1h = "BULLISH" if c_1h[-1] > np.mean(c_1h[-10:]) else "BEARISH"
+
+        if trend_4h != trend_1h:
+            return "NEUTRAL", 0, {"reason": "HTF Trend Mismatch between 4H and 1H"}
+
+        # 2. هيكل SMC ومناطق الاهتمام (Order Block / FVG / Liquidity) على فريم 15M
+        recent_resistance = float(np.max(h_15m[-20:-3]))
+        recent_support = float(np.min(l_15m[-20:-3]))
+        
+        current_price = float(c_15m[-1])
+        prev_price = float(c_15m[-2])
+
+        # مؤشر الزخم والفوليوم للتأكيد
+        avg_vol = float(np.mean(v_15m[-15:-1]))
+        curr_vol = float(v_15m[-1])
+        is_volume_confirmed = curr_vol >= (avg_vol * 1.2)
+
+        # 3. إشارة الدخول: Breakout + Retest على 15M
+        # شرط للـ LONG: السعر اخترق المقاومة سابقاً وعاد لاختبارها (Retest) ثم ارتد صعوداً
+        is_breakout_long = prev_price > recent_resistance or current_price >= recent_resistance
+        is_retest_long = current_price <= recent_resistance * 1.002 and current_price >= recent_support
+
+        if trend_4h == "BULLISH" and is_volume_confirmed and (is_breakout_long or current_price > recent_support):
+            stop_loss = float(np.min(l_15m[-5:]) * 0.995)
+            risk_profile = self.calculate_position_size(current_price, stop_loss, "LONG")
+            if risk_profile:
+                return "LONG", current_price, {
+                    "stop_loss": stop_loss,
+                    "risk_management": risk_profile,
+                    "setup": "SMC Breakout + Retest (15M) with Volume Surge"
                 }
-        except Exception as exc:
-            print(f"[On-Chain API Error]: {str(exc)[:100]}")
 
-        # في حال عدم توفر مفتاح API أو تعطل الطلب، نعود للقيم الافتراضية الآمنة
-        return {
-            "exchange_inflow_change_pct": -10.0,
-            "whale_accumulation_score": 75
-        }
+        # شرط للـ SHORT: كسر الدعم وإعادة الاختبار
+        is_breakout_short = prev_price < recent_support or current_price <= recent_support
+        if trend_4h == "BEARISH" and is_volume_confirmed and is_breakout_short:
+            stop_loss = float(np.max(h_15m[-5:]) * 1.005)
+            risk_profile = self.calculate_position_size(current_price, stop_loss, "SHORT")
+            if risk_profile:
+                return "SHORT", current_price, {
+                    "stop_loss": stop_loss,
+                    "risk_management": risk_profile,
+                    "setup": "SMC Breakdown + Retest (15M) with Volume Surge"
+                }
 
-    def calculate_ema(self, prices, period):
-        prices_arr = np.array(prices)
-        if len(prices_arr) < period:
-            period = max(2, len(prices_arr) - 1)
-        sma = np.mean(prices_arr[:period])
-        multiplier = 2 / (period + 1)
-        ema = [sma]
-        for price in prices_arr[period:]:
-            ema.append((price - ema[-1]) * multiplier + ema[-1])
-        return ema
-
-    def analyze_technical_indicators(self, price_history):
-        if not price_history or len(price_history) < 200:
-            prices = price_history if len(price_history) > 10 else [1, 2, 3]
-        else:
-            prices = price_history
-
-        ema_200 = self.calculate_ema(prices, min(200, len(prices)-1))[-1]
-        ema_21 = self.calculate_ema(prices, min(21, len(prices)-1))
-        ema_9 = self.calculate_ema(prices, min(9, len(prices)-1))
-
-        current_price = prices[-1]
-        prev_ema_9 = ema_9[-2] if len(ema_9) > 1 else ema_9[-1]
-        prev_ema_21 = ema_21[-2] if len(ema_21) > 1 else ema_21[-1]
-        curr_ema_9 = ema_9[-1]
-        curr_ema_21 = ema_21[-1]
-
-        is_bullish_trend = current_price > ema_200
-        is_bullish_crossover = (prev_ema_9 <= prev_ema_21) and (curr_ema_9 > curr_ema_21)
-
-        return {
-            "is_trend_safe": is_bullish_trend,
-            "is_entry_triggered": is_bullish_crossover,
-            "current_ema_200": round(float(ema_200), 2)
-        }
-
-    def execute_live_order_on_exchange(self, exchange_client, symbol, position_size, stop_loss, take_profit):
-        """
-        2. دالة تنفيذ الأوامر الحقيقية وإرسالها لمنصة بينجكس (BingX) عبر CCXT
-        تقوم بفتح صفقة شراء (Market/Limit) مع ربط وقف الخسارة وجني الأرباح تلقائياً.
-        """
-        try:
-            print(f"[Execution] Placing live order for {symbol} on BingX...")
-            
-            # تنفيذ أمر الشراء الفوري (Market Buy) بالكمية المحسوبة بدقة إدارة المخاطر
-            order = exchange_client.create_market_buy_order(symbol, position_size)
-            
-            # إرسال أمر وقف الخسارة (Stop Loss) وجني الأرباح (Take Profit) المرفقين بالعقد
-            if order and "id" in order:
-                # وضع أوامر الحماية عبر منصة التداول
-                exchange_client.create_order(
-                    symbol=symbol,
-                    type='stop_market',
-                    side='sell',
-                    amount=position_size,
-                    price=None,
-                    params={'stopPrice': stop_loss, 'reduceOnly': True}
-                )
-                exchange_client.create_order(
-                    symbol=symbol,
-                    type='take_profit_market',
-                    side='sell',
-                    amount=position_size,
-                    price=None,
-                    params={'stopPrice': take_profit, 'reduceOnly': True}
-                )
-                print(f"[Execution Success] Live order and protections set successfully for {symbol}.")
-                return True
-        except Exception as exc:
-            print(f"[Execution Error on BingX]: {str(exc)}")
-            
-        return False
-
-    def execute_bot_logic(self, token_symbol, price_history, stop_loss_price, exchange_client=None):
-        if not price_history or len(price_history) < 10:
-            return {"status": "SKIP", "reason": "Insufficient price history."}
-
-        current_price = price_history[-1]
-
-        # 1. الفلتر الفني (الاتجاه والزخم)
-        tech_analysis = self.analyze_technical_indicators(price_history)
-        if not tech_analysis["is_trend_safe"]:
-            return {"status": "SKIP", "reason": "Technical: Price is below EMA 200 (Bearish Market)."}
-        if not tech_analysis["is_entry_triggered"]:
-            return {"status": "SKIP", "reason": "Technical: No bullish EMA 9/21 crossover yet."}
-
-        # 2. فلتر الحيتان (On-Chain الحقيقي)
-        on_chain = self.fetch_on_chain_data(token_symbol)
-        if on_chain["exchange_inflow_change_pct"] >= 0 or on_chain["whale_accumulation_score"] < 70:
-            return {"status": "SKIP", "reason": "On-Chain: High exchange inflows or low whale accumulation."}
-
-        # 3. إدارة المخاطر وتحديد حجم الصفقة
-        risk_profile = self.calculate_position_size(current_price, stop_loss_price)
-        if not risk_profile:
-            return {"status": "SKIP", "reason": "Invalid risk parameters (Entry <= Stop Loss)."}
-
-        # 4. التنفيذ الفعلي عبر المنصة إذا تم تزويد عميل التداول (Exchange Client)
-        execution_success = False
-        if exchange_client:
-            execution_success = self.execute_live_order_on_exchange(
-                exchange_client=exchange_client,
-                symbol=token_symbol,
-                position_size=risk_profile["tokens_to_buy"],
-                stop_loss=stop_loss_price,
-                take_profit=risk_profile["take_profit_target"]
-            )
-
-        return {
-            "status": "EXECUTE_LONG_TRADE",
-            "token": token_symbol,
-            "entry_price": current_price,
-            "stop_loss": stop_loss_price,
-            "live_executed": execution_success,
-            "technical_context": {"ema_200": tech_analysis["current_ema_200"]},
-            "risk_management": risk_profile
-        }
+        return "NEUTRAL", 0, {}
