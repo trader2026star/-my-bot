@@ -1,7 +1,6 @@
 # ==========================================
-# ENGULFING STRATEGY BOT - MAIN (V7.0 - All Market Scanner)
+# MAIN BOT ENGINE (BingX & Telegram Connected)
 # ==========================================
-
 import os
 import time
 import threading
@@ -27,23 +26,22 @@ api_lock = threading.Lock()
 _last_api_request = 0.0
 _api_cooldown_until = 0.0
 
+# اتصال منصة بينجكس (دون أي تغيير)
 bingx = ccxt.bingx({
     "enableRateLimit": True,
     "timeout": 20000,
     "options": {"defaultType": "swap"}
 })
 
-
 @app.route("/")
 def home():
-    return "Engulfing Strategy Bot (All Market) is active!"
-
+    return "Crypto Full Bot (On-Chain + Technical + Risk) is active!"
 
 @app.route("/health")
 def health():
     return {"status": "healthy", "service": "active"}, 200
 
-
+# أدوات الاتصال بتليجرام (دون أي تغيير)
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -63,7 +61,6 @@ def send_telegram_message(message):
         print(f"Telegram error: {str(exc)[:150]}")
         return False
 
-
 def bingx_call(method_name, *args, **kwargs):
     global _last_api_request, _api_cooldown_until
     method = getattr(bingx, method_name)
@@ -81,119 +78,39 @@ def bingx_call(method_name, *args, **kwargs):
         except Exception as exc:
             err_str = str(exc)
             if "pause" in err_str or "109415" in err_str or "invalid" in err_str.lower():
-                print(f"Skipping paused/invalid symbol error: {err_str[:80]}")
                 return None
             if attempt >= MAX_API_RETRIES:
                 raise
             time.sleep(2.0)
-
     return None
 
-
 def get_all_usdt_symbols():
-    """جلب جميع أزواج العملات التي تنتهي بـ USDT:USDT من المنصة تلقائياً"""
     try:
         markets = bingx_call("load_markets")
         if not markets:
             return []
-        
         symbols = []
         for symbol, market in markets.items():
             if market.get("linear", False) and market.get("quote") == "USDT" and market.get("active", True):
-                # التأكد من الصيغة الصحيحة لعقود السواب في بينجكس
                 if "/USDT:USDT" in symbol:
                     symbols.append(symbol)
-        
-        print(f"Loaded {len(symbols)} symbols from the market.", flush=True)
         return symbols
-    except Exception as exc:
-        print(f"Error loading markets: {str(exc)[:100]}", flush=True)
+    except Exception:
         return []
 
-
-def fmt(value):
-    try:
-        return f"{float(value):.10g}"
-    except Exception:
-        return str(value)
-
-
-def notify_trade_executed(symbol, signal, entry, sl, tp1, tp2, tp3, confirmations):
-    conf_text = "\n".join(f"• {x}" for x in confirmations)
-
+def notify_trade_executed(symbol, data):
+    rm = data["risk_management"]
     msg = (
-        "🚀 *إشارة صفقة جديدة (1H Engulfing Market Scan)*\n\n"
+        "🚀 *إشارة صفقة جديدة (Advanced Bot Filter)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `{signal}`\n"
-        f"💵 سعر الدخول: `{fmt(entry)}`\n"
-        f"🛑 وقف الخسارة (الإبطال): `{fmt(sl)}`\n\n"
-        f"🎯 *الأهداف المستهدفة:*\n"
-        f"• الهدف الأول (تأمين وبداية جني أرباح): `{fmt(tp1)}`\n"
-        f"• الهدف الثاني: `{fmt(tp2)}`\n"
-        f"• الهدف الثالث (النهائي 1:3): `{fmt(tp3)}`\n\n"
-        f"✅ *تفاصيل النموذج السعري:*\n{conf_text}\n\n"
-        "⚡ *تم رصد النمط على فريم الساعة وتفعيل المتابعة.*"
+        f"⚖️ الاتجاه: `LONG`\n"
+        f"💵 سعر الدخول: `{data['entry_price']}`\n"
+        f"🛑 وقف الخسارة: `{data['stop_loss']}`\n"
+        f"🎯 الهدف المقترح (1:2): `{rm['take_profit_target']}`\n"
+        f"💰 القيمة المخاطر بها: `${rm['allowed_risk_usd']}`\n"
+        "✅ *اجتاز الفلاتر الفنية، الحيتان، وإدارة المخاطر بنجاح.*"
     )
     send_telegram_message(msg)
-
-
-def notify_breakeven(symbol, entry):
-    msg = (
-        "🛡️ *تحديث حماية الصفقة (Break-even)*\n\n"
-        f"🔹 العملة: `{symbol}`\n"
-        f"🔒 تم بلوغ الهدف الأول ونقل وقف الخسارة لسعر الدخول: `{fmt(entry)}`\n"
-        "✨ *الصفقة أصبحت آمنة تماماً!*"
-    )
-    send_telegram_message(msg)
-
-
-def notify_trade_closed(symbol, result_type, exit_price):
-    icon = "🎯" if result_type == "TARGET" else "🛑"
-    title = "تم تحقيق الهدف النهائي بنجاح!" if result_type == "TARGET" else "تم ضرب وقف الخسارة."
-    msg = (
-        f"{icon} *إغلاق الصفقة: {title}*\n\n"
-        f"🔹 العملة: `{symbol}`\n"
-        f"🏁 سعر الخروج: `{fmt(exit_price)}`"
-    )
-    send_telegram_message(msg)
-
-
-def monitor_active_trades(symbol, current_price):
-    if symbol not in active_trades:
-        return
-
-    trade = active_trades[symbol]
-    signal = trade["signal"]
-    sl = trade["sl"]
-    tp1 = trade["tp1"]
-    tp3 = trade["tp3"]
-    entry = trade["entry"]
-    be_triggered = trade["be_triggered"]
-
-    if signal == "LONG":
-        if not be_triggered and current_price >= tp1:
-            active_trades[symbol]["be_triggered"] = True
-            active_trades[symbol]["sl"] = entry
-            notify_breakeven(symbol, entry)
-        elif current_price >= tp3:
-            notify_trade_closed(symbol, "TARGET", current_price)
-            del active_trades[symbol]
-        elif current_price <= sl:
-            notify_trade_closed(symbol, "STOP", current_price)
-            del active_trades[symbol]
-
-    elif signal == "SHORT":
-        if not be_triggered and current_price <= tp1:
-            active_trades[symbol]["be_triggered"] = True
-            active_trades[symbol]["sl"] = entry
-            notify_breakeven(symbol, entry)
-        elif current_price <= tp3:
-            notify_trade_closed(symbol, "TARGET", current_price)
-            del active_trades[symbol]
-        elif current_price >= sl:
-            notify_trade_closed(symbol, "STOP", current_price)
-            del active_trades[symbol]
-
 
 def process_symbol(symbol, engine):
     try:
@@ -204,10 +121,6 @@ def process_symbol(symbol, engine):
         if current_price <= 0:
             return
 
-        if symbol in active_trades:
-            monitor_active_trades(symbol, current_price)
-            return
-
         global signal_history
         now_time = time.time()
         with history_lock:
@@ -215,55 +128,35 @@ def process_symbol(symbol, engine):
             if now_time - last_time < SIGNAL_COOLDOWN_SECONDS:
                 return
 
-        # جلب فريم 4 ساعات للاتجاه وفريم الساعة للنموذج
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
-        if not ohlcv_4h or not ohlcv_1h:
+        # جلب تاريخ الأسعار لفحص المؤشرات الفنية
+        ohlcv = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=220)
+        if not ohlcv or len(ohlcv) < 50:
             return
 
-        signal, score, volume_ratio, details, arrays = engine.analyze_institutional_setup(
-            ohlcv_4h, ohlcv_1h, symbol=symbol
-        )
+        closes = [row[4] for row in ohlcv]
+        lows = [row[3] for row in ohlcv]
+        
+        # تحديد نقطة وقف الخسارة تحت أدنى قاع حديث تلقائياً
+        stop_loss_price = float(min(lows[-10:])) * 0.995
 
-        if signal not in ("LONG", "SHORT") or score < 90:
-            return
+        # تنفيذ فحص استراتيجية الفلاتر المتسلسلة الجديدة
+        result = engine.execute_bot_logic(symbol, closes, stop_loss_price)
 
-        target_price = details.get("predictive_entry", current_price)
-        highs, lows, closes = arrays
-        sl, tp1, tp2, tp3, sl_pct, tp3_pct, rr = engine.calculate_risk_management(
-            target_price, signal, highs, lows, closes
-        )
-
-        notify_trade_executed(
-            symbol, signal, current_price, sl, tp1, tp2, tp3, 
-            details.get("confirmations", [])
-        )
-
-        active_trades[symbol] = {
-            "signal": signal,
-            "entry": current_price,
-            "sl": sl,
-            "tp1": tp1,
-            "tp3": tp3,
-            "be_triggered": False
-        }
-
-        with history_lock:
-            signal_history[symbol] = time.time()
+        if result.get("status") == "EXECUTE_LONG_TRADE":
+            notify_trade_executed(symbol, result)
+            with history_lock:
+                signal_history[symbol] = time.time()
 
     except Exception as exc:
         print(f"Error processing {symbol}: {str(exc)[:100]}", flush=True)
 
-
 def background_scanner():
-    print("All Market Engulfing Strategy Scanner started...", flush=True)
     time.sleep(5)
-    send_telegram_message("🤖 *تم تفعيل بوت مسح السوق بالكامل (All-Market 1H Engulfing Bot) بنجاح*")
-    engine = StrategyEngine()
+    send_telegram_message("🤖 *تم تفعيل بوت التداول المتقدم (Multi-Filter & Risk Management) بنجاح*")
+    engine = StrategyEngine(capital=10000, risk_per_trade=0.02, reward_ratio=2.0)
 
     while True:
         try:
-            # تحديث جلب العملات كل دورة لضمان شمول السوق بالكامل
             symbols = get_all_usdt_symbols()
             if not symbols:
                 time.sleep(30)
@@ -273,14 +166,12 @@ def background_scanner():
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
-            # استراحة قصيرة بعد الانتهاء من مسح السوق بالكامل
             time.sleep(60)
         except Exception as exc:
             print(f"Scanner error: {str(exc)[:150]}", flush=True)
             time.sleep(30)
 
-
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="all-market-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="full-bot-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
