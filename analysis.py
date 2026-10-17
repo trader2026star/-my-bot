@@ -1,7 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - SELECTIVE ENGINE V12
-# SMC + BOS/MSS + LIQUIDITY SWEEP + FVG/OB
-# Breakout/Retest + MTF + Volume/Momentum + ATR risk
+# MY EXPERT CRYPTO BOT - SELECTIVE ENGINE V13
+# SMC + BOS/MSS + LIQUIDITY SWEEP + FVG/OB + LIQUIDATIONS FILTER
 # ==========================================
 import numpy as np
 
@@ -91,9 +90,6 @@ class StrategyEngine:
             "risk_percent": round(self.risk_per_trade * 100, 3),
         }
 
-    def calculate_risk_management(self, entry_price, stop_loss_price, direction="LONG"):
-        return self.calculate_position_size(entry_price, stop_loss_price, direction)
-
     def _trend(self, candles):
         closes = candles[:, 4]
         if len(closes) < 25:
@@ -139,9 +135,25 @@ class StrategyEngine:
         return ph, pl
 
     @staticmethod
+    def calculate_liquidation_levels(swing_price, direction="LONG", leverages=[25, 50, 100]):
+        """
+        حساب مستويات التصفيات الإجبارية المتوقعة بناءً على القمم/القيعان والروافع المالية الشائعة
+        """
+        liq_levels = []
+        for lev in leverages:
+            maintenance_margin = 0.005  # 0.5% هامش صيانة تقريبي
+            if direction == "LONG":
+                # تصفيات المتداولين داخل صفقات الشراء تكون تحت القاع
+                liq = swing_price * (1 - (1 / lev) + maintenance_margin)
+            else:
+                # تصفيات المتداولين داخل صفقات البيع تكون فوق القمة
+                liq = swing_price * (1 + (1 / lev) - maintenance_margin)
+            liq_levels.append({"leverage": f"{lev}x", "price": liq})
+        return liq_levels
+
+    @staticmethod
     def _find_fvgs(candles):
         zones = []
-        # Three-candle imbalance: candle i leaves a gap against candle i-2.
         for i in range(2, len(candles)):
             older_high = float(candles[i-2, 2])
             older_low = float(candles[i-2, 3])
@@ -155,7 +167,6 @@ class StrategyEngine:
 
     @staticmethod
     def _find_order_block(candles, direction, break_index, lookback=8):
-        # Last opposing candle before the confirmed break; bounded to recent history.
         start = max(0, break_index - lookback)
         for i in range(break_index - 1, start - 1, -1):
             op, hi, lo, cl = map(float, candles[i, 1:5])
@@ -183,7 +194,6 @@ class StrategyEngine:
             return "NEUTRAL", 0, {"reason": "Insufficient or invalid OHLCV data"}
 
         try:
-            # Drop the last candle because exchange OHLCV usually includes an open candle.
             c4, c1, c15 = raw4[:-1], raw1[:-1], raw15[:-1]
             if min(len(c4), len(c1), len(c15)) < 25:
                 return "NEUTRAL", 0, {"reason": "Not enough closed candles"}
@@ -214,7 +224,6 @@ class StrategyEngine:
             if len(piv_hi) < 2 or len(piv_lo) < 2:
                 return "NEUTRAL", 0, {"reason": "Not enough confirmed swing points"}
 
-            # Only use pivots that are confirmed before the last few candles.
             eligible_hi = [(i, p) for i, p in piv_hi if i < len(cl) - 4]
             eligible_lo = [(i, p) for i, p in piv_lo if i < len(cl) - 4]
             if not eligible_hi or not eligible_lo:
@@ -233,7 +242,6 @@ class StrategyEngine:
             for i in range(lookback_start, len(cl) - 1):
                 if direction == "LONG" and cl[i] > swing_high and cl[i-1] <= swing_high:
                     break_index, bos = i, True
-                    # MSS is meaningful if recent structure had bearish lower swing sequence.
                     mss = swing_high < prior_high and cl[i] > swing_high
                 elif direction == "SHORT" and cl[i] < swing_low and cl[i-1] >= swing_low:
                     break_index, bos = i, True
@@ -242,10 +250,24 @@ class StrategyEngine:
             if not bos or break_index is None or break_index >= len(cl) - 1:
                 return "NEUTRAL", 0, {"reason": "No recent closed-candle BOS", "trend_4h": trend4, "trend_1h": trend1}
 
-            # Liquidity sweep: a wick through a prior swing followed by a close back inside.
+            # ----------------------------------------------------
+            # مؤشر التصفيات الإجبارية (Liquidation Sweep Indicator)
+            # ----------------------------------------------------
+            liq_levels = self.calculate_liquidation_levels(swing_low if direction == "LONG" else swing_high, direction)
             sweep_low = bool(lo[-1] < swing_low and cl[-1] > swing_low)
             sweep_high = bool(hi[-1] > swing_high and cl[-1] < swing_high)
             liquidity_sweep = sweep_low if direction == "LONG" else sweep_high
+
+            # التحقق من ضرب أحد مستويات التصفيات الإجبارية للمضاربين (25x, 50x, 100x)
+            hit_liq_zone = False
+            for l_info in liq_levels:
+                l_price = l_info["price"]
+                if direction == "LONG" and lo[-1] <= l_price and cl[-1] > l_price:
+                    hit_liq_zone = True
+                    break
+                elif direction == "SHORT" and hi[-1] >= l_price and cl[-1] < l_price:
+                    hit_liq_zone = True
+                    break
 
             tolerance = min(0.003, max(0.0005, atr_pct * 0.20))
             if direction == "LONG":
@@ -269,11 +291,9 @@ class StrategyEngine:
             fvg_ok = self._zone_near_price(fvg, entry, atr, 1.5)
             ob_ok = self._zone_near_price(ob, entry, atr, 1.5)
 
-            # Require at least one nearby, direction-aligned SMC zone.
             if not (fvg_ok or ob_ok):
                 return "NEUTRAL", 0, {"reason": "No nearby aligned FVG/Order Block", "volume_ratio": round(volume_ratio, 2)}
 
-            # ATR + structural stop; reject excessive risk instead of widening indefinitely.
             if direction == "LONG":
                 recent_structural_low = float(np.min(lo[-6:]))
                 stop = min(recent_structural_low, entry - 1.2 * atr) - 0.1 * atr
@@ -290,28 +310,26 @@ class StrategyEngine:
             if not risk:
                 return "NEUTRAL", 0, {"reason": "Risk management rejected setup"}
 
-            # Score is a setup-quality heuristic, not a win probability.
-            score = 65 + 8 + 5  # aligned 4H/1H + confirmed BOS/retest
+            # احتساب نقاط التقييم مع إضافة وزن لمؤشر التصفيات
+            score = 65 + 8 + 5
             if volume_ratio >= 1.5:
                 score += 5
-            if volume_ratio >= 2.0:
-                score += 3
             if fvg_ok:
                 score += 5
             if ob_ok:
                 score += 5
             if liquidity_sweep:
-                score += 3
-            if mss:
-                score += 2
+                score += 4
+            if hit_liq_zone:
+                score += 6  # إضافة نقاط إضافية عند تأكيد ضرب حوض تصفيات إجبارية (Liquidation Pool)
             if btc_trend == trend1:
                 score += 4
-            score = min(score, 95)
+            score = min(score, 98)
 
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": "Selective SMC + BOS + Breakout/Retest",
+                "setup": "Selective SMC + Liquidation Sweep + Breakout/Retest",
                 "score": int(score),
                 "trend_4h": trend4,
                 "trend_1h": trend1,
@@ -319,25 +337,17 @@ class StrategyEngine:
                 "bos": bool(bos),
                 "mss": bool(mss),
                 "liquidity_sweep": bool(liquidity_sweep),
+                "hit_liquidation_zone": bool(hit_liq_zone),
+                "liquidation_levels": [{"lever": x["leverage"], "price": self._round(x["price"])} for x in liq_levels],
                 "volume_ratio": round(volume_ratio, 2),
                 "rsi": round(rsi, 1),
                 "atr": self._round(atr),
-                "atr_percent": round(atr_pct * 100, 3),
                 "breakout_level": self._round(level),
-                "support": self._round(swing_low),
-                "resistance": self._round(swing_high),
                 "fvg": ({"type": fvg["type"], "low": self._round(fvg["low"]), "high": self._round(fvg["high"])} if fvg else None),
-                "fvg_confirmed_near_price": bool(fvg_ok),
                 "order_block": ({"low": self._round(ob["low"]), "high": self._round(ob["high"])} if ob else None),
-                "order_block_confirmed_near_price": bool(ob_ok),
-                "risk_percent": round(risk_pct * 100, 3),
-                "signal_type": "CLOSED_CANDLE_CONFIRMED",
-                "note": "Score is a heuristic, not a probability of profit. Paper-test before live use."
+                "signal_type": "CLOSED_CANDLE_CONFIRMED"
             }
             return direction, self._round(entry), details
 
         except (ValueError, TypeError, IndexError, FloatingPointError) as exc:
             return "NEUTRAL", 0, {"reason": "Analysis validation error", "error": str(exc)[:120]}
-
-    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
-        return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h)
