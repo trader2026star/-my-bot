@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - CANDLESTICK STRATEGY INTEGRATED
-# BingX + Telegram + Candlestick/SR Scanner + Live TP/SL Tracker
+# MY EXPERT CRYPTO BOT - H4 MA 10 STRATEGY INTEGRATED
+# BingX + Telegram + H4 MA 10 Scanner + Live TP/SL Tracker
 # ==========================================
 import os
 import time
@@ -21,7 +21,7 @@ MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
 
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "2.0")))
+REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "1.5")))
 
 signal_history = {}
 active_trades = {}
@@ -39,7 +39,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Candlestick Strategy Crypto Bot is active!"
+    return "H4 Scalping MA 10 Strategy Bot is active!"
 
 @app.route("/health")
 def health():
@@ -124,19 +124,18 @@ def notify_trade_executed(symbol, direction, entry_price, details):
     if not rm or "take_profit_target" not in rm or "stop_loss" not in details:
         return False
 
-    emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    emoji = "🟢 LONG (BUY)" if direction == "LONG" else "🔴 SHORT (SELL)"
     message = (
-        f"🎯 *إشارة الشموع اليابانية والدعم/المقاومة*\n\n"
+        f"📊 *إشارة استراتيجية H4 Scalping (MA 10)*\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{emoji}`\n"
         f"⭐ الإعداد: `{details.get('setup')}`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
         f"🛑 وقف الخسارة: `{details['stop_loss']}`\n"
         f"🎯 الهدف: `{rm['take_profit_target']}`\n"
-        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.0)}`\n"
+        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 1.5)}`\n"
         f"💰 المخاطرة: `${rm.get('allowed_risk_usd', 0)}` ({rm.get('risk_percent', 0)}%)\n\n"
-        f"🛡️ دعم: `{details.get('support_level')}` | مقاومة: `{details.get('resistance_level')}`\n"
-        f"📊 نسبة الجسم: `{details.get('body_ratio')}` | الفوليوم مؤكد: `نعم`\n\n"
+        f"📈 قيمة مؤشر MA 10: `{details.get('ma_10_value')}`\n\n"
         f"⚠️ *متابعة الأهداف ووقف الخسارة مفعلة.*"
     )
     return send_telegram_message(message)
@@ -158,14 +157,13 @@ def process_symbol(symbol, engine):
         if market_price <= 0 or quote_volume < 200000:
             return
 
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=40)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=40)
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=60)
-        if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
+        # جلب شمعات فريم الـ H4 حصرياً لتطبيق الاستراتيجية بدقة
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
+        if not ohlcv_4h:
             return
 
         direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m
+            ohlcv_4h=ohlcv_4h
         )
         if direction not in ("LONG", "SHORT") or not details:
             return
@@ -237,8 +235,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت استراتيجية الشموع اليابانية والفوليوم والدعم والمقاومة*\n"
-        "الفحص التلقائي مفعل بنجاح."
+        "🤖 *تم تشغيل بوت استراتيجية H4 Scalping (MA 10)*\n"
+        "الفحص التلقائي لإغلاق الشموع فوق وتحت الموفينج على فريم 4 ساعات مفعل بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -259,7 +257,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="candlestick-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ma10-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
