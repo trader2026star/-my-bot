@@ -1,12 +1,12 @@
 # ============================================================
-# EXPERT CRYPTO BOT - BALANCED HIGH-PROBABILITY ENGINE V16.1
-# SMC structure + ICT FVG/OB + Strict Retest + Volume Guard
+# MY EXPERT CRYPTO BOT - STRICT ANALYST ENGINE V16.2
+# Strict RSI Limits + Body Ratio Guard + Dynamic ATR Buffer
 # ============================================================
 import numpy as np
 
 
-class BalancedStrategyEngine:
-    def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.5):
+class StrategyEngine:
+    def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.0):
         self.total_capital = max(0.0, float(capital))
         self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
         self.reward_ratio = max(float(reward_ratio), 1.5)
@@ -126,18 +126,6 @@ class BalancedStrategyEngine:
                 pl.append((i, float(lows[i])))
         return ph, pl
 
-    @staticmethod
-    def _find_fvgs(candles):
-        zones = []
-        for i in range(2, len(candles)):
-            old_high, old_low = float(candles[i-2, 2]), float(candles[i-2, 3])
-            new_high, new_low = float(candles[i, 2]), float(candles[i, 3])
-            if new_low > old_high:
-                zones.append({"type": "BULLISH", "low": old_high, "high": new_low, "index": i})
-            elif new_high < old_low:
-                zones.append({"type": "BEARISH", "low": new_high, "high": old_low, "index": i})
-        return zones
-
     def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
         def no_trade(reason, **extra):
             out = {"reason": reason}
@@ -156,22 +144,37 @@ class BalancedStrategyEngine:
             if trend4 != trend1 or trend1 == "NEUTRAL":
                 return no_trade("Multi-timeframe trend disagreement", trend_4h=trend4, trend_1h=trend1)
 
+            btc_trend = "NOT_PROVIDED"
             if btc_ohlcv_1h is not None:
                 btc = self._array(btc_ohlcv_1h, 30)
-                if btc is not None and self._trend(btc[:-1]) != trend1:
-                    return no_trade("BTC trend filter mismatch")
+                if btc is not None:
+                    btc_trend = self._trend(btc[:-1])
+                    if btc_trend != trend1:
+                        return no_trade("BTC trend filter mismatch")
 
             op, hi, lo, cl, vol = (c15[:, i] for i in (1, 2, 3, 4, 5))
             entry = float(cl[-1])
             atr = self.calculate_atr(hi, lo, cl, 14)
             rsi = self._rsi(cl, 14)
-            
+
+            direction = "LONG" if trend1 == "BULLISH" else "SHORT"
+
+            # 🛑 1. حظر الشراء في القمم (منع LONG لو الـ RSI أعلى من 62)
+            if direction == "LONG" and (rsi > 62.0 or rsi < 45.0):
+                return no_trade("RSI Overbought/Unfavorable for LONG", rsi=round(rsi, 1))
+            if direction == "SHORT" and (rsi < 38.0 or rsi > 55.0):
+                return no_trade("RSI Oversold/Unfavorable for SHORT", rsi=round(rsi, 1))
+
+            # 🛑 2. فلتر جسم الشمعة لمنع الشمعات الضعيفة والترددية
+            candle_range = max(float(hi[-1] - lo[-1]), 1e-12)
+            body_ratio = abs(float(cl[-1] - op[-1])) / candle_range
+            if body_ratio < 0.45:
+                return no_trade("Candle body too weak (indecision candle)")
+
             piv_hi, piv_lo = self._pivots(hi, lo, 3, 3)
             if len(piv_hi) < 2 or len(piv_lo) < 2:
                 return no_trade("Insufficient swing pivots")
 
-            direction = "LONG" if trend1 == "BULLISH" else "SHORT"
-            
             # BOS Detection
             bos = False
             break_level = None
@@ -199,8 +202,12 @@ class BalancedStrategyEngine:
             if not retest:
                 return no_trade("Waiting for valid structure retest")
 
-            # Stop Loss & Risk Management
-            stop = min(lo[-5:]) - 0.2 * atr if direction == "LONG" else max(hi[-5:]) + 0.2 * atr
+            # 🛑 3. توسيع الستوب حمايةً من التذبذب اللحظي
+            if direction == "LONG":
+                stop = min(lo[-5:]) - 0.35 * atr
+            else:
+                stop = max(hi[-5:]) + 0.35 * atr
+
             risk = self.calculate_position_size(entry, stop, direction)
             if not risk:
                 return no_trade("Risk calculation failed")
@@ -208,11 +215,13 @@ class BalancedStrategyEngine:
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": "Balanced SMC BOS + Retest",
-                "score": 88,
+                "setup": "Strict Balanced SMC BOS + Retest",
+                "score": 90,
                 "trend_4h": trend4,
                 "trend_1h": trend1,
+                "btc_trend": btc_trend,
                 "bos": True,
+                "breakout_level": self._round(break_level),
                 "retest_confirmed": True,
                 "rsi": round(rsi, 1),
                 "atr": self._round(atr)
