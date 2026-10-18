@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - H4 MA 10 STRATEGY INTEGRATED
-# BingX + Telegram + H4 MA 10 Scanner + Live TP/SL Tracker
+# MY EXPERT CRYPTO BOT - COMPOSITE ENGINE & CIRCUIT BREAKER
+# BingX + Telegram + Smart Filter + Consecutive Loss Protection
 # ==========================================
 import os
 import time
@@ -21,7 +21,13 @@ MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
 
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "1.5")))
+REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "2.0")))
+
+# حماية إيقاف البوت عند الخسائر المتتالية
+consecutive_losses = 0
+max_allowed_consecutive_losses = 2
+bot_locked_out = False
+lockout_reset_time = 0
 
 signal_history = {}
 active_trades = {}
@@ -39,11 +45,11 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "H4 Scalping MA 10 Strategy Bot is active!"
+    return "Composite Secure Crypto Bot V3.0 is active!"
 
 @app.route("/health")
 def health():
-    return {"status": "healthy", "service": "active"}, 200
+    return {"status": "healthy", "locked_out": bot_locked_out}, 200
 
 
 def send_telegram_message(message):
@@ -61,7 +67,7 @@ def send_telegram_message(message):
             timeout=15
         )
         return response.status_code == 200
-    except Exception as exc:
+    except Exception:
         return False
 
 
@@ -115,7 +121,7 @@ def get_all_usdt_symbols():
                     continue
                 symbols.append(symbol)
         return sorted(set(symbols))
-    except Exception as exc:
+    except Exception:
         return []
 
 
@@ -124,24 +130,34 @@ def notify_trade_executed(symbol, direction, entry_price, details):
     if not rm or "take_profit_target" not in rm or "stop_loss" not in details:
         return False
 
-    emoji = "🟢 LONG (BUY)" if direction == "LONG" else "🔴 SHORT (SELL)"
     message = (
-        f"📊 *إشارة استراتيجية H4 Scalping (MA 10)*\n\n"
+        f"🎯 *إشارة مركبة عالية الدقة — SMC & FVG*\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `{emoji}`\n"
+        f"⚖️ الاتجاه: `🟢 LONG`\n"
         f"⭐ الإعداد: `{details.get('setup')}`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
         f"🛑 وقف الخسارة: `{details['stop_loss']}`\n"
         f"🎯 الهدف: `{rm['take_profit_target']}`\n"
-        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 1.5)}`\n"
+        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.0)}`\n"
         f"💰 المخاطرة: `${rm.get('allowed_risk_usd', 0)}` ({rm.get('risk_percent', 0)}%)\n\n"
-        f"📈 قيمة مؤشر MA 10: `{details.get('ma_10_value')}`\n\n"
+        f"📈 اتجاه 4H: `{details.get('trend_4h')}` | 1H: `{details.get('trend_1h')}`\n\n"
         f"⚠️ *متابعة الأهداف ووقف الخسارة مفعلة.*"
     )
     return send_telegram_message(message)
 
 
 def process_symbol(symbol, engine):
+    global bot_locked_out, lockout_reset_time
+    
+    # فحص نظام الإيقاف المؤقت للحماية
+    if bot_locked_out:
+        if time.time() > lockout_reset_time:
+            bot_locked_out = False
+            consecutive_losses = 0
+            send_telegram_message("♻️ *تم فك الحماية المؤقتة وإعادة تفعيل فحص البوت.*")
+        else:
+            return
+
     try:
         now = time.time()
         with history_lock:
@@ -154,18 +170,21 @@ def process_symbol(symbol, engine):
         market_price = float(ticker.get("last") or ticker.get("close") or 0)
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
         
-        if market_price <= 0 or quote_volume < 200000:
+        if market_price <= 0 or quote_volume < 300000:
             return
 
-        # جلب شمعات فريم الـ H4 حصرياً لتطبيق الاستراتيجية بدقة
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-        if not ohlcv_4h:
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=60)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=60)
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
+        if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
             return
+
+        btc_ohlcv_1h = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=50)
 
         direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_4h=ohlcv_4h
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=btc_ohlcv_1h
         )
-        if direction not in ("LONG", "SHORT") or not details:
+        if direction != "LONG" or not details:
             return
 
         sent = notify_trade_executed(symbol, direction, entry_price, details)
@@ -183,11 +202,12 @@ def process_symbol(symbol, engine):
         with history_lock:
             signal_history[symbol] = time.time()
 
-    except Exception as exc:
+    except Exception:
         pass
 
 
 def live_trade_tracker():
+    global consecutive_losses, bot_locked_out, lockout_reset_time
     while True:
         try:
             time.sleep(15)
@@ -210,11 +230,26 @@ def live_trade_tracker():
                     direction = trade["direction"]
                     tp, sl = trade["take_profit"], trade["stop_loss"]
                     
-                    hit_tp = price >= tp if direction == "LONG" else price <= tp
-                    hit_sl = price <= sl if direction == "LONG" else price >= sl
+                    hit_tp = price >= tp
+                    hit_sl = price <= sl
                     
                     if hit_tp or hit_sl:
-                        result_title = "🎯 *تم تحقيق الهدف بنجاح! (Take Profit)*" if hit_tp else "🛑 *تم ضرب وقف الخسارة! (Stop Loss)*"
+                        if hit_tp:
+                            consecutive_losses = 0 # تصفير العداد عند النجاح
+                            result_title = "🎯 *تم تحقيق الهدف بنجاح! (Take Profit)*"
+                        else:
+                            consecutive_losses += 1
+                            result_title = "🛑 *تم ضرب وقف الخسارة! (Stop Loss)*"
+                            
+                            # تفعيل نظام الإيقاف المؤقت بعد خسارتين متتاليتين
+                            if consecutive_losses >= max_allowed_consecutive_losses:
+                                bot_locked_out = True
+                                lockout_reset_time = time.time() + 14400 # إيقاف لمدة 4 ساعات مثلاً
+                                send_telegram_message(
+                                    "🛡️ *تم تفعيل درع الحماية الآلي (Circuit Breaker)*\n"
+                                    "تم رصد خسارة صفقتين متتاليتين. تم إيقاف البوت مؤقتًا لمدة 4 ساعات لحماية المحافظة ونفسيتك!"
+                                )
+
                         message = (
                             f"{result_title}\n\n"
                             f"🔹 العملة: `{symbol}`\n"
@@ -228,15 +263,15 @@ def live_trade_tracker():
                 if message:
                     send_telegram_message(message)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
-        except Exception as exc:
+        except Exception:
             time.sleep(10)
 
 
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت استراتيجية H4 Scalping (MA 10)*\n"
-        "الفحص التلقائي لإغلاق الشموع فوق وتحت الموفينج على فريم 4 ساعات مفعل بنجاح."
+        "🤖 *تم تشغيل النسخة المطورة الآمنة (SMC Composite V3.0)*\n"
+        "فلتر الاتجاه العام + فجوات FVG + نظام حماية الخسارتين المتتاليتين مفعلة بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -253,11 +288,11 @@ def background_scanner():
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
             time.sleep(60)
-        except Exception as exc:
+        except Exception:
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ma10-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="composite-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
