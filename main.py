@@ -1,6 +1,6 @@
 # ==========================================
 # MY EXPERT CRYPTO BOT - FINAL INTEGRATED VERSION V16.1
-# BingX + Telegram + Balanced SMC Engine + Live TP/SL Tracker
+# BingX + Telegram + Balanced SMC Engine + Strict Junk Filter + Live TP/SL Tracker
 # ==========================================
 import os
 import time
@@ -8,13 +8,12 @@ import threading
 import requests
 import ccxt
 from flask import Flask
+import numpy as np
+
 
 # ============================================================
 # BALANCED HIGH-PROBABILITY SMC ENGINE (V16.1)
 # ============================================================
-import numpy as np
-
-
 class StrategyEngine:
     def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.5):
         self.total_capital = max(0.0, float(capital))
@@ -330,11 +329,24 @@ def get_all_usdt_symbols():
                 and market.get("swap", True)
             ):
                 sym_upper = symbol.upper()
-                if any(x in sym_upper for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR"]):
+                base_asset = symbol.split('/')[0].upper()
+                
+                # 🚫 فلتر صارم لمنع العملات الوهمية، التجريبية، والرموز العشوائية
+                if any(x in sym_upper for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR", "TZA", "USD/"]):
                     continue
+                
+                # منع أي عملة تحتوي على أرقام في الاسم الأساسي (ما عدا البادئات المعتمدة مثل 1000)
+                if any(char.isdigit() for char in base_asset) and not base_asset.startswith("1000"):
+                    continue
+                    
+                # منع الرموز الوهمية ذات الأسماء الطويلة أو الشاذة (أكثر من 8 أحرف)
+                if len(base_asset) > 8:
+                    continue
+
                 symbols.append(symbol)
         return sorted(set(symbols))
     except Exception as exc:
+        print(f"Market loading error: {str(exc)[:150]}", flush=True)
         return []
 
 
@@ -375,7 +387,8 @@ def process_symbol(symbol, engine):
         market_price = float(ticker.get("last") or ticker.get("close") or 0)
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
         
-        if market_price <= 0 or quote_volume < 50000:
+        # 💰 رفع الحد الأدنى لحجم التداول إلى 200 ألف دولار لمنع العملات الضعيفة والوهمية
+        if market_price <= 0 or quote_volume < 200000:
             return
 
         ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=40)
@@ -464,7 +477,7 @@ def background_scanner():
     time.sleep(5)
     send_telegram_message(
         "🤖 *تم تشغيل بوت تداول العملات الرقمية (Balanced SMC V16.1)*\n"
-        "الفحص التلقائي لجميع أزواج USDT على منصة BingX مفعل بنجاح."
+        "الفحص التلقائي لجميع أزواج USDT الحقيقية على منصة BingX مفعل بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
