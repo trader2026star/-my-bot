@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - FINAL INTEGRATED VERSION V16.1
-# BingX + Telegram + Balanced SMC Engine + Strict Junk Filter + Live TP/SL Tracker
+# MY EXPERT CRYPTO BOT - FINAL INTEGRATED VERSION V16.2
+# BingX + Telegram + Strict Balanced SMC + Junk Filter + Live TP/SL Tracker
 # ==========================================
 import os
 import time
@@ -12,10 +12,10 @@ import numpy as np
 
 
 # ============================================================
-# BALANCED HIGH-PROBABILITY SMC ENGINE (V16.1)
+# BALANCED HIGH-PROBABILITY SMC ENGINE (V16.2 - STRICT RSI & STOP LOSS)
 # ============================================================
 class StrategyEngine:
-    def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.5):
+    def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.0):
         self.total_capital = max(0.0, float(capital))
         self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
         self.reward_ratio = max(float(reward_ratio), 1.5)
@@ -165,13 +165,25 @@ class StrategyEngine:
             entry = float(cl[-1])
             atr = self.calculate_atr(hi, lo, cl, 14)
             rsi = self._rsi(cl, 14)
-            
+
+            direction = "LONG" if trend1 == "BULLISH" else "SHORT"
+
+            # 🛑 1. فلتر صارم للـ RSI لمنع الشراء في القمم أو البيع في القيعان
+            if direction == "LONG" and (rsi > 62.0 or rsi < 45.0):
+                return no_trade("RSI Overbought/Unfavorable for LONG", rsi=round(rsi, 1))
+            if direction == "SHORT" and (rsi < 38.0 or rsi > 55.0):
+                return no_trade("RSI Oversold/Unfavorable for SHORT", rsi=round(rsi, 1))
+
+            # 🛑 2. فلتر شمعة التداول (يجب أن تكون شمعة الاتجاه ذات جسم واضح)
+            candle_range = max(float(hi[-1] - lo[-1]), 1e-12)
+            body_ratio = abs(float(cl[-1] - op[-1])) / candle_range
+            if body_ratio < 0.45:
+                return no_trade("Candle body too weak (indecision candle)")
+
             piv_hi, piv_lo = self._pivots(hi, lo, 3, 3)
             if len(piv_hi) < 2 or len(piv_lo) < 2:
                 return no_trade("Insufficient swing pivots")
 
-            direction = "LONG" if trend1 == "BULLISH" else "SHORT"
-            
             # BOS Detection
             bos = False
             break_level = None
@@ -199,8 +211,12 @@ class StrategyEngine:
             if not retest:
                 return no_trade("Waiting for valid structure retest")
 
-            # Stop Loss & Risk Management
-            stop = min(lo[-5:]) - 0.2 * atr if direction == "LONG" else max(hi[-5:]) + 0.2 * atr
+            # 🛑 3. توسيع الستوب قليلاً لتفادي التذبذب (ATR Safety Buffer)
+            if direction == "LONG":
+                stop = min(lo[-5:]) - 0.35 * atr
+            else:
+                stop = max(hi[-5:]) + 0.35 * atr
+
             risk = self.calculate_position_size(entry, stop, direction)
             if not risk:
                 return no_trade("Risk calculation failed")
@@ -208,8 +224,8 @@ class StrategyEngine:
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": "Balanced SMC BOS + Retest",
-                "score": 88,
+                "setup": "Strict Balanced SMC BOS + Retest",
+                "score": 90,
                 "trend_4h": trend4,
                 "trend_1h": trend1,
                 "btc_trend": btc_trend,
@@ -260,7 +276,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "My Expert Crypto Bot - Balanced SMC Scanner & TP/SL Tracker is active!"
+    return "My Expert Crypto Bot - Strict SMC Scanner & TP/SL Tracker is active!"
 
 @app.route("/health")
 def health():
@@ -331,15 +347,11 @@ def get_all_usdt_symbols():
                 sym_upper = symbol.upper()
                 base_asset = symbol.split('/')[0].upper()
                 
-                # 🚫 فلتر صارم لمنع العملات الوهمية، التجريبية، والرموز العشوائية
+                # 🚫 فلتر لمنع العملات الوهمية والتجريبية
                 if any(x in sym_upper for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR", "TZA", "USD/"]):
                     continue
-                
-                # منع أي عملة تحتوي على أرقام في الاسم الأساسي (ما عدا البادئات المعتمدة مثل 1000)
                 if any(char.isdigit() for char in base_asset) and not base_asset.startswith("1000"):
                     continue
-                    
-                # منع الرموز الوهمية ذات الأسماء الطويلة أو الشاذة (أكثر من 8 أحرف)
                 if len(base_asset) > 8:
                     continue
 
@@ -357,14 +369,14 @@ def notify_trade_executed(symbol, direction, entry_price, details):
 
     emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
     message = (
-        f"🎯 *إشارة صفقات عالية الدقة — Balanced SMC*\n\n"
+        f"🎯 *إشارة صفقات عالية الدقة — Strict SMC V16.2*\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{emoji}`\n"
-        f"⭐ تقييم الإعداد: `{details.get('score', 88)}/100`\n"
+        f"⭐ تقييم الإعداد: `{details.get('score', 90)}/100`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
         f"🛑 وقف الخسارة: `{details['stop_loss']}`\n"
         f"🎯 الهدف: `{rm['take_profit_target']}`\n"
-        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.5)}`\n"
+        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.0)}`\n"
         f"💰 المخاطرة: `${rm.get('allowed_risk_usd', 0)}` ({rm.get('risk_percent', 0)}%)\n\n"
         f"📈 اتجاه 4H: `{details.get('trend_4h')}` | 1H: `{details.get('trend_1h')}`\n"
         f"₿ اتجاه BTC: `{details.get('btc_trend')}`\n"
@@ -387,7 +399,7 @@ def process_symbol(symbol, engine):
         market_price = float(ticker.get("last") or ticker.get("close") or 0)
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
         
-        # 💰 رفع الحد الأدنى لحجم التداول إلى 200 ألف دولار لمنع العملات الضعيفة والوهمية
+        # 💰 فلتر سيولة 200 ألف دولار
         if market_price <= 0 or quote_volume < 200000:
             return
 
@@ -476,8 +488,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت تداول العملات الرقمية (Balanced SMC V16.1)*\n"
-        "الفحص التلقائي لجميع أزواج USDT الحقيقية على منصة BingX مفعل بنجاح."
+        "🤖 *تم تحديث البوت إلى النسخة الصارمة (Strict SMC V16.2)*\n"
+        "فلتر الـ RSI + حظر الشراء في القمم + توسيع الستوب ضد التذبذب مفعل بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
