@@ -1,6 +1,6 @@
 # ============================================================
-# EXPERT CRYPTO BOT - CANDLESTICK & S/R STRATEGY ENGINE
-# Based on Price Action, S/R Levels, Volume & Reversal Candles
+# EXPERT CRYPTO BOT - TRADER ACADEMY LESSON 2 STRATEGY ENGINE
+# Support/Resistance Reversal + Confirmation Candle + Volume + Strict SL/TP
 # ============================================================
 import numpy as np
 
@@ -12,7 +12,7 @@ class StrategyEngine:
         self.reward_ratio = max(float(reward_ratio), 1.5)
 
     @staticmethod
-    def _array(data, minimum=30):
+    def _array(data, minimum=35):
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -77,15 +77,12 @@ class StrategyEngine:
 
     @staticmethod
     def _pivots(highs, lows, left=3, right=3):
-        ph, pl = [], []
+        pl = []
         for i in range(left, len(highs) - right):
-            hwindow = highs[i-left:i+right+1]
             lwindow = lows[i-left:i+right+1]
-            if highs[i] == np.max(hwindow) and np.count_nonzero(hwindow == highs[i]) == 1:
-                ph.append(float(highs[i]))
             if lows[i] == np.min(lwindow) and np.count_nonzero(lwindow == lows[i]) == 1:
                 pl.append(float(lows[i]))
-        return ph, pl
+        return pl
 
     def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
         def no_trade(reason, **extra):
@@ -93,74 +90,71 @@ class StrategyEngine:
             out.update(extra)
             return "NEUTRAL", 0, out
 
-        raw15 = self._array(ohlcv_15m, 30)
+        raw15 = self._array(ohlcv_15m, 35)
         if raw15 is None:
-            return no_trade("Invalid or insufficient OHLCV data")
+            return no_trade("بيانات الشموع غير كافية")
 
         try:
             c15 = raw15[:-1]
             op, hi, lo, cl, vol = (c15[:, i] for i in (1, 2, 3, 4, 5))
-            entry = float(cl[-1])
             atr = self.calculate_atr(hi, lo, cl, 14)
 
-            # 1. تحليل الشمعة الأخيرة (الجسم والذيل)
-            candle_range = max(float(hi[-1] - lo[-1]), 1e-12)
-            body = abs(float(cl[-1] - op[-1]))
-            body_ratio = body / candle_range
-            is_green = cl[-1] > op[-1]
+            # 1. تحديد مستوى الدعم القوي من القيعان السابقة
+            piv_lo = self._pivots(hi, lo, 3, 3)
+            if not piv_lo:
+                return no_trade("لا توجد مستويات دعم واضحة")
+            support_level = min(piv_lo[-3:]) if len(piv_lo) >= 3 else min(piv_lo)
+
+            # 2. تطبيق تفاصيل الدرس: شمعة الارتداد + شمعة التأكيد
+            # الشمعة السابقة (i-1): شمعة ارتداد بذيل سفلي قرب الدعم
+            # الشمعة الحالية (i): شمعة تأكيد صاعدة تخترق قمة الشمعة السابقة
+            prev_lo = lo[-2]
+            prev_hi = hi[-2]
+            prev_op = op[-2]
+            prev_cl = cl[-2]
             
-            # ذيل سفلي طويل (شمعة ارتداد) أو شمعة قوية
-            lower_wick = min(op[-1], cl[-1]) - lo[-1]
-            upper_wick = hi[-1] - max(op[-1], cl[-1])
+            curr_op = op[-1]
+            curr_cl = cl[-1]
 
-            # 2. فوليوم التداول مقارنة بالمتوسط
+            # الشرط أ: هل الشمعة السابقة ارتدت من قرب الدعم ولها ذيل سفلي طويل؟
+            near_support = prev_lo <= (support_level + 1.5 * atr)
+            lower_wick = min(prev_op, prev_cl) - prev_lo
+            prev_body = abs(prev_cl - prev_op)
+            is_reversal_candle = lower_wick > prev_body * 0.8 or prev_lo <= support_level
+
+            # الشرط ب: شمعة التأكيد (تنتظر اختراق قمة شمعة الارتداد صعوداً)
+            confirmation_level = prev_hi
+            is_confirmed_breakout = curr_cl > confirmation_level and curr_cl > curr_op
+
+            # الشرط ج: فوليوم التداول مؤكد
             avg_vol = float(np.mean(vol[-15:-1])) if len(vol) >= 15 else float(np.mean(vol))
-            volume_ok = vol[-1] >= (avg_vol * 1.2) # ارتفاع الفوليوم
+            volume_ok = vol[-1] >= (avg_vol * 1.2) or vol[-2] >= (avg_vol * 1.2)
 
-            # 3. مستويات الدعم والمقاومة من القيعان والقمم السابقة
-            piv_hi, piv_lo = self._pivots(hi, lo, 2, 2)
-            support_level = min(piv_lo) if piv_lo else float(np.min(lo[:-1]))
-            resistance_level = max(piv_hi) if piv_hi else float(np.max(hi[:-1]))
+            if not (near_support and is_reversal_candle and is_confirmed_breakout and volume_ok):
+                return no_trade("بانتظار تأكيد الارتداد واختراق مستوى التأكيد مع الفوليوم")
 
-            # شروط الدخول لونغ بناءً على الارتداد من الدعم أو اختراق مقاومة بشمعة قوية وفوليوم
-            direction = "NEUTRAL"
-            setup_name = ""
-
-            # شرط الارتداد من الدعم (شمعة ارتداد بذيل سفلي أو شمعة قوية خضراء بالقرب من الدعم)
-            near_support = abs(lo[-1] - support_level) <= (1.5 * atr)
-            is_reversal_candle = is_green and (lower_wick > body * 1.2 or body_ratio >= 0.5)
-
-            if near_support and is_reversal_candle and volume_ok:
-                direction = "LONG"
-                setup_name = "ارتداد من الدعم + شمعة قوية وفوليوم"
-            elif cl[-1] > resistance_level and body_ratio >= 0.6 and volume_ok:
-                direction = "LONG"
-                setup_name = "اختراق مقاومة بشمعة قوية وفوليوم"
-
-            if direction == "NEUTRAL":
-                return no_trade("لم تتحقق شروط الشمعة أو الدعم/المقاومة والفوليوم")
-
-            # وقف الخسارة أسفل الشمعة أو الدعم بقليل مع مسافة آمنة
-            stop = float(min(lo[-1], support_level) - (0.3 * atr))
-            risk = self.calculate_position_size(entry, stop, direction)
+            # 3. إدارة الصفقة بدقة طبقاً لأمثلة الدرس
+            entry = float(curr_cl) # الدخول الافتراضي بعد التأكيد
+            stop = float(support_level - (0.25 * atr)) # وقف الخسارة أسفل الدعم
+            
+            risk = self.calculate_position_size(entry, stop, "LONG")
             if not risk:
                 return no_trade("فشل حساب إدارة المخاطر")
 
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": setup_name,
-                "score": 92,
+                "setup": "ارتداد من دعم + شمعة تأكيد صاعدة وفوليوم",
+                "score": 95,
                 "support_level": self._round(support_level),
-                "resistance_level": self._round(resistance_level),
-                "volume_ok": bool(volume_ok),
-                "body_ratio": round(body_ratio, 2),
+                "confirmation_level": self._round(confirmation_level),
+                "volume_ok": True,
                 "atr": self._round(atr)
             }
-            return direction, self._round(entry), details
+            return "LONG", self._round(entry), details
 
-        except Exception as e:
-            return no_trade(f"خطأ في التحليل: {str(e)[:50]}")
+        except Exception as exc:
+            return no_trade(f"خطأ: {str(exc)[:50]}")
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
         return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h)
