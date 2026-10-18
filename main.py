@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - COMPOSITE ENGINE & CIRCUIT BREAKER
-# BingX + Telegram + Smart Filter + Consecutive Loss Protection
+# MY EXPERT CRYPTO BOT - SEDRA STRATEGY BOT V4.0
+# BingX + Telegram + EMA Alignment + OrderBook + TP/SL Tracker
 # ==========================================
 import os
 import time
@@ -23,7 +23,6 @@ BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
 REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "2.0")))
 
-# حماية إيقاف البوت عند الخسائر المتتالية
 consecutive_losses = 0
 max_allowed_consecutive_losses = 2
 bot_locked_out = False
@@ -45,7 +44,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Composite Secure Crypto Bot V3.0 is active!"
+    return "Sedra Strategy Crypto Bot V4.0 is active!"
 
 @app.route("/health")
 def health():
@@ -131,30 +130,28 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         return False
 
     message = (
-        f"🎯 *إشارة مركبة عالية الدقة — SMC & FVG*\n\n"
+        f"🚨 **تحليل صفقة السريع (Sedra Strategy)** 🚨\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG`\n"
-        f"⭐ الإعداد: `{details.get('setup')}`\n"
-        f"💵 سعر الدخول: `{entry_price}`\n"
+        f"⚖️ الاتجاه: `🟢 LONG (صعودي)`\n"
+        f"⭐ الزخم والمتوسطات: `EMA 7 > 25 > 99` مرتبة بإيجابية\n"
+        f"💵 سعر الدخول الحالي: `{entry_price}`\n"
         f"🛑 وقف الخسارة: `{details['stop_loss']}`\n"
-        f"🎯 الهدف: `{rm['take_profit_target']}`\n"
-        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.0)}`\n"
-        f"💰 المخاطرة: `${rm.get('allowed_risk_usd', 0)}` ({rm.get('risk_percent', 0)}%)\n\n"
-        f"📈 اتجاه 4H: `{details.get('trend_4h')}` | 1H: `{details.get('trend_1h')}`\n\n"
-        f"⚠️ *متابعة الأهداف ووقف الخسارة مفعلة.*"
+        f"🎯 الهدف الأول: `{rm['take_profit_target']}`\n"
+        f"🎯 المقاومة المستهدفة: `{details.get('resistance_target')}`\n"
+        f"📊 هيمنة المشتري في دفاتر الطلبات: `{details.get('buy_ratio')}%`\n"
+        f"🛡️ الدعم القريب (EMA 7): `{details.get('support_level')}`\n\n"
+        f"⚠️ *متابعة الأهداف ووقف الخسارة مفعلة تلقائياً.*"
     )
     return send_telegram_message(message)
 
 
 def process_symbol(symbol, engine):
     global bot_locked_out, lockout_reset_time
-    
-    # فحص نظام الإيقاف المؤقت للحماية
     if bot_locked_out:
         if time.time() > lockout_reset_time:
             bot_locked_out = False
             consecutive_losses = 0
-            send_telegram_message("♻️ *تم فك الحماية المؤقتة وإعادة تفعيل فحص البوت.*")
+            send_telegram_message("♻️ *تم فك الحماية المؤقتة واستئناف الفحص التلقائي.*")
         else:
             return
 
@@ -170,19 +167,25 @@ def process_symbol(symbol, engine):
         market_price = float(ticker.get("last") or ticker.get("close") or 0)
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
         
-        if market_price <= 0 or quote_volume < 300000:
+        if market_price <= 0 or quote_volume < 500000:
             return
 
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=60)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=60)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=50)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=120)
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
         if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
             return
 
-        btc_ohlcv_1h = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=50)
+        # جلب دفتر الطلبات للتحقق من سيولة الشراء والبيع
+        orderbook = bingx_call("fetch_order_book", symbol, limit=20)
+        ob_data = {"bids_volume": 1.0, "asks_volume": 1.0}
+        if orderbook and "bids" in orderbook and "asks" in orderbook:
+            bids_sum = sum([bid[1] for bid in orderbook["bids"][:10]])
+            asks_sum = sum([ask[1] for ask in orderbook["asks"][:10]])
+            ob_data = {"bids_volume": bids_sum, "asks_volume": asks_sum}
 
         direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=btc_ohlcv_1h
+            ohlcv_4h, ohlcv_1h, ohlcv_15m, orderbook_data=ob_data
         )
         if direction != "LONG" or not details:
             return
@@ -235,19 +238,17 @@ def live_trade_tracker():
                     
                     if hit_tp or hit_sl:
                         if hit_tp:
-                            consecutive_losses = 0 # تصفير العداد عند النجاح
+                            consecutive_losses = 0
                             result_title = "🎯 *تم تحقيق الهدف بنجاح! (Take Profit)*"
                         else:
                             consecutive_losses += 1
                             result_title = "🛑 *تم ضرب وقف الخسارة! (Stop Loss)*"
-                            
-                            # تفعيل نظام الإيقاف المؤقت بعد خسارتين متتاليتين
                             if consecutive_losses >= max_allowed_consecutive_losses:
                                 bot_locked_out = True
-                                lockout_reset_time = time.time() + 14400 # إيقاف لمدة 4 ساعات مثلاً
+                                lockout_reset_time = time.time() + 14400
                                 send_telegram_message(
-                                    "🛡️ *تم تفعيل درع الحماية الآلي (Circuit Breaker)*\n"
-                                    "تم رصد خسارة صفقتين متتاليتين. تم إيقاف البوت مؤقتًا لمدة 4 ساعات لحماية المحافظة ونفسيتك!"
+                                    "🛡️ *درع الحماية الآلي مفعل*\n"
+                                    "تم إيقاف البوت مؤقتًا لمدة 4 ساعات بسبب خسارة صفقتين متتاليتين لحماية رصيدك ونفسيتك."
                                 )
 
                         message = (
@@ -270,8 +271,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل النسخة المطورة الآمنة (SMC Composite V3.0)*\n"
-        "فلتر الاتجاه العام + فجوات FVG + نظام حماية الخسارتين المتتاليتين مفعلة بنجاح."
+        "🤖 *تم تشغيل بوت استراتيجية (Sedra Crypto & Orderbook)*\n"
+        "متوسطات EMA مرتبة + تحليل دفتر الطلبات وسيولة السوق مفعلة بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -292,7 +293,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="composite-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="sedra-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
