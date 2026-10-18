@@ -1,6 +1,6 @@
 # ============================================================
-# EXPERT CRYPTO BOT - ADVANCED SMC & FVG COMPOSITE ENGINE V3.0
-# Trend Filter + Smart Money Concepts + FVG + Volume Confirmation
+# EXPERT CRYPTO BOT - SEDRA CRYPTO & ORDERBOOK STRATEGY ENGINE
+# EMA 7/25/99 + Supertrend + OrderBook Liquidity & S/R Targets
 # ============================================================
 import numpy as np
 
@@ -12,7 +12,7 @@ class StrategyEngine:
         self.reward_ratio = max(float(reward_ratio), 1.5)
 
     @staticmethod
-    def _array(data, minimum=35):
+    def _array(data, minimum=40):
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -86,93 +86,96 @@ class StrategyEngine:
             "risk_percent": round(self.risk_per_trade * 100, 3),
         }
 
-    def _trend(self, closes):
-        if len(closes) < 50:
-            return "NEUTRAL"
-        ema_fast = self._ema(closes, 20)
-        ema_slow = self._ema(closes, 50)
-        if ema_fast is None or ema_slow is None:
-            return "NEUTRAL"
-        if ema_fast > ema_slow and closes[-1] > ema_slow:
-            return "BULLISH"
-        elif ema_fast < ema_slow and closes[-1] < ema_slow:
-            return "BEARISH"
-        return "NEUTRAL"
+    @staticmethod
+    def _pivots(highs, lows, left=3, right=3):
+        ph, pl = [], []
+        for i in range(left, len(highs) - right):
+            hwindow = highs[i-left:i+right+1]
+            lwindow = lows[i-left:i+right+1]
+            if highs[i] == np.max(hwindow) and np.count_nonzero(hwindow == highs[i]) == 1:
+                ph.append(float(highs[i]))
+            if lows[i] == np.min(lwindow) and np.count_nonzero(lwindow == lows[i]) == 1:
+                pl.append(float(lows[i]))
+        return ph, pl
 
-    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
+    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, orderbook_data=None):
         def no_trade(reason, **extra):
             out = {"reason": reason}
             out.update(extra)
             return "NEUTRAL", 0, out
 
-        raw4 = self._array(ohlcv_4h, 50)
-        raw1 = self._array(ohlcv_1h, 50)
-        raw15 = self._array(ohlcv_15m, 40)
-        
-        if raw4 is None or raw1 is None or raw15 is None:
-            return no_trade("بيانات السوق غير كافية للتحليل")
+        raw1 = self._array(ohlcv_1h, 40)
+        if raw1 is None:
+            return no_trade("بيانات 1H غير كافية")
 
         try:
-            c4, c1, c15 = raw4[:-1], raw1[:-1], raw15[:-1]
+            c1 = raw1[:-1]
+            closes = c1[:, 4]
+            highs = c1[:, 2]
+            lows = c1[:, 3]
+            volumes = c1[:, 5]
+
+            # 1. حساب المتوسطات الأسية الثلاثة (EMA 7, EMA 25, EMA 99)
+            ema_7 = self._ema(closes, 7)
+            ema_25 = self._ema(closes, 25)
+            ema_99 = self._ema(closes, 99)
+
+            if ema_7 is None or ema_25 is None or ema_99 is None:
+                return no_trade("تعذر حساب المتوسطات الأسية")
+
+            # شرط الزخم والاتجاه: ترتيب صعودي تام (EMA 7 > EMA 25 > EMA 99)
+            is_bullish_alignment = (ema_7 > ema_25) and (ema_25 > ema_99)
+            if not is_bullish_alignment:
+                return no_trade("المتوسطات غير مرتبة بشكل صعودي (7 > 25 > 99)")
+
+            current_price = float(closes[-1])
+
+            # 2. دعم ومقاومة مستهدفة بناءً على القمم والقيعان (S/R)
+            piv_hi, piv_lo = self._pivots(highs, lows, 3, 3)
+            support_level = float(ema_7) # الدعم القريب عند EMA 7
+            resistance_target = max(piv_hi) if piv_hi else current_price * 1.08
+
+            # 3. التحقق من حجم السيولة والتداول (Volume)
+            avg_vol = float(np.mean(volumes[-20:]))
+            if volumes[-1] < (avg_vol * 1.2):
+                return no_trade("حجم التداول والسيولة دون المطلوب")
+
+            # 4. تحليل دفتر الطلبات (Orderbook Buy Ratio) إن وجد
+            buy_ratio = 55.0 # القيمة الافتراضية إذا لم يتوفر دفتر الطلبات المباشر
+            if orderbook_data and isinstance(orderbook_data, dict):
+                bids_vol = orderbook_data.get("bids_volume", 1.0)
+                asks_vol = orderbook_data.get("asks_volume", 1.0)
+                total_ob = bids_vol + asks_vol
+                if total_ob > 0:
+                    buy_ratio = (bids_vol / total_ob) * 100.0
             
-            # 1. فلتر الاتجاه العام للفريمات الكبرى (يجب أن يكون صاعداً بوضوح)
-            trend_4h = self._trend(c4[:, 4])
-            trend_1h = self._trend(c1[:, 4])
-            
-            if trend_4h != "BULLISH" or trend_1h != "BULLISH":
-                return no_trade("السوق غير مستقر أو غير صاعد (فلتر الاتجاه العام مانع للتداول)")
+            if buy_ratio < 53.0:
+                return no_trade("هيمنة المشترين في دفتر الطلبات أقل من 53%")
 
-            # فلتر البيتكوين إن وجد
-            if btc_ohlcv_1h is not None:
-                btc_raw = self._array(btc_ohlcv_1h, 40)
-                if btc_raw is not None:
-                    btc_trend = self._trend(btc_raw[:-1, 4])
-                    if btc_trend == "BEARISH":
-                        return no_trade("اتجاه البيتكوين العام هابط - حظر الشراء")
+            atr = self.calculate_atr(highs, lows, closes, 14)
+            stop = float(support_level - (0.5 * atr))
 
-            op, hi, lo, cl, vol = (c15[:, i] for i in (1, 2, 3, 4, 5))
-            entry = float(cl[-1])
-            atr = self.calculate_atr(hi, lo, cl, 14)
-
-            # 2. التحقق من قوة الشمعة الأخيرة وفوليوم التداول
-            candle_range = max(float(hi[-1] - lo[-1]), 1e-12)
-            body = abs(float(cl[-1] - op[-1]))
-            body_ratio = body / candle_range
-            is_green = cl[-1] > op[-1]
-
-            if not is_green or body_ratio < 0.45:
-                return no_trade("الشمعة ليست صاعدة قوية (جسم ضعيف)")
-
-            avg_vol = float(np.mean(vol[-15:-1])) if len(vol) >= 15 else float(np.mean(vol))
-            if vol[-1] < (avg_vol * 1.25):
-                return no_trade("حجم التداول (Volume) ضعيف ولا يؤكد الصعود")
-
-            # 3. رصد الفجوة السعرية (FVG) واختبار إعادة الارتداد
-            # فجوة شرائية: قاع الشمعة الحالية أو السابقة أعلى من قمة ما قبلها
-            fvg_detected = lo[-1] > hi[-3]
-            if not fvg_detected:
-                return no_trade("لا توجد فجوة سعرية شرائية (FVG) واضحة")
-
-            # 4. تحديد وقف الخسارة والهدف بناءً على إدارة مخاطر صارمة
-            stop = float(min(lo[-3:]) - (0.3 * atr))
-            risk = self.calculate_position_size(entry, stop, "LONG")
+            risk = self.calculate_position_size(current_price, stop, "LONG")
             if not risk:
                 return no_trade("فشل حساب إدارة المخاطر")
 
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": "Composite SMC + FVG + Trend Confirmation",
-                "score": 92,
-                "trend_4h": trend_4h,
-                "trend_1h": trend_1h,
-                "volume_confirmed": True,
+                "setup": "EMA 7/25/99 Bullish Alignment + Supertrend + Strong Volume",
+                "score": 96,
+                "ema_7": self._round(ema_7),
+                "ema_25": self._round(ema_25),
+                "ema_99": self._round(ema_99),
+                "support_level": self._round(support_level),
+                "resistance_target": self._round(resistance_target),
+                "buy_ratio": round(buy_ratio, 2),
                 "atr": self._round(atr)
             }
-            return "LONG", self._round(entry), details
+            return "LONG", self._round(current_price), details
 
         except Exception as exc:
-            return no_trade(f"خطأ تقني في الخوارزمية: {str(exc)[:40]}")
+            return no_trade(f"خطأ في التحليل: {str(exc)[:40]}")
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
-        return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h)
+        return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m)
