@@ -1,6 +1,6 @@
 # ============================================================
-# EXPERT CRYPTO BOT - SEDRA CRYPTO & ORDERBOOK STRATEGY ENGINE
-# EMA 7/25/99 + Supertrend + OrderBook Liquidity & S/R Targets
+# EXPERT CRYPTO BOT - PULLBACK & RETEST WITH TIME FILTER V5.0
+# Safe Entry after Correction + Volume + Temporal/Time Filter
 # ============================================================
 import numpy as np
 
@@ -35,17 +35,6 @@ class StrategyEngine:
             return value
         decimals = max(2, min(12, int(-np.floor(np.log10(value))) + 3))
         return round(value, decimals)
-
-    @staticmethod
-    def _ema(values, period):
-        v = np.asarray(values, dtype=float)
-        if len(v) < period:
-            return None
-        alpha = 2.0 / (period + 1.0)
-        out = float(v[0])
-        for x in v[1:]:
-            out = alpha * float(x) + (1.0 - alpha) * out
-        return out
 
     def calculate_atr(self, highs, lows, closes, period=14):
         h, l, c = (np.asarray(x, dtype=float) for x in (highs, lows, closes))
@@ -88,94 +77,72 @@ class StrategyEngine:
 
     @staticmethod
     def _pivots(highs, lows, left=3, right=3):
-        ph, pl = [], []
+        pl = []
         for i in range(left, len(highs) - right):
-            hwindow = highs[i-left:i+right+1]
             lwindow = lows[i-left:i+right+1]
-            if highs[i] == np.max(hwindow) and np.count_nonzero(hwindow == highs[i]) == 1:
-                ph.append(float(highs[i]))
             if lows[i] == np.min(lwindow) and np.count_nonzero(lwindow == lows[i]) == 1:
                 pl.append(float(lows[i]))
-        return ph, pl
+        return pl
 
-    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, orderbook_data=None):
+    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m):
         def no_trade(reason, **extra):
             out = {"reason": reason}
             out.update(extra)
             return "NEUTRAL", 0, out
 
-        raw1 = self._array(ohlcv_1h, 40)
-        if raw1 is None:
-            return no_trade("بيانات 1H غير كافية")
+        raw15 = self._array(ohlcv_15m, 40)
+        if raw15 is None:
+            return no_trade("بيانات فريم 15 دقيقة غير كافية")
 
         try:
-            c1 = raw1[:-1]
-            closes = c1[:, 4]
-            highs = c1[:, 2]
-            lows = c1[:, 3]
-            volumes = c1[:, 5]
-
-            # 1. حساب المتوسطات الأسية الثلاثة (EMA 7, EMA 25, EMA 99)
-            ema_7 = self._ema(closes, 7)
-            ema_25 = self._ema(closes, 25)
-            ema_99 = self._ema(closes, 99)
-
-            if ema_7 is None or ema_25 is None or ema_99 is None:
-                return no_trade("تعذر حساب المتوسطات الأسية")
-
-            # شرط الزخم والاتجاه: ترتيب صعودي تام (EMA 7 > EMA 25 > EMA 99)
-            is_bullish_alignment = (ema_7 > ema_25) and (ema_25 > ema_99)
-            if not is_bullish_alignment:
-                return no_trade("المتوسطات غير مرتبة بشكل صعودي (7 > 25 > 99)")
-
-            current_price = float(closes[-1])
-
-            # 2. دعم ومقاومة مستهدفة بناءً على القمم والقيعان (S/R)
-            piv_hi, piv_lo = self._pivots(highs, lows, 3, 3)
-            support_level = float(ema_7) # الدعم القريب عند EMA 7
-            resistance_target = max(piv_hi) if piv_hi else current_price * 1.08
-
-            # 3. التحقق من حجم السيولة والتداول (Volume)
-            avg_vol = float(np.mean(volumes[-20:]))
-            if volumes[-1] < (avg_vol * 1.2):
-                return no_trade("حجم التداول والسيولة دون المطلوب")
-
-            # 4. تحليل دفتر الطلبات (Orderbook Buy Ratio) إن وجد
-            buy_ratio = 55.0 # القيمة الافتراضية إذا لم يتوفر دفتر الطلبات المباشر
-            if orderbook_data and isinstance(orderbook_data, dict):
-                bids_vol = orderbook_data.get("bids_volume", 1.0)
-                asks_vol = orderbook_data.get("asks_volume", 1.0)
-                total_ob = bids_vol + asks_vol
-                if total_ob > 0:
-                    buy_ratio = (bids_vol / total_ob) * 100.0
+            c15 = raw15[:-1]
+            op, hi, lo, cl, vol = (c15[:, i] for i in (1, 2, 3, 4, 5))
             
-            if buy_ratio < 53.0:
-                return no_trade("هيمنة المشترين في دفتر الطلبات أقل من 53%")
+            # التحليل الزمني البسيط: التأكد من عدم وجود تذبذب هيكلي حاد في آخر 3 شمعات
+            recent_ranges = hi[-3:] - lo[-3:]
+            avg_range = np.mean(hi - lo)
+            if np.any(recent_ranges > (avg_range * 2.5)):
+                return no_trade("تذبذب زمني/سعرى عالٍ جداً - تجنب الدخول")
 
-            atr = self.calculate_atr(highs, lows, closes, 14)
-            stop = float(support_level - (0.5 * atr))
+            # البحث عن قاع سابق (دعم)
+            piv_lo = self._pivots(hi, lo, 3, 3)
+            if not piv_lo:
+                return no_trade("لا توجد قيعان واضحة للاستناد عليها")
+            support_level = min(piv_lo[-3:]) if len(piv_lo) >= 3 else min(piv_lo)
 
+            current_price = float(cl[-1])
+            atr = self.calculate_atr(hi, lo, cl, 14)
+
+            # شرط الـ Pullback (التصحيح): السعر اقترب من الدعم ثم ارتد بشمعة خضراء قوية
+            near_support = abs(current_price - support_level) <= (2.0 * atr) or lo[-1] <= (support_level + atr)
+            is_green = cl[-1] > op[-1]
+            body_ratio = abs(cl[-1] - op[-1]) / max(float(hi[-1] - lo[-1]), 1e-12)
+
+            if not (near_support and is_green and body_ratio > 0.40):
+                return no_trade("بانتظار تصحيح هادئ واقتراب حقيقي من الدعم مع شمعة ارتداد")
+
+            # تأكيد الفوليوم
+            avg_vol = float(np.mean(vol[-15:]))
+            if vol[-1] < (avg_vol * 1.15):
+                return no_trade("حجم التداول غير مؤكد للارتداد")
+
+            stop = float(support_level - (0.4 * atr))
             risk = self.calculate_position_size(current_price, stop, "LONG")
             if not risk:
-                return no_trade("فشل حساب إدارة المخاطر")
+                return no_trade("فشل حساب المخاطر")
 
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": "EMA 7/25/99 Bullish Alignment + Supertrend + Strong Volume",
-                "score": 96,
-                "ema_7": self._round(ema_7),
-                "ema_25": self._round(ema_25),
-                "ema_99": self._round(ema_99),
+                "setup": "Pullback & Retest at Support + Time/Volatility Filter",
+                "score": 94,
                 "support_level": self._round(support_level),
-                "resistance_target": self._round(resistance_target),
-                "buy_ratio": round(buy_ratio, 2),
                 "atr": self._round(atr)
             }
             return "LONG", self._round(current_price), details
 
         except Exception as exc:
-            return no_trade(f"خطأ في التحليل: {str(exc)[:40]}")
+            return no_trade(f"خطأ: {str(exc)[:40]}")
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
         return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m)
