@@ -17,7 +17,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = max(60, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "7200")))
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50")))
 SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.20")))
-MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2")))
+MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
 
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
@@ -188,7 +188,7 @@ def process_symbol(symbol, engine):
                 "direction": direction,
                 "entry_price": float(entry_price),
                 "stop_loss": float(details["stop_loss"]),
-                "take_profit": float(details["risk_management"]["take_profit_2"]), # الاعتماد على الهدف الثاني كهدف رئيسي لإغلاق الصفقة
+                "take_profit": float(details["risk_management"]["take_profit_2"]),
                 "timestamp": time.time()
             }
         with history_lock:
