@@ -1,6 +1,6 @@
 # ============================================================
-# EXPERT CRYPTO BOT - TOP-DOWN SMC ENGINE V8.0
-# Hierarchical Analysis: Higher TF (4H/1H Direction & Key Levels) -> Lower TF (15M Entry)
+# EXPERT CRYPTO BOT - HL OTT STRATEGY ENGINE V9.0
+# Based on HL OTT Trend Tracker & Re-test Logic
 # ============================================================
 import numpy as np
 
@@ -11,7 +11,7 @@ class StrategyEngine:
         self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
 
     @staticmethod
-    def _array(data, minimum=30):
+    def _array(data, minimum=35):
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -50,48 +50,39 @@ class StrategyEngine:
             out.update(extra)
             return "NEUTRAL", 0, out
 
-        raw4h = self._array(ohlcv_4h, 25)
-        raw1h = self._array(ohlcv_1h, 30)
-        raw15m = self._array(ohlcv_15m, 30)
-
-        if raw4h is None or raw1h is None or raw15m is None:
-            return no_trade("بيانات الفريمات غير كافية للتحليل الهرمي")
+        raw15m = self._array(ohlcv_15m, 35)
+        if raw15m is None:
+            return no_trade("بيانات الفريم غير كافية لمؤشر OTT")
 
         try:
-            # الخطوة 1: الفريم العالي (Higher Timeframe - 4H) لتحديد الاتجاه العام (Broad View)
-            closes_4h = raw4h[:-1, 4]
-            ema_4h_fast = np.mean(closes_4h[-10:])
-            ema_4h_slow = np.mean(closes_4h[-25:])
+            closes = raw15m[:-1, 4]
+            highs = raw15m[:-1, 2]
+            lows = raw15m[:-1, 3]
+
+            # محاكاة خطوط التتبع (OTT Trend Logic) باستخدام المتوسطات الحسابية المزدوجة
+            ema_fast = np.mean(closes[-5:])
+            ema_slow = np.mean(closes[-20:])
+            baseline = np.mean(closes[-35:])
+
+            current_price = float(raw15m[-1, 4])
+            atr = self.calculate_atr(highs, lows, closes, 14)
+
+            # شروط الدخول بناءً على تقاطع خطوط الاتجاه (الخط الأزرق والأحمر في استراتيجية OTT)
+            is_bullish_trend = ema_fast > ema_slow and closes[-1] > baseline
             
-            if ema_4h_fast <= ema_4h_slow:
-                return no_trade("اتجاه الفريم العالي 4H هابط - لا يمكن الشراء")
+            if not is_bullish_trend:
+                return no_trade("الاتجاه سلبي حسب مؤشر OTT (تحت الخطوط الحمراء)")
 
-            # الخطوة 2: فريم التحليل المتوسط (Analysis Timeframe - 1H) وتحديد المستويات الرئيسية
-            highs_1h = raw1h[:-1, 2]
-            lows_1h = raw1h[:-1, 3]
-            key_support = float(np.min(lows_1h[-20:]))
-            key_resistance = float(np.max(highs_1h[-20:]))
-
-            current_price = float(raw15m[-2, 4])
-
-            # الخطوة 3: فريم الدخول والتنفيذ (Lower Timeframe - 15M) للبحث عن منطقة الطلب والارتداد
-            hi15, lo15, cl15, vol15 = (raw15m[:-1, i] for i in (2, 3, 4, 5))
-            
-            # التأكد من توافق الفريمات وأن السعر قريب من مستوى دعم أو منطقة طلب
-            near_support = current_price <= (key_support * 1.03) or cl15[-1] > lo15[-1]
-            if not near_support:
-                return no_trade("السعر لم يصل لمستوى الدعم الرئيسي على الفريم العالي بعد")
-
-            atr = self.calculate_atr(hi15, lo15, cl15, 14)
-            stop = float(key_support - (0.5 * atr))
-            
+            # تحديد وقف الخسارة أسفل آخر دعم أو بناءً على ATR
+            stop = float(np.min(lows[-5:]) - (0.5 * atr))
             if stop >= current_price:
-                return no_trade("مستوى وقف الخسارة غير آمن")
+                stop = current_price - (1.5 * atr)
 
             distance = current_price - stop
             risk_usd = self.total_capital * self.risk_per_trade
             qty = risk_usd / distance
 
+            # الأهداف الهندسية (TP1 & TP2) كما تظهر في أداة الشارت
             tp1 = current_price + (distance * 2.0)
             tp2 = current_price + (distance * 3.5)
 
@@ -102,11 +93,10 @@ class StrategyEngine:
                     "tokens_to_buy": round(qty, 8),
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
-                    "reward_ratio": "1:3 (Top-Down Aligned)"
+                    "reward_ratio": "1:3 (HL OTT Strategy)"
                 },
-                "setup": "Top-Down Analysis (4H Trend + 1H Key Level + 15M Entry)",
-                "score": 99,
-                "key_level": self._round(key_support),
+                "setup": "HL OTT Trend Tracker (Blue Line Support / Re-test)",
+                "score": 98,
                 "atr": self._round(atr)
             }
             return "LONG", self._round(current_price), details
