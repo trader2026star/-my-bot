@@ -191,7 +191,7 @@ def process_symbol(symbol, engine):
                 "entry_price": float(entry_price),
                 "stop_loss": float(details["stop_loss"]),
                 "take_profit": float(details["risk_management"]["take_profit_target"]),
-                "timestamp": time.time() # تسجيل وقت الدخول للفلتر الزمني
+                "timestamp": time.time()
             }
         with history_lock:
             signal_history[symbol] = time.time()
@@ -202,7 +202,7 @@ def process_symbol(symbol, engine):
 
 def live_trade_tracker():
     global consecutive_losses, bot_locked_out, lockout_reset_time
-    max_trade_duration_seconds = 43200 # 12 ساعة أقصى مدة للصفقة (فلتر زمني)
+    max_trade_duration_seconds = 43200
     
     while True:
         try:
@@ -287,7 +287,7 @@ def background_scanner():
                 time.sleep(SYMBOL_PAUSE_SECONDS)
             time.sleep(60)
         except Exception:
-            time.sleep30)
+            time.sleep(30)
 
 
 scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="pullback-bot-scanner")
