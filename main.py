@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - HL OTT STRATEGY V9.1
-# BingX + Telegram + HL OTT 30M Timeframe
+# MY EXPERT CRYPTO BOT - PATTERN RECOGNITION V10.0
+# BingX + Telegram + Double Bottom & Inverse H&S Retest
 # ==========================================
 import os
 import time
@@ -43,7 +43,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "HL OTT 30M Strategy Bot V9.1 is active!"
+    return "Pattern Recognition Bot V10.0 (Double Bottom + Inv H&S) is active!"
 
 @app.route("/health")
 def health():
@@ -129,14 +129,16 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         return False
 
     message = (
-        f"📊 *إشارة استراتيجية مؤشر HL OTT (فريم 30 دقيقة)* 📊\n\n"
+        f"📊 *إشارة نموذج القاع المزدوج والرأس والكتفين* 📊\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG (شراء - فوق الخط الأزرق 30M)`\n"
+        f"⚖️ الاتجاه: `🟢 LONG (شراء - إعادة اختبار خط العنق)`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
+        f"📍 مستوى خط العنق (Neckline): `{details.get('neckline')}`\n"
+        f"📍 مستوى الكتف الأيمن: `{details.get('right_shoulder')}`\n"
         f"🟥 وقف الخسارة (Stop Loss): `{rm['stop_loss']}`\n"
         f"🟩 الهدف الأول (TP 1): `{rm['take_profit_1']}`\n"
-        f"🟩 Goal 2 (TP 2): `{rm['take_profit_2']}`\n\n"
-        f"⚠️ *متابعة الأهداف والوقف الآلي مفعلة بنجاح.*"
+        f"🟩 الهدف الثاني (TP 2): `{rm['take_profit_2']}`\n\n"
+        f"⚠️ *متابعة الصفقات والوقف الآلي مفعلة بنجاح.*"
     )
     return send_telegram_message(message)
 
@@ -166,8 +168,7 @@ def process_symbol(symbol, engine):
         if market_price <= 0 or quote_volume < 500000:
             return
 
-        # جلب شمعات فريم النصف ساعة (30m)
-        ohlcv_30m = bingx_call("fetch_ohlcv", symbol, timeframe="30m", limit=40)
+        ohlcv_30m = bingx_call("fetch_ohlcv", symbol, timeframe="30m", limit=45)
         if not ohlcv_30m:
             return
 
@@ -262,8 +263,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت استراتيجية HL OTT على فريم 30 دقيقة (V9.1)*\n"
-        "تم تحديث التحليل ليعمل كلياً على فريم 30M."
+        "🤖 *تم تشغيل بوت تحليل نماذج الرأس والكتفين والقاع المزدوج (V10.0)*\n"
+        "تمت برمجة الشروط الهندسية الموضحة بالصور بدقة."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -283,7 +284,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ott-30m-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="pattern-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
