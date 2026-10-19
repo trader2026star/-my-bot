@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - TOP-DOWN ANALYSIS V8.0
-# BingX + Telegram + Multi-Timeframe Alignment + SL/TP Tracker
+# MY EXPERT CRYPTO BOT - HL OTT STRATEGY V9.0
+# BingX + Telegram + HL OTT Trend Tracker + SL/TP Tracker
 # ==========================================
 import os
 import time
@@ -43,7 +43,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Top-Down Analysis Bot V8.0 is active!"
+    return "HL OTT Strategy Bot V9.0 is active!"
 
 @app.route("/health")
 def health():
@@ -129,16 +129,14 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         return False
 
     message = (
-        f"🎯 *إشارة التحليل الهرمي المتوافق (Top-Down Analysis)* 🎯\n\n"
+        f"📊 *إشارة استراتيجية مؤشر HL OTT* 📊\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG (شراء)`\n"
-        f"📈 توافق الفريمات: `4H اتجاه صاعد ➔ 1H مستوى رئيسي ➔ 15M تنفيذ`\n"
+        f"⚖️ الاتجاه: `🟢 LONG (شراء - فوق الخط الأزرق)`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
         f"🟥 وقف الخسارة (Stop Loss): `{rm['stop_loss']}`\n"
         f"🟩 الهدف الأول (TP 1): `{rm['take_profit_1']}`\n"
-        f"🟩 الهدف الثاني (TP 2): `{rm['take_profit_2']}`\n"
-        f"📍 المستوى الرئيسي (Key Level): `{details.get('key_level')}`\n\n"
-        f"⚠️ *متابعة الأهداف والستوب الآلي مفعلة بنجاح.*"
+        f"🟩 الهدف الثاني (TP 2): `{rm['take_profit_2']}`\n\n"
+        f"⚠️ *متابعة الأهداف والوقف الآلي مفعلة بنجاح.*"
     )
     return send_telegram_message(message)
 
@@ -168,8 +166,8 @@ def process_symbol(symbol, engine):
         if market_price <= 0 or quote_volume < 500000:
             return
 
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=40)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=50)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=40)
         if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
             return
@@ -267,8 +265,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت التحليل الهرمي (Top-Down Analysis V8.0)*\n"
-        "التحليل من أعلى لأسفل (4H اتجاه ➔ 1H مستويات ➔ 15M دخول) مفعل بنجاح."
+        "🤖 *تم تشغيل بوت استراتيجية HL OTT (V9.0)*\n"
+        "التحليل بناءً على خطوط تتبع الاتجاه وأهداف التداول مفعل بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -288,7 +286,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="topdown-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ott-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
