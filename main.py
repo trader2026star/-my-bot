@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - SEDRA STRATEGY BOT V4.0
-# BingX + Telegram + EMA Alignment + OrderBook + TP/SL Tracker
+# MY EXPERT CRYPTO BOT - PULLBACK & TIME FILTER V5.0
+# BingX + Telegram + Safe Retest Strategy + Circuit Breaker
 # ==========================================
 import os
 import time
@@ -44,7 +44,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Sedra Strategy Crypto Bot V4.0 is active!"
+    return "Pullback & Time Filter Crypto Bot V5.0 is active!"
 
 @app.route("/health")
 def health():
@@ -130,17 +130,16 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         return False
 
     message = (
-        f"🚨 **تحليل صفقة السريع (Sedra Strategy)** 🚨\n\n"
+        f"🛡️ *إشارة دخول آمن (Pullback & Retest)* 🛡️\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG (صعودي)`\n"
-        f"⭐ الزخم والمتوسطات: `EMA 7 > 25 > 99` مرتبة بإيجابية\n"
-        f"💵 سعر الدخول الحالي: `{entry_price}`\n"
+        f"⚖️ الاتجاه: `🟢 LONG`\n"
+        f"⭐ الإعداد: `{details.get('setup')}`\n"
+        f"💵 سعر الدخول: `{entry_price}`\n"
         f"🛑 وقف الخسارة: `{details['stop_loss']}`\n"
-        f"🎯 الهدف الأول: `{rm['take_profit_target']}`\n"
-        f"🎯 المقاومة المستهدفة: `{details.get('resistance_target')}`\n"
-        f"📊 هيمنة المشتري في دفاتر الطلبات: `{details.get('buy_ratio')}%`\n"
-        f"🛡️ الدعم القريب (EMA 7): `{details.get('support_level')}`\n\n"
-        f"⚠️ *متابعة الأهداف ووقف الخسارة مفعلة تلقائياً.*"
+        f"🎯 الهدف: `{rm['take_profit_target']}`\n"
+        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.0)}`\n"
+        f"📍 الدعم المختبر: `{details.get('support_level')}`\n\n"
+        f"⚠️ *متابعة الأهداف، الوقف، والفلتر الزمني مفعلة.*"
     )
     return send_telegram_message(message)
 
@@ -151,7 +150,7 @@ def process_symbol(symbol, engine):
         if time.time() > lockout_reset_time:
             bot_locked_out = False
             consecutive_losses = 0
-            send_telegram_message("♻️ *تم فك الحماية المؤقتة واستئناف الفحص التلقائي.*")
+            send_telegram_message("♻️ *فك حماية التوقف المؤقت واستئناف العمل.*")
         else:
             return
 
@@ -167,25 +166,17 @@ def process_symbol(symbol, engine):
         market_price = float(ticker.get("last") or ticker.get("close") or 0)
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
         
-        if market_price <= 0 or quote_volume < 500000:
+        if market_price <= 0 or quote_volume < 400000:
             return
 
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=50)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=120)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
         if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
             return
 
-        # جلب دفتر الطلبات للتحقق من سيولة الشراء والبيع
-        orderbook = bingx_call("fetch_order_book", symbol, limit=20)
-        ob_data = {"bids_volume": 1.0, "asks_volume": 1.0}
-        if orderbook and "bids" in orderbook and "asks" in orderbook:
-            bids_sum = sum([bid[1] for bid in orderbook["bids"][:10]])
-            asks_sum = sum([ask[1] for ask in orderbook["asks"][:10]])
-            ob_data = {"bids_volume": bids_sum, "asks_volume": asks_sum}
-
         direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m, orderbook_data=ob_data
+            ohlcv_4h, ohlcv_1h, ohlcv_15m
         )
         if direction != "LONG" or not details:
             return
@@ -200,7 +191,7 @@ def process_symbol(symbol, engine):
                 "entry_price": float(entry_price),
                 "stop_loss": float(details["stop_loss"]),
                 "take_profit": float(details["risk_management"]["take_profit_target"]),
-                "timestamp": time.time()
+                "timestamp": time.time() # تسجيل وقت الدخول للفلتر الزمني
             }
         with history_lock:
             signal_history[symbol] = time.time()
@@ -211,9 +202,12 @@ def process_symbol(symbol, engine):
 
 def live_trade_tracker():
     global consecutive_losses, bot_locked_out, lockout_reset_time
+    max_trade_duration_seconds = 43200 # 12 ساعة أقصى مدة للصفقة (فلتر زمني)
+    
     while True:
         try:
             time.sleep(15)
+            now = time.time()
             with trades_lock:
                 symbols = list(active_trades.keys())
             
@@ -235,12 +229,13 @@ def live_trade_tracker():
                     
                     hit_tp = price >= tp
                     hit_sl = price <= sl
+                    expired = (now - trade["timestamp"]) > max_trade_duration_seconds
                     
-                    if hit_tp or hit_sl:
+                    if hit_tp or hit_sl or expired:
                         if hit_tp:
                             consecutive_losses = 0
                             result_title = "🎯 *تم تحقيق الهدف بنجاح! (Take Profit)*"
-                        else:
+                        elif hit_sl:
                             consecutive_losses += 1
                             result_title = "🛑 *تم ضرب وقف الخسارة! (Stop Loss)*"
                             if consecutive_losses >= max_allowed_consecutive_losses:
@@ -248,8 +243,10 @@ def live_trade_tracker():
                                 lockout_reset_time = time.time() + 14400
                                 send_telegram_message(
                                     "🛡️ *درع الحماية الآلي مفعل*\n"
-                                    "تم إيقاف البوت مؤقتًا لمدة 4 ساعات بسبب خسارة صفقتين متتاليتين لحماية رصيدك ونفسيتك."
+                                    "تم إيقاف البوت مؤقتًا لمدة 4 ساعات لحماية رصيدك بعد خسارتين."
                                 )
+                        else:
+                            result_title = "⏰ *إغلاق زمني للصفقة (Time-based Expiry)*"
 
                         message = (
                             f"{result_title}\n\n"
@@ -271,8 +268,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت استراتيجية (Sedra Crypto & Orderbook)*\n"
-        "متوسطات EMA مرتبة + تحليل دفتر الطلبات وسيولة السوق مفعلة بنجاح."
+        "🤖 *تم تشغيل بوت استراتيجية التصحيح وإعادة الاختبار (Pullback V5.0)*\n"
+        "الدخول الآمن من الدعوم + الفلتر الزمني ودرع الحماية مفعلة بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -290,10 +287,10 @@ def background_scanner():
                 time.sleep(SYMBOL_PAUSE_SECONDS)
             time.sleep(60)
         except Exception:
-            time.sleep(30)
+            time.sleep30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="sedra-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="pullback-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
