@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - HL OTT STRATEGY V9.0
-# BingX + Telegram + HL OTT Trend Tracker + SL/TP Tracker
+# MY EXPERT CRYPTO BOT - HL OTT STRATEGY V9.1
+# BingX + Telegram + HL OTT 30M Timeframe
 # ==========================================
 import os
 import time
@@ -43,7 +43,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "HL OTT Strategy Bot V9.0 is active!"
+    return "HL OTT 30M Strategy Bot V9.1 is active!"
 
 @app.route("/health")
 def health():
@@ -129,13 +129,13 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         return False
 
     message = (
-        f"📊 *إشارة استراتيجية مؤشر HL OTT* 📊\n\n"
+        f"📊 *إشارة استراتيجية مؤشر HL OTT (فريم 30 دقيقة)* 📊\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG (شراء - فوق الخط الأزرق)`\n"
+        f"⚖️ الاتجاه: `🟢 LONG (شراء - فوق الخط الأزرق 30M)`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
         f"🟥 وقف الخسارة (Stop Loss): `{rm['stop_loss']}`\n"
         f"🟩 الهدف الأول (TP 1): `{rm['take_profit_1']}`\n"
-        f"🟩 الهدف الثاني (TP 2): `{rm['take_profit_2']}`\n\n"
+        f"🟩 Goal 2 (TP 2): `{rm['take_profit_2']}`\n\n"
         f"⚠️ *متابعة الأهداف والوقف الآلي مفعلة بنجاح.*"
     )
     return send_telegram_message(message)
@@ -166,15 +166,12 @@ def process_symbol(symbol, engine):
         if market_price <= 0 or quote_volume < 500000:
             return
 
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=40)
-        if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
+        # جلب شمعات فريم النصف ساعة (30m)
+        ohlcv_30m = bingx_call("fetch_ohlcv", symbol, timeframe="30m", limit=40)
+        if not ohlcv_30m:
             return
 
-        direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_4h, ohlcv_1h, ohlcv_15m
-        )
+        direction, entry_price, details = engine.analyze_market_structure(ohlcv_30m)
         if direction != "LONG" or not details:
             return
 
@@ -265,8 +262,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت استراتيجية HL OTT (V9.0)*\n"
-        "التحليل بناءً على خطوط تتبع الاتجاه وأهداف التداول مفعل بنجاح."
+        "🤖 *تم تشغيل بوت استراتيجية HL OTT على فريم 30 دقيقة (V9.1)*\n"
+        "تم تحديث التحليل ليعمل كلياً على فريم 30M."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -286,7 +283,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ott-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ott-30m-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
