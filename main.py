@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - PULLBACK & TIME FILTER V5.0
-# BingX + Telegram + Safe Retest Strategy + Circuit Breaker
+# MY EXPERT CRYPTO BOT - INSTITUTIONAL SMC ENGINE V6.0
+# BingX + Telegram + FVG & Order Block Tracker + Protection
 # ==========================================
 import os
 import time
@@ -21,7 +21,7 @@ MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
 
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "2.0")))
+REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "2.5")))
 
 consecutive_losses = 0
 max_allowed_consecutive_losses = 2
@@ -44,7 +44,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Pullback & Time Filter Crypto Bot V5.0 is active!"
+    return "Institutional SMC Crypto Bot V6.0 is active!"
 
 @app.route("/health")
 def health():
@@ -130,16 +130,16 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         return False
 
     message = (
-        f"🛡️ *إشارة دخول آمن (Pullback & Retest)* 🛡️\n\n"
+        f"🏛️ *إشارة دخول مؤسسية (Institutional SMC Engine)* 🏛️\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `🟢 LONG`\n"
-        f"⭐ الإعداد: `{details.get('setup')}`\n"
+        f"⭐ النمط: `{details.get('setup')}`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
-        f"🛑 وقف الخسارة: `{details['stop_loss']}`\n"
-        f"🎯 الهدف: `{rm['take_profit_target']}`\n"
-        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.0)}`\n"
-        f"📍 الدعم المختبر: `{details.get('support_level')}`\n\n"
-        f"⚠️ *متابعة الأهداف، الوقف، والفلتر الزمني مفعلة.*"
+        f"🛑 وقف الخسارة (OB): `{details['stop_loss']}`\n"
+        f"🎯 الهدف المستهدف: `{rm['take_profit_target']}`\n"
+        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.5)}`\n"
+        f"📦 منطقة الفجوة (FVG): `{details.get('fvg_zone')}`\n\n"
+        f"⚠️ *متابعة الأهداف والستوب مفعلة تلقائياً.*"
     )
     return send_telegram_message(message)
 
@@ -150,7 +150,7 @@ def process_symbol(symbol, engine):
         if time.time() > lockout_reset_time:
             bot_locked_out = False
             consecutive_losses = 0
-            send_telegram_message("♻️ *فك حماية التوقف المؤقت واستئناف العمل.*")
+            send_telegram_message("♻️ *تم انتهاء مدة التوقف واستئناف المسح الآلي.*")
         else:
             return
 
@@ -166,11 +166,11 @@ def process_symbol(symbol, engine):
         market_price = float(ticker.get("last") or ticker.get("close") or 0)
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
         
-        if market_price <= 0 or quote_volume < 400000:
+        if market_price <= 0 or quote_volume < 500000:
             return
 
         ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=50)
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
         if not ohlcv_4h or not ohlcv_1h or not ohlcv_15m:
             return
@@ -243,10 +243,10 @@ def live_trade_tracker():
                                 lockout_reset_time = time.time() + 14400
                                 send_telegram_message(
                                     "🛡️ *درع الحماية الآلي مفعل*\n"
-                                    "تم إيقاف البوت مؤقتًا لمدة 4 ساعات لحماية رصيدك بعد خسارتين."
+                                    "تم إيقاف البوت مؤقتًا لمدة 4 ساعات لحماية محفظتك بعد خسارتين."
                                 )
                         else:
-                            result_title = "⏰ *إغلاق زمني للصفقة (Time-based Expiry)*"
+                            result_title = "⏰ *إغلاق زمني للصفقة (Time Expiration)*"
 
                         message = (
                             f"{result_title}\n\n"
@@ -268,8 +268,8 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت استراتيجية التصحيح وإعادة الاختبار (Pullback V5.0)*\n"
-        "الدخول الآمن من الدعوم + الفلتر الزمني ودرع الحماية مفعلة بنجاح."
+        "🤖 *تم تشغيل بوت التحليل المؤسسي (Institutional SMC Engine V6.0)*\n"
+        "مناطق FVG + كتل الأوامر OB + كسر BOS ونظام الحماية الآلي مفعلة بنجاح."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
@@ -290,7 +290,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="pullback-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="smc-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
