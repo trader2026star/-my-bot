@@ -1,6 +1,6 @@
 # ============================================================
-# EXPERT CRYPTO BOT - HL OTT STRATEGY ENGINE V9.1 (30M TIMEFRAME)
-# Based on HL OTT Trend Tracker & Re-test Logic on 30m Timeframe
+# EXPERT CRYPTO BOT - DOUBLE BOTTOM + INVERSE H&S ENGINE V10.0
+# Strategy: Inverse Head & Shoulders + Double Bottom & Retest
 # ============================================================
 import numpy as np
 
@@ -11,7 +11,7 @@ class StrategyEngine:
         self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
 
     @staticmethod
-    def _array(data, minimum=35):
+    def _array(data, minimum=40):
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -50,41 +50,55 @@ class StrategyEngine:
             out.update(extra)
             return "NEUTRAL", 0, out
 
-        raw30m = self._array(ohlcv_30m, 35)
+        raw30m = self._array(ohlcv_30m, 40)
         if raw30m is None:
-            return no_trade("بيانات فريم 30 دقيقة غير كافية لمؤشر OTT")
+            return no_trade("بيانات فريم 30 دقيقة غير كافية للتحليل")
 
         try:
             closes = raw30m[:-1, 4]
             highs = raw30m[:-1, 2]
             lows = raw30m[:-1, 3]
 
-            # حساب خطوط تتبع الاتجاه OTT على فريم النصف ساعة (30M)
-            ema_fast = np.mean(closes[-5:])
-            ema_slow = np.mean(closes[-20:])
-            baseline = np.mean(closes[-35:])
-
             current_price = float(raw30m[-1, 4])
             atr = self.calculate_atr(highs, lows, closes, 14)
 
-            # شرط الدخول: الاتجاه صاعد فوق خطوط OTT على فريم 30M
-            is_bullish_trend = ema_fast > ema_slow and closes[-1] > baseline
-            
-            if not is_bullish_trend:
-                return no_trade("الاتجاه سلبي على فريم 30 دقيقة (تحت خطوط OTT الحمراء)")
+            # 1. تحديد مستويات الرأس والقاع المزدوج والكتفين
+            # تقسيم الشمعات المتاحة لرصد قاع الكتف الأيسر، الرأس (القاع المزدوج)، والكتف الأيمن
+            left_shoulder_low = float(np.min(lows[-35:-25]))
+            head_low_1 = float(np.min(lows[-25:-18]))
+            head_low_2 = float(np.min(lows[-18:-10]))
+            right_shoulder_low = float(np.min(lows[-10:-3]))
 
-            # تحديد وقف الخسارة أسفل آخر دعم على فريم 30M
-            stop = float(np.min(lows[-5:]) - (0.5 * atr))
+            # التأكد من صحة نموذج القاع المزدوج في الرأس (Head / Double Bottom)
+            is_double_bottom = abs(head_low_1 - head_low_2) / head_low_1 <= 0.015
+            is_head_lowest = (head_low_1 < left_shoulder_low) and (head_low_2 < right_shoulder_low)
+
+            if not (is_double_bottom and is_head_lowest):
+                return no_trade("لم يكتمل نموذج القاع المزدوج في الرأس")
+
+            # 2. تحديد خط العنق (Neckline)
+            neckline_resistance = float(np.max(highs[-25:-10]))
+
+            # 3. التأكد من كسر خط العنق مع إعادة الاختبار (Breakout & Retest)
+            max_recent_high = float(np.max(highs[-5:]))
+            has_broken_neckline = max_recent_high > neckline_resistance
+            is_retesting = abs(current_price - neckline_resistance) / neckline_resistance <= 0.012
+
+            if not (has_broken_neckline and is_retesting):
+                return no_trade("لم يحدث إعادة اختبار (Retest) لخط العنق بعد الاختراق")
+
+            # 4. حساب أهداف الصفقة ووقف الخسارة أسفل الكتف الأيمن
+            stop = float(right_shoulder_low - (0.3 * atr))
             if stop >= current_price:
                 stop = current_price - (1.5 * atr)
 
+            pattern_height = neckline_resistance - min(head_low_1, head_low_2)
+            tp1 = current_price + pattern_height
+            tp2 = current_price + (pattern_height * 1.618)
+
             distance = current_price - stop
             risk_usd = self.total_capital * self.risk_per_trade
-            qty = risk_usd / distance
-
-            # الأهداف الهندسية TP1 و TP2
-            tp1 = current_price + (distance * 2.0)
-            tp2 = current_price + (distance * 3.5)
+            qty = risk_usd / distance if distance > 0 else 0
 
             details = {
                 "stop_loss": self._round(stop),
@@ -93,10 +107,12 @@ class StrategyEngine:
                     "tokens_to_buy": round(qty, 8),
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
-                    "reward_ratio": "1:3 (HL OTT 30M Strategy)"
+                    "reward_ratio": "1:2.5 (Double Bottom + Inv H&S)"
                 },
-                "setup": "HL OTT 30M Trend Tracker",
-                "score": 98,
+                "setup": "Inverse H&S + Double Bottom (Neckline Retest)",
+                "neckline": self._round(neckline_resistance),
+                "right_shoulder": self._round(right_shoulder_low),
+                "score": 99,
                 "atr": self._round(atr)
             }
             return "LONG", self._round(current_price), details
@@ -105,5 +121,4 @@ class StrategyEngine:
             return no_trade(f"خطأ: {str(exc)[:40]}")
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
-        # للتوافق مع المحرك
         return self.analyze_market_structure(ohlcv_15m)
