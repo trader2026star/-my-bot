@@ -1,12 +1,12 @@
 # ============================================================
-# EXPERT CRYPTO BOT - PULLBACK & RETEST WITH TIME FILTER V5.0
-# Safe Entry after Correction + Volume + Temporal/Time Filter
+# EXPERT CRYPTO BOT - INSTITUTIONAL SMC & ICT ENGINE V6.0
+# Smart Money Concepts: FVG + Order Block (OB) + CHoCH/BOS + Volume Flow
 # ============================================================
 import numpy as np
 
 
 class StrategyEngine:
-    def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.0):
+    def __init__(self, capital=10000, risk_per_trade=0.01, reward_ratio=2.5):
         self.total_capital = max(0.0, float(capital))
         self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
         self.reward_ratio = max(float(reward_ratio), 1.5)
@@ -75,74 +75,70 @@ class StrategyEngine:
             "risk_percent": round(self.risk_per_trade * 100, 3),
         }
 
-    @staticmethod
-    def _pivots(highs, lows, left=3, right=3):
-        pl = []
-        for i in range(left, len(highs) - right):
-            lwindow = lows[i-left:i+right+1]
-            if lows[i] == np.min(lwindow) and np.count_nonzero(lwindow == lows[i]) == 1:
-                pl.append(float(lows[i]))
-        return pl
-
     def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m):
         def no_trade(reason, **extra):
             out = {"reason": reason}
             out.update(extra)
             return "NEUTRAL", 0, out
 
-        raw15 = self._array(ohlcv_15m, 40)
-        if raw15 is None:
-            return no_trade("بيانات فريم 15 دقيقة غير كافية")
+        raw1h = self._array(ohlcv_1h, 45)
+        raw15m = self._array(ohlcv_15m, 40)
+        
+        if raw1h is None or raw15m is None:
+            return no_trade("بيانات السوق غير كافية للتحليل المؤسسي")
 
         try:
-            c15 = raw15[:-1]
-            op, hi, lo, cl, vol = (c15[:, i] for i in (1, 2, 3, 4, 5))
+            c1h = raw1h[:-1]
+            c15 = raw15m[:-1]
+
+            # 1. رصد كسر هيكل السوق الصاعد (BOS) على فريم الساعة
+            closes_1h = c1h[:, 4]
+            highs_1h = c1h[:, 2]
+            prev_high = np.max(highs_1h[-20:-3])
             
-            # التحليل الزمني البسيط: التأكد من عدم وجود تذبذب هيكلي حاد في آخر 3 شمعات
-            recent_ranges = hi[-3:] - lo[-3:]
-            avg_range = np.mean(hi - lo)
-            if np.any(recent_ranges > (avg_range * 2.5)):
-                return no_trade("تذبذب زمني/سعرى عالٍ جداً - تجنب الدخول")
+            if closes_1h[-1] <= prev_high:
+                return no_trade("لم يحدث كسر حقيقي لهيكل السوق (BOS) بعد")
 
-            # البحث عن قاع سابق (دعم)
-            piv_lo = self._pivots(hi, lo, 3, 3)
-            if not piv_lo:
-                return no_trade("لا توجد قيعان واضحة للاستناد عليها")
-            support_level = min(piv_lo[-3:]) if len(piv_lo) >= 3 else min(piv_lo)
+            # 2. اكتشاف الفجوة السعرية (Fair Value Gap - FVG) على فريم 15 دقيقة
+            hi15, lo15, cl15, vol15 = c15[:, 2], c15[:, 3], c15[:, 4], c15[:, 5]
+            
+            # شرط FVG الشرائية: قاع الشمعة الحالية أعلى من قمة الشمعة قبل السابقة
+            fvg_top = float(lo15[-1])
+            fvg_bottom = float(hi15[-3])
+            has_fvg = fvg_top > fvg_bottom
 
-            current_price = float(cl[-1])
-            atr = self.calculate_atr(hi, lo, cl, 14)
+            if not has_fvg:
+                return no_trade("لا توجد فجوة سعرية مؤسسية (FVG) واضحة")
 
-            # شرط الـ Pullback (التصحيح): السعر اقترب من الدعم ثم ارتد بشمعة خضراء قوية
-            near_support = abs(current_price - support_level) <= (2.0 * atr) or lo[-1] <= (support_level + atr)
-            is_green = cl[-1] > op[-1]
-            body_ratio = abs(cl[-1] - op[-1]) / max(float(hi[-1] - lo[-1]), 1e-12)
+            current_price = float(cl15[-1])
+            atr = self.calculate_atr(hi15, lo15, cl15, 14)
 
-            if not (near_support and is_green and body_ratio > 0.40):
-                return no_trade("بانتظار تصحيح هادئ واقتراب حقيقي من الدعم مع شمعة ارتداد")
+            # 3. التأكد من التدفق السيولي (Institutional Volume Flow)
+            avg_vol = float(np.mean(vol15[-20:]))
+            if vol15[-1] < (avg_vol * 1.3):
+                return no_trade("حجم التداول لا يعكس تدفقاً سيولياً مؤسسياً")
 
-            # تأكيد الفوليوم
-            avg_vol = float(np.mean(vol[-15:]))
-            if vol[-1] < (avg_vol * 1.15):
-                return no_trade("حجم التداول غير مؤكد للارتداد")
+            # 4. تحديد كتلة الأوامر (Order Block - OB) لوضع وقف الخسارة الآمن
+            ob_low = float(np.min(lo15[-5:]))
+            stop = float(ob_low - (0.3 * atr))
 
-            stop = float(support_level - (0.4 * atr))
             risk = self.calculate_position_size(current_price, stop, "LONG")
             if not risk:
-                return no_trade("فشل حساب المخاطر")
+                return no_trade("فشل حساب إدارة المخاطر")
 
             details = {
                 "stop_loss": self._round(stop),
                 "risk_management": risk,
-                "setup": "Pullback & Retest at Support + Time/Volatility Filter",
-                "score": 94,
-                "support_level": self._round(support_level),
+                "setup": "Institutional SMC (BOS + FVG + Order Block Retest)",
+                "score": 98,
+                "fvg_zone": f"{self._round(fvg_bottom)} - {self._round(fvg_top)}",
+                "order_block_low": self._round(ob_low),
                 "atr": self._round(atr)
             }
             return "LONG", self._round(current_price), details
 
         except Exception as exc:
-            return no_trade(f"خطأ: {str(exc)[:40]}")
+            return no_trade(f"خطأ تقني: {str(exc)[:40]}")
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
         return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m)
