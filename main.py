@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - INSTITUTIONAL SMC ENGINE V6.0
-# BingX + Telegram + FVG & Order Block Tracker + Protection
+# MY EXPERT CRYPTO BOT - TRADINGVIEW STYLE V7.0
+# BingX + Telegram + Dual Targets (TP1 & TP2) + SL
 # ==========================================
 import os
 import time
@@ -17,11 +17,10 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = max(60, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "7200")))
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50")))
 SYMBOL_PAUSE_SECONDS = max(0.10, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.20")))
-MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
+MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2")))
 
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-REWARD_RATIO = max(1.0, float(os.environ.get("REWARD_RATIO", "2.5")))
 
 consecutive_losses = 0
 max_allowed_consecutive_losses = 2
@@ -44,7 +43,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "Institutional SMC Crypto Bot V6.0 is active!"
+    return "TradingView Style Position Bot V7.0 is active!"
 
 @app.route("/health")
 def health():
@@ -126,20 +125,19 @@ def get_all_usdt_symbols():
 
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
-    if not rm or "take_profit_target" not in rm or "stop_loss" not in details:
+    if not rm or "take_profit_1" not in rm or "stop_loss" not in details:
         return False
 
     message = (
-        f"🏛️ *إشارة دخول مؤسسية (Institutional SMC Engine)* 🏛️\n\n"
+        f"📊 *إشارة صفقة بطريقة TradingView Position* 📊\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG`\n"
-        f"⭐ النمط: `{details.get('setup')}`\n"
+        f"⚖️ الاتجاه: `🟢 LONG (شراء)`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
-        f"🛑 وقف الخسارة (OB): `{details['stop_loss']}`\n"
-        f"🎯 الهدف المستهدف: `{rm['take_profit_target']}`\n"
-        f"📐 العائد/المخاطرة: `1:{rm.get('reward_ratio', 2.5)}`\n"
-        f"📦 منطقة الفجوة (FVG): `{details.get('fvg_zone')}`\n\n"
-        f"⚠️ *متابعة الأهداف والستوب مفعلة تلقائياً.*"
+        f"🟥 وقف الخسارة (Stop Loss): `{rm['stop_loss']}`\n"
+        f"🟩 الهدف الأول (TP 1): `{rm['take_profit_1']}`\n"
+        f"🟩 الهدف الثاني (TP 2): `{rm['take_profit_2']}`\n"
+        f"📦 منطقة الفجوة المؤسسية: `{details.get('fvg_zone')}`\n\n"
+        f"⚠️ *المتابعة الهندسية للأهداف مفعلة أوتوماتيكياً.*"
     )
     return send_telegram_message(message)
 
@@ -150,7 +148,7 @@ def process_symbol(symbol, engine):
         if time.time() > lockout_reset_time:
             bot_locked_out = False
             consecutive_losses = 0
-            send_telegram_message("♻️ *تم انتهاء مدة التوقف واستئناف المسح الآلي.*")
+            send_telegram_message("♻️ *تم فك الحماية واستئناف الفحص.*")
         else:
             return
 
@@ -190,7 +188,7 @@ def process_symbol(symbol, engine):
                 "direction": direction,
                 "entry_price": float(entry_price),
                 "stop_loss": float(details["stop_loss"]),
-                "take_profit": float(details["risk_management"]["take_profit_target"]),
+                "take_profit": float(details["risk_management"]["take_profit_2"]), # الاعتماد على الهدف الثاني كهدف رئيسي لإغلاق الصفقة
                 "timestamp": time.time()
             }
         with history_lock:
@@ -243,10 +241,10 @@ def live_trade_tracker():
                                 lockout_reset_time = time.time() + 14400
                                 send_telegram_message(
                                     "🛡️ *درع الحماية الآلي مفعل*\n"
-                                    "تم إيقاف البوت مؤقتًا لمدة 4 ساعات لحماية محفظتك بعد خسارتين."
+                                    "تم إيقاف البوت مؤقتًا لمدة 4 ساعات لحماية الرصيد."
                                 )
                         else:
-                            result_title = "⏰ *إغلاق زمني للصفقة (Time Expiration)*"
+                            result_title = "⏰ *إغلاق زمني للصفقة*"
 
                         message = (
                             f"{result_title}\n\n"
@@ -254,7 +252,7 @@ def live_trade_tracker():
                             f"📊 الاتجاه: `{direction}`\n"
                             f"💵 سعر الإشارة: `{trade['entry_price']}`\n"
                             f"📍 السعر الحالي: `{price}`\n"
-                            f"🎯 الهدف: `{tp}` | 🛑 الوقف: `{sl}`"
+                            f"🎯 الهدف النهائي: `{tp}` | 🛑 الوقف: `{sl}`"
                         )
                         del active_trades[symbol]
                 
@@ -268,13 +266,12 @@ def live_trade_tracker():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل بوت التحليل المؤسسي (Institutional SMC Engine V6.0)*\n"
-        "مناطق FVG + كتل الأوامر OB + كسر BOS ونظام الحماية الآلي مفعلة بنجاح."
+        "🤖 *تم تشغيل بوت أداة التداول الهندسي (TradingView Style V7.0)*\n"
+        "حساب أهداف متعددة (TP1 & TP2) ووقف الخسارة بدقة تامة مفعلة."
     )
     engine = StrategyEngine(
         capital=BOT_CAPITAL_USD,
-        risk_per_trade=RISK_PER_TRADE,
-        reward_ratio=REWARD_RATIO
+        risk_per_trade=RISK_PER_TRADE
     )
     while True:
         try:
@@ -290,7 +287,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="smc-bot-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="tv-bot-scanner")
 tracker_thread = threading.Thread(target=live_trade_tracker, daemon=True, name="trade-tracker")
 scanner_thread.start()
 tracker_thread.start()
