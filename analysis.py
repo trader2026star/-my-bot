@@ -1,6 +1,6 @@
 # ============================================================
-# EXPERT CRYPTO BOT - HL OTT STRATEGY ENGINE V9.0
-# Based on HL OTT Trend Tracker & Re-test Logic
+# EXPERT CRYPTO BOT - HL OTT STRATEGY ENGINE V9.1 (30M TIMEFRAME)
+# Based on HL OTT Trend Tracker & Re-test Logic on 30m Timeframe
 # ============================================================
 import numpy as np
 
@@ -44,36 +44,36 @@ class StrategyEngine:
         tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
         return float(np.mean(tr[-min(max(1, int(period)), len(tr)):])) if len(tr) else 0.0
 
-    def analyze_market_structure(self, ohlcv_4h, ohlcv_1h, ohlcv_15m):
+    def analyze_market_structure(self, ohlcv_30m):
         def no_trade(reason, **extra):
             out = {"reason": reason}
             out.update(extra)
             return "NEUTRAL", 0, out
 
-        raw15m = self._array(ohlcv_15m, 35)
-        if raw15m is None:
-            return no_trade("بيانات الفريم غير كافية لمؤشر OTT")
+        raw30m = self._array(ohlcv_30m, 35)
+        if raw30m is None:
+            return no_trade("بيانات فريم 30 دقيقة غير كافية لمؤشر OTT")
 
         try:
-            closes = raw15m[:-1, 4]
-            highs = raw15m[:-1, 2]
-            lows = raw15m[:-1, 3]
+            closes = raw30m[:-1, 4]
+            highs = raw30m[:-1, 2]
+            lows = raw30m[:-1, 3]
 
-            # محاكاة خطوط التتبع (OTT Trend Logic) باستخدام المتوسطات الحسابية المزدوجة
+            # حساب خطوط تتبع الاتجاه OTT على فريم النصف ساعة (30M)
             ema_fast = np.mean(closes[-5:])
             ema_slow = np.mean(closes[-20:])
             baseline = np.mean(closes[-35:])
 
-            current_price = float(raw15m[-1, 4])
+            current_price = float(raw30m[-1, 4])
             atr = self.calculate_atr(highs, lows, closes, 14)
 
-            # شروط الدخول بناءً على تقاطع خطوط الاتجاه (الخط الأزرق والأحمر في استراتيجية OTT)
+            # شرط الدخول: الاتجاه صاعد فوق خطوط OTT على فريم 30M
             is_bullish_trend = ema_fast > ema_slow and closes[-1] > baseline
             
             if not is_bullish_trend:
-                return no_trade("الاتجاه سلبي حسب مؤشر OTT (تحت الخطوط الحمراء)")
+                return no_trade("الاتجاه سلبي على فريم 30 دقيقة (تحت خطوط OTT الحمراء)")
 
-            # تحديد وقف الخسارة أسفل آخر دعم أو بناءً على ATR
+            # تحديد وقف الخسارة أسفل آخر دعم على فريم 30M
             stop = float(np.min(lows[-5:]) - (0.5 * atr))
             if stop >= current_price:
                 stop = current_price - (1.5 * atr)
@@ -82,7 +82,7 @@ class StrategyEngine:
             risk_usd = self.total_capital * self.risk_per_trade
             qty = risk_usd / distance
 
-            # الأهداف الهندسية (TP1 & TP2) كما تظهر في أداة الشارت
+            # الأهداف الهندسية TP1 و TP2
             tp1 = current_price + (distance * 2.0)
             tp2 = current_price + (distance * 3.5)
 
@@ -93,9 +93,9 @@ class StrategyEngine:
                     "tokens_to_buy": round(qty, 8),
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
-                    "reward_ratio": "1:3 (HL OTT Strategy)"
+                    "reward_ratio": "1:3 (HL OTT 30M Strategy)"
                 },
-                "setup": "HL OTT Trend Tracker (Blue Line Support / Re-test)",
+                "setup": "HL OTT 30M Trend Tracker",
                 "score": 98,
                 "atr": self._round(atr)
             }
@@ -105,4 +105,5 @@ class StrategyEngine:
             return no_trade(f"خطأ: {str(exc)[:40]}")
 
     def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
-        return self.analyze_market_structure(ohlcv_4h, ohlcv_1h, ohlcv_15m)
+        # للتوافق مع المحرك
+        return self.analyze_market_structure(ohlcv_15m)
