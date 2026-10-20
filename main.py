@@ -1,7 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MAIN ENGINE V11.0
-# Features: Comprehensive Multi-Pattern Scanning,
-#           Detailed Diagnostic Logging & Debug Mode
+# MY EXPERT CRYPTO BOT - MAIN ENGINE V11.1
+# Features: Clean Market Filtering (No Fake/Test Symbols)
 # ==========================================
 import os
 import time
@@ -12,7 +11,6 @@ import ccxt
 from flask import Flask, jsonify, request
 from analysis import StrategyEngine
 
-# إعداد السجلات التفصيلية
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -24,7 +22,7 @@ app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SIGNAL_COOLDOWN_SECONDS = max(60, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "1800"))) # 30 دقيقة
+SIGNAL_COOLDOWN_SECONDS = max(60, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "1800")))
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.35")))
 SYMBOL_PAUSE_SECONDS = max(0.05, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.10")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
@@ -65,7 +63,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return f"MY EXPERT CRYPTO BOT V11.0 is active! Debug Mode: {DEBUG_MODE}"
+    return f"MY EXPERT CRYPTO BOT V11.1 is active! Debug Mode: {DEBUG_MODE}"
 
 @app.route("/health")
 def health():
@@ -78,7 +76,6 @@ def debug_stats():
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram configuration missing.")
         return False
     try:
         response = requests.post(
@@ -117,6 +114,7 @@ def bingx_call(method_name, *args, **kwargs):
 
 
 def get_all_usdt_symbols():
+    """فلترة دقيقة لمنع ظهور أي عملات وهمية، تجريبية، أو مشتقات غريبة"""
     try:
         markets = bingx_call("load_markets")
         if not markets:
@@ -131,8 +129,16 @@ def get_all_usdt_symbols():
                 and market.get("swap", True)
             ):
                 base_asset = symbol.split('/')[0].upper()
-                if any(x in symbol.upper() for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR"]):
+                sym_upper = symbol.upper()
+                
+                # منع الرموز التجريبية، الوهمية، أو التي تحتوي على حروف مريبة
+                if any(x in sym_upper for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR", "USD2", "DIS2", "DAL2"]):
                     continue
+                if "SKD" in base_asset or len(base_asset) > 9:
+                    continue
+                if any(char.isdigit() for char in base_asset) and not base_asset.startswith("1000"):
+                    continue
+                    
                 symbols.append(symbol)
         return sorted(set(symbols))
     except Exception as e:
@@ -183,7 +189,7 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
             return
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 300000:
+        if quote_volume < 500000: # رفع حد السيولة الأدنى لتصفية العملات الضعيفة
             return
 
         ohlcv_30m = bingx_call("fetch_ohlcv", symbol, timeframe="30m", limit=45)
@@ -200,8 +206,6 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
         if direction == "NEUTRAL":
             reason = details.get("reason", "Unknown")
             scan_stats["rejection_reasons"][reason] = scan_stats["rejection_reasons"].get(reason, 0) + 1
-            if DEBUG_MODE:
-                logger.debug(f"[{symbol}] Neutral: {reason}")
             return
 
         scan_stats["patterns_detected"] += 1
@@ -231,14 +235,13 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل محرك النماذج الهندسية الشامل (V11.0)*\n"
-        "يدعم اكتشاف النماذج الاربعة (LONG & SHORT) مع تأكيدات SMC والزخم."
+        "🤖 *تم تشغيل محرك النماذج الهندسية الشامل (V11.1 - Clean Market)*\n"
+        "تمت تصفية العملات الوهمية والتجريبية نهائياً."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
     while True:
         try:
-            # التصفير الدوري للإحصائيات قبل كل دورة مسح
             for k in list(scan_stats.keys()):
                 if isinstance(scan_stats[k], int):
                     scan_stats[k] = 0
@@ -256,10 +259,7 @@ def background_scanner():
                 process_symbol(symbol, engine, btc_ohlcv)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
-            logger.info(
-                f"Scan Complete: {scan_stats['scanned_pairs']} pairs scanned. "
-                f"Patterns: {scan_stats['patterns_detected']}, Signals Sent: {scan_stats['signals_sent']}"
-            )
+            logger.info(f"Scan Complete. Valid Pairs Scanned: {scan_stats['scanned_pairs']}")
             time.sleep(60)
         except Exception as exc:
             logger.error(f"Scanner Loop Error: {exc}")
