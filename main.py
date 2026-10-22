@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - CRT + TBS MAIN ENGINE (V13.0)
-# Features: Clean Market Filtering & High Probability CRT + TBS Signals
+# MY EXPERT CRYPTO BOT - ICT MAIN ENGINE (V14.0)
+# Features: Clean Market Filtering & ICT Institutional Signals
 # ==========================================
 import os
 import time
@@ -51,7 +51,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return f"MY EXPERT CRYPTO BOT V13.0 (CRT + TBS High Probability Engine) Active!"
+    return f"MY EXPERT CRYPTO BOT V14.0 (ICT Institutional Engine) Active!"
 
 @app.route("/health")
 def health():
@@ -127,17 +127,18 @@ def get_all_usdt_symbols():
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
     message = (
-        f"🎯 *إشارة CRT + TBS عالية الدقة (High Probability)* 🎯\n\n"
+        f"🏛️ *إشارة ICT المؤسسية (Order Block + FVG)* 🏛️\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG (شراء - Turtle Soup)`\n"
+        f"⚖️ الاتجاه: `🟢 LONG (شراء مؤسسي - Smart Money)`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
-        f"📍 القاع المرجعي (CRT Low): `{details.get('neckline')}`\n"
-        f"⭐️ درجة التقييم الصارمة: `{details.get('score')}/100`\n\n"
+        f"📍 منطقة الأوامر (OB Level): `{details.get('neckline')}`\n"
+        f"⭐️ درجة التقييم المؤسسي: `{details.get('score')}/100`\n\n"
         f"🟥 وقف الخسارة (SL): `{details.get('stop_loss')}`\n"
         f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
-        f"🎯 الهدف الرئيسي (CRT High): `{rm.get('take_profit_3')}`\n\n"
-        f"ℹ️ *ملاحظة الاستراتيجية:* {details.get('smc_note')}"
+        f"🎯 الهدف المؤسسي الرئيسي (TP3): `{rm.get('take_profit_3')}`\n"
+        f"📐 نسبة العائد/المخاطرة: `{rm.get('reward_ratio')}`\n\n"
+        f"ℹ️ *ملاحظة الهيكل:* {details.get('smc_note')}"
     )
     return send_telegram_message(message)
 
@@ -154,7 +155,7 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
             return
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 800000: # تصفية سيولة عالية جداً لضمان جودة الصفقات
+        if quote_volume < 1000000: # سيولة مؤسسية أعلى لضمان عدم التلاعب
             return
 
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=45)
@@ -180,8 +181,8 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🚀 *تم تشغيل محرك CRT + TBS الصارم (V13.0)*\n"
-        "الاستراتيجية تعمل الآن بفلترة صفقات القمة فقط (High Probability Setups)."
+        "🏛️ *تم تشغيل محرك ICT المؤسسي (V14.0)*\n"
+        "البوت يبحث الآن عن مناطق الأوامر (OB) والفجوات الاستثمارية (FVG) فقط."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -204,7 +205,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="crt-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ict-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
