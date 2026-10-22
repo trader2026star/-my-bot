@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - PATTERN RECOGNITION ENGINE (V11.3)
+# MY EXPERT CRYPTO BOT - PATTERN RECOGNITION ENGINE (V11.4)
 # Safer closed-candle analysis, multi-timeframe bias, SMC checks,
 # pattern validation, conservative scoring, ATR-based risk levels.
 # NOTE: No strategy guarantees profit. Backtest before live trading.
@@ -26,7 +26,6 @@ class StrategyEngine:
             a = a[:, :6]
             if not np.all(np.isfinite(a)):
                 return None
-            # CCXT layout: timestamp, open, high, low, close, volume
             if np.any(a[:, 1:5] <= 0) or np.any(a[:, 5] < 0):
                 return None
             if np.any(a[:, 2] < a[:, 3]):  # high < low
@@ -219,7 +218,7 @@ class StrategyEngine:
                     break
         return result
 
-    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None, debug_flag=False):
+    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
         debug = []
 
         def no_trade(reason, **extra):
@@ -274,4 +273,153 @@ class StrategyEngine:
                     necks = [x for x in pl if left[0] < x[0] < right[0]]
                     if necks:
                         pattern, direction = "HEAD_SHOULDERS", "SHORT"
-                        neckline, base, quality = min(x
+                        neckline, base, quality = min(x[1] for x in necks), max(left[1], right[1], head[1]), 22
+                        age = len(a)-1-right[0]
+        if pattern is None and len(ph) >= 2:
+            left, right = ph[-2], ph[-1]
+            if right[0]-left[0] >= 5 and abs(left[1]-right[1]) <= 1.25*atr:
+                necks = [x for x in pl if left[0] < x[0] < right[0]]
+                if necks:
+                    pattern, direction = "DOUBLE_TOP", "SHORT"
+                    neckline, base, quality = min(x[1] for x in necks), max(left[1], right[1]), 18
+                    age = len(a)-1-right[0]
+        if pattern is None:
+            return no_trade("لم يُكتشف نموذج هندسي مكتمل بشروط القمم والقيعان", rsi=round(rsi, 2))
+        if age > 16:
+            return no_trade(f"النموذج قديم: {age} شمعة منذ آخر pivot مؤكد", pattern=pattern, age=age)
+
+        recent_c = c[-6:]
+        state = "FORMING"
+        if direction == "LONG":
+            broke = np.any(recent_c > neckline)
+            retest = l[-1] <= neckline + 0.25*atr and c[-1] > neckline and c[-1] > o[-1]
+            breakout = c[-1] > neckline + 0.35*atr and c[-1] > o[-1]
+            if retest and broke:
+                state = "RETEST_CONFIRMED"
+            elif breakout:
+                state = "BREAKOUT_CONFIRMED"
+            elif c[-1] < base - 0.35*atr:
+                state = "INVALIDATED"
+        else:
+            broke = np.any(recent_c < neckline)
+            retest = h[-1] >= neckline - 0.25*atr and c[-1] < neckline and c[-1] < o[-1]
+            breakout = c[-1] < neckline - 0.35*atr and c[-1] < o[-1]
+            if retest and broke:
+                state = "RETEST_CONFIRMED"
+            elif breakout:
+                state = "BREAKOUT_CONFIRMED"
+            elif c[-1] > base + 0.35*atr:
+                state = "INVALIDATED"
+        debug.append(f"Pattern={pattern}, direction={direction}, age={age}, state={state}, neckline={neckline:.8g}")
+        if state not in ("RETEST_CONFIRMED", "BREAKOUT_CONFIRMED"):
+            return no_trade(f"النموذج غير مؤهل أو أُبطل: {state}", pattern=pattern, state=state)
+
+        if abs(current_price-neckline) > 1.5*atr:
+            return no_trade("تم رفض الإشارة: السعر ابتعد عن خط العنق وأصبح الدخول متأخرًا", pattern=pattern, state=state)
+
+        smc = self.analyze_smc_advanced(a, atr)
+        debug.extend(smc["details"])
+        bias4 = self._bias(ohlcv_4h, 30) if ohlcv_4h is not None else "NEUTRAL"
+        bias1 = self._bias(ohlcv_1h, 30) if ohlcv_1h is not None else "NEUTRAL"
+        btc_bias = self._bias(btc_ohlcv_1h, 30) if btc_ohlcv_1h is not None else "NEUTRAL"
+        debug.append(f"Bias: 4H={bias4}, 1H={bias1}, BTC1H={btc_bias}")
+
+        score = quality
+        score += 15 if state == "RETEST_CONFIRMED" else 10
+        if vol_ratio >= 1.25:
+            score += 8
+        elif vol_ratio >= 1.0:
+            score += 4
+        if direction == "LONG":
+            if rsi >= 45 and rsi <= 68: score += 5
+            if macd_hist > 0: score += 5
+        else:
+            if rsi >= 32 and rsi <= 55: score += 5
+            if macd_hist < 0: score += 5
+        if smc["sweep"] and smc["sweep_direction"] == direction: score += 8
+        if smc["bos"]: score += 5
+        if smc["choch"]: score += 3
+        if smc["fvg"]: score += 3
+        if smc["ob"]: score += 3
+        if smc["eq_levels"]: score += 2
+        expected_bias = "BULLISH" if direction == "LONG" else "BEARISH"
+        for bias, pts in ((bias4, 10), (bias1, 8), (btc_bias, 7)):
+            if bias == expected_bias: score += pts
+            elif bias != "NEUTRAL": score -= pts * 0.65
+        score = int(max(0, min(100, round(score))))
+        debug.append(f"Rule-based quality score={score}/100 (not win probability)")
+        
+        if bias4 != "NEUTRAL" and btc_bias != "NEUTRAL" and bias4 != expected_bias and btc_bias != expected_bias:
+            return no_trade("تعارض قوي: اتجاه 4H والبيتكوين ضد الإشارة", score=score, pattern=pattern)
+        if score < 65:
+            return no_trade(f"التقييم أقل من الحد الأدنى 65/100: {score}", score=score, pattern=pattern)
+
+        if direction == "LONG":
+            structural_stop = base - 0.25*atr
+            stop = min(structural_stop, current_price - 1.2*atr)
+            risk_dist = current_price - stop
+            if risk_dist <= 0 or risk_dist > 3.0*atr:
+                return no_trade("مسافة وقف الخسارة غير مناسبة بالنسبة إلى ATR", score=score)
+            tp1, tp2, tp3 = current_price + risk_dist*1.5, current_price + risk_dist*2.0, current_price + risk_dist*3.0
+        else:
+            structural_stop = base + 0.25*atr
+            stop = max(structural_stop, current_price + 1.2*atr)
+            risk_dist = stop - current_price
+            if risk_dist <= 0 or risk_dist > 3.0*atr:
+                return no_trade("مسافة وقف الخسارة غير مناسبة بالنسبة إلى ATR", score=score)
+            tp1, tp2, tp3 = current_price - risk_dist*1.5, current_price - risk_dist*2.0, current_price - risk_dist*3.0
+        if min(current_price, stop, tp1, tp2, tp3) <= 0:
+            return no_trade("السعر أو الوقف أو الأهداف غير صالحة", score=score)
+
+        risk_usd = self.total_capital*self.risk_per_trade
+        qty = risk_usd/risk_dist
+        details = {
+            "reason": "Signal qualified; rule-based score is not a win probability",
+            "stop_loss": self._round(stop),
+            "risk_management": {
+                "allowed_risk_usd": round(risk_usd, 2),
+                "tokens_to_buy": round(qty, 8),
+                "take_profit_1": self._round(tp1),
+                "take_profit_2": self._round(tp2),
+                "take_profit_3": self._round(tp3),
+                "reward_ratio": "1:2.0",
+                "risk_distance": self._round(risk_dist),
+                "note": "Quantity is theoretical; account for contract size, leverage, fees and slippage on BingX."
+            },
+            "setup": f"{pattern} ({state})",
+            "pattern_name": pattern,
+            "neckline": self._round(neckline),
+            "pattern_base_level": self._round(base),
+            "state": state,
+            "score": score,
+            "atr": self._round(atr),
+            "rsi": round(rsi, 2),
+            "volume_ratio": round(vol_ratio, 2),
+            "timeframe_bias": {"4h": bias4, "1h": bias1, "btc_1h": btc_bias},
+            "smc": smc,
+            "smc_note": " | ".join(smc["details"]) if smc["details"] else "No SMC confirmation detected",
+            "debug_trace": debug
+        }
+        return direction, self._round(current_price), details
+
+    def analyze_market_structure(self, ohlcv_30m, ohlcv_4h=None, ohlcv_1h=None, btc_ohlcv_1h=None, **kwargs):
+        """Universal compatibility wrapper accepting any extra keyword arguments (like debug) from main.py."""
+        return self.analyze_multi_timeframe(ohlcv_4h, ohlcv_1h, ohlcv_30m, btc_ohlcv_1h)
+
+    def calculate_risk_management(self, entry_price, stop_loss, direction="LONG"):
+        entry, stop = float(entry_price), float(stop_loss)
+        if not np.isfinite(entry) or not np.isfinite(stop) or entry <= 0 or stop <= 0:
+            return {"allowed_risk_usd": 0.0, "tokens_to_buy": 0.0, "risk_distance": 0.0}
+        if direction.upper() == "LONG" and stop >= entry:
+            return {"allowed_risk_usd": 0.0, "tokens_to_buy": 0.0, "risk_distance": 0.0}
+        if direction.upper() == "SHORT" and stop <= entry:
+            return {"allowed_risk_usd": 0.0, "tokens_to_buy": 0.0, "risk_distance": 0.0}
+        dist = abs(entry-stop)
+        risk_usd = self.total_capital*self.risk_per_trade
+        qty = risk_usd/dist if dist > 0 else 0.0
+        return {
+            "allowed_risk_usd": round(risk_usd, 2),
+            "tokens_to_buy": round(qty, 8),
+            "risk_distance": round(dist, 8),
+            "note": "Theoretical quantity; contract size, leverage, fees and slippage are not included."
+        }
