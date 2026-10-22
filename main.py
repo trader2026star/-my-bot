@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - ICT MAIN ENGINE (V14.0)
-# Features: Clean Market Filtering & ICT Institutional Signals
+# MY EXPERT CRYPTO BOT - ICT + FOOTPRINT MAIN ENGINE (V15.0)
+# Features: ICT Structure + Footprint Order Flow (R:R = 1:2.5)
 # ==========================================
 import os
 import time
@@ -32,7 +32,6 @@ RISK_PER_TRADE = min(0.05, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
 
 signal_history = {}
-active_trades = {}
 scan_stats = {
     "scanned_pairs": 0,
     "fetch_failures": 0,
@@ -51,7 +50,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return f"MY EXPERT CRYPTO BOT V14.0 (ICT Institutional Engine) Active!"
+    return f"MY EXPERT CRYPTO BOT V15.0 (ICT + Footprint Engine - R:R 1:2.5) Active!"
 
 @app.route("/health")
 def health():
@@ -127,18 +126,18 @@ def get_all_usdt_symbols():
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
     message = (
-        f"🏛️ *إشارة ICT المؤسسية (Order Block + FVG)* 🏛️\n\n"
+        f"📊 *إشارة مؤكدة (ICT + Footprint Order Flow)* 📊\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG (شراء مؤسسي - Smart Money)`\n"
+        f"⚖️ الاتجاه: `🟢 LONG (شراء مؤسسي)`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
-        f"📍 منطقة الأوامر (OB Level): `{details.get('neckline')}`\n"
-        f"⭐️ درجة التقييم المؤسسي: `{details.get('score')}/100`\n\n"
+        f"📍 قاع الـ OB / الوقف: `{details.get('neckline')}`\n"
+        f"⭐️ درجة التقييم: `{details.get('score')}/100`\n\n"
         f"🟥 وقف الخسارة (SL): `{details.get('stop_loss')}`\n"
         f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
-        f"🎯 الهدف المؤسسي الرئيسي (TP3): `{rm.get('take_profit_3')}`\n"
+        f"🎯 الهدف الرئيسي (TP3 - R:R 1:2.5): `{rm.get('take_profit_3')}`\n"
         f"📐 نسبة العائد/المخاطرة: `{rm.get('reward_ratio')}`\n\n"
-        f"ℹ️ *ملاحظة الهيكل:* {details.get('smc_note')}"
+        f"ℹ️ *تأكيد الفوتبرينت والهيكل:* {details.get('smc_note')}"
     )
     return send_telegram_message(message)
 
@@ -155,7 +154,7 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
             return
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 1000000: # سيولة مؤسسية أعلى لضمان عدم التلاعب
+        if quote_volume < 1000000: # فلترة السيولة القوية
             return
 
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=45)
@@ -181,8 +180,8 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🏛️ *تم تشغيل محرك ICT المؤسسي (V14.0)*\n"
-        "البوت يبحث الآن عن مناطق الأوامر (OB) والفجوات الاستثمارية (FVG) فقط."
+        "🚀 *تم تشغيل محرك ICT + Footprint الهجين (V15.0)*\n"
+        "الاستراتيجية تعمل الآن بتأكيد تدفق الأوامر ونسبة مخاطرة لـ عائد 1:2.5 ثابتة."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -205,7 +204,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="ict-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="footprint-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
