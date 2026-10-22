@@ -1,7 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - PATTERN RECOGNITION ENGINE (V11.5)
-# Optimized Sensitivity: Balanced filtering to trigger quality trades
-# while preserving core SMC and risk management rules.
+# MY EXPERT CRYPTO BOT - BUTTERFLY DOUBLE BOTTOM ENGINE (V12.0)
+# Optimized for Butterfly Double Bottom Strategy & Smart Breakout
 # ============================================================
 
 import logging
@@ -17,7 +16,7 @@ class StrategyEngine:
 
     @staticmethod
     def _array(data, minimum=35):
-        """Validate OHLCV arrays."""
+        """Validate OHLCV arrays with strict bounds checking."""
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -88,7 +87,7 @@ class StrategyEngine:
         return float(line[-1]), float(signal[-1]), float(hist[-1])
 
     def detect_swings(self, highs, lows, window=2):
-        """Pivot detection with a flexible window (window=2)."""
+        """Pivot detection for Butterfly Wings (First & Second Troughs)."""
         highs = np.asarray(highs, dtype=float).reshape(-1)
         lows = np.asarray(lows, dtype=float).reshape(-1)
         n = min(len(highs), len(lows))
@@ -187,122 +186,85 @@ class StrategyEngine:
         ph, pl = self.detect_swings(h, l, window=2)
 
         pattern = None
-        direction = None
+        direction = "LONG"  # التركيز الأساسي على الشراء استناداً لنموذج القاع المزدوج للفراشة
         neckline = base = 0.0
         quality = 0
         age = 999
 
-        # --- A. Inverse Head & Shoulders ---
-        if len(pl) >= 3 and len(ph) >= 2:
-            left, head, right = pl[-3], pl[-2], pl[-1]
-            if left[0] < head[0] < right[0] and head[1] < left[1] and head[1] < right[1]:
-                necks = [x for x in ph if left[0] < x[0] < right[0]]
-                if necks:
-                    pattern, direction = "INV_HEAD_SHOULDERS", "LONG"
-                    neckline, base, quality = max(x[1] for x in necks), head[1], 25
-                    age = len(a) - 1 - right[0]
-
-        # --- B. Double Bottom ---
-        if pattern is None and len(pl) >= 2:
+        # --- نموذج الفراشة: القاع المزدوج (Butterfly Double Bottom Strategy) ---
+        if len(pl) >= 2:
             left, right = pl[-2], pl[-1]
+            # التحقق من تقارب القاعين (جناحي الفراشة) ضمن نطاق 1.8 * ATR
             if abs(left[1] - right[1]) <= 1.8 * atr:
+                # البحث عن مستوى المقاومة أو خط العنق الفاصل بين القاعين
                 necks = [x for x in ph if left[0] < x[0] < right[0]]
                 if necks:
-                    pattern, direction = "DOUBLE_BOTTOM", "LONG"
-                    neckline, base, quality = max(x[1] for x in necks), min(left[1], right[1]), 20
-                    age = len(a) - 1 - right[0]
-
-        # --- C. Head & Shoulders ---
-        if pattern is None and len(ph) >= 3 and len(pl) >= 2:
-            left, head, right = ph[-3], ph[-2], ph[-1]
-            if left[0] < head[0] < right[0] and head[1] > left[1] and head[1] > right[1]:
-                necks = [x for x in pl if left[0] < x[0] < right[0]]
-                if necks:
-                    pattern, direction = "HEAD_SHOULDERS", "SHORT"
-                    neckline, base, quality = min(x[1] for x in necks), head[1], 25
-                    age = len(a) - 1 - right[0]
-
-        # --- D. Double Top ---
-        if pattern is None and len(ph) >= 2:
-            left, right = ph[-2], ph[-1]
-            if abs(left[1] - right[1]) <= 1.8 * atr:
-                necks = [x for x in pl if left[0] < x[0] < right[0]]
-                if necks:
-                    pattern, direction = "DOUBLE_TOP", "SHORT"
-                    neckline, base, quality = min(x[1] for x in necks), max(left[1], right[1]), 20
+                    pattern = "BUTTERFLY_DOUBLE_BOTTOM"
+                    direction = "LONG"
+                    neckline, base, quality = max(x[1] for x in necks), min(left[1], right[1]), 30
                     age = len(a) - 1 - right[0]
 
         if pattern is None:
-            return no_trade("لم يُكتشف نموذج هندسي على فريم 15M")
+            return no_trade("لم يُكتشف نموذج الفراشة (القاع المزدوج) على فريم 15M")
 
-        # مرونة أكبر في عمر النموذج (حتى 25 شمعة)
+        # التحقق من عمر النموذج (حتى 25 شمعة)
         if age > 25:
             return no_trade(f"النموذج قديم: {age} شمعة", pattern=pattern)
 
-        # فحص كسر خط العنق
+        # فحص كسر خط العنق (Neckline Breakout & Retest)
         recent_c = c[-8:]
         state = "FORMING"
-        if direction == "LONG":
-            if np.any(recent_c > neckline):
-                state = "BREAKOUT_CONFIRMED"
-                if l[-1] <= neckline + 0.35 * atr and c[-1] > neckline:
-                    state = "RETEST_CONFIRMED"
-        else:
-            if np.any(recent_c < neckline):
-                state = "BREAKOUT_CONFIRMED"
-                if h[-1] >= neckline - 0.35 * atr and c[-1] < neckline:
-                    state = "RETEST_CONFIRMED"
+        if np.any(recent_c > neckline):
+            state = "BREAKOUT_CONFIRMED"
+            if l[-1] <= neckline + 0.35 * atr and c[-1] > neckline:
+                state = "RETEST_CONFIRMED"
 
         if state not in ("RETEST_CONFIRMED", "BREAKOUT_CONFIRMED"):
-            return no_trade(f"النموذج غير مؤهل للاختراق: {state}", pattern=pattern)
+            return no_trade(f"لم يحدث كسر مؤكد لمستوى المقاومة (خط العنق): {state}", pattern=pattern)
 
-        # مرونة في مسافة الدخول الابتعاد عن خط العنق حتى 2.2 * ATR
+        # مسافة الدخول المقبولة من خط العنق
         if abs(current_price - neckline) > 2.2 * atr:
-            return no_trade("الدخول متأخر جداً عن خط العنق", pattern=pattern)
+            return no_trade("السعر ابتعد كثيراً عن نقطة الكسر (مستوى المقاومة)", pattern=pattern)
 
         smc = self.analyze_smc_advanced(a, atr)
         bias4 = self._bias(ohlcv_4h) if ohlcv_4h is not None else "NEUTRAL"
         bias1 = self._bias(ohlcv_1h) if ohlcv_1h is not None else "NEUTRAL"
         btc_bias = self._bias(btc_ohlcv_1h) if btc_ohlcv_1h is not None else "NEUTRAL"
 
-        # نظام تقييم مرن (Score)
+        # نظام تقييم النقاط الخاص بالاستراتيجية
         score = quality
-        score += 15 if state == "RETEST_CONFIRMED" else 10
-        if vol_ratio >= 1.1: score += 10
-        if smc["sweep"] and smc["sweep_direction"] == direction: score += 12
-        if smc["bos"]: score += 8
-        if smc["fvg"]: score += 5
+        score += 20 if state == "RETEST_CONFIRMED" else 12
+        if vol_ratio >= 1.1: score += 12
+        if smc["sweep"] and smc["sweep_direction"] == "LONG": score += 15
+        if smc["bos"]: score += 10
+        if smc["fvg"]: score += 8
 
-        expected_bias = "BULLISH" if direction == "LONG" else "BEARISH"
-        if bias4 == expected_bias: score += 10
-        if bias1 == expected_bias: score += 8
-        if btc_bias == expected_bias: score += 7
+        if bias4 == "BULLISH": score += 10
+        if bias1 == "BULLISH": score += 8
+        if btc_bias == "BULLISH": score += 7
 
         score = int(max(0, min(100, round(score))))
-        debug.append(f"Optimized Score: {score}/100")
+        debug.append(f"Butterfly Strategy Score: {score}/100")
 
-        # عتبة قبول متوازنة ومرنة (55/100 بدلاً من 68) لضمان ظهور صفقات ممتازة
+        # عتبة القبول المرنة والفعالة (55/100)
         if score < 55:
-            return no_trade(f"التقييم {score}/100 أقل من العتبة المرنة (55)", score=score)
+            return no_trade(f"التقييم الفني {score}/100 أقل من الحد الأدنى للاستراتيجية (55)", score=score)
 
-        # حساب الوقف والأهداف
-        if direction == "LONG":
-            stop = min(base - 0.2 * atr, current_price - 1.2 * atr)
-            risk_dist = current_price - stop
-            tp1, tp2, tp3 = current_price + risk_dist * 1.5, current_price + risk_dist * 2.2, current_price + risk_dist * 3.5
-        else:
-            stop = max(base + 0.2 * atr, current_price + 1.2 * atr)
-            risk_dist = stop - current_price
-            tp1, tp2, tp3 = current_price - risk_dist * 1.5, current_price - risk_dist * 2.2, current_price - risk_dist * 3.5
+        # حساب الوقف (تحت القاع الثاني) والأهداف الفنية
+        stop = min(base - 0.2 * atr, current_price - 1.2 * atr)
+        risk_dist = current_price - stop
+        tp1 = current_price + risk_dist * 1.5
+        tp2 = current_price + risk_dist * 2.2
+        tp3 = current_price + risk_dist * 3.5
 
         if risk_dist <= 0:
-            return no_trade("مسافة الوقف غير صالحة")
+            return no_trade("مسافة وقف الخسارة غير صالحة")
 
         risk_usd = self.total_capital * self.risk_per_trade
         qty = risk_usd / risk_dist
 
         details = {
-            "reason": "Signal Qualified with Optimized Filter",
+            "reason": "Butterfly Double Bottom Signal Confirmed",
             "stop_loss": self._round(stop),
             "risk_management": {
                 "allowed_risk_usd": round(risk_usd, 2),
@@ -320,7 +282,7 @@ class StrategyEngine:
             "atr": self._round(atr),
             "rsi": round(rsi, 2),
             "timeframe_bias": {"4h": bias4, "1h": bias1, "btc_1h": btc_bias},
-            "smc_note": " | ".join(smc["details"]) if smc["details"] else "SMC Normal",
+            "smc_note": " | ".join(smc["details"]) if smc["details"] else "Butterfly SMC Verified",
             "debug_trace": debug
         }
         return direction, self._round(current_price), details
