@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - ICT + FOOTPRINT ENGINE (V15.0)
-# Hybrid Engine: ICT Structure + Footprint Order Flow (R:R = 1:2.5)
+# MY EXPERT CRYPTO BOT - MULTI-TIMEFRAME ICT + FOOTPRINT (V16.0)
+# Multi-Timeframe Alignment: 1D (Bias) -> 4H (BOS) -> 1H (OB/FVG) -> 15M (Entry)
 # ============================================================
 
 import logging
@@ -15,7 +15,7 @@ class StrategyEngine:
         self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
 
     @staticmethod
-    def _array(data, minimum=35):
+    def _array(data, minimum=20):
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -51,110 +51,114 @@ class StrategyEngine:
         tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
         return float(np.mean(tr[-period:])) if len(tr) > 0 else 0.0
 
-    def analyze_footprint_imbalance(self, open_p, high_p, low_p, close_p, volume):
-        """
-        محاكاة Footprint Delta & Buying Imbalance بناءً على حركة السعر داخل الشمعة وحجم التداول.
-        """
-        candle_range = high_p - low_p
-        if candle_range <= 0 or volume <= 0:
+    def _get_daily_bias(self, ohlcv_1d):
+        """1. اليومي: تحديد الانحياز والمستويات الرئيسية"""
+        arr = self._array(ohlcv_1d, minimum=15)
+        if arr is None:
+            return "NEUTRAL"
+        closes = arr[:, 4]
+        # إذا كان السعر الحالي أعلى من متوسط آخر 10 أيام -> الانحياز صاعد
+        ma10 = np.mean(closes[-10:])
+        return "BULLISH" if closes[-1] > ma10 else "BEARISH"
+
+    def _check_4h_structure(self, ohlcv_4h):
+        """2. 4 ساعات: تحديد الاتجاه وسحب السيولة والكسور (BOS)"""
+        arr = self._array(ohlcv_4h, minimum=20)
+        if arr is None:
+            return False
+        highs = arr[:, 2]
+        closes = arr[:, 4]
+        # كسر قمة سابقة (BOS) مع زخم صاعد
+        recent_high = np.max(highs[-10:-2])
+        return bool(closes[-1] > recent_high)
+
+    def _check_1h_ob_fvg(self, ohlcv_1h):
+        """3. ساعة واحدة: كشف الأوردر بلوك (OB) والفجوات السعرية (FVG)"""
+        arr = self._array(ohlcv_1h, minimum=20)
+        if arr is None:
             return False, 0.0
-
-        # تقدير الدلتا والشرائين العدائيين (Aggressive Buyers)
-        body = close_p - open_p
-        delta_ratio = body / candle_range  # مؤشر قوة اتجاه الدلتا
         
-        # شرط Footprint Imbalance: زيادة السيولة الشرائية المفاجئة مع إغلاق قاطعة صاعدة
-        is_buying_imbalance = delta_ratio > 0.4 and volume > 0.0
-
-        return is_buying_imbalance, delta_ratio
-
-    def analyze_ict_footprint(self, a, atr):
-        result = {"valid": False, "direction": None, "ob_level": 0.0, "details": []}
-        if len(a) < 15 or atr <= 0:
-            return result
-
-        o, h, l, c, v = a[:, 1], a[:, 2], a[:, 3], a[:, 4], a[:, 5]
-
-        # 1. كشف منطقة ICT Bullish FVG / OB
-        fvg_detected = False
-        for i in range(len(a) - 1, max(3, len(a) - 8), -1):
-            if l[i] > h[i-2]:  # الفجوة السعرية
-                fvg_detected = True
+        lows = arr[:, 3]
+        highs = arr[:, 2]
+        
+        # كشف فجوة FVG صاعدة على فريم الساعة
+        has_fvg = False
+        for i in range(len(arr) - 1, max(2, len(arr) - 6), -1):
+            if lows[i] > highs[i-2]:
+                has_fvg = True
                 break
+                
+        ob_level = float(np.min(lows[-5:-1]))
+        return has_fvg, ob_level
 
-        # تحديد قاع الـ Order Block
-        ob_level = float(np.min(l[-5:-1]))
+    def _check_15m_entry(self, ohlcv_15m):
+        """4. 15 دقيقة: التنقية والتأكيد المباشر عبر الفوتبرينت والدلتا"""
+        arr = self._array(ohlcv_15m, minimum=20)
+        if arr is None:
+            return False
+        
+        o, h, l, c, v = arr[-1, 1], arr[-1, 2], arr[-1, 3], arr[-1, 4], arr[-1, 5]
+        candle_range = h - l
+        if candle_range <= 0 or v <= 0:
+            return False
+            
+        # التأكيد عبر تدفق السيولة الشرائية الفورية (Footprint Confirmation)
+        body = c - o
+        delta_ratio = body / candle_range
+        return bool(delta_ratio > 0.35 and c > o)
 
-        # 2. كشف Footprint Confirmation في الشمعة الأخيرة
-        has_imbalance, delta_ratio = self.analyze_footprint_imbalance(o[-1], h[-1], l[-1], c[-1], v[-1])
-
-        # 3. التأكيد المزدوج (ICT Area + Footprint Order Flow)
-        if fvg_detected and has_imbalance:
-            result["valid"] = True
-            result["direction"] = "LONG"
-            result["ob_level"] = ob_level
-            result["details"].append("ICT Bullish FVG Reclaimed")
-            result["details"].append(f"Footprint Buying Imbalance Confirmed (Delta Ratio: {round(delta_ratio, 2)})")
-
-        return result
-
-    def analyze_multi_timeframe(self, ohlcv_4h, ohlcv_1h, ohlcv_15m, btc_ohlcv_1h=None):
+    def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None, ohlcv_4h=None, ohlcv_1d=None, **kwargs):
         debug = []
 
-        def no_trade(reason, **extra):
-            out = {"reason": reason, "debug_trace": debug}
-            out.update(extra)
-            return "NEUTRAL", 0, out
+        def no_trade(reason):
+            return "NEUTRAL", 0, {"reason": reason, "debug_trace": debug}
 
-        raw15 = self._array(ohlcv_15m, 35)
-        if raw15 is None or len(raw15) < 36:
-            return no_trade("بيانات غير كافية")
+        # 1. التأكد من انحياز الفريم اليومي (1D)
+        daily_bias = self._get_daily_bias(ohlcv_1d)
+        if daily_bias != "BULLISH":
+            return no_trade("الانحياز اليومي (1D) ليس صاعداً")
 
-        a = raw15[:-1]
+        # 2. التأكد من كسر الهيكل على فريم (4H)
+        if not self._check_4h_structure(ohlcv_4h):
+            return no_trade("لم يتحقق كسر الهيكل (BOS) على فريم 4 ساعات")
+
+        # 3. التأكد من وجود FVG و Order Block على فريم (1H)
+        has_1h_fvg, ob_level = self._check_1h_ob_fvg(ohlcv_1h)
+        if not has_1h_fvg:
+            return no_trade("لا توجد مناطق فجوة سعرية (FVG) أو Order Block على فريم الساعة")
+
+        # 4. التأكد من شمعة التفعيل الصارمة على فريم (15M)
+        if not self._check_15m_entry(ohlcv_15m):
+            return no_trade("شمعة 15 دقيقة لم تعطِ تأكيد تدفق الأوامر (Footprint Confirmation)")
+
+        raw15 = self._array(ohlcv_15m, 20)
         current_price = float(raw15[-1, 4])
-        atr = self.calculate_atr(a[:, 2], a[:, 3], a[:, 4], 14)
-        if atr <= 0 or current_price <= 0:
-            return no_trade("بيانات ATR غير صالحة")
+        atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
 
-        setup = self.analyze_ict_footprint(a, atr)
-        if not setup["valid"]:
-            return no_trade("لم تتحقق شروط الدمج (ICT + Footprint Imbalance)")
-
-        direction = setup["direction"]
-
-        # تحديد الوقف الذكي أسفل الـ Order Block الموثق بالفوتبرينت
-        stop = min(setup["ob_level"] - 0.15 * atr, current_price - 1.2 * atr)
+        # حساب الوقف والأهداف بناءً على نسبة 1:2.5
+        stop = min(ob_level - 0.2 * atr, current_price - 1.2 * atr)
         risk_dist = current_price - stop
         if risk_dist <= 0:
             return no_trade("مسافة الوقف غير صالحة")
 
-        # تطبيق هدف ثابت ونسبة عائد لـ مخاطرة 1:2.5 بالضبط
         tp_target = current_price + (risk_dist * 2.5)
-
         risk_usd = self.total_capital * self.risk_per_trade
         qty = risk_usd / risk_dist
 
         details = {
-            "reason": "ICT + Footprint Validated Setup",
+            "reason": "Aligned Multi-Timeframe ICT Setup (1D+4H+1H+15M)",
             "stop_loss": self._round(stop),
             "risk_management": {
                 "allowed_risk_usd": round(risk_usd, 2),
                 "tokens_to_buy": round(qty, 8),
                 "take_profit_1": self._round(current_price + (risk_dist * 1.2)),
                 "take_profit_2": self._round(current_price + (risk_dist * 1.8)),
-                "take_profit_3": self._round(tp_target),  # Target R:R = 1:2.5
+                "take_profit_3": self._round(tp_target),
                 "reward_ratio": "1:2.5"
             },
-            "setup": "ICT + Footprint Order Flow",
-            "pattern_name": "ICT_FOOTPRINT",
-            "neckline": self._round(setup["ob_level"]),
-            "state": "FOOTPRINT_CONFIRMED",
-            "score": 88,
-            "atr": self._round(atr),
-            "smc_note": " | ".join(setup["details"]),
-            "debug_trace": debug
+            "setup": "Full Multi-Timeframe ICT Alignment",
+            "score": 95,
+            "smc_note": "1D Daily Bias (BULLISH) | 4H BOS Confirmed | 1H FVG & OB Found | 15M Entry Confirmed"
         }
-        return direction, self._round(current_price), details
 
-    def analyze_market_structure(self, ohlcv_30m, ohlcv_4h=None, ohlcv_1h=None, btc_ohlcv_1h=None, **kwargs):
-        return self.analyze_multi_timeframe(ohlcv_4h, ohlcv_1h, ohlcv_30m, btc_ohlcv_1h)
+        return "LONG", self._round(current_price), details
