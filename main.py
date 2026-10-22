@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MAIN ENGINE V11.1
-# Features: Clean Market Filtering (No Fake/Test Symbols)
+# MY EXPERT CRYPTO BOT - BUTTERFLY ENGINE V12.0
+# Features: Clean Market Filtering & Butterfly Double Bottom Strategy
 # ==========================================
 import os
 import time
@@ -63,7 +63,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return f"MY EXPERT CRYPTO BOT V11.1 is active! Debug Mode: {DEBUG_MODE}"
+    return f"MY EXPERT CRYPTO BOT V12.0 (Butterfly Double Bottom Strategy) is active! Debug Mode: {DEBUG_MODE}"
 
 @app.route("/health")
 def health():
@@ -148,10 +148,10 @@ def get_all_usdt_symbols():
 
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
-    dir_emoji = "🟢 LONG (شراء)" if direction == "LONG" else "🔴 SHORT (بيع)"
+    dir_emoji = "🟢 LONG (شراء - قاع مزدوج للفراشة)" if direction == "LONG" else "🔴 SHORT (بيع)"
 
     message = (
-        f"📊 *إشارة هندسية مؤكدة ({details.get('setup')})* 📊\n\n"
+        f"🦋 *إشارة نموذج الفراشة: القاع المزدوج مؤكدة* 🦋\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{dir_emoji}`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
@@ -162,7 +162,7 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
         f"🟩 الهدف الثالث (TP3): `{rm.get('take_profit_3')}`\n"
         f"📐 نسبة العائد/المخاطرة: `{rm.get('reward_ratio')}`\n\n"
-        f"ℹ️ *ملاحظة SMC:* {details.get('smc_note')}"
+        f"ℹ️ *ملاحظة الاستراتيجية:* {details.get('smc_note')}"
     )
     return send_telegram_message(message)
 
@@ -235,8 +235,8 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🤖 *تم تشغيل محرك النماذج الهندسية الشامل (V11.1 - Clean Market)*\n"
-        "تمت تصفية العملات الوهمية والتجريبية نهائياً."
+        "🤖 *تم تشغيل محرك نموذج الفراشة: القاع المزدوج (V12.0)*\n"
+        "تم تفعيل استراتيجية القاع المزدوج بدقة تامة مع تصفية العملات الوهمية."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -266,7 +266,7 @@ def background_scanner():
             time.sleep(30)
 
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="pattern-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="butterfly-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
