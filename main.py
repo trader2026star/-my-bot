@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - ICT + FOOTPRINT MAIN ENGINE (V15.0)
-# Features: ICT Structure + Footprint Order Flow (R:R = 1:2.5)
+# MY EXPERT CRYPTO BOT - MULTI-TIMEFRAME ENGINE (V16.0)
+# Multi-Timeframe Logic (1D -> 4H -> 1H -> 15M)
 # ==========================================
 import os
 import time
@@ -22,40 +22,30 @@ app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SIGNAL_COOLDOWN_SECONDS = max(60, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "1800")))
+SIGNAL_COOLDOWN_SECONDS = max(60, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "3600")))
 API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.35")))
 SYMBOL_PAUSE_SECONDS = max(0.05, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.10")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
 
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.05, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
 
 signal_history = {}
-scan_stats = {
-    "scanned_pairs": 0,
-    "fetch_failures": 0,
-    "signals_sent": 0
-}
+scan_stats = {"scanned_pairs": 0, "signals_sent": 0}
 
 history_lock = threading.Lock()
 api_lock = threading.Lock()
 _last_api_request = 0.0
 
-bingx = ccxt.bingx({
-    "enableRateLimit": True,
-    "timeout": 20000,
-    "options": {"defaultType": "swap"}
-})
+bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defaultType": "swap"}})
 
 @app.route("/")
 def home():
-    return f"MY EXPERT CRYPTO BOT V15.0 (ICT + Footprint Engine - R:R 1:2.5) Active!"
+    return "MY EXPERT CRYPTO BOT V16.0 (Multi-Timeframe 1D/4H/1H/15M) Active!"
 
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy", "stats": scan_stats}), 200
-
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -63,19 +53,13 @@ def send_telegram_message(message):
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True
-            },
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True},
             timeout=15
         )
         return response.status_code == 200
     except Exception as e:
         logger.error(f"Telegram error: {e}")
         return False
-
 
 def bingx_call(method_name, *args, **kwargs):
     global _last_api_request
@@ -95,7 +79,6 @@ def bingx_call(method_name, *args, **kwargs):
             time.sleep(1.0)
     return None
 
-
 def get_all_usdt_symbols():
     try:
         markets = bingx_call("load_markets")
@@ -111,8 +94,7 @@ def get_all_usdt_symbols():
                 and market.get("swap", True)
             ):
                 base_asset = symbol.split('/')[0].upper()
-                sym_upper = symbol.upper()
-                if any(x in sym_upper for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR", "USD2"]):
+                if any(x in symbol.upper() for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR"]):
                     continue
                 if len(base_asset) > 9:
                     continue
@@ -122,27 +104,23 @@ def get_all_usdt_symbols():
         logger.error(f"Error loading markets: {e}")
         return []
 
-
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
     message = (
-        f"📊 *إشارة مؤكدة (ICT + Footprint Order Flow)* 📊\n\n"
+        f"💎 *إشارة نخبويّة - توافق الفريمات الأربعة (1D / 4H / 1H / 15M)* 💎\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG (شراء مؤسسي)`\n"
+        f"⚖️ الاتجاه: `🟢 LONG`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
-        f"📍 قاع الـ OB / الوقف: `{details.get('neckline')}`\n"
-        f"⭐️ درجة التقييم: `{details.get('score')}/100`\n\n"
+        f"⭐️ درجة الجودة الممتازة: `{details.get('score')}/100`\n\n"
         f"🟥 وقف الخسارة (SL): `{details.get('stop_loss')}`\n"
         f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
-        f"🎯 الهدف الرئيسي (TP3 - R:R 1:2.5): `{rm.get('take_profit_3')}`\n"
-        f"📐 نسبة العائد/المخاطرة: `{rm.get('reward_ratio')}`\n\n"
-        f"ℹ️ *تأكيد الفوتبرينت والهيكل:* {details.get('smc_note')}"
+        f"🎯 الهدف الرئيسي (TP3 - R:R 1:2.5): `{rm.get('take_profit_3')}`\n\n"
+        f"ℹ️ *هيكلية التأكيد:* {details.get('smc_note')}"
     )
     return send_telegram_message(message)
 
-
-def process_symbol(symbol, engine, btc_ohlcv_1h):
+def process_symbol(symbol, engine):
     try:
         now = time.time()
         with history_lock:
@@ -154,14 +132,21 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
             return
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 1000000: # فلترة السيولة القوية
+        if quote_volume < 3000000: # تصفية سيولة عالية جداً لتصفية الصفقات القوية فقط
             return
 
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=45)
-        if not ohlcv_15m:
+        # جلب بيانات الفريمات الأربعة كاملة
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
+        ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=20)
+
+        if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
             return
 
-        direction, entry_price, details = engine.analyze_market_structure(ohlcv_15m)
+        direction, entry_price, details = engine.analyze_market_structure(
+            ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
+        )
         scan_stats["scanned_pairs"] += 1
 
         if direction == "NEUTRAL":
@@ -176,12 +161,11 @@ def process_symbol(symbol, engine, btc_ohlcv_1h):
     except Exception as exc:
         logger.error(f"Error processing {symbol}: {exc}")
 
-
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🚀 *تم تشغيل محرك ICT + Footprint الهجين (V15.0)*\n"
-        "الاستراتيجية تعمل الآن بتأكيد تدفق الأوامر ونسبة مخاطرة لـ عائد 1:2.5 ثابتة."
+        "💎 *تم تشغيل محرك توافق الفريمات الأربعة (V16.0)*\n"
+        "البوت لن يرسل أي صفقة إلا بعد موافقة الفريم اليومي + 4 ساعات + الساعة + 15 دقيقة."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -192,10 +176,8 @@ def background_scanner():
                 time.sleep(30)
                 continue
 
-            btc_ohlcv = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1h", limit=25)
-
             for symbol in symbols:
-                process_symbol(symbol, engine, btc_ohlcv)
+                process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
             time.sleep(60)
@@ -203,8 +185,7 @@ def background_scanner():
             logger.error(f"Scanner Loop Error: {exc}")
             time.sleep(30)
 
-
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="footprint-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="mtf-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
