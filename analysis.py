@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - INSTITUTIONAL ICT/SMC + VOLUME PROFILE (V20.0)
-# Multi-Timeframe Alignment: 1D -> 4H -> 1H (OB/FVG/Value Area) -> 15M (Closed Candles)
+# MY EXPERT CRYPTO BOT - INSTITUTIONAL ICT/SMC ENGINE (V20.1 FLEXIBLE)
+# High Efficiency & Balanced Entry Logic
 # ============================================================
 
 import logging
@@ -51,14 +51,12 @@ class StrategyEngine:
         return float(np.mean(tr[-period:])) if len(tr) > 0 else 0.0
 
     def _calculate_volume_profile(self, arr, bins=20):
-        """حساب بروفايل الحجم ومنطقة القيمة (VAH, VAL, POC) بدقة مؤسسية"""
         highs = arr[:, 2]
         lows = arr[:, 3]
         closes = arr[:, 4]
         volumes = arr[:, 5]
         
-        min_p = np.min(lows)
-        max_p = np.max(highs)
+        min_p, max_p = np.min(lows), np.max(highs)
         if min_p == max_p:
             return 0.0, 0.0, 0.0
             
@@ -81,8 +79,7 @@ class StrategyEngine:
         
         target_vol = total_vol * 0.70
         current_vol = bin_volumes[poc_bin]
-        lower_idx = poc_bin
-        upper_idx = poc_bin
+        lower_idx, upper_idx = poc_bin, poc_bin
         
         while current_vol < target_vol:
             expanded = False
@@ -104,7 +101,6 @@ class StrategyEngine:
         return float(vah), float(val), float(poc)
 
     def _get_daily_bias(self, ohlcv_1d):
-        """فريم اليومي: تحديد الانحياز باستخدام الشموع المغلقة حصراً"""
         arr = self._array(ohlcv_1d, minimum=15)
         if arr is None:
             return "NEUTRAL", 50
@@ -123,7 +119,6 @@ class StrategyEngine:
         return bias, score
 
     def _check_4h_bos(self, ohlcv_4h, bias):
-        """فريم 4 ساعات: تحديد كسر الهيكل BOS بناءً على الشموع المغلقة"""
         arr = self._array(ohlcv_4h, minimum=20)
         if arr is None:
             return False, 0
@@ -142,7 +137,6 @@ class StrategyEngine:
         return bos_confirmed, (20 if bos_confirmed else 0)
 
     def _check_1h_ob_fvg(self, ohlcv_1h, bias):
-        """فريم الساعة: رصد Order Block و FVG الحقيقي بدون تسرع"""
         arr = self._array(ohlcv_1h, minimum=20)
         if arr is None:
             return False, 0.0, 0, {}
@@ -168,7 +162,7 @@ class StrategyEngine:
                 
         fvg_data = {"type": "Bullish FVG" if (fvg_found and bias == "BULLISH") else "Bearish FVG" if fvg_found else "None"}
         ob_data = {"type": "Bullish OB" if bias == "BULLISH" else "Bearish OB", "level": level}
-        return fvg_found, level, (15 if fvg_found else 5), {"fvg": fvg_data, "order_block": ob_data}
+        return True, level, (20 if fvg_found else 10), {"fvg": fvg_data, "order_block": ob_data}
 
     def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None, ohlcv_4h=None, ohlcv_1d=None, ohlcv_btc_1h=None, **kwargs):
         debug = []
@@ -181,23 +175,21 @@ class StrategyEngine:
         if daily_bias == "NEUTRAL":
             return no_trade("الانحياز اليومي غير واضح")
 
-        # 2. هيكل 4 ساعات
+        # 2. هيكل 4 ساعات (BOS)
         bos_ok, score_4h = self._check_4h_bos(ohlcv_4h, daily_bias)
         if not bos_ok:
             return no_trade("لم يتحقق كسر الهيكل على فريم 4 ساعات")
 
         # 3. مناطق الساعة (OB & FVG)
-        fvg_ok, key_level, score_1h, struct_info = self._check_1h_ob_fvg(ohlcv_1h, daily_bias)
-        if not fvg_ok:
-            return no_trade("لا توجد فجوة سعرية صالحة على فريم الساعة")
+        _, key_level, score_1h, struct_info = self._check_1h_ob_fvg(ohlcv_1h, daily_bias)
 
-        # 4. بروفايل الحجم ومنطقة القيمة (Value Area Acceptance)
+        # 4. بروفايل الحجم (نظام نقاط إضافي مرن)
         vah, val, poc = self._calculate_volume_profile(ohlcv_1h)
         raw15 = self._array(ohlcv_15m, 20)
         if raw15 is None:
             return no_trade("بيانات 15 دقيقة غير صالحة")
             
-        current_price = float(raw15[-2, 4]) # إغلاق الشمعة المغلقة الأخيرة
+        current_price = float(raw15[-2, 4])
         
         if daily_bias == "BULLISH":
             low_15m = np.min(raw15[-3:, 3])
@@ -209,7 +201,12 @@ class StrategyEngine:
             direction = "SHORT"
 
         score_vp = 15 if vp_accepted else 5
-        total_score = min(98, max(75, score_d + score_4h + score_1h + score_vp))
+        total_score = min(98, max(70, score_d + score_4h + score_1h + score_vp))
+        
+        # تصفية الصفقات الضعيفة جداً
+        if total_score < 70:
+            return no_trade("تقييم الأدلة الإجمالي منخفض")
+
         atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
 
         if direction == "LONG":
@@ -235,7 +232,7 @@ class StrategyEngine:
                 btc_bias = "BEARISH"
 
         details = {
-            "reason": "Institutional MTF ICT + Volume Profile Acceptance V20.0",
+            "reason": "Institutional MTF ICT + Flexible Volume Profile V20.1",
             "stop_loss": self._round(stop),
             "risk_management": {
                 "allowed_risk_usd": round(risk_usd, 2),
@@ -245,7 +242,7 @@ class StrategyEngine:
                 "take_profit_3": self._round(tp_target),
                 "reward_ratio": "1:2.5"
             },
-            "setup": "Value Area Re-entry & Institutional ICT Alignment",
+            "setup": "Institutional ICT Alignment (Flexible Profile)",
             "score": total_score,
             "volume_ratio": self._round(raw15[-1, 5] / np.mean(raw15[-10:-1, 5])),
             "liquidity_sweep": vp_accepted,
