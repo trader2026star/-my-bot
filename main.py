@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - MAIN V18.0 (OPTIMIZED & SECURE)
-# BingX Futures + Telegram + Render; compatible with analysis.py V18.0
+# MY EXPERT CRYPTO BOT - MAIN V20.0 (OPTIMIZED & SECURE)
+# BingX Futures + Telegram + Render; Anti-Fake & Anti-Rate Limit
 # ============================================================
 import os
 import time
@@ -18,12 +18,12 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SIGNAL_COOLDOWN_SECONDS = max(60, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "3600")))
-API_MIN_INTERVAL_SECONDS = max(0.40, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.50"))) # زيادة الفاصل لحماية الـ API
-SYMBOL_PAUSE_SECONDS = max(0.15, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.25"))) # مهلة أمان بين العملات لتفادي خطأ 100410
+API_MIN_INTERVAL_SECONDS = max(0.45, float(os.environ.get("API_MIN_INTERVAL_SECONDS", "0.55"))) # حماية كاملة ضد خطأ 100410
+SYMBOL_PAUSE_SECONDS = max(0.20, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.30"))) # مهلة بين كل عملة وأخرى
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-MIN_QUOTE_VOLUME_USD = max(5000000.0, float(os.environ.get("MIN_QUOTE_VOLUME_USD", "5000000"))) # رفع الحد الأدنى للسيولة لمنع العملات الوهمية
+MIN_QUOTE_VOLUME_USD = max(5000000.0, float(os.environ.get("MIN_QUOTE_VOLUME_USD", "5000000"))) # تصفية العملات الوهمية (5 مليون $)
 
 signal_history = {}
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "api_errors": 0}
@@ -35,12 +35,12 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V18.0 (ICT/SMC LONG+SHORT - Anti-Fake & Optimized) Active!"
+    return "MY EXPERT CRYPTO BOT V20.0 (Institutional ICT + Volume Profile) Active!"
 
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "healthy", "version": "18.0", "stats": dict(scan_stats)}), 200
+    return jsonify({"status": "healthy", "version": "20.0", "stats": dict(scan_stats)}), 200
 
 
 def send_telegram_message(message):
@@ -79,7 +79,7 @@ def bingx_call(method_name, *args, **kwargs):
                 with history_lock:
                     scan_stats["api_errors"] += 1
                 return None
-            time.sleep(1.2 * (attempt + 1))
+            time.sleep(1.5 * (attempt + 1))
     return None
 
 
@@ -98,7 +98,7 @@ def get_all_usdt_symbols():
         base = symbol.split("/")[0].upper()
         sym_upper = symbol.upper()
         
-        # فلترة قاطعة وصارمة لاستبعاد العملات الوهمية، التجريبية، والرموز الهامشية
+        # استبعاد تام للعملات الوهمية، التجريبية، والرموز الهامشية
         if any(x in base for x in ("TEST", "DEMO", "FAKE", "USD2")) or any(x in sym_upper for x in ("UP/", "DOWN/", "BULL", "BEAR", "1000000")):
             continue
         if len(base) > 9:
@@ -114,7 +114,7 @@ def _format_signal(symbol, direction, entry_price, details):
     fvg = details.get("fvg") or {}
     ob = details.get("order_block") or {}
     lines = [
-        "💎 *MY EXPERT CRYPTO BOT — ICT/SMC V18.0*",
+        "💎 *MY EXPERT CRYPTO BOT — V20.0 (Institutional)*",
         "",
         f"🔹 العملة: `{symbol}`",
         f"⚖️ الاتجاه: `{arrow}`",
@@ -125,7 +125,7 @@ def _format_signal(symbol, direction, entry_price, details):
         f"🎯 TP2: `{rm.get('take_profit_2')}`",
         f"🏁 TP3: `{rm.get('take_profit_3')}` (R:R 1:2.5)",
         f"📊 حجم 15M: `{details.get('volume_ratio', 0)}x`",
-        f"💧 سحب سيولة: `{'YES' if details.get('liquidity_sweep') else 'NO'}`",
+        f"💧 قبول منطقة القيمة (VA): `{'YES' if details.get('liquidity_sweep') else 'NO'}`",
         f"🧱 FVG: `{fvg.get('type', 'غير موجود')}`",
         f"🏛️ Order Block: `{ob.get('type', 'غير موجود')}`",
         f"₿ اتجاه BTC: `{details.get('btc_bias', 'UNAVAILABLE')}`",
@@ -147,7 +147,7 @@ def process_symbol(symbol, engine):
         if now - signal_history.get(symbol, 0) < SIGNAL_COOLDOWN_SECONDS:
             return
     try:
-        # 1. فحص التيستر وحجم التداول الحقيقي أولاً لمنع العملات الوهمية
+        # فحص السيولة الحقيقية أولاً لمنع العملات الوهمية
         ticker = bingx_call("fetch_ticker", symbol)
         if not ticker:
             return
@@ -157,11 +157,10 @@ def process_symbol(symbol, engine):
             last = float(ticker.get("last") or 0)
             quote_volume = base_volume * last
         
-        # استبعاد العملات التي تقل سيولتها عن الحد الأدنى الصارم (5 مليون $)
         if float(quote_volume or 0) < MIN_QUOTE_VOLUME_USD:
             return
 
-        # 2. جلب الشموع فقط للعملات الحقيقية التي اجتازت شرط السيولة
+        # جلب الشموع للعملات الحقيقية فقط
         data = {}
         for tf, limit in (("15m", 50), ("1h", 50), ("4h", 50), ("1d", 40)):
             candles = bingx_call("fetch_ohlcv", symbol, timeframe=tf, limit=limit)
@@ -193,8 +192,9 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🚀 *تم تشغيل MY EXPERT CRYPTO BOT V18.0 بنجاح*\n"
-        "تم تفعيل الفلترة الصارمة للسيولة (5 مليون $+$) ومنع العملات الوهمية وحماية خوادم الـ API."
+        "🚀 *تم تشغيل MY EXPERT CRYPTO BOT V20.0 بنجاح*\n"
+        "التحليل المؤسسي (ICT/SMC + Volume Profile) مفعل.\n"
+        "تم تفعيل فلترة السيولة الصارمة ($5M+) وحماية الـ API وتجنب الـ Rate Limit."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     while True:
@@ -204,11 +204,11 @@ def background_scanner():
                 logger.warning("No eligible BingX USDT perpetual symbols found.")
                 time.sleep(30)
                 continue
-            logger.info("Starting clean scan of %s validated symbols", len(symbols))
+            logger.info("Starting clean institutional scan of %s symbols", len(symbols))
             for symbol in symbols:
                 process_symbol(symbol, engine)
                 time.sleep(SYMBOL_PAUSE_SECONDS)
-            time.sleep(120) # فترة استراحة أطول بين الدورات لراحة الخوادم وتففريغ الـ Rate Limit
+            time.sleep(150) # استراحة موسعة بين الدورات لحماية الخوادم كلياً
         except Exception:
             logger.exception("Scanner loop error")
             time.sleep(30)
