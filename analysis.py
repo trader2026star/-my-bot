@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - STRICT ICT / SMC ENGINE (V18.0)
-# Multi-Timeframe Institutional Flow: 1D (Bias) -> 4H (BOS) -> 1H (OB/FVG) -> 15M (Confirmation)
+# MY EXPERT CRYPTO BOT - STRICT ICT / SMC ENGINE (V18.1 - Final Integrated)
+# Multi-Timeframe Institutional Flow: 1D (Bias) -> 4H (BOS) -> 1H (OB/Unmitigated FVG) -> 15M (Closed Candle Trigger)
 # Direct Support for LONG & SHORT
 # ============================================================
 
@@ -70,7 +70,6 @@ class StrategyEngine:
         elif closes[-1] < swing_low:
             return "BEARISH"
         
-        # في حال التذبذب داخل النطاق، نعتمد اتجاه الشموع الأخير
         return "BULLISH" if closes[-1] >= closes[-5] else "BEARISH"
 
     def _check_4h_bos(self, ohlcv_4h, bias):
@@ -93,7 +92,7 @@ class StrategyEngine:
         return False
 
     def _check_1h_ob_and_fvg(self, ohlcv_1h, bias):
-        """3. كشف الفجوة السعرية (FVG) غير المغلقة والـ Order Block الحقيقي على 1H"""
+        """3. كشف الفجوة السعرية (FVG) غير المغلقة (Unmitigated) والـ Order Block الحقيقي على 1H"""
         arr = self._array(ohlcv_1h, minimum=15)
         if arr is None:
             return False, 0.0
@@ -107,11 +106,17 @@ class StrategyEngine:
         ob_level = 0.0
 
         if bias == "BULLISH":
-            # كشف FVG صاعدة (Low الشمعة الحالي أعلى من High الشمعة قبل السابقة)
-            for i in range(len(arr) - 1, max(2, len(arr) - 8), -1):
+            # فحص وجود FVG صاعدة والتأكد أنها لم تملأها الشموع اللاحقة
+            for i in range(len(arr) - 2, max(2, len(arr) - 8), -1):
                 if lows[i] > highs[i - 2]:
-                    has_fvg = True
-                    break
+                    mitigated = False
+                    for k in range(i + 1, len(arr)):
+                        if lows[k] < highs[i - 2]:
+                            mitigated = True
+                            break
+                    if not mitigated:
+                        has_fvg = True
+                        break
 
             # تحديد الـ Order Block (آخر شمعة هابطة قبل الانطلاق الصاعد)
             for i in range(len(arr) - 2, max(0, len(arr) - 10), -1):
@@ -122,11 +127,17 @@ class StrategyEngine:
                 ob_level = float(np.min(lows[-6:-1]))
 
         elif bias == "BEARISH":
-            # كشف FVG هابطة (High الشمعة الحالي أقل من Low الشمعة قبل السابقة)
-            for i in range(len(arr) - 1, max(2, len(arr) - 8), -1):
+            # فحص وجود FVG هابطة والتأكد أن السعر لم يخترقها للأعلى لاحقاً
+            for i in range(len(arr) - 2, max(2, len(arr) - 8), -1):
                 if highs[i] < lows[i - 2]:
-                    has_fvg = True
-                    break
+                    mitigated = False
+                    for k in range(i + 1, len(arr)):
+                        if highs[k] > lows[i - 2]:
+                            mitigated = True
+                            break
+                    if not mitigated:
+                        has_fvg = True
+                        break
 
             # تحديد الـ Order Block (آخر شمعة صاعدة قبل الانهيار الهابط)
             for i in range(len(arr) - 2, max(0, len(arr) - 10), -1):
@@ -139,12 +150,13 @@ class StrategyEngine:
         return has_fvg, ob_level
 
     def _check_15m_trigger(self, ohlcv_15m, bias):
-        """4. التأكيد والتفعيل المباشر على فريم 15 دقيقة (تدفق السيولة والشمعة التنفيذية)"""
+        """4. التأكيد والتفعيل المباشر على الشمعة المغلقة أصولاً (arr[-2]) في فريم 15 دقيقة"""
         arr = self._array(ohlcv_15m, minimum=15)
         if arr is None:
             return False
 
-        o, h, l, c, v = arr[-1, 1], arr[-1, 2], arr[-1, 3], arr[-1, 4], arr[-1, 5]
+        # الاعتماد على الشمعة المغلقة تماماً arr[-2] لتفادي الشموع الوهمية الحية
+        o, h, l, c, v = arr[-2, 1], arr[-2, 2], arr[-2, 3], arr[-2, 4], arr[-2, 5]
         candle_range = h - l
         if candle_range <= 0 or v <= 0:
             return False
@@ -152,7 +164,6 @@ class StrategyEngine:
         body = abs(c - o)
         body_ratio = body / candle_range
 
-        # نطلب زَخماً حقيقياً وشمعة واضحة الاتجاه (لا تقل عن 35% من المدى)
         if bias == "BULLISH":
             return bool(body_ratio >= 0.35 and c > o)
         elif bias == "BEARISH":
@@ -173,20 +184,20 @@ class StrategyEngine:
         if not self._check_4h_bos(ohlcv_4h, daily_bias):
             return no_trade(f"لم يتحقق كسر الهيكل (BOS) بجهة {daily_bias} على 4H")
 
-        # 3. الـ OB والـ FVG على 1H
+        # 3. الـ OB والـ FVG النشطة على 1H
         has_fvg, ob_level = self._check_1h_ob_and_fvg(ohlcv_1h, daily_bias)
         if not has_fvg:
-            return no_trade("لا توجد فجوة سعرية (FVG) نِشطة على 1H")
+            return no_trade("لا توجد فجوة سعرية (FVG) نشطة وغير مغلقة على 1H")
 
-        # 4. شمعة التفعيل على 15M
+        # 4. شمعة التفعيل المغلقة على 15M
         if not self._check_15m_trigger(ohlcv_15m, daily_bias):
-            return no_trade("شمعة 15M لم تعطِ إشارة تدفق سيولة مؤكدة")
+            return no_trade("شمعة 15M المغلقة لم تعطِ إشارة تدفق سيولة مؤكدة")
 
         raw15 = self._array(ohlcv_15m, 15)
         current_price = float(raw15[-1, 4])
         atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
         if atr <= 0:
-            atr = current_price * 0.005 # حماية في حال عدم توفر ATR
+            atr = current_price * 0.005
 
         risk_usd = self.total_capital * self.risk_per_trade
 
@@ -227,7 +238,7 @@ class StrategyEngine:
             },
             "setup": "Strict ICT/SMC Alignment",
             "score": 98,
-            "smc_note": f"1D Bias: {daily_bias} | 4H BOS Confirmed | 1H OB & FVG Active | 15M Trigger Validated"
+            "smc_note": f"1D Bias: {daily_bias} | 4H BOS Confirmed | 1H OB & Unmitigated FVG Active | 15M Closed Trigger Validated"
         }
 
         return direction, self._round(current_price), details
