@@ -1,6 +1,7 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - MULTI-TIMEFRAME ICT + FOOTPRINT (V16.0)
+# MY EXPERT CRYPTO BOT - MULTI-TIMEFRAME ICT + FOOTPRINT (V17.0)
 # Multi-Timeframe Alignment: 1D (Bias) -> 4H (BOS) -> 1H (OB/FVG) -> 15M (Entry)
+# Full Dual-Direction Support: LONG & SHORT
 # ============================================================
 
 import logging
@@ -12,10 +13,10 @@ logger = logging.getLogger("StrategyEngine")
 class StrategyEngine:
     def __init__(self, capital=10000, risk_per_trade=0.01):
         self.total_capital = max(1.0, float(capital))
-        self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
+        self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.05)
 
     @staticmethod
-    def _array(data, minimum=20):
+    def _array(data, minimum=15):
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -52,113 +53,165 @@ class StrategyEngine:
         return float(np.mean(tr[-period:])) if len(tr) > 0 else 0.0
 
     def _get_daily_bias(self, ohlcv_1d):
-        """1. اليومي: تحديد الانحياز والمستويات الرئيسية"""
+        """1. اليومي: تحديد الانحياز بناءً على الهيكل والمتوسط المتحرك"""
         arr = self._array(ohlcv_1d, minimum=15)
         if arr is None:
             return "NEUTRAL"
         closes = arr[:, 4]
-        # إذا كان السعر الحالي أعلى من متوسط آخر 10 أيام -> الانحياز صاعد
-        ma10 = np.mean(closes[-10:])
-        return "BULLISH" if closes[-1] > ma10 else "BEARISH"
+        highs = arr[:, 2]
+        lows = arr[:, 3]
+        
+        ma20 = np.mean(closes[-15:])
+        if closes[-1] > ma20 and closes[-1] > np.max(highs[-5:-1]):
+            return "BULLISH"
+        elif closes[-1] < ma20 and closes[-1] < np.min(lows[-5:-1]):
+            return "BEARISH"
+        
+        return "BULLISH" if closes[-1] > ma20 else "BEARISH"
 
-    def _check_4h_structure(self, ohlcv_4h):
-        """2. 4 ساعات: تحديد الاتجاه وسحب السيولة والكسور (BOS)"""
-        arr = self._array(ohlcv_4h, minimum=20)
+    def _check_4h_structure(self, ohlcv_4h, bias):
+        """2. 4 ساعات: كسر الهيكل (BOS) بجهة الانحياز"""
+        arr = self._array(ohlcv_4h, minimum=15)
         if arr is None:
             return False
         highs = arr[:, 2]
+        lows = arr[:, 3]
         closes = arr[:, 4]
-        # كسر قمة سابقة (BOS) مع زخم صاعد
-        recent_high = np.max(highs[-10:-2])
-        return bool(closes[-1] > recent_high)
 
-    def _check_1h_ob_fvg(self, ohlcv_1h):
+        if bias == "BULLISH":
+            recent_high = np.max(highs[-8:-2])
+            return bool(closes[-1] > recent_high)
+        elif bias == "BEARISH":
+            recent_low = np.min(lows[-8:-2])
+            return bool(closes[-1] < recent_low)
+        return False
+
+    def _check_1h_ob_fvg(self, ohlcv_1h, bias):
         """3. ساعة واحدة: كشف الأوردر بلوك (OB) والفجوات السعرية (FVG)"""
-        arr = self._array(ohlcv_1h, minimum=20)
+        arr = self._array(ohlcv_1h, minimum=15)
         if arr is None:
             return False, 0.0
-        
+
         lows = arr[:, 3]
         highs = arr[:, 2]
-        
-        # كشف فجوة FVG صاعدة على فريم الساعة
+        opens = arr[:, 1]
+        closes = arr[:, 4]
+
         has_fvg = False
-        for i in range(len(arr) - 1, max(2, len(arr) - 6), -1):
-            if lows[i] > highs[i-2]:
-                has_fvg = True
-                break
-                
-        ob_level = float(np.min(lows[-5:-1]))
+        ob_level = 0.0
+
+        if bias == "BULLISH":
+            for i in range(len(arr) - 1, max(2, len(arr) - 6), -1):
+                if lows[i] > highs[i - 2]:
+                    has_fvg = True
+                    break
+            # ICT Order Block: آخر شمعة هابطة قبل الحركة الصاعدة
+            for i in range(len(arr) - 2, max(0, len(arr) - 8), -1):
+                if closes[i] < opens[i]:
+                    ob_level = float(lows[i])
+                    break
+            if ob_level == 0.0:
+                ob_level = float(np.min(lows[-5:-1]))
+
+        elif bias == "BEARISH":
+            for i in range(len(arr) - 1, max(2, len(arr) - 6), -1):
+                if highs[i] < lows[i - 2]:
+                    has_fvg = True
+                    break
+            # ICT Order Block: آخر شمعة صاعدة قبل الحركة الهابطة
+            for i in range(len(arr) - 2, max(0, len(arr) - 8), -1):
+                if closes[i] > opens[i]:
+                    ob_level = float(highs[i])
+                    break
+            if ob_level == 0.0:
+                ob_level = float(np.max(highs[-5:-1]))
+
         return has_fvg, ob_level
 
-    def _check_15m_entry(self, ohlcv_15m):
-        """4. 15 دقيقة: التنقية والتأكيد المباشر عبر الفوتبرينت والدلتا"""
-        arr = self._array(ohlcv_15m, minimum=20)
+    def _check_15m_entry(self, ohlcv_15m, bias):
+        """4. 15 دقيقة: التأكيد المباشر عبر تدفق السيولة والشمعة التنفيذية"""
+        arr = self._array(ohlcv_15m, minimum=15)
         if arr is None:
             return False
-        
+
         o, h, l, c, v = arr[-1, 1], arr[-1, 2], arr[-1, 3], arr[-1, 4], arr[-1, 5]
         candle_range = h - l
         if candle_range <= 0 or v <= 0:
             return False
-            
-        # التأكيد عبر تدفق السيولة الشرائية الفورية (Footprint Confirmation)
-        body = c - o
+
+        body = abs(c - o)
         delta_ratio = body / candle_range
-        return bool(delta_ratio > 0.35 and c > o)
+
+        if bias == "BULLISH":
+            return bool(delta_ratio > 0.35 and c > o)
+        elif bias == "BEARISH":
+            return bool(delta_ratio > 0.35 and c < o)
+        return False
 
     def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None, ohlcv_4h=None, ohlcv_1d=None, **kwargs):
-        debug = []
-
         def no_trade(reason):
-            return "NEUTRAL", 0, {"reason": reason, "debug_trace": debug}
+            return "NEUTRAL", 0, {"reason": reason}
 
-        # 1. التأكد من انحياز الفريم اليومي (1D)
+        # 1. التثبت من الانحياز اليومي
         daily_bias = self._get_daily_bias(ohlcv_1d)
-        if daily_bias != "BULLISH":
-            return no_trade("الانحياز اليومي (1D) ليس صاعداً")
+        if daily_bias not in ["BULLISH", "BEARISH"]:
+            return no_trade("الانحياز اليومي غير محدد")
 
-        # 2. التأكد من كسر الهيكل على فريم (4H)
-        if not self._check_4h_structure(ohlcv_4h):
-            return no_trade("لم يتحقق كسر الهيكل (BOS) على فريم 4 ساعات")
+        # 2. فحص كسر الهيكل على 4H
+        if not self._check_4h_structure(ohlcv_4h, daily_bias):
+            return no_trade(f"لم يتحقق كسر الهيكل (BOS) لاتجاه {daily_bias} على 4H")
 
-        # 3. التأكد من وجود FVG و Order Block على فريم (1H)
-        has_1h_fvg, ob_level = self._check_1h_ob_fvg(ohlcv_1h)
-        if not has_1h_fvg:
-            return no_trade("لا توجد مناطق فجوة سعرية (FVG) أو Order Block على فريم الساعة")
+        # 3. فحص FVG و Order Block على 1H
+        has_fvg, ob_level = self._check_1h_ob_fvg(ohlcv_1h, daily_bias)
+        if not has_fvg:
+            return no_trade("لا توجد فجوة سعرية (FVG) مدعومة على فريم الساعة")
 
-        # 4. التأكد من شمعة التفعيل الصارمة على فريم (15M)
-        if not self._check_15m_entry(ohlcv_15m):
+        # 4. تأكيد الدخول على 15M
+        if not self._check_15m_entry(ohlcv_15m, daily_bias):
             return no_trade("شمعة 15 دقيقة لم تعطِ تأكيد تدفق الأوامر (Footprint Confirmation)")
 
-        raw15 = self._array(ohlcv_15m, 20)
+        raw15 = self._array(ohlcv_15m, 15)
         current_price = float(raw15[-1, 4])
         atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
 
-        # حساب الوقف والأهداف بناءً على نسبة 1:2.5
-        stop = min(ob_level - 0.2 * atr, current_price - 1.2 * atr)
-        risk_dist = current_price - stop
-        if risk_dist <= 0:
-            return no_trade("مسافة الوقف غير صالحة")
-
-        tp_target = current_price + (risk_dist * 2.5)
         risk_usd = self.total_capital * self.risk_per_trade
+
+        if daily_bias == "BULLISH":
+            direction = "LONG"
+            stop = min(ob_level - 0.2 * atr, current_price - 1.2 * atr)
+            risk_dist = current_price - stop
+            if risk_dist <= 0:
+                return no_trade("مسافة الوقف غير صالحة")
+            tp1 = current_price + (risk_dist * 1.2)
+            tp2 = current_price + (risk_dist * 1.8)
+            tp3 = current_price + (risk_dist * 2.5)
+
+        else: # BEARISH
+            direction = "SHORT"
+            stop = max(ob_level + 0.2 * atr, current_price + 1.2 * atr)
+            risk_dist = stop - current_price
+            if risk_dist <= 0:
+                return no_trade("مسافة الوقف غير صالحة")
+            tp1 = current_price - (risk_dist * 1.2)
+            tp2 = current_price - (risk_dist * 1.8)
+            tp3 = current_price - (risk_dist * 2.5)
+
         qty = risk_usd / risk_dist
 
         details = {
-            "reason": "Aligned Multi-Timeframe ICT Setup (1D+4H+1H+15M)",
+            "reason": f"Aligned Multi-Timeframe ICT Setup ({direction})",
             "stop_loss": self._round(stop),
             "risk_management": {
                 "allowed_risk_usd": round(risk_usd, 2),
                 "tokens_to_buy": round(qty, 8),
-                "take_profit_1": self._round(current_price + (risk_dist * 1.2)),
-                "take_profit_2": self._round(current_price + (risk_dist * 1.8)),
-                "take_profit_3": self._round(tp_target),
+                "take_profit_1": self._round(tp1),
+                "take_profit_2": self._round(tp2),
+                "take_profit_3": self._round(tp3),
                 "reward_ratio": "1:2.5"
             },
             "setup": "Full Multi-Timeframe ICT Alignment",
             "score": 95,
-            "smc_note": "1D Daily Bias (BULLISH) | 4H BOS Confirmed | 1H FVG & OB Found | 15M Entry Confirmed"
+            "smc_note": f"1D {daily_bias} Bias | 4H BOS Confirmed | 1H FVG & OB Found | 15M Entry Confirmed"
         }
 
-        return "LONG", self._round(current_price), details
+        return direction, self._round(current_price), details
