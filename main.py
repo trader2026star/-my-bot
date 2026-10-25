@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.1)
-# Main Bot Controller + Interactive Telegram Listener
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.2)
+# Main Bot Controller + Smart Interactive Telegram Listener
 # ==========================================
 import os
 import time
@@ -41,7 +41,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.1 (MTF Volume Profile & PoC Sniper + Interactive) Active!"
+    return "MY EXPERT CRYPTO BOT V17.2 (MTF Volume Profile & PoC Sniper + Smart Listener) Active!"
 
 @app.route("/health")
 def health():
@@ -135,7 +135,6 @@ def process_symbol(symbol, engine):
         if quote_volume < 3000000:
             return
 
-        # جلب بيانات الفريمات الأربعة كاملة (1D, 4H, 1H, 15M)
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
         ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
@@ -164,8 +163,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة وملف الحجم (V17.1)*\n"
-        "البوت يراقـب توافق (1D -> 4H -> 1H PoC -> 15M Volume Spike) لفلترة الصفقات، ويمكنك إرسال اسم أي عملة هنا للتحليل الفوري!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة وملف الحجم (V17.2)*\n"
+        "البوت يراقـب توافق الفريمات الأربعة، ويمكنك إرسال اسم أي عملة هنا للتحليل الفوري!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -186,7 +185,7 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع رسائل تيليجرام للرد على طلبات التحليل اليدوية لأي عملة يرسلها المستخدم"""
+    """مستمع ذكي لرسائل تيليجرام للرد الفوري وتصحيح أسماء العملات"""
     offset = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -211,7 +210,11 @@ def check_telegram_updates():
                 if text.startswith("/"):
                     continue
                 
+                # تنظيف اسم العملة وتصحيح المسميات الشائعة مثل skyai -> skai
                 base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
+                if base_coin == "SKYAI":
+                    base_coin = "SKAI"
+                
                 target_symbol = f"{base_coin}/USDT:USDT"
                 
                 send_telegram_message(f"🔍 جاري فحص وتحليل عملة `{base_coin}` عبر الفريمات الأربعة...")
@@ -222,7 +225,7 @@ def check_telegram_updates():
                 ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                 
                 if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                    send_telegram_message(f"❌ تعذر العثور على بيانات كافية لعملة `{base_coin}` أو أنها غير مدعومة بالعقود الآجلة.")
+                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة رمز العملة في العقود الآجلة.")
                     continue
                 
                 direction, entry_price, details = engine.analyze_market_structure(
@@ -249,7 +252,7 @@ def check_telegram_updates():
                         f"⏳ **العملة غير جاهزة للونج بالكامل حالياً**\n\n"
                         f"🔹 العملة: `{target_symbol}`\n"
                         f"💵 السعر الحالي: `{current_price}`\n"
-                        f"⚠️ **السبب / الملاحظة:** `{reason}`\n\n"
+                        f"⚠️ **السبب الفني:** `{reason}`\n\n"
                         f"💡 **نصيحة قناص:** انتظر اختراق مقاومة أو تكون فوليوم إيجابي على فريم 15 دقيقة للدخول بأمان."
                     )
                 
@@ -259,7 +262,6 @@ def check_telegram_updates():
             logger.error(f"Telegram listener error: {e}")
             time.sleep(10)
 
-# تشغيل خيوط البوت (الماسح الآلي + مستمع التيليجرام)
 scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="mtf-poc-scanner")
 scanner_thread.start()
 
