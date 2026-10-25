@@ -1,6 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.2)
-# Main Bot Controller + Smart Interactive Telegram Listener
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.3)
 # ==========================================
 import os
 import time
@@ -41,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.2 (MTF Volume Profile & PoC Sniper + Smart Listener) Active!"
+    return "MY EXPERT CRYPTO BOT V17.3 Active!"
 
 @app.route("/health")
 def health():
@@ -163,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة وملف الحجم (V17.2)*\n"
-        "البوت يراقـب توافق الفريمات الأربعة، ويمكنك إرسال اسم أي عملة هنا للتحليل الفوري!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.3)*\n"
+        "يمكنك إرسال اسم أي عملة هنا (مثل SKAI أو ARB) للتحليل الفوري!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -185,7 +184,6 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع ذكي لرسائل تيليجرام للرد الفوري وتصحيح أسماء العملات"""
     offset = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -210,22 +208,28 @@ def check_telegram_updates():
                 if text.startswith("/"):
                     continue
                 
-                # تنظيف اسم العملة وتصحيح المسميات الشائعة مثل skyai -> skai
                 base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
-                if base_coin == "SKYAI":
-                    base_coin = "SKAI"
+                send_telegram_message(f"🔍 جاري البحث عن عملة `{base_coin}` وفحصها...")
                 
-                target_symbol = f"{base_coin}/USDT:USDT"
+                # البحث الذكي في الأسواق المتاحة بالمنصة عن الرمز المطابق
+                all_symbols = get_all_usdt_symbols()
+                target_symbol = None
+                for s in all_symbols:
+                    if s.split('/')[0].upper() == base_coin:
+                        target_symbol = s
+                        break
                 
-                send_telegram_message(f"🔍 جاري فحص وتحليل عملة `{base_coin}` عبر الفريمات الأربعة...")
-                
+                if not target_symbol:
+                    # محاولة احتياطية مباشرة
+                    target_symbol = f"{base_coin}/USDT:USDT"
+
                 ohlcv_15m = bingx_call("fetch_ohlcv", target_symbol, timeframe="15m", limit=30)
                 ohlcv_1h = bingx_call("fetch_ohlcv", target_symbol, timeframe="1h", limit=30)
                 ohlcv_4h = bingx_call("fetch_ohlcv", target_symbol, timeframe="4h", limit=30)
                 ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                 
                 if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة رمز العملة في العقود الآجلة.")
+                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد أن الرمز مدرج في عقود Swap بنجاح.")
                     continue
                 
                 direction, entry_price, details = engine.analyze_market_structure(
@@ -253,7 +257,7 @@ def check_telegram_updates():
                         f"🔹 العملة: `{target_symbol}`\n"
                         f"💵 السعر الحالي: `{current_price}`\n"
                         f"⚠️ **السبب الفني:** `{reason}`\n\n"
-                        f"💡 **نصيحة قناص:** انتظر اختراق مقاومة أو تكون فوليوم إيجابي على فريم 15 دقيقة للدخول بأمان."
+                        f"💡 **نصيحة قناص:** انتظر اختراق مقاومة قريبة أو تكون فوليوم إيجابي على فريم 15 دقيقة للدخول بأمان."
                     )
                 
                 send_telegram_message(reply_msg)
@@ -269,5 +273,5 @@ telegram_listener_thread = threading.Thread(target=check_telegram_updates, daemo
 telegram_listener_thread.start()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    port = int(os.environ.com.get("PORT", "5000") if hasattr(os.environ, "com") else os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
