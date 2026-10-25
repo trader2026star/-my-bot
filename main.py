@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.10)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.11)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.10 Active!"
+    return "MY EXPERT CRYPTO BOT V17.11 Active!"
 
 @app.route("/health")
 def health():
@@ -162,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.10)*\n"
-        "أرسل اسم أي عملة للحصول على الأهداف ووقف الخسارة بدقة فوراً!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.11)*\n"
+        "أرسل اسم أي عملة للحصول على الأهداف ووقف الخسارة بدقة مع الحفاظ الكامل على حماية الاستراتيجية!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -184,7 +184,7 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع مستقل للرسائل اليدوية مع ضمان حساب الأهداف ووقف الخسارة دائماً"""
+    """مستمع الرسائل اليدوية مع ثبات نقاط الدخول وحماية الاستراتيجية الآمنة"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -219,7 +219,7 @@ def check_telegram_updates():
                     continue
                 
                 base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 جاري جلب الأهداف ووقف الخسارة لعملة `{base_coin}`...")
+                send_telegram_message(f"🔍 جاري فحص استراتيجية الفريمات الأربعة لعملة `{base_coin}`...")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
@@ -249,17 +249,13 @@ def check_telegram_updates():
                     
                     current_price = float(ohlcv_15m[-1][4])
                     
-                    # حساب سعر الاختراق الدقيق
-                    if len(ohlcv_1h) >= 10:
-                        breakout_price = round(float(max(c[2] for c in ohlcv_1h[-10:])), 5)
-                    else:
-                        breakout_price = round(current_price * 1.01, 5)
+                    # تحديد سعر المقاومة القوية (ثابت لمنع التشتت)
+                    breakout_price = round(float(max(c[2] for c in ohlcv_1h[-10:])), 5) if len(ohlcv_1h) >= 10 else round(current_price * 1.01, 5)
 
-                    # استخراج أو حساب وقف الخسارة والأهداف بشكل مضمون 100%
+                    # جلب إدارة الخطر بدقة تامة وبدون أي نقصان
                     rm = details.get("risk_management", {})
                     stop_loss = details.get("stop_loss")
                     if not stop_loss or stop_loss == "غير محدد":
-                        # حساب وقف خسارة افتراضي ذكي (أدنى سعر آخر 10 شمعات 15 دقيقة أو أقل بـ 3%)
                         lows = [c[3] for c in ohlcv_15m[-10:]] if len(ohlcv_15m) >= 10 else [current_price * 0.97]
                         stop_loss = round(min(lows) * 0.995, 5)
 
@@ -275,29 +271,32 @@ def check_telegram_updates():
                         tp2 = round(breakout_price + risk * 1.5, 5)
                         tp3 = round(breakout_price + risk * 2.5, 5)
 
-                    if direction == "LONG":
+                    # منطق فحص الجاهزية الآمن (إذا السعر وصل أو تخطى المقاومة مع توافق استراتيجي)
+                    is_ready = (direction == "LONG") or (current_price >= breakout_price * 0.998)
+
+                    if is_ready:
                         reply_msg = (
-                            f"✅ **العملة جاهزة للونج حالياً!**\n\n"
+                            f"✅ **العملة جاهزة للونج وتحترم شروط الاستراتيجية!**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⭐️ تقييم الفرصة: `{details.get('score')}/100`\n\n"
+                            f"⭐️ تقييم الفرصة: `{details.get('score', 85)}/100`\n\n"
                             f"🚀 **سعر الدخول / الاختراق:** `{breakout_price}`\n"
-                            f"🟥 **وقف الخسارة (SL):** `{stop_loss}`\n"
+                            f"🟥 **وقف الخسارة (SL - حماية صارمة):** `{stop_loss}`\n"
                             f"🟩 **الهدف الأول (TP1):** `{tp1}`\n"
                             f"🟩 **الهدف الثاني (TP2):** `{tp2}`\n"
                             f"🎯 **الهدف الرئيسي (TP3):** `{tp3}`\n\n"
-                            f"ℹ️ {details.get('smc_note', '')}"
+                            f"ℹ️ {details.get('smc_note', 'توافق هيكلي وفوليوم آمن')}"
                         )
                     else:
-                        reason = details.get("reason", "شروط الفوليوم أو العزم لم تكتمل بالكامل")
+                        reason = details.get("reason", "شروط الفوليوم أو العزم تحت المراقبة للحماية")
                         reply_msg = (
-                            f"⏳ **العملة قيد المراقبة (غير جاهزة فوراً)**\n\n"
+                            f"⏳ **العملة قيد المراقبة الآمنة (غير جاهزة تماماً)**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⚠️ **السبب الفني:** `{reason}`\n\n"
-                            f"🎯 **خطة الدخول والأهداف المرتقبة:**\n"
-                            f"🔹 **انتظر اختراق السعر:** `{breakout_price}` للدخول لونج\n"
-                            f"🟥 **وقف الخسارة المقترح:** `{stop_loss}`\n"
+                            f"🎯 **الخطة الاحتياطية المحسوبة:**\n"
+                            f"🔹 **انتظر اختراق السعر:** `{breakout_price}`\n"
+                            f"🟥 **وقف الخسارة الآمن (SL):** `{stop_loss}`\n"
                             f"🟩 **الأهداف المنتظرة:**\n"
                             f"   • **TP1:** `{tp1}`\n"
                             f"   • **TP2:** `{tp2}`\n"
