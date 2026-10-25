@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - MULTI-TIMEFRAME ICT + FOOTPRINT (V16.0)
-# Multi-Timeframe Alignment: 1D (Bias) -> 4H (BOS) -> 1H (OB/FVG) -> 15M (Entry)
+# MY EXPERT CRYPTO BOT - VOLUME PROFILE & PoC ENGINE (V16.0)
+# Strategy: Volume Profile, PoC (Point of Control) & Value Area Bounce
 # ============================================================
 
 import logging
@@ -51,61 +51,63 @@ class StrategyEngine:
         tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
         return float(np.mean(tr[-period:])) if len(tr) > 0 else 0.0
 
-    def _get_daily_bias(self, ohlcv_1d):
-        """1. اليومي: تحديد الانحياز والمستويات الرئيسية"""
-        arr = self._array(ohlcv_1d, minimum=15)
+    def calculate_volume_profile(self, ohlcv, bins=35):
+        """حساب ملف الحجم (Volume Profile)، نقطة التحكم (PoC)، ومنطقة القيمة (Value Area)"""
+        arr = self._array(ohlcv, minimum=15)
         if arr is None:
-            return "NEUTRAL"
-        closes = arr[:, 4]
-        # إذا كان السعر الحالي أعلى من متوسط آخر 10 أيام -> الانحياز صاعد
-        ma10 = np.mean(closes[-10:])
-        return "BULLISH" if closes[-1] > ma10 else "BEARISH"
-
-    def _check_4h_structure(self, ohlcv_4h):
-        """2. 4 ساعات: تحديد الاتجاه وسحب السيولة والكسور (BOS)"""
-        arr = self._array(ohlcv_4h, minimum=20)
-        if arr is None:
-            return False
-        highs = arr[:, 2]
-        closes = arr[:, 4]
-        # كسر قمة سابقة (BOS) مع زخم صاعد
-        recent_high = np.max(highs[-10:-2])
-        return bool(closes[-1] > recent_high)
-
-    def _check_1h_ob_fvg(self, ohlcv_1h):
-        """3. ساعة واحدة: كشف الأوردر بلوك (OB) والفجوات السعرية (FVG)"""
-        arr = self._array(ohlcv_1h, minimum=20)
-        if arr is None:
-            return False, 0.0
+            return None, None, None
         
+        highs = arr[:, 2]
         lows = arr[:, 3]
-        highs = arr[:, 2]
+        volumes = arr[:, 5]
         
-        # كشف فجوة FVG صاعدة على فريم الساعة
-        has_fvg = False
-        for i in range(len(arr) - 1, max(2, len(arr) - 6), -1):
-            if lows[i] > highs[i-2]:
-                has_fvg = True
+        min_price = np.min(lows)
+        max_price = np.max(highs)
+        if min_price == max_price:
+            return None, None, None
+            
+        bin_edges = np.linspace(min_price, max_price, bins + 1)
+        bin_volumes = np.zeros(bins)
+        
+        for i in range(len(arr)):
+            h, l, v = highs[i], lows[i], volumes[i]
+            if v <= 0:
+                continue
+            for b in range(bins):
+                b_low, b_high = bin_edges[b], bin_edges[b+1]
+                overlap = max(0.0, min(h, b_high) - max(l, b_low))
+                candle_range = h - l if h > l else 1.0
+                bin_volumes[b] += v * (overlap / candle_range)
+                
+        poc_index = np.argmax(bin_volumes)
+        poc_price = (bin_edges[poc_index] + bin_edges[poc_index+1]) / 2.0
+        
+        # حساب نطاق القيمة (70% من حجم التداول الإجمالي - Value Area)
+        total_vol = np.sum(bin_volumes)
+        if total_vol <= 0:
+            return float(poc_price), float(min_price), float(max_price)
+            
+        target_vol = total_vol * 0.70
+        current_vol = bin_volumes[poc_index]
+        lower_idx = poc_index
+        upper_idx = poc_index
+        
+        while current_vol < target_vol and (lower_idx > 0 or upper_idx < bins - 1):
+            vol_below = bin_volumes[lower_idx - 1] if lower_idx > 0 else -1
+            vol_above = bin_volumes[upper_idx + 1] if upper_idx < bins - 1 else -1
+            
+            if vol_above >= vol_below and upper_idx < bins - 1:
+                upper_idx += 1
+                current_vol += bin_volumes[upper_idx]
+            elif lower_idx > 0:
+                lower_idx -= 1
+                current_vol += bin_volumes[lower_idx]
+            else:
                 break
                 
-        ob_level = float(np.min(lows[-5:-1]))
-        return has_fvg, ob_level
-
-    def _check_15m_entry(self, ohlcv_15m):
-        """4. 15 دقيقة: التنقية والتأكيد المباشر عبر الفوتبرينت والدلتا"""
-        arr = self._array(ohlcv_15m, minimum=20)
-        if arr is None:
-            return False
-        
-        o, h, l, c, v = arr[-1, 1], arr[-1, 2], arr[-1, 3], arr[-1, 4], arr[-1, 5]
-        candle_range = h - l
-        if candle_range <= 0 or v <= 0:
-            return False
-            
-        # التأكيد عبر تدفق السيولة الشرائية الفورية (Footprint Confirmation)
-        body = c - o
-        delta_ratio = body / candle_range
-        return bool(delta_ratio > 0.35 and c > o)
+        val = bin_edges[lower_idx]
+        vah = bin_edges[upper_idx + 1]
+        return float(poc_price), float(val), float(vah)
 
     def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None, ohlcv_4h=None, ohlcv_1d=None, **kwargs):
         debug = []
@@ -113,30 +115,30 @@ class StrategyEngine:
         def no_trade(reason):
             return "NEUTRAL", 0, {"reason": reason, "debug_trace": debug}
 
-        # 1. التأكد من انحياز الفريم اليومي (1D)
-        daily_bias = self._get_daily_bias(ohlcv_1d)
-        if daily_bias != "BULLISH":
-            return no_trade("الانحياز اليومي (1D) ليس صاعداً")
-
-        # 2. التأكد من كسر الهيكل على فريم (4H)
-        if not self._check_4h_structure(ohlcv_4h):
-            return no_trade("لم يتحقق كسر الهيكل (BOS) على فريم 4 ساعات")
-
-        # 3. التأكد من وجود FVG و Order Block على فريم (1H)
-        has_1h_fvg, ob_level = self._check_1h_ob_fvg(ohlcv_1h)
-        if not has_1h_fvg:
-            return no_trade("لا توجد مناطق فجوة سعرية (FVG) أو Order Block على فريم الساعة")
-
-        # 4. التأكد من شمعة التفعيل الصارمة على فريم (15M)
-        if not self._check_15m_entry(ohlcv_15m):
-            return no_trade("شمعة 15 دقيقة لم تعطِ تأكيد تدفق الأوامر (Footprint Confirmation)")
-
         raw15 = self._array(ohlcv_15m, 20)
+        if raw15 is None:
+            return no_trade("بيانات 15 دقيقة غير صالحة")
+            
         current_price = float(raw15[-1, 4])
-        atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
+        
+        # 1. حساب ملف الحجم ونقطة التحكم (PoC) على فريم الساعة أو 4 ساعات
+        source_ohlcv = ohlcv_1h if ohlcv_1h is not None else ohlcv_15m
+        poc, val, vah = self.calculate_volume_profile(source_ohlcv)
+        if poc is None:
+            return no_trade("تعذر حساب نقاط ملف الحجم (Volume Profile)")
 
-        # حساب الوقف والأهداف بناءً على نسبة 1:2.5
-        stop = min(ob_level - 0.2 * atr, current_price - 1.2 * atr)
+        # 2. شروط الدخول: الارتداد الصاعد من نقطة التحكم (PoC) أو حد منطقة القيمة السفلي (VAL)
+        last_candle = raw15[-1]
+        o, h, l, c, v = last_candle[1], last_candle[2], last_candle[3], last_candle[4], last_candle[5]
+        
+        is_bullish_candle = c > o and (c - o) >= (h - l) * 0.35
+        near_key_node = (current_price <= poc * 1.02) and (current_price >= val * 0.98)
+        
+        if not (near_key_node and is_bullish_candle):
+            return no_trade("السعر لم يلامس نقطة التحكم PoC أو حد القيمة VAL مع شمعة تأكيد")
+
+        atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
+        stop = min(val - 0.5 * atr, current_price - 1.5 * atr)
         risk_dist = current_price - stop
         if risk_dist <= 0:
             return no_trade("مسافة الوقف غير صالحة")
@@ -146,19 +148,19 @@ class StrategyEngine:
         qty = risk_usd / risk_dist
 
         details = {
-            "reason": "Aligned Multi-Timeframe ICT Setup (1D+4H+1H+15M)",
+            "reason": "Volume Profile PoC & Value Area Bounce Strategy",
             "stop_loss": self._round(stop),
             "risk_management": {
                 "allowed_risk_usd": round(risk_usd, 2),
                 "tokens_to_buy": round(qty, 8),
-                "take_profit_1": self._round(current_price + (risk_dist * 1.2)),
+                "take_profit_1": self._round(current_price + (risk_dist * 1.0)),
                 "take_profit_2": self._round(current_price + (risk_dist * 1.8)),
                 "take_profit_3": self._round(tp_target),
                 "reward_ratio": "1:2.5"
             },
-            "setup": "Full Multi-Timeframe ICT Alignment",
-            "score": 95,
-            "smc_note": "1D Daily Bias (BULLISH) | 4H BOS Confirmed | 1H FVG & OB Found | 15M Entry Confirmed"
+            "setup": "Volume Profile & Point of Control (PoC)",
+            "score": 93,
+            "smc_note": f"PoC: {self._round(poc)} | VAL: {self._round(val)} | VAH: {self._round(vah)}"
         }
 
         return "LONG", self._round(current_price), details
