@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.9)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.10)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.9 Active!"
+    return "MY EXPERT CRYPTO BOT V17.10 Active!"
 
 @app.route("/health")
 def health():
@@ -162,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.9)*\n"
-        "أرسل اسم أي عملة (مثل SKYAI أو BTC) للحصول على الأهداف ووقف الخسارة فوراً!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.10)*\n"
+        "أرسل اسم أي عملة للحصول على الأهداف ووقف الخسارة بدقة فوراً!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -184,7 +184,7 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع مستقل للرسائل اليدوية مع تصحيح فهرسة القوائم بشكل كامل"""
+    """مستمع مستقل للرسائل اليدوية مع ضمان حساب الأهداف ووقف الخسارة دائماً"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -248,17 +248,32 @@ def check_telegram_updates():
                     )
                     
                     current_price = float(ohlcv_15m[-1][4])
-                    rm = details.get("risk_management", {})
-                    stop_loss = details.get("stop_loss", "غير محدد")
-                    tp1 = rm.get("take_profit_1", "غير محدد")
-                    tp2 = rm.get("take_profit_2", "غير محدد")
-                    tp3 = rm.get("take_profit_3", "غير محدد")
                     
-                    # التصحيح هنا: استخدام استخراج سليم للقيم من قائمة القوائم
+                    # حساب سعر الاختراق الدقيق
                     if len(ohlcv_1h) >= 10:
                         breakout_price = round(float(max(c[2] for c in ohlcv_1h[-10:])), 5)
                     else:
                         breakout_price = round(current_price * 1.01, 5)
+
+                    # استخراج أو حساب وقف الخسارة والأهداف بشكل مضمون 100%
+                    rm = details.get("risk_management", {})
+                    stop_loss = details.get("stop_loss")
+                    if not stop_loss or stop_loss == "غير محدد":
+                        # حساب وقف خسارة افتراضي ذكي (أدنى سعر آخر 10 شمعات 15 دقيقة أو أقل بـ 3%)
+                        lows = [c[3] for c in ohlcv_15m[-10:]] if len(ohlcv_15m) >= 10 else [current_price * 0.97]
+                        stop_loss = round(min(lows) * 0.995, 5)
+
+                    tp1 = rm.get("take_profit_1")
+                    tp2 = rm.get("take_profit_2")
+                    tp3 = rm.get("take_profit_3")
+
+                    if not tp1 or tp1 == "غير محدد":
+                        risk = breakout_price - float(stop_loss)
+                        if risk <= 0:
+                            risk = current_price * 0.03
+                        tp1 = round(breakout_price + risk * 1.0, 5)
+                        tp2 = round(breakout_price + risk * 1.5, 5)
+                        tp3 = round(breakout_price + risk * 2.5, 5)
 
                     if direction == "LONG":
                         reply_msg = (
