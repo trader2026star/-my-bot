@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MAIN ENGINE (V18.0)
-# Robust BingX API Handling & Dynamic Telegram Alerts
+# MY EXPERT CRYPTO BOT - MULTI-TIMEFRAME ENGINE (V16.0)
+# Multi-Timeframe Logic (1D -> 4H -> 1H -> 15M)
 # ==========================================
 import os
 import time
@@ -41,7 +41,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V18.0 (Strict ICT/SMC Engine) Active!"
+    return "MY EXPERT CRYPTO BOT V16.0 (Multi-Timeframe 1D/4H/1H/15M) Active!"
 
 @app.route("/health")
 def health():
@@ -106,20 +106,17 @@ def get_all_usdt_symbols():
 
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
-    
-    dir_label = "🟢 LONG (شراء)" if direction == "LONG" else "🔴 SHORT (بيع)"
-    
     message = (
-        f"💎 *إشارة نخبويّة - توافق الفريمات الأربعة ICT/SMC (V18.0)* 💎\n\n"
+        f"💎 *إشارة نخبويّة - توافق الفريمات الأربعة (1D / 4H / 1H / 15M)* 💎\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `{dir_label}`\n"
+        f"⚖️ الاتجاه: `🟢 LONG`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
-        f"⭐️ جودة الصفقة: `{details.get('score')}/100`\n\n"
-        f"🛑 وقف الخسارة (SL): `{details.get('stop_loss')}`\n"
-        f"🎯 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
-        f"🎯 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
-        f"🏆 الهدف الرئيسي (TP3 - R:R 1:2.5): `{rm.get('take_profit_3')}`\n\n"
-        f"ℹ️ *تفاصيل الهيكل:* {details.get('smc_note')}"
+        f"⭐️ درجة الجودة الممتازة: `{details.get('score')}/100`\n\n"
+        f"🟥 وقف الخسارة (SL): `{details.get('stop_loss')}`\n"
+        f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
+        f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
+        f"🎯 الهدف الرئيسي (TP3 - R:R 1:2.5): `{rm.get('take_profit_3')}`\n\n"
+        f"ℹ️ *هيكلية التأكيد:* {details.get('smc_note')}"
     )
     return send_telegram_message(message)
 
@@ -135,13 +132,13 @@ def process_symbol(symbol, engine):
             return
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 2000000: # استبعاد العملات عديمة السيولة
+        if quote_volume < 3000000: # تصفية سيولة عالية جداً لتصفية الصفقات القوية فقط
             return
 
-        # جلب البيانات الكاملة بالفريمات الأربعة
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=25)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=25)
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=25)
+        # جلب بيانات الفريمات الأربعة كاملة
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
         ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=20)
 
         if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
@@ -167,8 +164,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🚀 *تم تشغيل المحرك المطور الصارم (V18.0)*\n"
-        "تم تصحيح خوارزمية الفريمات الأربعة كلياً. البوت يحلل الآن اتجاهي LONG و SHORT بانضباط مؤسساتي صارم."
+        "💎 *تم تشغيل محرك توافق الفريمات الأربعة (V16.0)*\n"
+        "البوت لن يرسل أي صفقة إلا بعد موافقة الفريم اليومي + 4 ساعات + الساعة + 15 دقيقة."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
