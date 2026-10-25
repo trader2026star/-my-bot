@@ -1,8 +1,8 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - INSTITUTIONAL ICT/SMC ENGINE (V19.1 - Fixed)
+# MY EXPERT CRYPTO BOT - INSTITUTIONAL ICT/SMC ENGINE (V19.2 - Sniper Balance)
 # Multi-Timeframe Logic:
 # 1D Bias -> Discount/Premium Check -> Liquidity Sweep -> 1H OB/FVG -> 15M Execution
-# Full Support for LONG & SHORT
+# Full Support for LONG & SHORT (Balanced & Selective)
 # ============================================================
 
 import logging
@@ -78,69 +78,97 @@ class StrategyEngine:
         return bias, swing_high, swing_low, range_mid
 
     def _check_premium_discount(self, current_price, swing_high, swing_low, bias):
-        """2. فحص مناطق الخصم والعلاوة (مرونة النطاق لتجنب رفض الصفقات الصاعدة القوية)"""
+        """2. فحص مناطق الخصم والعلاوة بوزن متوازن"""
         total_range = swing_high - swing_low
         if total_range <= 0:
             return True
 
         price_position = (current_price - swing_low) / total_range
 
-        if bias == "BULLISH" and price_position <= 0.65:
+        # السماح بالشراء تحت 70% والبيع فوق 30% لضمان عدم تفويت الحركات القوية
+        if bias == "BULLISH" and price_position <= 0.70:
             return True
-        elif bias == "BEARISH" and price_position >= 0.35:
+        elif bias == "BEARISH" and price_position >= 0.30:
             return True
 
-        return True
+        return False
 
     def _check_4h_bos_and_sweep(self, ohlcv_4h, bias):
-        """3. كشف كسر الهيكل أو السيولة بمرونة عالية"""
+        """3. كشف كسر الهيكل وسحب السيولة بدقة لتجنب الصفقات الوهمية"""
         arr = self._array(ohlcv_4h, minimum=15)
         if arr is None:
-            return True, "Structure Flexible Pass"
+            return False, "No Structure Data"
 
         highs = arr[:, 2]
         lows = arr[:, 3]
         closes = arr[:, 4]
 
-        if bias == "BULLISH":
-            return True, "BULLISH Structure Confirmed"
-        elif bias == "BEARISH":
-            return True, "BEARISH Structure Confirmed"
+        prev_high = np.max(highs[-10:-3])
+        prev_low = np.min(lows[-10:-3])
 
-        return True, "Structure Pass"
+        if bias == "BULLISH":
+            swept_liquidity = np.min(lows[-3:]) < prev_low
+            bos_confirmed = closes[-1] > prev_high or closes[-2] > prev_high
+            if bos_confirmed or swept_liquidity:
+                return True, "BULLISH BOS/Sweep Confirmed"
+        elif bias == "BEARISH":
+            swept_liquidity = np.max(highs[-3:]) > prev_high
+            bos_confirmed = closes[-1] < prev_low or closes[-2] < prev_low
+            if bos_confirmed or swept_liquidity:
+                return True, "BEARISH BOS/Sweep Confirmed"
+
+        return False, "No Structure Confirmation"
 
     def _check_1h_ob_and_fvg(self, ohlcv_1h, bias):
-        """4. استخراج مستويات الدعم والـ Order Block بدون قيود قاسية"""
+        """4. فحص الـ Order Block ومستويات السيولة بدقة"""
         arr = self._array(ohlcv_1h, minimum=15)
         if arr is None:
-            return True, 0.0
+            return False, 0.0
 
         lows = arr[:, 3]
         highs = arr[:, 2]
+        closes = arr[:, 4]
+        opens = arr[:, 1]
+
+        ob_level = 0.0
+        has_fvg = True  # السماح بمرونة معقولة للـ FVG لتجنب الشلل
 
         if bias == "BULLISH":
-            ob_level = float(np.min(lows[-6:-1]))
+            for i in range(len(arr) - 2, max(0, len(arr) - 10), -1):
+                if closes[i] < opens[i]:
+                    ob_level = float(lows[i])
+                    break
+            if ob_level == 0.0:
+                ob_level = float(np.min(lows[-6:-1]))
         else:
-            ob_level = float(np.max(highs[-6:-1]))
+            for i in range(len(arr) - 2, max(0, len(arr) - 10), -1):
+                if closes[i] > opens[i]:
+                    ob_level = float(highs[i])
+                    break
+            if ob_level == 0.0:
+                ob_level = float(np.max(highs[-6:-1]))
 
-        return True, ob_level
+        return has_fvg, ob_level
 
     def _check_15m_trigger(self, ohlcv_15m, bias):
-        """5. مرونة في قبول الشمعة لتجنب رفض الزخم اللحظي"""
+        """5. شمعة تفعيل متوازنة (جسم الشمعة >= 25% لتأكيد الزخم الحقيقي)"""
         arr = self._array(ohlcv_15m, minimum=15)
         if arr is None:
-            return True
+            return False
 
         o, h, l, c, v = arr[-2, 1], arr[-2, 2], arr[-2, 3], arr[-2, 4], arr[-2, 5]
         candle_range = h - l
-        if candle_range <= 0:
-            return True
+        if candle_range <= 0 or v <= 0:
+            return False
 
         body_ratio = abs(c - o) / candle_range
-        if body_ratio >= 0.15:
-            return True
 
-        return True
+        if bias == "BULLISH":
+            return bool(body_ratio >= 0.25 and c > o)
+        elif bias == "BEARISH":
+            return bool(body_ratio >= 0.25 and c < o)
+
+        return False
 
     def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None, ohlcv_4h=None, ohlcv_1d=None, **kwargs):
         def no_trade(reason):
@@ -148,17 +176,26 @@ class StrategyEngine:
 
         daily_bias, swing_high, swing_low, range_mid = self._get_daily_bias_and_range(ohlcv_1d)
         if daily_bias not in ["BULLISH", "BEARISH"]:
-            daily_bias = "BULLISH"
+            return no_trade("الانحياز اليومي غير واضح")
 
         raw15 = self._array(ohlcv_15m, 15)
         if raw15 is None:
             return no_trade("بيانات 15M غير كافية")
         current_price = float(raw15[-1, 4])
 
-        self._check_premium_discount(current_price, swing_high, swing_low, daily_bias)
+        if not self._check_premium_discount(current_price, swing_high, swing_low, daily_bias):
+            return no_trade("السعر خارج منطقة الخصم/العلاوة المقبولة")
+
         has_structure, structure_note = self._check_4h_bos_and_sweep(ohlcv_4h, daily_bias)
+        if not has_structure:
+            return no_trade("لم يتم تأكيد هيكل 4H أو سحب السيولة")
+
         has_fvg, ob_level = self._check_1h_ob_and_fvg(ohlcv_1h, daily_bias)
-        self._check_15m_trigger(ohlcv_15m, daily_bias)
+        if not has_fvg:
+            return no_trade("لم تتطابق شروط 1H OB")
+
+        if not self._check_15m_trigger(ohlcv_15m, daily_bias):
+            return no_trade("شمعة 15M لم تعطِ زخم الإغلاق المطلوب")
 
         atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
         if atr <= 0:
@@ -168,32 +205,30 @@ class StrategyEngine:
 
         if daily_bias == "BULLISH":
             direction = "LONG"
-            stop = min(ob_level - (0.4 * atr) if ob_level > 0 else current_price - (1.5 * atr), current_price - (1.2 * atr))
+            stop = min(ob_level - (0.3 * atr) if ob_level > 0 else current_price - (1.2 * atr), current_price - (1.2 * atr))
             risk_dist = current_price - stop
             if risk_dist <= 0:
-                risk_dist = current_price * 0.01
-                stop = current_price - risk_dist
+                return no_trade("مسافة الوقف غير صالحة")
 
-            tp1 = current_price + (risk_dist * 1.3)
-            tp2 = current_price + (risk_dist * 2.0)
+            tp1 = current_price + (risk_dist * 1.5)
+            tp2 = current_price + (risk_dist * 2.2)
             tp3 = current_price + (risk_dist * 3.0)
 
         else:
             direction = "SHORT"
-            stop = max(ob_level + (0.4 * atr) if ob_level > 0 else current_price + (1.5 * atr), current_price + (1.2 * atr))
+            stop = max(ob_level + (0.3 * atr) if ob_level > 0 else current_price + (1.2 * atr), current_price + (1.2 * atr))
             risk_dist = stop - current_price
             if risk_dist <= 0:
-                risk_dist = current_price * 0.01
-                stop = current_price + risk_dist
+                return no_trade("مسافة الوقف غير صالحة")
 
-            tp1 = current_price - (risk_dist * 1.3)
-            tp2 = current_price - (risk_dist * 2.0)
+            tp1 = current_price - (risk_dist * 1.5)
+            tp2 = current_price - (risk_dist * 2.2)
             tp3 = current_price - (risk_dist * 3.0)
 
         qty = risk_usd / risk_dist
 
         details = {
-            "reason": f"Institutional ICT Optimized Alignment ({direction})",
+            "reason": f"Institutional ICT Sniper Alignment ({direction})",
             "stop_loss": self._round(stop),
             "risk_management": {
                 "allowed_risk_usd": round(risk_usd, 2),
@@ -203,9 +238,9 @@ class StrategyEngine:
                 "take_profit_3": self._round(tp3),
                 "reward_ratio": "1:3.0"
             },
-            "setup": "Institutional ICT Optimized (Flexible SMC)",
-            "score": 95,
-            "smc_note": f"1D Bias: {daily_bias} | 4H & 1H Structure Validated | Ready for Execution"
+            "setup": "Institutional ICT Sniper (Balanced SMC)",
+            "score": 98,
+            "smc_note": f"1D Bias: {daily_bias} | 4H: {structure_note} | 1H OB Validated | 15M Sniper Trigger Confirmed"
         }
 
         return direction, self._round(current_price), details
