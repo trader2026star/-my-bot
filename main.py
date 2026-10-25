@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.5)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.6)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.5 Active!"
+    return "MY EXPERT CRYPTO BOT V17.6 Active!"
 
 @app.route("/health")
 def health():
@@ -162,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.5)*\n"
-        "أرسل اسم أي عملة (مثل SKYAI أو ARB) للحصول على التحليل الفوري مباشرة!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.6)*\n"
+        "أرسل اسم أي عملة (مثل SKYAI أو BTC) للحصول على التحليل الفوري مباشرة!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -184,11 +184,10 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع مستقل ومحسن للرسائل اليدوية"""
+    """مستمع مستقل للرسائل اليدوية مع معالجة أخطاء داخلية لضمان الرد دائماً"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
-    # مسح الرسائل القديمة عند البدء لتفادي التداخل
     try:
         init_resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset=-1", timeout=10)
         if init_resp.status_code == 200:
@@ -220,63 +219,66 @@ def check_telegram_updates():
                     continue
                 
                 base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
-                
-                # إرسال تأكيد الفحص
                 send_telegram_message(f"🔍 جاري جلب وتحليل عملة `{base_coin}`...")
                 
-                all_symbols = get_all_usdt_symbols()
-                target_symbol = None
-                
-                for s in all_symbols:
-                    s_base = s.split('/')[0].upper()
-                    if s_base == base_coin or base_coin in s_base:
-                        target_symbol = s
-                        break
-                
-                if not target_symbol:
-                    target_symbol = f"{base_coin}/USDT:USDT"
+                try:
+                    all_symbols = get_all_usdt_symbols()
+                    target_symbol = None
+                    
+                    for s in all_symbols:
+                        s_base = s.split('/')[0].upper()
+                        if s_base == base_coin or base_coin in s_base:
+                            target_symbol = s
+                            break
+                    
+                    if not target_symbol:
+                        target_symbol = f"{base_coin}/USDT:USDT"
 
-                ohlcv_15m = bingx_call("fetch_ohlcv", target_symbol, timeframe="15m", limit=30)
-                ohlcv_1h = bingx_call("fetch_ohlcv", target_symbol, timeframe="1h", limit=30)
-                ohlcv_4h = bingx_call("fetch_ohlcv", target_symbol, timeframe="4h", limit=30)
-                ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
-                
-                if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة الرمز في عقود الـ Swap.")
-                    continue
-                
-                direction, entry_price, details = engine.analyze_market_structure(
-                    ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
-                )
-                
-                current_price = float(ohlcv_15m[-1, 4])
-                
-                if direction == "LONG":
-                    rm = details.get("risk_management", {})
-                    reply_msg = (
-                        f"✅ **العملة جاهزة للونج حالياً!**\n\n"
-                        f"🔹 العملة: `{target_symbol}`\n"
-                        f"💵 السعر الحالي: `{current_price}`\n"
-                        f"⭐️ تقييم الفرصة: `{details.get('score')}/100`\n\n"
-                        f"🟥 وقف الخسارة: `{details.get('stop_loss')}`\n"
-                        f"🟩 الهدف الأول: `{rm.get('take_profit_1')}`\n"
-                        f"🎯 الهدف الرئيسي: `{rm.get('take_profit_3')}`\n\n"
-                        f"ℹ️ {details.get('smc_note')}"
+                    ohlcv_15m = bingx_call("fetch_ohlcv", target_symbol, timeframe="15m", limit=30)
+                    ohlcv_1h = bingx_call("fetch_ohlcv", target_symbol, timeframe="1h", limit=30)
+                    ohlcv_4h = bingx_call("fetch_ohlcv", target_symbol, timeframe="4h", limit=30)
+                    ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
+                    
+                    if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
+                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة الرمز في عقود الـ Swap.")
+                        continue
+                    
+                    direction, entry_price, details = engine.analyze_market_structure(
+                        ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
                     )
-                else:
-                    reason = details.get("reason", "الشروط غير مكتملة")
-                    reply_msg = (
-                        f"⏳ **العملة غير جاهزة للونج بالكامل حالياً**\n\n"
-                        f"🔹 العملة: `{target_symbol}`\n"
-                        f"💵 السعر الحالي: `{current_price}`\n"
-                        f"⚠️ **السبب الفني:** `{reason}`\n\n"
-                        f"💡 **نصيحة قناص:** انتظر اختراق مقاومة أو تكون فوليوم إيجابي على فريم 15 دقيقة للدخول بأمان."
-                    )
-                
-                send_telegram_message(reply_msg)
+                    
+                    current_price = float(ohlcv_15m[-1, 4])
+                    
+                    if direction == "LONG":
+                        rm = details.get("risk_management", {})
+                        reply_msg = (
+                            f"✅ **العملة جاهزة للونج حالياً!**\n\n"
+                            f"🔹 العملة: `{target_symbol}`\n"
+                            f"💵 السعر الحالي: `{current_price}`\n"
+                            f"⭐️ تقييم الفرصة: `{details.get('score')}/100`\n\n"
+                            f"🟥 وقف الخسارة: `{details.get('stop_loss')}`\n"
+                            f"🟩 الهدف الأول: `{rm.get('take_profit_1')}`\n"
+                            f"🎯 الهدف الرئيسي: `{rm.get('take_profit_3')}`\n\n"
+                            f"ℹ️ {details.get('smc_note')}"
+                        )
+                    else:
+                        reason = details.get("reason", "الشروط غير مكتملة")
+                        reply_msg = (
+                            f"⏳ **العملة غير جاهزة للونج بالكامل حالياً**\n\n"
+                            f"🔹 العملة: `{target_symbol}`\n"
+                            f"💵 السعر الحالي: `{current_price}`\n"
+                            f"⚠️ **السبب الفني:** `{reason}`\n\n"
+                            f"💡 **نصيحة قناص:** انتظر اختراق مقاومة أو تكون فوليوم إيجابي على فريم 15 دقيقة للدخول بأمان."
+                        )
+                    
+                    send_telegram_message(reply_msg)
+                    
+                except Exception as inner_err:
+                    logger.error(f"Analysis inner error for {base_coin}: {inner_err}")
+                    send_telegram_message(f"❌ حدث خطأ أثناء تحليل العملة `{base_coin}`: `{str(inner_err)}`")
                 
         except Exception as e:
-            logger.error(f"Telegram listener error: {e}")
+            logger.error(f"Telegram listener outer error: {e}")
             time.sleep(5)
 
 scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="mtf-poc-scanner")
