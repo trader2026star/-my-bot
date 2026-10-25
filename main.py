@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.8)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.9)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.8 Active!"
+    return "MY EXPERT CRYPTO BOT V17.9 Active!"
 
 @app.route("/health")
 def health():
@@ -162,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.8)*\n"
-        "أرسل اسم أي عملة (مثل SKYAI أو ARB) للحصول على الأهداف ووقف الخسارة فوراً!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.9)*\n"
+        "أرسل اسم أي عملة (مثل SKYAI أو BTC) للحصول على الأهداف ووقف الخسارة فوراً!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -184,7 +184,7 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع مستقل للرسائل اليدوية مع إظهار مستويات الدخول، الأهداف، ووقف الخسارة بدقة"""
+    """مستمع مستقل للرسائل اليدوية مع تصحيح فهرسة القوائم بشكل كامل"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -254,8 +254,11 @@ def check_telegram_updates():
                     tp2 = rm.get("take_profit_2", "غير محدد")
                     tp3 = rm.get("take_profit_3", "غير محدد")
                     
-                    # حساب سعر مقاومة/اختراق دقيق بناءً على آخر شمعات الساعة
-                    breakout_price = round(float(max(ohlcv_1h[-10:, 2])), 5) if len(ohlcv_1h) >= 10 else round(current_price * 1.01, 5)
+                    # التصحيح هنا: استخدام استخراج سليم للقيم من قائمة القوائم
+                    if len(ohlcv_1h) >= 10:
+                        breakout_price = round(float(max(c[2] for c in ohlcv_1h[-10:])), 5)
+                    else:
+                        breakout_price = round(current_price * 1.01, 5)
 
                     if direction == "LONG":
                         reply_msg = (
