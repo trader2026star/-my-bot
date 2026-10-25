@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.6)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.7)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.6 Active!"
+    return "MY EXPERT CRYPTO BOT V17.7 Active!"
 
 @app.route("/health")
 def health():
@@ -162,7 +162,7 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.6)*\n"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.7)*\n"
         "أرسل اسم أي عملة (مثل SKYAI أو BTC) للحصول على التحليل الفوري مباشرة!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
@@ -184,7 +184,7 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع مستقل للرسائل اليدوية مع معالجة أخطاء داخلية لضمان الرد دائماً"""
+    """مستمع مستقل للرسائل اليدوية مع تصحيح فهرسة القوائم"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -247,7 +247,8 @@ def check_telegram_updates():
                         ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
                     )
                     
-                    current_price = float(ohlcv_15m[-1, 4])
+                    # التصحيح هنا: استخدام الفهرسة الصحيحة للقوائم بـ [][ ] بدلاً من الفهرسة المزدوجة
+                    current_price = float(ohlcv_15m[-1][4])
                     
                     if direction == "LONG":
                         rm = details.get("risk_management", {})
