@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - VOLUME PROFILE & PoC ENGINE (V16.0)
-# Strategy: Volume Profile, PoC (Point of Control) & Value Area Bounce
+# MY EXPERT CRYPTO BOT - VOLUME PROFILE & PoC ENGINE (V16.1 - Sniper Mode)
+# Strategy: Strict Volume Profile, PoC Bounce & Value Area
 # ============================================================
 
 import logging
@@ -52,7 +52,6 @@ class StrategyEngine:
         return float(np.mean(tr[-period:])) if len(tr) > 0 else 0.0
 
     def calculate_volume_profile(self, ohlcv, bins=35):
-        """حساب ملف الحجم (Volume Profile)، نقطة التحكم (PoC)، ومنطقة القيمة (Value Area)"""
         arr = self._array(ohlcv, minimum=15)
         if arr is None:
             return None, None, None
@@ -82,7 +81,6 @@ class StrategyEngine:
         poc_index = np.argmax(bin_volumes)
         poc_price = (bin_edges[poc_index] + bin_edges[poc_index+1]) / 2.0
         
-        # حساب نطاق القيمة (70% من حجم التداول الإجمالي - Value Area)
         total_vol = np.sum(bin_volumes)
         if total_vol <= 0:
             return float(poc_price), float(min_price), float(max_price)
@@ -121,21 +119,21 @@ class StrategyEngine:
             
         current_price = float(raw15[-1, 4])
         
-        # 1. حساب ملف الحجم ونقطة التحكم (PoC) على فريم الساعة أو 4 ساعات
         source_ohlcv = ohlcv_1h if ohlcv_1h is not None else ohlcv_15m
         poc, val, vah = self.calculate_volume_profile(source_ohlcv)
         if poc is None:
             return no_trade("تعذر حساب نقاط ملف الحجم (Volume Profile)")
 
-        # 2. شروط الدخول: الارتداد الصاعد من نقطة التحكم (PoC) أو حد منطقة القيمة السفلي (VAL)
         last_candle = raw15[-1]
         o, h, l, c, v = last_candle[1], last_candle[2], last_candle[3], last_candle[4], last_candle[5]
         
-        is_bullish_candle = c > o and (c - o) >= (h - l) * 0.35
-        near_key_node = (current_price <= poc * 1.02) and (current_price >= val * 0.98)
+        # الشروط الصارمة جداً (القناص): نطاق ضيق جداً (0.5%) + شمعة زخم قوية (60% من حجم الشمعة صاعد)
+        candle_range = h - l if h > l else 1.0
+        is_strong_bullish = c > o and ((c - o) / candle_range) >= 0.60
+        near_key_node = (current_price <= poc * 1.005) and (current_price >= val * 0.995)
         
-        if not (near_key_node and is_bullish_candle):
-            return no_trade("السعر لم يلامس نقطة التحكم PoC أو حد القيمة VAL مع شمعة تأكيد")
+        if not (near_key_node and is_strong_bullish):
+            return no_trade("السعر ليس في نقطة الارتداد الدقيقة أو عزم الشمعة ضعيف")
 
         atr = self.calculate_atr(raw15[:, 2], raw15[:, 3], raw15[:, 4], 14)
         stop = min(val - 0.5 * atr, current_price - 1.5 * atr)
@@ -148,7 +146,7 @@ class StrategyEngine:
         qty = risk_usd / risk_dist
 
         details = {
-            "reason": "Volume Profile PoC & Value Area Bounce Strategy",
+            "reason": "Sniper Volume Profile PoC Bounce Strategy",
             "stop_loss": self._round(stop),
             "risk_management": {
                 "allowed_risk_usd": round(risk_usd, 2),
@@ -158,9 +156,9 @@ class StrategyEngine:
                 "take_profit_3": self._round(tp_target),
                 "reward_ratio": "1:2.5"
             },
-            "setup": "Volume Profile & Point of Control (PoC)",
-            "score": 93,
-            "smc_note": f"PoC: {self._round(poc)} | VAL: {self._round(val)} | VAH: {self._round(vah)}"
+            "setup": "Strict PoC & Value Area Sniper",
+            "score": 98,
+            "smc_note": f"Sniper PoC: {self._round(poc)} | VAL: {self._round(val)} | VAH: {self._round(vah)}"
         }
 
         return "LONG", self._round(current_price), details
