@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - VOLUME PROFILE & PoC ENGINE (V16.0)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.0)
 # Main Bot Controller
 # ==========================================
 import os
@@ -41,7 +41,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V16.0 (Volume Profile & PoC Strategy) Active!"
+    return "MY EXPERT CRYPTO BOT V17.0 (MTF Volume Profile & PoC Sniper) Active!"
 
 @app.route("/health")
 def health():
@@ -107,16 +107,16 @@ def get_all_usdt_symbols():
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
     message = (
-        f"💎 *إشارة نخبويّة - استراتيجية ملف الحجم و PoC* 💎\n\n"
+        f"💎 *صفقة قناص نخبويّة - توافق الفريمات الأربعة مع PoC* 💎\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `🟢 LONG`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
-        f"⭐️ درجة الجودة الممتازة: `{details.get('score')}/100`\n\n"
+        f"⭐️ درجة الجودة: `{details.get('score')}/100`\n\n"
         f"🟥 وقف الخسارة (SL): `{details.get('stop_loss')}`\n"
         f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
         f"🎯 الهدف الرئيسي (TP3 - R:R 1:2.5): `{rm.get('take_profit_3')}`\n\n"
-        f"ℹ️ *تفاصيل المستويات:* {details.get('smc_note')}"
+        f"ℹ️ *التفاصيل الهيكلية:* {details.get('smc_note')}"
     )
     return send_telegram_message(message)
 
@@ -132,18 +132,20 @@ def process_symbol(symbol, engine):
             return
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 3000000: # تصفية السيولة العالية لضمان قوة العملات المحددة
+        if quote_volume < 3000000:
             return
 
-        # جلب بيانات الشموع اللازمة لحساب ملف الحجم (Volume Profile)
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=50)
+        # جلب بيانات الفريمات الأربعة كاملة (1D, 4H, 1H, 15M)
+        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
+        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
+        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
+        ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=25)
 
-        if not (ohlcv_15m and ohlcv_1h):
+        if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
             return
 
         direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h
+            ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
         )
         scan_stats["scanned_pairs"] += 1
 
@@ -162,8 +164,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت استراتيجية ملف الحجم و PoC (V16.0)*\n"
-        "البوت يراقب السوق الآن ويرسل الصفقات عند ارتداد السعر من نقطة التحكم بدقة عالية."
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة وملف الحجم (V17.0)*\n"
+        "البوت يراقـب توافق (1D -> 4H -> 1H PoC -> 15M Volume Spike) لفلترة الصفقات بدقة فائقة."
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -180,10 +182,10 @@ def background_scanner():
 
             time.sleep(60)
         except Exception as exc:
-            logger.error(f"Scanner Loop Error: {exc}")
-            time.sleep(30)
+                    logger.error(f"Scanner Loop Error: {exc}")
+                    time.sleep(30)
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="volume-profile-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="mtf-poc-scanner")
 scanner_thread.start()
 
 if __name__ == "__main__":
