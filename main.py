@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.3)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.4)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.3 Active!"
+    return "MY EXPERT CRYPTO BOT V17.4 Active!"
 
 @app.route("/health")
 def health():
@@ -95,7 +95,7 @@ def get_all_usdt_symbols():
                 base_asset = symbol.split('/')[0].upper()
                 if any(x in symbol.upper() for x in ["TEST", "UP/", "DOWN/", "BULL", "BEAR"]):
                     continue
-                if len(base_asset) > 9:
+                if len(base_asset) > 12:
                     continue
                 symbols.append(symbol)
         return sorted(set(symbols))
@@ -162,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.3)*\n"
-        "يمكنك إرسال اسم أي عملة هنا (مثل SKAI أو ARB) للتحليل الفوري!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.4)*\n"
+        "يمكنك إرسال اسم أي عملة هنا (مثل SKYAI أو ARB) للتحليل الفوري!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -211,16 +211,17 @@ def check_telegram_updates():
                 base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
                 send_telegram_message(f"🔍 جاري البحث عن عملة `{base_coin}` وفحصها...")
                 
-                # البحث الذكي في الأسواق المتاحة بالمنصة عن الرمز المطابق
                 all_symbols = get_all_usdt_symbols()
                 target_symbol = None
+                
+                # البحث الذكي المطابق أو الجزئي لاسم العملة في قائمة الأسواق
                 for s in all_symbols:
-                    if s.split('/')[0].upper() == base_coin:
+                    s_base = s.split('/')[0].upper()
+                    if s_base == base_coin or base_coin in s_base:
                         target_symbol = s
                         break
                 
                 if not target_symbol:
-                    # محاولة احتياطية مباشرة
                     target_symbol = f"{base_coin}/USDT:USDT"
 
                 ohlcv_15m = bingx_call("fetch_ohlcv", target_symbol, timeframe="15m", limit=30)
@@ -229,7 +230,7 @@ def check_telegram_updates():
                 ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                 
                 if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد أن الرمز مدرج في عقود Swap بنجاح.")
+                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة الرمز في العقود الآجلة.")
                     continue
                 
                 direction, entry_price, details = engine.analyze_market_structure(
@@ -257,7 +258,7 @@ def check_telegram_updates():
                         f"🔹 العملة: `{target_symbol}`\n"
                         f"💵 السعر الحالي: `{current_price}`\n"
                         f"⚠️ **السبب الفني:** `{reason}`\n\n"
-                        f"💡 **نصيحة قناص:** انتظر اختراق مقاومة قريبة أو تكون فوليوم إيجابي على فريم 15 دقيقة للدخول بأمان."
+                        f"💡 **نصيحة قناص:** انتظر اختراق مقاومة أو تكون فوليوم إيجابي على فريم 15 دقيقة للدخول بأمان."
                     )
                 
                 send_telegram_message(reply_msg)
@@ -273,5 +274,5 @@ telegram_listener_thread = threading.Thread(target=check_telegram_updates, daemo
 telegram_listener_thread.start()
 
 if __name__ == "__main__":
-    port = int(os.environ.com.get("PORT", "5000") if hasattr(os.environ, "com") else os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
