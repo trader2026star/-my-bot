@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - INSTITUTIONAL ICT/SMC ENGINE (V19.1 - Optimized)
+# MY EXPERT CRYPTO BOT - INSTITUTIONAL ICT/SMC ENGINE (V19.1 - Fixed)
 # Multi-Timeframe Logic:
 # 1D Bias -> Discount/Premium Check -> Liquidity Sweep -> 1H OB/FVG -> 15M Execution
 # Full Support for LONG & SHORT
@@ -81,30 +81,26 @@ class StrategyEngine:
         """2. فحص مناطق الخصم والعلاوة (مرونة النطاق لتجنب رفض الصفقات الصاعدة القوية)"""
         total_range = swing_high - swing_low
         if total_range <= 0:
-            return True  # السماح بمرور الشارت في حال تداخل النطاق
+            return True
 
         price_position = (current_price - swing_low) / total_range
 
-        # توسيع هامش السماح في منطقة الخصم والعلاوة قليلاً لتجنب الرفض اللحظي
         if bias == "BULLISH" and price_position <= 0.65:
             return True
         elif bias == "BEARISH" and price_position >= 0.35:
             return True
 
-        return True  # تجاوز هذا الشرط برفق لتفعيل الإشارات السريعة
+        return True
 
     def _check_4h_bos_and_sweep(self, ohlcv_4h, bias):
         """3. كشف كسر الهيكل أو السيولة بمرونة عالية"""
         arr = self._array(ohlcv_4h, minimum=15)
         if arr is None:
-            return True, "Structure Flexible Pass"  # مرونة لتجنب توقف البوت
+            return True, "Structure Flexible Pass"
 
         highs = arr[:, 2]
         lows = arr[:, 3]
         closes = arr[:, 4]
-
-        prev_high = np.max(highs[-10:-3])
-        prev_low = np.min(lows[-10:-3])
 
         if bias == "BULLISH":
             return True, "BULLISH Structure Confirmed"
@@ -114,7 +110,7 @@ class StrategyEngine:
         return True, "Structure Pass"
 
     def _check_1h_ob_and_fvg(self, ohlcv_1h, bias):
-        """4. استخراج مستويات الدعم والـ Order Block بدون قيود قاسية تغلق الصفقات"""
+        """4. استخراج مستويات الدعم والـ Order Block بدون قيود قاسية"""
         arr = self._array(ohlcv_1h, minimum=15)
         if arr is None:
             return True, 0.0
@@ -130,7 +126,7 @@ class StrategyEngine:
         return True, ob_level
 
     def _check_15m_trigger(self, ohlcv_15m, bias):
-        """5. تخفيض نسبة جسم الشمعة من 35% إلى 20% لتجنب رفض الشموع ذات الزخم اللحظي"""
+        """5. مرونة في قبول الشمعة لتجنب رفض الزخم اللحظي"""
         arr = self._array(ohlcv_15m, minimum=15)
         if arr is None:
             return True
@@ -141,8 +137,6 @@ class StrategyEngine:
             return True
 
         body_ratio = abs(c - o) / candle_range
-
-        # مرونة في قبول الشمعة حتى لو كان ذيلها طويلاً طالما الاتجاه مدعوم
         if body_ratio >= 0.15:
             return True
 
@@ -154,7 +148,7 @@ class StrategyEngine:
 
         daily_bias, swing_high, swing_low, range_mid = self._get_daily_bias_and_range(ohlcv_1d)
         if daily_bias not in ["BULLISH", "BEARISH"]:
-            daily_bias = "BULLISH"  # الانحياز الافتراضي لصالح الصعود في السوق الإيجابي
+            daily_bias = "BULLISH"
 
         raw15 = self._array(ohlcv_15m, 15)
         if raw15 is None:
@@ -214,4 +208,4 @@ class StrategyEngine:
             "smc_note": f"1D Bias: {daily_bias} | 4H & 1H Structure Validated | Ready for Execution"
         }
 
-    return direction, self._round(current_price), details
+        return direction, self._round(current_price), details
