@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.4)
+# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.5)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.4 Active!"
+    return "MY EXPERT CRYPTO BOT V17.5 Active!"
 
 @app.route("/health")
 def health():
@@ -162,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.4)*\n"
-        "يمكنك إرسال اسم أي عملة هنا (مثل SKYAI أو ARB) للتحليل الفوري!"
+        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.5)*\n"
+        "أرسل اسم أي عملة (مثل SKYAI أو ARB) للحصول على التحليل الفوري مباشرة!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -184,20 +184,31 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    offset = 0
+    """مستمع مستقل ومحسن للرسائل اليدوية"""
+    last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
+    # مسح الرسائل القديمة عند البدء لتفادي التداخل
+    try:
+        init_resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset=-1", timeout=10)
+        if init_resp.status_code == 200:
+            res_list = init_resp.json().get("result", [])
+            if res_list:
+                last_update_id = res_list[-1]["update_id"]
+    except:
+        pass
+
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
-            response = requests.get(url, timeout=35)
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=25"
+            response = requests.get(url, timeout=30)
             if response.status_code != 200:
-                time.sleep(5)
+                time.sleep(3)
                 continue
             
             data = response.json()
             for result in data.get("result", []):
-                offset = result["update_id"] + 1
+                last_update_id = result["update_id"]
                 message = result.get("message", {})
                 text = message.get("text", "").strip().upper()
                 chat_id = message.get("chat", {}).get("id")
@@ -209,12 +220,13 @@ def check_telegram_updates():
                     continue
                 
                 base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 جاري البحث عن عملة `{base_coin}` وفحصها...")
+                
+                # إرسال تأكيد الفحص
+                send_telegram_message(f"🔍 جاري جلب وتحليل عملة `{base_coin}`...")
                 
                 all_symbols = get_all_usdt_symbols()
                 target_symbol = None
                 
-                # البحث الذكي المطابق أو الجزئي لاسم العملة في قائمة الأسواق
                 for s in all_symbols:
                     s_base = s.split('/')[0].upper()
                     if s_base == base_coin or base_coin in s_base:
@@ -230,7 +242,7 @@ def check_telegram_updates():
                 ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                 
                 if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة الرمز في العقود الآجلة.")
+                    send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة الرمز في عقود الـ Swap.")
                     continue
                 
                 direction, entry_price, details = engine.analyze_market_structure(
@@ -265,7 +277,7 @@ def check_telegram_updates():
                 
         except Exception as e:
             logger.error(f"Telegram listener error: {e}")
-            time.sleep(10)
+            time.sleep(5)
 
 scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="mtf-poc-scanner")
 scanner_thread.start()
