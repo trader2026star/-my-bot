@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V18.0 Sniper Elite LONG ONLY
+# MY EXPERT CRYPTO BOT - V18.1 Sniper Elite LONG ONLY (MM Shield)
 # MTF: 1D Bias -> 4H Structure -> 1H Volume Profile -> 15M Trigger
 # Signal-only: does NOT place exchange orders.
 # ============================================================
@@ -23,7 +23,6 @@ class StrategyEngine:
 
     @staticmethod
     def _array(data, minimum=20):
-        """Validate standard CCXT OHLCV rows: timestamp, open, high, low, close, volume."""
         try:
             a = np.asarray(data, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -58,7 +57,6 @@ class StrategyEngine:
 
     @staticmethod
     def _closed(data, minimum=20):
-        """Conservatively exclude the newest candle because it may still be forming."""
         arr = StrategyEngine._array(data, minimum=minimum + 1)
         if arr is None or len(arr) < minimum + 1:
             return None
@@ -92,7 +90,6 @@ class StrategyEngine:
             return False
         closes = arr[:, 4]
         ma20 = float(np.mean(closes[-20:]))
-        # Mild trend confirmation avoids treating one candle above MA as enough.
         return bool(closes[-1] > ma20 and closes[-1] >= closes[-4])
 
     def _check_4h_structure(self, ohlcv_4h):
@@ -104,11 +101,9 @@ class StrategyEngine:
         swing_high, swing_low = self._swing_levels(arr, 12)
         bullish_momentum = closes[-1] > ma10 and closes[-1] >= closes[-4]
         bullish_break = swing_high is not None and closes[-1] > swing_high
-        # Permit a rising structure above the mean, or a confirmed close above recent swing high.
         return bool(bullish_momentum or bullish_break)
 
     def calculate_volume_profile(self, ohlcv, bins=35):
-        """Approximate candle-range volume profile. It is not trade-by-trade exchange volume."""
         arr = self._closed(ohlcv, minimum=20)
         if arr is None:
             return None, None, None
@@ -161,7 +156,6 @@ class StrategyEngine:
 
     @staticmethod
     def _bullish_fvg(arr):
-        # Three-candle imbalance: low of current candle above high two candles earlier.
         if len(arr) < 3:
             return None
         a, c = arr[-3], arr[-1]
@@ -171,7 +165,6 @@ class StrategyEngine:
 
     @staticmethod
     def _bullish_order_block(arr):
-        # Latest bearish candle in a short lookback; use its range as a candidate zone only.
         start = max(0, len(arr) - 8)
         for i in range(len(arr) - 2, start - 1, -1):
             row = arr[i]
@@ -188,13 +181,12 @@ class StrategyEngine:
                 "debug_trace": list(debug),
                 "trade_valid": False,
                 "score": 0,
-                "setup": "V18 Sniper Elite LONG Only",
+                "setup": "V18.1 Sniper Elite Pro - MM Shield",
             }
             if extra:
                 details.update(extra)
             return "NEUTRAL", 0, details
 
-        # Require all four timeframes; missing higher-timeframe data must not silently bypass filters.
         if any(x is None for x in (ohlcv_15m, ohlcv_1h, ohlcv_4h, ohlcv_1d)):
             return no_trade("بيانات أحد الفريمات الأربعة غير متوفرة")
 
@@ -230,16 +222,22 @@ class StrategyEngine:
         high = float(m15[-1, 2])
         low = float(m15[-1, 3])
         volume = float(m15[-1, 5])
+        
         candle_range = max(high - low, close * 1e-8)
         body_ratio = max(0.0, close - open_) / candle_range
+        
+        # [تعديل الحماية 1]: فحص وجود ذيل علوي تلاعبي (Upper Rejection Wick) لصانع السوق
+        upper_wick = high - max(open_, close)
+        is_manipulated_wick = (upper_wick / candle_range) > 0.45
+
         avg_volume = float(np.mean(m15[-16:-1, 5]))
-        volume_spike = avg_volume > 0 and volume >= avg_volume * 1.20
+        # [تعديل الحماية 2]: رفع معيار تدفق الحجم المؤسسي لمنع فخاخ التجزئة
+        volume_spike = avg_volume > 0 and volume >= avg_volume * 1.35
 
         atr = self.calculate_atr(m15[:, 2], m15[:, 3], m15[:, 4], 14)
         if atr <= 0 or not np.isfinite(atr):
             return no_trade("تعذر حساب ATR بصورة صالحة")
 
-        # A usable LONG location is near PoC/VAL or a nearby bullish OB/FVG zone.
         near_profile = (val * 0.997 <= close <= poc * 1.012)
         fvg = self._bullish_fvg(m15)
         ob = self._bullish_order_block(h1)
@@ -247,20 +245,19 @@ class StrategyEngine:
         near_ob = bool(ob and ob[0] - 0.15 * atr <= close <= ob[1] + 0.15 * atr)
         location_ok = near_profile or near_fvg or near_ob
 
-        # Liquidity sweep: prior low is taken intrabar and price closes back above it.
         recent_lows = m15[-8:-1, 3]
         sweep_level = float(np.min(recent_lows)) if len(recent_lows) else low
-        liquidity_sweep = bool(low < sweep_level and close > sweep_level)
+        # [تعديل الحماية 3]: التأكد من أن سحب السيولة حقيقي تلاه إغلاق جسم قوي فوق القاع المسحوب
+        liquidity_sweep = bool(low < sweep_level and close > sweep_level and body_ratio >= 0.40)
 
-        # Basic local bullish structure confirmation (close above previous 5-candle highs).
         prior_high = float(np.max(m15[-6:-1, 2]))
         micro_bos = close > prior_high
-        strong_bullish = close > open_ and body_ratio >= 0.45
-        not_chasing = close <= poc * 1.025 and close <= vah * 1.005
+        strong_bullish = close > open_ and body_ratio >= 0.50
+        not_chasing = close <= poc * 1.020 and close <= vah * 1.002
         momentum_ok = close >= float(m15[-3, 4])
 
         score = 0
-        score += 20  # daily bias confirmed
+        score += 20  
         score += 15 if h4_bos else (10 if h4_bullish else 0)
         score += 15 if near_profile else (8 if near_ob or near_fvg else 0)
         score += 15 if liquidity_sweep else 0
@@ -268,71 +265,55 @@ class StrategyEngine:
         score += 10 if volume_spike else 0
         score += 10 if strong_bullish and momentum_ok else 0
         score = min(100, int(score))
-        debug.extend([
-            f"1D bullish bias: yes; close={self._round(daily_close)} MA20={self._round(daily_ma20)}",
-            f"4H bullish={h4_bullish}; BOS={h4_bos}",
-            f"1H PoC={self._round(poc)} VAL={self._round(val)} VAH={self._round(vah)}",
-            f"15M sweep={liquidity_sweep}; microBOS={micro_bos}; volumeSpike={volume_spike}; bodyRatio={body_ratio:.2f}",
-        ])
 
-        # Quality gates: no signal simply because a score looks high.
+        # فلاتر الرفض الذكية ضد صانع السوق
+        if is_manipulated_wick:
+            return no_trade("تم اكتشاف ذيل رفض علوي تلاعبي (صانع السوق ينفض المشترين)", {"score": score})
         if not location_ok:
-            return no_trade("السعر ليس داخل منطقة دخول مناسبة قرب PoC/OB/FVG", {
-                "score": score, "smc_note": "الموقع غير مناسب؛ لا تطارد السعر"
-            })
+            return no_trade("السعر خارج مناطق القيمة أو الأوامر المؤسسية الحقيقية", {"score": score})
         if not not_chasing:
-            return no_trade("السعر امتد بعيدًا عن منطقة القيمة؛ تجنب مطاردة الحركة", {
-                "score": score, "smc_note": "السعر بعيد عن منطقة الدخول"
-            })
+            return no_trade("السعر ممتد بشكل مفرط؛ خطر الوقوع في فخ مطاردة الحركة", {"score": score})
         if not strong_bullish or not momentum_ok:
-            return no_trade("تأكيد شمعة 15M والزخم الصاعد غير مكتمل", {
-                "score": score, "smc_note": "انتظار إغلاق صاعد أقوى"
-            })
+            return no_trade("شمعة التأكيد لا تملك الزخم الجسماني الكافي للأعلى", {"score": score})
         if not volume_spike and not liquidity_sweep and not micro_bos:
-            return no_trade("لا يوجد تأكيد كافٍ للحجم أو سحب السيولة أو كسر الهيكل", {
-                "score": score, "smc_note": "تأكيد السيولة/الهيكل غير كافٍ"
-            })
-        if score < 65:
-            return no_trade("درجة جودة الإشارة أقل من الحد الأدنى 65/100", {
-                "score": score, "smc_note": "التأكيدات المستقلة غير كافية"
-            })
+            return no_trade("شروط تدفق الحجم أو السيولة غير كافية لاعتماد الصفقة", {"score": score})
+        if score < 70:  # رفعنا الحد الأدنى لرفع الجودة ودقة القنص
+            score_val = score
+            return no_trade(f"درجة الجودة ({score_val}/100) أقل من المعيار الصارم المحدث (70)", {"score": score_val})
 
-        # Structural stop: below recent swing/VAL, with ATR buffer; cap risk distance to avoid oversized stops.
+        # [تعديل الحماية 4]: إزاحة الوقف خلف القاع الهيكلي بمسافة أمان إضافية ضد الـ Wicks
         recent_swing_low = float(np.min(m15[-8:, 3]))
         structural_floor = min(recent_swing_low, val)
-        stop = min(structural_floor - 0.25 * atr, close - 1.2 * atr)
+        stop = min(structural_floor - 0.40 * atr, close - 1.4 * atr) # حماية إضافية ضد اصطياد الوقفات
+        
         risk_dist = close - stop
         if not np.isfinite(risk_dist) or risk_dist <= 0:
             return no_trade("مسافة وقف الخسارة غير صالحة", {"score": score})
         risk_pct = risk_dist / close
-        if risk_pct > 0.08:
-            return no_trade("مسافة وقف الخسارة أكبر من 8%؛ مخاطرة الصفقة غير مناسبة", {
-                "score": score, "risk_distance_pct": round(risk_pct * 100, 2)
-            })
+        if risk_pct > 0.07:
+            return no_trade("مخاطرة الوقف تتجاوز الحد الأقصى الآمن (7%)", {"score": score, "risk_pct": round(risk_pct * 100, 2)})
 
-        # Position size is a spot-equivalent quantity estimate. Contract multipliers/limits must be checked separately.
         risk_usd = self.total_capital * self.risk_per_trade
         qty_by_risk = risk_usd / risk_dist
-        max_notional = self.total_capital * 3.0  # conservative notional cap, not a leverage recommendation
+        max_notional = self.total_capital * 3.0
         qty_by_notional = max_notional / close
         qty = min(qty_by_risk, qty_by_notional)
         effective_risk = qty * risk_dist
 
-        # R-multiple targets; round and ensure ordering.
-        tp1 = close + risk_dist * 1.0
-        tp2 = close + risk_dist * 1.8
-        tp3 = close + risk_dist * 2.5
+        tp1 = close + risk_dist * 1.2
+        tp2 = close + risk_dist * 2.0
+        tp3 = close + risk_dist * 3.0
         if not (stop < close < tp1 < tp2 < tp3):
-            return no_trade("فشل التحقق من ترتيب مستويات الدخول والوقف والأهداف", {"score": score})
+            return no_trade("فشل التحقق من ترتيب مستويات الأهداف والوقف", {"score": score})
 
         notes = (
             f"1D Bias صاعد | 4H BOS={'نعم' if h4_bos else 'لا'} | "
             f"PoC={self._round(poc)} VAL={self._round(val)} VAH={self._round(vah)} | "
             f"Sweep={'نعم' if liquidity_sweep else 'لا'} | "
-            f"Micro BOS={'نعم' if micro_bos else 'لا'} | Volume Spike={'نعم' if volume_spike else 'لا'}"
+            f"MM Shield Active: High Volume & Body Confirmation"
         )
         details = {
-            "reason": "V18 Sniper Elite: MTF LONG confirmation",
+            "reason": "V18.1 Sniper Elite Pro: MM Shield & MTF LONG",
             "trade_valid": True,
             "stop_loss": self._round(stop),
             "risk_distance": self._round(risk_dist),
@@ -345,9 +326,9 @@ class StrategyEngine:
                 "take_profit_1": self._round(tp1),
                 "take_profit_2": self._round(tp2),
                 "take_profit_3": self._round(tp3),
-                "reward_ratio": "1:2.5",
+                "reward_ratio": "1:3.0",
             },
-            "setup": "V18 MTF Volume Profile + Structure + Liquidity LONG",
+            "setup": "V18.1 MM Shield Volume Profile + Protected Structure LONG",
             "score": score,
             "smc_note": notes,
             "levels": {
@@ -360,6 +341,6 @@ class StrategyEngine:
                 "micro_bos": micro_bos,
             },
             "debug_trace": list(debug),
-            "warning": "تقدير فني وليس ضمانًا للربح. حجم الكمية تقديري ويجب التحقق من مواصفات عقد BingX.",
+            "warning": "تنسيق فني محصن ضد صانع السوق. يرجى مراجعة مواصفات العقد قبل التنفيذ.",
         }
         return "LONG", self._round(close), details
