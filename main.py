@@ -158,7 +158,7 @@ def background_scanner():
     time.sleep(5)
     send_telegram_message(
         "💎 *تم تفعيل بوت قناص النخبة V18.1 (حماية صانع السوق - MM Shield)* 💎\n"
-        "أرسل الكلمة `/scan` في أي وقت لفحص السوق وجلب العملات الجاهزة للدخول فوراً!"
+        "أرسل الأمر `/scan` في أي وقت لفحص السوق وجلب العملات الجاهزة للدخول فوراً!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -184,8 +184,37 @@ def background_scanner():
             logger.error(f"Scanner Loop Error: {exc}")
             time.sleep(30)
 
+def run_manual_scan(chat_id, engine):
+    """تنفيذ الفحص الشامل في مسار مستقل منعاً لحدوث Timeout مع تيليجرام"""
+    try:
+        send_telegram_message("🔍 *جاري بدء فحص شامل لجميع عملات السوق (V18.1 MM Shield)... قد يستغرق ذلك دقيقة أو دقيقتين* ⏳")
+        all_symbols = get_all_usdt_symbols()
+        ready_signals = []
+        
+        for s in all_symbols:
+            direction, entry_price, details = process_symbol(s, engine)
+            if direction == "LONG":
+                ready_signals.append((s, entry_price, details))
+            time.sleep(0.02)
+        
+        if ready_signals:
+            report = f"🎯 *نتائج الفحص! العملات الجاهزة للدخول حالياً ({len(ready_signals)}):*\n\n"
+            for s, ep, det in ready_signals[:10]:
+                rm = det.get("risk_management", {})
+                report += (
+                    f"🔹 **{s}** | السعر: `{ep}` | الجودة: `{det.get('score')}/100`\n"
+                    f"   • SL: `{det.get('stop_loss')}` | TP1: `{rm.get('take_profit_1')}`\n\n"
+                )
+            send_telegram_message(report)
+        else:
+            send_telegram_message("⚠️ *لم يتم العثور على عملات مستوفية لشروط القنص الصارمة (MM Shield) في هذا الفحص.*")
+            
+    except Exception as scan_err:
+        logger.error(f"Manual scan error: {scan_err}")
+        send_telegram_message("❌ حدث خطأ أثناء إجراء الفحص الشامل.")
+
 def check_telegram_updates():
-    """مستمع الرسائل: يدعم أمر /scan للفحص الفوري أو اسم أي عملة"""
+    """مستمع الرسائل: يدعم أمر /scan للفحص الفوري أو اسم عملة مفردة"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -217,37 +246,13 @@ def check_telegram_updates():
                 if not text or str(chat_id) != str(TELEGRAM_CHAT_ID):
                     continue
                 
-                # --- حالة أمر الـ SCAN الشامل ---
+                # --- أمر الفحص الشامل /scan ---
                 if text_upper in ["/SCAN", "SCAN", "فحص"]:
-                    send_telegram_message("🔍 *جاري بدء فحص شامل لجميع عملات السوق (V18.1 MM Shield)... انتظر قليلاً* ⏳")
-                    try:
-                        all_symbols = get_all_usdt_symbols()
-                        ready_signals = []
-                        
-                        for s in all_symbols:
-                            direction, entry_price, details = process_symbol(s, engine)
-                            if direction == "LONG":
-                                ready_signals.append((s, entry_price, details))
-                            time.sleep(0.05)
-                        
-                        if ready_signals:
-                            report = f"🎯 *تم الانتهاء من الفحص! العملات الجاهزة للدخول حالياً ({len(ready_signals)}):*\n\n"
-                            for s, ep, det in ready_signals[:10]: # أقصى حد 10 عملات في الرسالة لعدم تجاوز حد التيليجرام
-                                rm = det.get("risk_management", {})
-                                report += (
-                                    f"🔹 **{s}** | السعر: `{ep}` | الجودة: `{det.get('score')}/100`\n"
-                                    f"   • SL: `{det.get('stop_loss')}` | TP1: `{rm.get('take_profit_1')}`\n\n"
-                                )
-                            send_telegram_message(report)
-                        else:
-                            send_telegram_message("⚠️ *لم يتم العثور على عملات مستوفية لشروط القنص الصارمة (MM Shield) حالياً. السوق تحت المراقبة.*")
-                            
-                    except Exception as scan_err:
-                        logger.error(f"Manual scan error: {scan_err}")
-                        send_telegram_message("❌ حدث خطأ أثناء إجراء الفحص الشامل.")
+                    scan_thread = threading.Thread(target=run_manual_scan, args=(chat_id, engine), daemon=True)
+                    scan_thread.start()
                     continue
                 
-                # --- حالة فحص عملة معينة يدوياً ---
+                # --- فحص عملة مفردة يدوياً ---
                 if text.startswith("/"):
                     continue
                 
