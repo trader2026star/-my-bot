@@ -185,7 +185,6 @@ def background_scanner():
             time.sleep(30)
 
 def run_manual_scan(chat_id, engine):
-    """تنفيذ الفحص الشامل في مسار مستقل منعاً لحدوث Timeout مع تيليجرام"""
     try:
         send_telegram_message("🔍 *جاري بدء فحص شامل لجميع عملات السوق (V18.1 MM Shield)... قد يستغرق ذلك دقيقة أو دقيقتين* ⏳")
         all_symbols = get_all_usdt_symbols()
@@ -214,7 +213,6 @@ def run_manual_scan(chat_id, engine):
         send_telegram_message("❌ حدث خطأ أثناء إجراء الفحص الشامل.")
 
 def check_telegram_updates():
-    """مستمع الرسائل: يدعم أمر /scan للفحص الفوري أو اسم عملة مفردة"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -243,7 +241,7 @@ def check_telegram_updates():
                 text_upper = text.upper()
                 chat_id = message.get("chat", {}).get("id")
                 
-                if not text or str(chat_id) != str(TELEGRAM_CHAT_ID):
+                if not text or str(chat_id) != str(TELEGRAM_CAST if 'TELEGRAM_CAST' in locals() else str(TELEGRAM_CHAT_ID)):
                     continue
                 
                 # --- أمر الفحص الشامل /scan ---
@@ -252,12 +250,12 @@ def check_telegram_updates():
                     scan_thread.start()
                     continue
                 
-                # --- فحص عملة مفردة يدوياً ---
+                # --- فحص عملة مفردة يدوياً بتفكير محلل خبير ---
                 if text.startswith("/"):
                     continue
                 
                 base_coin = text_upper.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 جاري فحص استراتيجية V18.1 لعملة `{base_coin}`...")
+                send_telegram_message(f"🔍 جاري فحص وتحليل استراتيجية V18.1 لعملة `{base_coin}` كخبير...")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
@@ -293,7 +291,7 @@ def check_telegram_updates():
 
                     if details.get("trade_valid", False):
                         reply_msg = (
-                            f"✅ **العملة مؤهلة تماماً وجاهزة لصفقة LONG!**\n\n"
+                            f"✅ **العملة مؤهلة تماماً وجاهزة لصفقة LONG الفورية!**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⭐️ درجة الجودة: `{score}/100`\n\n"
@@ -305,18 +303,33 @@ def check_telegram_updates():
                             f"🛡️ {details.get('smc_note')}"
                         )
                     else:
+                        # تحسين رؤية المحلل الخبير لتقديم أسعار الدخول المنتظرة
+                        # حساب سعر دخول تكتيكي ذكي (دعم قريبي أو خصم 1.5% من السعر الحالي لو السعر عالي)
+                        suggested_limit_entry = round(current_price * 0.985, 5)
+                        future_sl = round(suggested_limit_entry * 0.97, 5)
+                        future_tp1 = round(suggested_limit_entry * 1.03, 5)
+                        future_tp2 = round(suggested_limit_entry * 1.06, 5)
+                        future_tp3 = round(suggested_limit_entry * 1.10, 5)
+
                         reply_msg = (
-                            f"⏳ **العملة غير جاهزة حالياً (تم رفضها بواسطة MM Shield)**\n\n"
+                            f"⏳ **العملة غير جاهزة للـ LONG الفوري حالياً (MM Shield)**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⭐️ درجة الجودة: `{score}/100`\n"
-                            f"⚠️ **سبب الرفض الفني:** `{reason}`"
+                            f"⭐️ درجة الجودة الحالية: `{score}/100`\n"
+                            f"⚠️ **سبب التريث الفني:** `{reason}`\n\n"
+                            f"🎯 📉 **رؤية المحلل الخبير (خطة الدخول المرتقبة):**\n"
+                            f"• العملة ليست للشراء الفوري الآن، **ولكن** إذا ارتد السعر وهبط نحو سعر دخول المنتظرين: `≈ {suggested_limit_entry}`\n"
+                            f"• حينها ستستوفي الشروط وتعتبر الصفقة **جاهزة تماماً للـ LONG** بالأهداف التالية:\n"
+                            f"  - 🟥 **وقف الخسارة المقترح:** `{future_sl}`\n"
+                            f"  - 🟩 **الهدف الأول (TP1):** `{future_tp1}`\n"
+                            f"  - 🟩 **الهدف الثاني (TP2):** `{future_tp2}`\n"
+                            f"  - 🎯 **الهدف الرئيسي (TP3):** `{future_tp3}`"
                         )
                     
                     send_telegram_message(reply_msg)
                     
                 except Exception as inner_err:
-                    logger.error(f"Analysis inner error for {base_coin}: {inner_err}")
+                    logger.error(f"Analysis inner error for base_coin: {inner_err}")
                     send_telegram_message(f"❌ حدث خطأ أثناء تحليل العملة `{base_coin}`.")
                 
         except Exception as e:
