@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - MTF VOLUME PROFILE & PoC (V17.11)
+# MY EXPERT CRYPTO BOT - V18.1 Sniper Elite Pro (MM Shield)
 # ==========================================
 import os
 import time
@@ -26,7 +26,7 @@ API_MIN_INTERVAL_SECONDS = max(0.25, float(os.environ.get("API_MIN_INTERVAL_SECO
 SYMBOL_PAUSE_SECONDS = max(0.05, float(os.environ.get("SYMBOL_PAUSE_SECONDS", "0.10")))
 MAX_API_RETRIES = max(0, min(3, int(os.environ.get("MAX_API_RETRIES", "2"))))
 
-BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "1000")))
+BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "10000")))
 RISK_PER_TRADE = min(0.05, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
 
 signal_history = {}
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.11 Active!"
+    return "MY EXPERT CRYPTO BOT V18.1 Sniper Elite Pro Active!"
 
 @app.route("/health")
 def health():
@@ -106,7 +106,7 @@ def get_all_usdt_symbols():
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
     message = (
-        f"💎 *صفقة قناص نخبويّة - توافق الفريمات الأربعة مع PoC* 💎\n\n"
+        f"💎 *قناص النخبة V18.1 - إشارة صيد مؤكدة (MM Shield)* 💎\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `🟢 LONG`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
@@ -115,7 +115,7 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
         f"🎯 الهدف الرئيسي (TP3): `{rm.get('take_profit_3')}`\n\n"
-        f"ℹ️ *التفاصيل الهيكلية:* {details.get('smc_note')}"
+        f"🛡️ *حماية صانع السوق:* `{details.get('smc_note')}`"
     )
     return send_telegram_message(message)
 
@@ -131,7 +131,7 @@ def process_symbol(symbol, engine):
             return
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 3000000:
+        if quote_volume < 4000000:  # رفعنا الحد الأدنى للفوليوم لضمان السيولة الحقيقية
             return
 
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
@@ -147,7 +147,7 @@ def process_symbol(symbol, engine):
         )
         scan_stats["scanned_pairs"] += 1
 
-        if direction == "NEUTRAL":
+        if direction != "LONG" or not details.get("trade_valid", False):
             return
 
         sent = notify_trade_executed(symbol, direction, entry_price, details)
@@ -162,8 +162,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.11)*\n"
-        "أرسل اسم أي عملة للحصول على الأهداف ووقف الخسارة بدقة مع الحفاظ الكامل على حماية الاستراتيجية!"
+        "💎 *تم تفعيل بوت قناص النخبة V18.1 (حماية صانع السوق - MM Shield)* 💎\n"
+        "البوت يقوم بفحص السوق تلقائياً ويستقبل طلباتك الفردية للعملات بكل دقة!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -184,7 +184,7 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع الرسائل اليدوية مع ثبات نقاط الدخول وحماية الاستراتيجية الآمنة"""
+    """مستمع الرسائل اليدوية لفحص العملات بناءً على طلبك الفوري"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -219,7 +219,7 @@ def check_telegram_updates():
                     continue
                 
                 base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 جاري فحص استراتيجية الفريمات الأربعة لعملة `{base_coin}`...")
+                send_telegram_message(f"🔍 جاري فحص استراتيجية V18.1 مع حماية صانع السوق لعملة `{base_coin}`...")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
@@ -248,59 +248,32 @@ def check_telegram_updates():
                     )
                     
                     current_price = float(ohlcv_15m[-1][4])
-                    
-                    # تحديد سعر المقاومة القوية (ثابت لمنع التشتت)
-                    breakout_price = round(float(max(c[2] for c in ohlcv_1h[-10:])), 5) if len(ohlcv_1h) >= 10 else round(current_price * 1.01, 5)
-
-                    # جلب إدارة الخطر بدقة تامة وبدون أي نقصان
                     rm = details.get("risk_management", {})
                     stop_loss = details.get("stop_loss")
-                    if not stop_loss or stop_loss == "غير محدد":
-                        lows = [c[3] for c in ohlcv_15m[-10:]] if len(ohlcv_15m) >= 10 else [current_price * 0.97]
-                        stop_loss = round(min(lows) * 0.995, 5)
+                    score = details.get("score", 0)
+                    reason = details.get("reason", "تحليل تحت السيطرة")
 
-                    tp1 = rm.get("take_profit_1")
-                    tp2 = rm.get("take_profit_2")
-                    tp3 = rm.get("take_profit_3")
-
-                    if not tp1 or tp1 == "غير محدد":
-                        risk = breakout_price - float(stop_loss)
-                        if risk <= 0:
-                            risk = current_price * 0.03
-                        tp1 = round(breakout_price + risk * 1.0, 5)
-                        tp2 = round(breakout_price + risk * 1.5, 5)
-                        tp3 = round(breakout_price + risk * 2.5, 5)
-
-                    # منطق فحص الجاهزية الآمن (إذا السعر وصل أو تخطى المقاومة مع توافق استراتيجي)
-                    is_ready = (direction == "LONG") or (current_price >= breakout_price * 0.998)
-
-                    if is_ready:
+                    if details.get("trade_valid", False):
                         reply_msg = (
-                            f"✅ **العملة جاهزة للونج وتحترم شروط الاستراتيجية!**\n\n"
+                            f"✅ **العملة مؤهلة تماماً وجاهزة لصفقة LONG!**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⭐️ تقييم الفرصة: `{details.get('score', 85)}/100`\n\n"
-                            f"🚀 **سعر الدخول / الاختراق:** `{breakout_price}`\n"
-                            f"🟥 **وقف الخسارة (SL - حماية صارمة):** `{stop_loss}`\n"
-                            f"🟩 **الهدف الأول (TP1):** `{tp1}`\n"
-                            f"🟩 **الهدف الثاني (TP2):** `{tp2}`\n"
-                            f"🎯 **الهدف الرئيسي (TP3):** `{tp3}`\n\n"
-                            f"ℹ️ {details.get('smc_note', 'توافق هيكلي وفوليوم آمن')}"
+                            f"⭐️ درجة الجودة: `{score}/100`\n\n"
+                            f"🚀 **سعر الدخول المقترح:** `{entry_price}`\n"
+                            f"🟥 **وقف الخسارة المحمي (SL):** `{stop_loss}`\n"
+                            f"🟩 **الهدف الأول (TP1):** `{rm.get('take_profit_1')}`\n"
+                            f"🟩 **الهدف الثاني (TP2):** `{rm.get('take_profit_2')}`\n"
+                            f"🎯 **الهدف الرئيسي (TP3):** `{rm.get('take_profit_3')}`\n\n"
+                            f"🛡️ {details.get('smc_note')}"
                         )
                     else:
-                        reason = details.get("reason", "شروط الفوليوم أو العزم تحت المراقبة للحماية")
                         reply_msg = (
-                            f"⏳ **العملة قيد المراقبة الآمنة (غير جاهزة تماماً)**\n\n"
+                            f"⏳ **العملة غير جاهزة حالياً (تم رفضها بواسطة MM Shield)**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⚠️ **السبب الفني:** `{reason}`\n\n"
-                            f"🎯 **الخطة الاحتياطية المحسوبة:**\n"
-                            f"🔹 **انتظر اختراق السعر:** `{breakout_price}`\n"
-                            f"🟥 **وقف الخسارة الآمن (SL):** `{stop_loss}`\n"
-                            f"🟩 **الأهداف المنتظرة:**\n"
-                            f"   • **TP1:** `{tp1}`\n"
-                            f"   • **TP2:** `{tp2}`\n"
-                            f"   • **TP3:** `{tp3}`\n"
+                            f"⭐️ درجة الجودة: `{score}/100`\n"
+                            f"⚠️ **سبب الرفض الفني:** `{reason}`\n\n"
+                            f"💡 *النصيحة:* انتظر حتى تتوفر شروط الفوليوم الحقيقي أو يعود السعر لمناطق القيمة الآمنة."
                         )
                     
                     send_telegram_message(reply_msg)
