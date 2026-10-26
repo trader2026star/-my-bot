@@ -124,15 +124,15 @@ def process_symbol(symbol, engine):
         now = time.time()
         with history_lock:
             if now - signal_history.get(symbol, 0) < SIGNAL_COOLDOWN_SECONDS:
-                return
+                return None, None, None
 
         ticker = bingx_call("fetch_ticker", symbol)
         if not ticker:
-            return
+            return None, None, None
 
         quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 4000000:  # رفعنا الحد الأدنى للفوليوم لضمان السيولة الحقيقية
-            return
+        if quote_volume < 4000000:
+            return None, None, None
 
         ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
@@ -140,30 +140,25 @@ def process_symbol(symbol, engine):
         ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=25)
 
         if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-            return
+            return None, None, None
 
         direction, entry_price, details = engine.analyze_market_structure(
             ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
         )
         scan_stats["scanned_pairs"] += 1
 
-        if direction != "LONG" or not details.get("trade_valid", False):
-            return
-
-        sent = notify_trade_executed(symbol, direction, entry_price, details)
-        if sent:
-            scan_stats["signals_sent"] += 1
-            with history_lock:
-                signal_history[symbol] = time.time()
+        if direction == "LONG" and details.get("trade_valid", False):
+            return direction, entry_price, details
 
     except Exception as exc:
         logger.error(f"Error processing {symbol}: {exc}")
+    return None, None, None
 
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
         "💎 *تم تفعيل بوت قناص النخبة V18.1 (حماية صانع السوق - MM Shield)* 💎\n"
-        "البوت يقوم بفحص السوق تلقائياً ويستقبل طلباتك الفردية للعملات بكل دقة!"
+        "أرسل الكلمة `/scan` في أي وقت لفحص السوق وجلب العملات الجاهزة للدخول فوراً!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -175,7 +170,13 @@ def background_scanner():
                 continue
 
             for symbol in symbols:
-                process_symbol(symbol, engine)
+                direction, entry_price, details = process_symbol(symbol, engine)
+                if direction == "LONG":
+                    sent = notify_trade_executed(symbol, direction, entry_price, details)
+                    if sent:
+                        scan_stats["signals_sent"] += 1
+                        with history_lock:
+                            signal_history[symbol] = time.time()
                 time.sleep(SYMBOL_PAUSE_SECONDS)
 
             time.sleep(60)
@@ -184,7 +185,7 @@ def background_scanner():
             time.sleep(30)
 
 def check_telegram_updates():
-    """مستمع الرسائل اليدوية لفحص العملات بناءً على طلبك الفوري"""
+    """مستمع الرسائل: يدعم أمر /scan للفحص الفوري أو اسم أي عملة"""
     last_update_id = 0
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
     
@@ -209,17 +210,49 @@ def check_telegram_updates():
             for result in data.get("result", []):
                 last_update_id = result["update_id"]
                 message = result.get("message", {})
-                text = message.get("text", "").strip().upper()
+                text = message.get("text", "").strip()
+                text_upper = text.upper()
                 chat_id = message.get("chat", {}).get("id")
                 
                 if not text or str(chat_id) != str(TELEGRAM_CHAT_ID):
                     continue
                 
+                # --- حالة أمر الـ SCAN الشامل ---
+                if text_upper in ["/SCAN", "SCAN", "فحص"]:
+                    send_telegram_message("🔍 *جاري بدء فحص شامل لجميع عملات السوق (V18.1 MM Shield)... انتظر قليلاً* ⏳")
+                    try:
+                        all_symbols = get_all_usdt_symbols()
+                        ready_signals = []
+                        
+                        for s in all_symbols:
+                            direction, entry_price, details = process_symbol(s, engine)
+                            if direction == "LONG":
+                                ready_signals.append((s, entry_price, details))
+                            time.sleep(0.05)
+                        
+                        if ready_signals:
+                            report = f"🎯 *تم الانتهاء من الفحص! العملات الجاهزة للدخول حالياً ({len(ready_signals)}):*\n\n"
+                            for s, ep, det in ready_signals[:10]: # أقصى حد 10 عملات في الرسالة لعدم تجاوز حد التيليجرام
+                                rm = det.get("risk_management", {})
+                                report += (
+                                    f"🔹 **{s}** | السعر: `{ep}` | الجودة: `{det.get('score')}/100`\n"
+                                    f"   • SL: `{det.get('stop_loss')}` | TP1: `{rm.get('take_profit_1')}`\n\n"
+                                )
+                            send_telegram_message(report)
+                        else:
+                            send_telegram_message("⚠️ *لم يتم العثور على عملات مستوفية لشروط القنص الصارمة (MM Shield) حالياً. السوق تحت المراقبة.*")
+                            
+                    except Exception as scan_err:
+                        logger.error(f"Manual scan error: {scan_err}")
+                        send_telegram_message("❌ حدث خطأ أثناء إجراء الفحص الشامل.")
+                    continue
+                
+                # --- حالة فحص عملة معينة يدوياً ---
                 if text.startswith("/"):
                     continue
                 
-                base_coin = text.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 جاري فحص استراتيجية V18.1 مع حماية صانع السوق لعملة `{base_coin}`...")
+                base_coin = text_upper.replace("/USDT", "").replace("USDT", "").strip()
+                send_telegram_message(f"🔍 جاري فحص استراتيجية V18.1 لعملة `{base_coin}`...")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
@@ -240,7 +273,7 @@ def check_telegram_updates():
                     ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                     
                     if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`. تأكد من صحة الرمز في عقود الـ Swap.")
+                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`.")
                         continue
                     
                     direction, entry_price, details = engine.analyze_market_structure(
@@ -272,15 +305,14 @@ def check_telegram_updates():
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⭐️ درجة الجودة: `{score}/100`\n"
-                            f"⚠️ **سبب الرفض الفني:** `{reason}`\n\n"
-                            f"💡 *النصيحة:* انتظر حتى تتوفر شروط الفوليوم الحقيقي أو يعود السعر لمناطق القيمة الآمنة."
+                            f"⚠️ **سبب الرفض الفني:** `{reason}`"
                         )
                     
                     send_telegram_message(reply_msg)
                     
                 except Exception as inner_err:
                     logger.error(f"Analysis inner error for {base_coin}: {inner_err}")
-                    send_telegram_message(f"❌ حدث خطأ أثناء تحليل العملة `{base_coin}`: `{str(inner_err)}`")
+                    send_telegram_message(f"❌ حدث خطأ أثناء تحليل العملة `{base_coin}`.")
                 
         except Exception as e:
             logger.error(f"Telegram listener outer error: {e}")
