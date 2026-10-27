@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V18.1 Sniper Elite LONG ONLY (MM Shield)
-# MTF: 1D Bias -> 4H Structure -> 1H Volume Profile -> 15M Trigger
+# MY EXPERT CRYPTO BOT - V18.1 Sniper Elite LONG ONLY (MM Shield + SMC Pro)
+# MTF: 1D Bias -> 4H Structure -> 1H Volume Profile -> 15M Trigger (FVG & OB)
 # Signal-only: does NOT place exchange orders.
 # ============================================================
 
@@ -168,7 +168,7 @@ class StrategyEngine:
         start = max(0, len(arr) - 8)
         for i in range(len(arr) - 2, start - 1, -1):
             row = arr[i]
-            if row[4] < row[1]:
+            if row[4] < row[1]:  # شمعة هبوطية قبل الانطلاقة
                 return float(row[3]), float(row[2])
         return None
 
@@ -181,7 +181,7 @@ class StrategyEngine:
                 "debug_trace": list(debug),
                 "trade_valid": False,
                 "score": 0,
-                "setup": "V18.1 Sniper Elite Pro - MM Shield",
+                "setup": "V18.1 Sniper Elite Pro - MM Shield + SMC",
             }
             if extra:
                 details.update(extra)
@@ -226,18 +226,17 @@ class StrategyEngine:
         candle_range = max(high - low, close * 1e-8)
         body_ratio = max(0.0, close - open_) / candle_range
         
-        # [تعديل الحماية 1]: فحص وجود ذيل علوي تلاعبي (Upper Rejection Wick) لصانع السوق
         upper_wick = high - max(open_, close)
         is_manipulated_wick = (upper_wick / candle_range) > 0.45
 
         avg_volume = float(np.mean(m15[-16:-1, 5]))
-        # [تعديل الحماية 2]: رفع معيار تدفق الحجم المؤسسي لمنع فخاخ التجزئة
         volume_spike = avg_volume > 0 and volume >= avg_volume * 1.35
 
         atr = self.calculate_atr(m15[:, 2], m15[:, 3], m15[:, 4], 14)
         if atr <= 0 or not np.isfinite(atr):
             return no_trade("تعذر حساب ATR بصورة صالحة")
 
+        # دمج الفجوات (FVG) وبلوكات الأوامر (OB) مع مناطق القيمة
         near_profile = (val * 0.997 <= close <= poc * 1.012)
         fvg = self._bullish_fvg(m15)
         ob = self._bullish_order_block(h1)
@@ -247,7 +246,6 @@ class StrategyEngine:
 
         recent_lows = m15[-8:-1, 3]
         sweep_level = float(np.min(recent_lows)) if len(recent_lows) else low
-        # [تعديل الحماية 3]: التأكد من أن سحب السيولة حقيقي تلاه إغلاق جسم قوي فوق القاع المسحوب
         liquidity_sweep = bool(low < sweep_level and close > sweep_level and body_ratio >= 0.40)
 
         prior_high = float(np.max(m15[-6:-1, 2]))
@@ -266,25 +264,22 @@ class StrategyEngine:
         score += 10 if strong_bullish and momentum_ok else 0
         score = min(100, int(score))
 
-        # فلاتر الرفض الذكية ضد صانع السوق
         if is_manipulated_wick:
             return no_trade("تم اكتشاف ذيل رفض علوي تلاعبي (صانع السوق ينفض المشترين)", {"score": score})
         if not location_ok:
-            return no_trade("السعر خارج مناطق القيمة أو الأوامر المؤسسية الحقيقية", {"score": score})
+            return no_trade("السعر خارج مناطق القيمة أو الأوامر المؤسسية الحقيقية (FVG/OB)", {"score": score})
         if not not_chasing:
             return no_trade("السعر ممتد بشكل مفرط؛ خطر الوقوع في فخ مطاردة الحركة", {"score": score})
         if not strong_bullish or not momentum_ok:
             return no_trade("شمعة التأكيد لا تملك الزخم الجسماني الكافي للأعلى", {"score": score})
         if not volume_spike and not liquidity_sweep and not micro_bos:
             return no_trade("شروط تدفق الحجم أو السيولة غير كافية لاعتماد الصفقة", {"score": score})
-        if score < 70:  # رفعنا الحد الأدنى لرفع الجودة ودقة القنص
-            score_val = score
-            return no_trade(f"درجة الجودة ({score_val}/100) أقل من المعيار الصارم المحدث (70)", {"score": score_val})
+        if score < 70:
+            return no_trade(f"درجة الجودة ({score}/100) أقل من المعيار الصارم المحدث (70)", {"score": score})
 
-        # [تعديل الحماية 4]: إزاحة الوقف خلف القاع الهيكلي بمسافة أمان إضافية ضد الـ Wicks
         recent_swing_low = float(np.min(m15[-8:, 3]))
         structural_floor = min(recent_swing_low, val)
-        stop = min(structural_floor - 0.40 * atr, close - 1.4 * atr) # حماية إضافية ضد اصطياد الوقفات
+        stop = min(structural_floor - 0.40 * atr, close - 1.4 * atr)
         
         risk_dist = close - stop
         if not np.isfinite(risk_dist) or risk_dist <= 0:
@@ -310,10 +305,10 @@ class StrategyEngine:
             f"1D Bias صاعد | 4H BOS={'نعم' if h4_bos else 'لا'} | "
             f"PoC={self._round(poc)} VAL={self._round(val)} VAH={self._round(vah)} | "
             f"Sweep={'نعم' if liquidity_sweep else 'لا'} | "
-            f"MM Shield Active: High Volume & Body Confirmation"
+            f"SMC/FVG Active: Smart Money & Protected Structure LONG"
         )
         details = {
-            "reason": "V18.1 Sniper Elite Pro: MM Shield & MTF LONG",
+            "reason": "V18.1 Sniper Elite Pro: MM Shield + SMC & MTF LONG",
             "trade_valid": True,
             "stop_loss": self._round(stop),
             "risk_distance": self._round(risk_dist),
@@ -328,7 +323,7 @@ class StrategyEngine:
                 "take_profit_3": self._round(tp3),
                 "reward_ratio": "1:3.0",
             },
-            "setup": "V18.1 MM Shield Volume Profile + Protected Structure LONG",
+            "setup": "V18.1 MM Shield + SMC FVG/OB Protected Structure LONG",
             "score": score,
             "smc_note": notes,
             "levels": {
@@ -341,6 +336,6 @@ class StrategyEngine:
                 "micro_bos": micro_bos,
             },
             "debug_trace": list(debug),
-            "warning": "تنسيق فني محصن ضد صانع السوق. يرجى مراجعة مواصفات العقد قبل التنفيذ.",
+            "warning": "تنسيق فني محصن ضد صانع السوق باستخدام مفاهيم المال الذكي. يرجى المراجعة.",
         }
         return "LONG", self._round(close), details
