@@ -261,12 +261,22 @@ def check_telegram_updates():
                     all_symbols = get_all_usdt_symbols()
                     target_symbol = None
                     
+                    # 1. البحث عن مطابقة تامة للعملة أولاً (مثل SOL أو BTC) منعاً لأي خلط
                     for s in all_symbols:
                         s_base = s.split('/')[0].upper()
-                        if s_base == base_coin or base_coin in s_base:
+                        if s_base == base_coin:
                             target_symbol = s
                             break
                     
+                    # 2. إذا لم توجد مطابقة تامة، نبحث عن الاحتوا่ الدقيق
+                    if not target_symbol:
+                        for s in all_symbols:
+                            s_base = s.split('/')[0].upper()
+                            if base_coin in s_base and len(s_base) == len(base_coin):
+                                target_symbol = s
+                                break
+                    
+                    # 3. الاحتياطي النهائي لو لم تكن موجودة في القائمة المباشرة
                     if not target_symbol:
                         target_symbol = f"{base_coin}/USDT:USDT"
 
@@ -303,8 +313,6 @@ def check_telegram_updates():
                             f"🛡️ {details.get('smc_note')}"
                         )
                     else:
-                        # تحسين رؤية المحلل الخبير لتقديم أسعار الدخول المنتظرة
-                        # حساب سعر دخول تكتيكي ذكي (دعم قريبي أو خصم 1.5% من السعر الحالي لو السعر عالي)
                         suggested_limit_entry = round(current_price * 0.985, 5)
                         future_sl = round(suggested_limit_entry * 0.97, 5)
                         future_tp1 = round(suggested_limit_entry * 1.03, 5)
