@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (Interactive Report Version)
+# MY EXPERT CRYPTO BOT - Main Controller V20 (Full Features)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V17.11 Active!"
+    return "MY EXPERT CRYPTO BOT V20 Active!"
 
 @app.route("/health")
 def health():
@@ -103,46 +103,11 @@ def get_all_usdt_symbols():
         logger.error(f"Error loading markets: {e}")
         return []
 
-def process_symbol(symbol, engine):
-    try:
-        now = time.time()
-        with history_lock:
-            if now - signal_history.get(symbol, 0) < SIGNAL_COOLDOWN_SECONDS:
-                return None, None, None
-
-        ticker = bingx_call("fetch_ticker", symbol)
-        if not ticker:
-            return None, None, None
-
-        quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
-        if quote_volume < 4000000:
-            return None, None, None
-
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
-        ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-        ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=25)
-
-        if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-            return None, None, None
-
-        direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
-        )
-        scan_stats["scanned_pairs"] += 1
-
-        if direction in ["LONG", "SHORT"] and details.get("trade_valid", False):
-            return direction, entry_price, details
-
-    except Exception as exc:
-        logger.error(f"Error processing {symbol}: {exc}")
-    return None, None, None
-
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تشغيل بوت قناص الفريمات الأربعة (V17.11)*\n"
-        "أرسل اسم أي عملة للحصول على الأهداف ووقف الخسارة بدقة مع حماية كاملة على حماية الاستراتيجية!"
+        "💎 *تم تشغيل بوت القناص المؤسسي (الإصدار الشامل V20)*\n"
+        "تم تفعيل فريم الساعة، فلتر البيتكوين، صفقات البيع والشراء، وإدارة حجم العقد!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -153,18 +118,56 @@ def background_scanner():
                 time.sleep(30)
                 continue
 
+            # جلب بيانات البيتكوين اليومية للفلتر العام
+            btc_ohlcv_1d = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1d", limit=25)
+
             for symbol in symbols:
-                direction, entry_price, details = process_symbol(symbol, engine)
-                if direction in ["LONG", "SHORT"]:
+                if symbol == "BTC/USDT:USDT":
+                    continue
+                
+                now = time.time()
+                with history_lock:
+                    if now - signal_history.get(symbol, 0) < SIGNAL_COOLDOWN_SECONDS:
+                        continue
+
+                ticker = bingx_call("fetch_ticker", symbol)
+                if not ticker:
+                    continue
+
+                quote_volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0)
+                if quote_volume < 4000000:
+                    continue
+
+                ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
+                ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
+                ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
+                ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=25)
+
+                if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
+                    continue
+
+                direction, entry_price, details = engine.analyze_market_structure(
+                    ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d, btc_ohlcv_1d=btc_ohlcv_1d
+                )
+                scan_stats["scanned_pairs"] += 1
+
+                if direction in ["LONG", "SHORT"] and details.get("trade_valid", False):
                     rm = details.get("risk_management", {})
+                    ps = details.get("position_sizing", {})
+                    icon = "🟢" if direction == "LONG" else "🔴"
+                    
                     message = (
-                        f"🎯 *صفقة قناص ناجحة - توافق الفريمات الأربعة مع* 💎\n\n"
+                        f"🎯 *فرصة قناص مؤسسي جديدة ({direction})* {icon}\n\n"
                         f"🔹 العملة: `{symbol}`\n"
-                        f"⚖️ الاتجاه: `🟢 LONG`\n"
+                        f"⚖️ الاتجاه: `{direction}`\n"
                         f"💵 سعر الدخول: `{entry_price}`\n"
-                        f"🟥 وقف الخسارة: `{details.get('stop_loss')}`\n"
-                        f"🟩 **الأهداف:**\n"
-                        f"• TP1: `{rm.get('take_profit_1')}`\n"
+                        f"🟥 وقف الخسارة: `{details.get('stop_loss')}`\n\n"
+                        f"📊 *إدارة رأس المال والعقد:* \n"
+                        f"• حجم العقد: `{ps.get('units')}` وحدة\n"
+                        f"• القيمة بالدولار: `${ps.get('margin_usd')}`\n"
+                        f"• المخاطرة المستهدفة: `${ps.get('risk_amount_usd')}`\n\n"
+                        f"🟩 **الأهداف ومتابعة الصفقة:**\n"
+                        f"• TP1: `{rm.get('take_profit_1')}` (نقل الوقف لـ Breakeven)\n"
                         f"• TP2: `{rm.get('take_profit_2')}`\n"
                         f"• TP3: `{rm.get('take_profit_3')}`"
                     )
@@ -209,14 +212,11 @@ def check_telegram_updates():
                 text_upper = text.upper()
                 chat_id = message.get("chat", {}).get("id")
                 
-                if not text or str(chat_id) != str(TELEGRAM_CHAT_ID):
-                    continue
-                
-                if text.startswith("/"):
+                if not text or str(chat_id) != str(TELEGRAM_CHAT_ID) or text.startswith("/"):
                     continue
                 
                 base_coin = text_upper.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 *جاري فحص استراتيجية الفريمات الأربعة لعملة `{base_coin}`...* ⏳")
+                send_telegram_message(f"🔍 *جاري فحص الاستراتيجية الشاملة لعملة `{base_coin}`...* ⏳")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
@@ -229,63 +229,59 @@ def check_telegram_updates():
                             break
                     
                     if not target_symbol:
-                        for s in all_symbols:
-                            s_base = s.split('/')[0].upper()
-                            if base_coin in s_base and len(s_base) == len(base_coin):
-                                target_symbol = s
-                                break
-                    
-                    if not target_symbol:
                         target_symbol = f"{base_coin}/USDT:USDT"
 
+                    btc_ohlcv_1d = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1d", limit=25)
                     ohlcv_15m = bingx_call("fetch_ohlcv", target_symbol, timeframe="15m", limit=30)
                     ohlcv_1h = bingx_call("fetch_ohlcv", target_symbol, timeframe="1h", limit=30)
                     ohlcv_4h = bingx_call("fetch_ohlcv", target_symbol, timeframe="4h", limit=30)
                     ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                     
                     if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات الأربعة للعملة `{base_coin}`.")
+                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات للعملة `{base_coin}`.")
                         continue
                     
                     direction, entry_price, details = engine.analyze_market_structure(
-                        ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
+                        ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d, btc_ohlcv_1d=btc_ohlcv_1d
                     )
                     
                     current_price = float(ohlcv_15m[-2][4])
-                    reason = details.get("reason", "شروط القناس لم تكتمل على 15M (السعر، عزم الشمعة، أو تدفق الفوليوم)")
+                    reason = details.get("reason", "شروط القناس لم تكتمل")
                     stop_loss = details.get("stop_loss", round(current_price * 0.98, 5))
                     rm = details.get("risk_management", {})
+                    ps = details.get("position_sizing", {})
 
                     if details.get("trade_valid", False):
+                        icon = "🟢" if direction == "LONG" else "🔴"
                         reply_msg = (
-                            f"✅ *العملة جاهزة للتنفيذ الفوري!* 🟢\n\n"
-                            f"🔹 العملة: `{target_symbol} : USDT`\n"
+                            f"✅ *العملة جاهزة للتنفيذ الفوري!* {icon}\n\n"
+                            f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⚖️ الاتجاه: `LONG`\n\n"
+                            f"⚖️ الاتجاه: `{direction}`\n\n"
                             f"🎯 *خطة الدخول والأهداف المؤكدة:*\n"
                             f"🔹 سعر الدخول: `{entry_price}`\n"
-                            f"🟥 وقف الخسارة الآمن: `{stop_loss}`\n"
+                            f"🟥 وقف الخسارة: `{stop_loss}`\n"
+                            f"📊 حجم العقد المقترح: `{ps.get('units')}` وحدة (${ps.get('margin_usd')})\n"
                             f"🟩 **الأهداف المنتظرة:**\n"
-                            f"• TP1: `{rm.get('take_profit_1')}`\n"
+                            f"• TP1: `{rm.get('take_profit_1')}` (نقل الوقف للتعادل)\n"
                             f"• TP2: `{rm.get('take_profit_2')}`\n"
                             f"• TP3: `{rm.get('take_profit_3')}`"
                         )
                     else:
-                        # التنسيق المطلوب تماماً كما طلبت وكما في الصور (العملة قيد المراقبة الآمنة)
                         breakout_price = round(current_price * 1.015, 5)
                         tp1 = round(current_price * 1.035, 5)
                         tp2 = round(current_price * 1.055, 5)
                         tp3 = round(current_price * 1.085, 5)
                         
                         reply_msg = (
-                            f"⏳ *العملة قيد المراقبة الآمنة (غير جاهزة تماماً)* ⏳\n\n"
-                            f"🔹 العملة: `{target_symbol} : USDT`\n"
+                            f"⏳ *العملة قيد المراقبة الآمنة* ⏳\n\n"
+                            f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⚠️ السبب الفني: `{reason}`\n\n"
                             f"🎯 *الخطة الاحتياطية المحسوبة:*\n"
                             f"🔹 انتظر اختراق السعر: `{breakout_price}` للدخول\n"
-                            f"🟥 وقف الخسارة الآمن (SL): `{stop_loss}`\n"
-                            f"🟩 **الأهداف المنتظرة:**\n"
+                            f"🟥 وقف الخسارة الآمن: `{stop_loss}`\n"
+                            f"🟩 **الأهداف الاحتياطية:**\n"
                             f"• TP1: `{tp1}`\n"
                             f"• TP2: `{tp2}`\n"
                             f"• TP3: `{tp3}`"
