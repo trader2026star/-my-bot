@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (SMC Edition)
+# MY EXPERT CRYPTO BOT - Main Controller (Multi-TF SMC Edition)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (SMC Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Multi-TF SMC Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -106,8 +106,8 @@ def get_all_usdt_symbols():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🏛️ *تم تشغيل بوت الصفقات المؤسسية (نسخة SMC & Order Blocks)*\n"
-        "البوت يراقَب مناطق السيولة، الـ Order Blocks، وفجوات القيمة العادلة (FVG) بدقة!"
+        "🏛️ *تم تشغيل بوت الصفقات المؤسسية (دمج الفريمات الأربعة مع SMC)*\n"
+        "يتم الآن تحليل (1D, 4H, 1H, 15M) للبحث عن مناطق الـ Order Blocks والسيولة بدقة!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -156,7 +156,7 @@ def background_scanner():
                     icon = "🟢" if direction == "LONG" else "🔴"
                     
                     message = (
-                        f"🏛️ *فرصة SMC مؤسسية جديدة ({direction})* {icon}\n\n"
+                        f"🏛️ *فرصة SMC مؤسسية متوافقة مع الفريمات الأربعة ({direction})* {icon}\n\n"
                         f"🔹 العملة: `{symbol}`\n"
                         f"⚖️ الاتجاه: `{direction}`\n"
                         f"💵 سعر الدخول (منطقة OB): `{entry_price}`\n"
@@ -216,7 +216,7 @@ def check_telegram_updates():
                     continue
                 
                 base_coin = text_upper.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 *جاري تحليل مناطق الـ SMC والسيولة لعملة `{base_coin}`...* ⏳")
+                send_telegram_message(f"🔍 *جاري تحليل الفريمات الأربعة ومناطق الـ SMC لعملة `{base_coin}`...* ⏳")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
@@ -238,7 +238,7 @@ def check_telegram_updates():
                     ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                     
                     if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات للعملة `{base_coin}`.")
+                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات الأربعة للعملة `{base_coin}`.")
                         continue
                     
                     direction, entry_price, details = engine.analyze_market_structure(
@@ -246,7 +246,7 @@ def check_telegram_updates():
                     )
                     
                     current_price = float(ohlcv_15m[-2][4])
-                    reason = details.get("reason", "شروط الـ SMC لم تكتمل بعد")
+                    reason = details.get("reason", "شروط الفريمات الأربعة لم تكتمل")
                     stop_loss = details.get("stop_loss", round(current_price * 0.98, 5))
                     rm = details.get("risk_management", {})
                     ps = details.get("position_sizing", {})
@@ -254,7 +254,7 @@ def check_telegram_updates():
                     if details.get("trade_valid", False):
                         icon = "🟢" if direction == "LONG" else "🔴"
                         reply_msg = (
-                            f"✅ *العملة وصلت لمنطقة الـ SMC وجاهزة للتنفيذ!* {icon}\n\n"
+                            f"✅ *العملة متوافقة تماماً وجاهزة للتنفيذ!* {icon}\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⚖️ الاتجاه: `{direction}`\n\n"
@@ -275,7 +275,7 @@ def check_telegram_updates():
                         tp3 = round(current_price * 1.085, 5)
                         
                         reply_msg = (
-                            f"⏳ *العملة قيد المراقبة (في انتظار لمس منطقة Order Block)* ⏳\n\n"
+                            f"⏳ *العملة قيد المراقبة (في انتظار توافق الفريمات الأربعة)* ⏳\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⚠️ السبب الفني: `{reason}`\n\n"
