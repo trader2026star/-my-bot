@@ -1,13 +1,12 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V22.0 Institutional Sniper Pro
-# Strict Trend + Institutional Value Areas (VAL/VAH) + Candle Confirmation
-# Signal-only: does NOT place exchange orders.
+# MY EXPERT CRYPTO BOT - V25.0 Demand/Supply Mitigation Elite
+# Exact Strategy: Order Block / Demand Zone Identification, Mitigation & Retest
 # ============================================================
 
 import logging
 import numpy as np
 
-logger = logging.getLogger("InstitutionalEngine")
+logger = logging.getLogger("MitigationEngine")
 
 
 class StrategyEngine:
@@ -63,40 +62,41 @@ class StrategyEngine:
         except Exception:
             return 0.0
 
-    def calculate_volume_profile(self, ohlcv, bins=35):
-        arr = self._array(ohlcv, minimum=20)
-        if arr is None:
-            return None, None, None
-        highs, lows, volumes = arr[:-1, 2], arr[:-1, 3], arr[:-1, 5]
-        min_price, max_price = float(np.min(lows)), float(np.max(highs))
-        if max_price <= min_price:
-            return None, None, None
+    @staticmethod
+    def _find_demand_zone(arr):
+        """البحث عن آخر شمعة هابطة قوية تسببت في دفع السعر للأعلى (Demand Order Block)"""
+        if len(arr) < 15:
+            return None, None
+        for i in range(len(arr) - 3, 5, -1):
+            prev_candle = arr[i]      # الشمعة الهابطة
+            next_candle = arr[i + 1]  # شمعة الانفجار الصاعد
+            # شروط بلوك الطلب: الشمعة السابقة حمراء والتي تليها خضراء قوية اخترقت القمة
+            if prev_candle[4] < prev_candle[1] and next_candle[4] > next_candle[1]:
+                zone_low = float(min(prev_candle[3], next_candle[3]))
+                zone_high = float(max(prev_candle[1], prev_candle[2]))
+                if zone_high > zone_low:
+                    return zone_low, zone_high
+        # افتراضي بناءً على أدنى قاع حديث إذا لم يُوجد بلوك صريح
+        recent_low = float(np.min(arr[-10:-2, 3]))
+        recent_high = float(np.mean(arr[-10:-2, 4]))
+        return recent_low, recent_high * 0.995
 
-        edges = np.linspace(min_price, max_price, bins + 1)
-        bin_volumes = np.zeros(bins, dtype=float)
-        for h, l, v in zip(highs, lows, volumes):
-            if v <= 0:
-                continue
-            candle_range = h - l
-            if candle_range <= 0:
-                idx = min(bins - 1, max(0, int(np.searchsorted(edges, l, side="right") - 1)))
-                bin_volumes[idx] += v
-                continue
-            first = max(0, min(bins - 1, int(np.searchsorted(edges, l, side="right") - 1)))
-            last = max(0, min(bins - 1, int(np.searchsorted(edges, h, side="left"))))
-            for b in range(first, last + 1):
-                overlap = max(0.0, min(h, edges[b + 1]) - max(l, edges[b]))
-                if overlap > 0:
-                    bin_volumes[b] += v * overlap / candle_range
-
-        total_vol = float(np.sum(bin_volumes))
-        if total_vol <= 0:
-            return None, None, None
-        poc_idx = int(np.argmax(bin_volumes))
-        poc = float((edges[poc_idx] + edges[poc_idx + 1]) / 2.0)
-        val = float(edges[max(0, poc_idx - int(bins * 0.2))])
-        vah = float(edges[min(bins, poc_idx + int(bins * 0.2))])
-        return poc, val, vah
+    @staticmethod
+    def _find_supply_zone(arr):
+        """البحث عن آخر شمعة صاعدة قبل الانفجار الهابط (Supply Order Block)"""
+        if len(arr) < 15:
+            return None, None
+        for i in range(len(arr) - 3, 5, -1):
+            prev_candle = arr[i]
+            next_candle = arr[i + 1]
+            if prev_candle[4] > prev_candle[1] and next_candle[4] < next_candle[1]:
+                zone_low = float(min(prev_candle[3], next_candle[3]))
+                zone_high = float(max(prev_candle[2], next_candle[2]))
+                if zone_high > zone_low:
+                    return zone_low, zone_high
+        recent_high = float(np.max(arr[-10:-2, 2]))
+        recent_low = float(np.mean(arr[-10:-2, 4]))
+        return recent_low * 1.005, recent_high
 
     def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None, ohlcv_4h=None, ohlcv_1d=None, **kwargs):
         def no_trade(reason):
@@ -105,57 +105,58 @@ class StrategyEngine:
         if any(x is None for x in (ohlcv_15m, ohlcv_1h, ohlcv_4h, ohlcv_1d)):
             return no_trade("بيانات الفريمات غير مكتملة")
 
+        m15 = self._array(ohlcv_15m, 25)
         d1 = self._array(ohlcv_1d, 20)
         h4 = self._array(ohlcv_4h, 20)
-        m15 = self._array(ohlcv_15m, 20)
-        if d1 is None or h4 is None or m15 is None:
+        
+        if m15 is None or d1 is None or h4 is None:
             return no_trade("بيانات الشموع غير صالحة للتحليل")
 
         daily_close = float(d1[-2, 4])
         daily_ma20 = float(np.mean(d1[:-1, 4][-20:]))
         
-        h4_close = float(h4[-2, 4])
-        h4_ma10 = float(np.mean(h4[:-1, 4][-10:]))
-
-        # بيانات الشمعة الحالية والسابقة على فريم 15 دقيقة للتأكيد
-        open_ = float(m15[-2, 1])
         close = float(m15[-2, 4])
+        open_ = float(m15[-2, 1])
         high = float(m15[-2, 2])
         low = float(m15[-2, 3])
+        volume = float(m15[-2, 5])
+
+        atr = self.calculate_atr(m15[:-1, 2], m15[:-1, 3], m15[:-1, 4], 14)
+        if atr <= 0:
+            return no_trade("تعذر حساب ATR")
+
+        is_bullish_trend = daily_close >= daily_ma20
+        is_bearish_trend = daily_close < daily_ma20
+
+        # استخراج منطقة الطلب أو العرض حسب الشارت تماماً
+        demand_low, demand_high = self._find_demand_zone(m15)
+        supply_low, supply_high = self._find_supply_zone(m15)
 
         candle_range = max(high - low, close * 1e-8)
         body_ratio = max(0.0, abs(close - open_)) / candle_range
 
-        atr = self.calculate_atr(m15[:-1, 2], m15[:-1, 3], m15[:-1, 4], 14)
-        poc, val, vah = self.calculate_volume_profile(ohlcv_1h)
-        if not poc or not val or not vah:
-            return no_trade("تعذر حساب نطاق السيولة المؤسسية")
+        # تطبيق استراتيجية الشارت: ملامسة المنطقة (Mitigation/Retest) + ارتداد مؤكد
+        if is_bullish_trend and demand_low is not None:
+            # التحقق مما إذا كان السعر قد دخل في منطقة الطلب (Demand Zone Retest)
+            in_demand_zone = (demand_low * 0.995 <= low <= demand_high * 1.005) or (demand_low * 0.995 <= close <= demand_high * 1.005)
+            strong_rejection = (close > open_) and (body_ratio >= 0.35) # شمعة ارتداد خضراء من المنطقة
 
-        # قواعد الترند الصارم
-        is_bullish = daily_close >= daily_ma20 and h4_close >= h4_ma10
-        is_bearish = daily_close < daily_ma20 and h4_close < h4_ma10
+            if not in_demand_zone:
+                return no_trade("السعر لم يقم بإعادة اختبار (Mitigation) لمنطقة الطلب بعد")
+            if not strong_rejection:
+                return no_trade("السعر داخل منطقة الطلب لكن لم تظهر شمعة ارتداد مؤكدة بعد")
 
-        if not is_bullish and not is_bearish:
-            return no_trade("الترند العام متذبذب ولا يحقق شروط الأمان المؤسسي")
-
-        if is_bullish:
-            # شروط الـ LONG مع تأكيد ملامسة VAL وشمعة ارتداد خضراء بجسم لا يقل عن 45%
-            near_val = (val * 0.998 <= low <= val * 1.015) or (val * 0.998 <= close <= val * 1.015)
-            strong_green = (close > open_) and (body_ratio >= 0.45)
-
-            if not near_val:
-                return no_trade("السعر لم يلامس منطقة القيمة الشرائية (VAL)")
-            if not strong_green:
-                return no_trade(f"قريب من VAL لكن شمعة الارتداد ضعيفة (جسم الشمعة: {round(body_ratio*100)}%)")
-
-            score = 92
-            stop = float(min(low, val) - (1.2 * atr))
+            score = 88
+            stop = float(demand_low - (1.2 * atr))  # وقف الخسارة تحت منطقة الطلب مباشرة كما في الاستراتيجية
             risk_dist = close - stop
-            if risk_dist <= 0:
-                return no_trade("مسافة وقف الخسارة غير صالحة رياضياً")
+            max_allowed_risk = close * 0.045
+
+            if not np.isfinite(risk_dist) or risk_dist <= 0 or risk_dist > max_allowed_risk:
+                return no_trade("مسافة وقف الخسارة غير صالحة أو بعيدة جداً")
 
             risk_usd = self.total_capital * self.risk_per_trade
             qty = risk_usd / risk_dist
+            effective_risk_usd = qty * risk_dist
 
             tp1 = close + (risk_dist * 1.5)
             tp2 = close + (risk_dist * 2.5)
@@ -163,37 +164,42 @@ class StrategyEngine:
 
             details = {
                 "trade_valid": True,
-                "reason": "Institutional VAL Support & Confirmed Green Candle",
+                "reason": "Exact Strategy: Demand Zone Mitigation & Rejection Retest",
                 "stop_loss": self._round(stop),
                 "score": score,
-                "setup": "V22.0 Institutional Confirmed LONG",
+                "setup": "V25.0 Demand Mitigation LONG",
                 "risk_management": {
+                    "allowed_risk_usd": round(risk_usd, 2),
+                    "estimated_risk_usd": round(effective_risk_usd, 2),
+                    "tokens_to_buy": round(qty, 8),
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
                 },
-                "smc_note": f"Confirmed LONG | VAL={self._round(val)} | Body={round(body_ratio*100)}%"
+                "smc_note": f"Demand Retest LONG | Zone=[{self._round(demand_low)} - {self._round(demand_high)}] | Score={score}"
             }
             return "LONG", self._round(close), details
 
-        else:
-            # شروط الـ SHORT مع تأكيد ملامسة VAH وشمعة هبوط حمراء مؤكدة
-            near_vah = (vah * 0.985 <= high <= vah * 1.002) or (vah * 0.985 <= close <= vah * 1.002)
-            strong_red = (close < open_) and (body_ratio >= 0.45)
+        elif is_bearish_trend and supply_low is not None:
+            in_supply_zone = (supply_low * 0.995 <= high <= supply_high * 1.005) or (supply_low * 0.995 <= close <= supply_high * 1.005)
+            strong_rejection_bear = (close < open_) and (body_ratio >= 0.35)
 
-            if not near_vah:
-                return no_trade("السعر لم يلامس منطقة المقاومة البيعية (VAH)")
-            if not strong_red:
-                return no_trade(f"قريب من VAH لكن شمعة الرفض ضعيفة (جسم الشمعة: {round(body_ratio*100)}%)")
+            if not in_supply_zone:
+                return no_trade("السعر لم يقم بإعادة اختبار (Mitigation) لمنطقة العرض بعد")
+            if not strong_rejection_bear:
+                return no_trade("السعر داخل منطقة العرض لكن لم تظهر شمعة رفض هابط مؤكدة بعد")
 
-            score = 92
-            stop = float(max(high, vah) + (1.2 * atr))
+            score = 88
+            stop = float(supply_high + (1.2 * atr))
             risk_dist = stop - close
-            if risk_dist <= 0:
-                return no_trade("مسافة وقف الخسارة غير صالحة رياضياً")
+            max_allowed_risk = close * 0.045
+
+            if not np.isfinite(risk_dist) or risk_dist <= 0 or risk_dist > max_allowed_risk:
+                return no_trade("مسافة وقف الخسارة للبيع غير صالحة أو بعيدة جداً")
 
             risk_usd = self.total_capital * self.risk_per_trade
             qty = risk_usd / risk_dist
+            effective_risk_usd = qty * risk_dist
 
             tp1 = close - (risk_dist * 1.5)
             tp2 = close - (risk_dist * 2.5)
@@ -201,15 +207,21 @@ class StrategyEngine:
 
             details = {
                 "trade_valid": True,
-                "reason": "Institutional VAH Resistance & Confirmed Red Candle",
+                "reason": "Exact Strategy: Supply Zone Mitigation & Rejection Retest",
                 "stop_loss": self._round(stop),
                 "score": score,
-                "setup": "V22.0 Institutional Confirmed SHORT",
+                "setup": "V25.0 Supply Mitigation SHORT",
                 "risk_management": {
+                    "allowed_risk_usd": round(risk_usd, 2),
+                    "estimated_risk_usd": round(effective_risk_usd, 2),
+                    "tokens_to_buy": round(qty, 8),
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
                 },
-                "smc_note": f"Confirmed SHORT | VAH={self._round(vah)} | Body={round(body_ratio*100)}%"
+                "smc_note": f"Supply Retest SHORT | Zone=[{self._round(supply_low)} - {self._round(supply_high)}] | Score={score}"
             }
             return "SHORT", self._round(close), details
+
+        else:
+            return no_trade("السعر ليس في منطقة إعادة اختبار (Mitigation Zone) مطابقة للاستراتيجية")
