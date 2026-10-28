@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - V18.1 Sniper Elite Pro (MM Shield)
+# MY EXPERT CRYPTO BOT - V19.0 Sniper Elite Pro (Dual Direction: LONG & SHORT)
 # ==========================================
 import os
 import time
@@ -40,7 +40,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V18.1 Sniper Elite Pro Active!"
+    return "MY EXPERT CRYPTO BOT V19.0 Dual Direction Active!"
 
 @app.route("/health")
 def health():
@@ -105,17 +105,18 @@ def get_all_usdt_symbols():
 
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
+    dir_emoji = "🟢 LONG (شراء)" if direction == "LONG" else "🔴 SHORT (بيع)"
     message = (
-        f"💎 *قناص النخبة V18.1 - إشارة صيد مؤكدة (MM Shield)* 💎\n\n"
+        f"💎 *قناص النخبة V19.0 - إشارة صيد مزدوجة الاتجاه* 💎\n\n"
         f"🔹 العملة: `{symbol}`\n"
-        f"⚖️ الاتجاه: `🟢 LONG`\n"
+        f"⚖️ الاتجاه: `{dir_emoji}`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
         f"⭐️ درجة الجودة: `{details.get('score')}/100`\n\n"
         f"🟥 وقف الخسارة (SL): `{details.get('stop_loss')}`\n"
         f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
         f"🎯 الهدف الرئيسي (TP3): `{rm.get('take_profit_3')}`\n\n"
-        f"🛡️ *حماية صانع السوق:* `{details.get('smc_note')}`"
+        f"🛡️ *تفاصيل الفحص:* `{details.get('smc_note')}`"
     )
     return send_telegram_message(message)
 
@@ -147,7 +148,7 @@ def process_symbol(symbol, engine):
         )
         scan_stats["scanned_pairs"] += 1
 
-        if direction == "LONG" and details.get("trade_valid", False):
+        if direction in ["LONG", "SHORT"] and details.get("trade_valid", False):
             return direction, entry_price, details
 
     except Exception as exc:
@@ -157,8 +158,8 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تفعيل بوت قناص النخبة V18.1 (حماية صانع السوق - MM Shield)* 💎\n"
-        "أرسل الأمر `/scan` في أي وقت لفحص السوق وجلب العملات الجاهزة للدخول فوراً!"
+        "💎 *تم تفعيل بوت قناص النخبة V19.0 (Dual Direction - LONG & SHORT)* 💎\n"
+        "أرسل الأمر `/scan` في أي وقت لفحص السوق وجلب صفقات الشراء والبيع المؤكدة!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -171,7 +172,7 @@ def background_scanner():
 
             for symbol in symbols:
                 direction, entry_price, details = process_symbol(symbol, engine)
-                if direction == "LONG":
+                if direction in ["LONG", "SHORT"]:
                     sent = notify_trade_executed(symbol, direction, entry_price, details)
                     if sent:
                         scan_stats["signals_sent"] += 1
@@ -186,27 +187,28 @@ def background_scanner():
 
 def run_manual_scan(chat_id, engine):
     try:
-        send_telegram_message("🔍 *جاري بدء فحص شامل لجميع عملات السوق (V18.1 MM Shield)... قد يستغرق ذلك دقيقة أو دقيقتين* ⏳")
+        send_telegram_message("🔍 *جاري بدء فحص شامل لجميع عملات السوق (V19.0 Dual Direction)... قد يستغرق ذلك دقيقة أو دقيقتين* ⏳")
         all_symbols = get_all_usdt_symbols()
         ready_signals = []
         
         for s in all_symbols:
             direction, entry_price, details = process_symbol(s, engine)
-            if direction == "LONG":
-                ready_signals.append((s, entry_price, details))
+            if direction in ["LONG", "SHORT"]:
+                ready_signals.append((s, direction, entry_price, details))
             time.sleep(0.02)
         
         if ready_signals:
-            report = f"🎯 *نتائج الفحص! العملات الجاهزة للدخول حالياً ({len(ready_signals)}):*\n\n"
-            for s, ep, det in ready_signals[:10]:
+            report = f"🎯 *نتائج الفحص الشامل! الفرص الجاهزة للدخول ({len(ready_signals)}):*\n\n"
+            for s, d, ep, det in ready_signals[:10]:
                 rm = det.get("risk_management", {})
+                dir_icon = "🟢 LONG" if d == "LONG" else "🔴 SHORT"
                 report += (
-                    f"🔹 **{s}** | السعر: `{ep}` | الجودة: `{det.get('score')}/100`\n"
+                    f"🔹 **{s}** | الاتجاه: `{dir_icon}` | السعر: `{ep}` | الجودة: `{det.get('score')}/100`\n"
                     f"   • SL: `{det.get('stop_loss')}` | TP1: `{rm.get('take_profit_1')}`\n\n"
                 )
             send_telegram_message(report)
         else:
-            send_telegram_message("⚠️ *لم يتم العثور على عملات مستوفية لشروط القنص الصارمة (MM Shield) في هذا الفحص.*")
+            send_telegram_message("⚠️ *لم يتم العثور على صفقات مستوفية للشروط الصارمة في هذا الفحص.*")
             
     except Exception as scan_err:
         logger.error(f"Manual scan error: {scan_err}")
@@ -241,7 +243,7 @@ def check_telegram_updates():
                 text_upper = text.upper()
                 chat_id = message.get("chat", {}).get("id")
                 
-                if not text or str(chat_id) != str(TELEGRAM_CAST if 'TELEGRAM_CAST' in locals() else str(TELEGRAM_CHAT_ID)):
+                if not text or str(chat_id) != str(TELEGRAM_CHAT_ID):
                     continue
                 
                 # --- أمر الفحص الشامل /scan ---
@@ -250,25 +252,25 @@ def check_telegram_updates():
                     scan_thread.start()
                     continue
                 
-                # --- فحص عملة مفردة يدوياً بتفكير محلل خبير ---
+                # --- فحص عملة مفردة يدوياً ---
                 if text.startswith("/"):
                     continue
                 
                 base_coin = text_upper.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 جاري فحص وتحليل استراتيجية V18.1 لعملة `{base_coin}` كخبير...")
+                send_telegram_message(f"🔍 جاري فحص وتحليل استراتيجية V19.0 لعملة `{base_coin}` كخبير...")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
                     target_symbol = None
                     
-                    # 1. البحث عن مطابقة تامة للعملة أولاً (مثل SOL أو BTC) منعاً لأي خلط
+                    # 1. مطابقة تامة
                     for s in all_symbols:
                         s_base = s.split('/')[0].upper()
                         if s_base == base_coin:
                             target_symbol = s
                             break
                     
-                    # 2. إذا لم توجد مطابقة تامة، نبحث عن الاحتوا่ الدقيق
+                    # 2. احتواء دقيق
                     if not target_symbol:
                         for s in all_symbols:
                             s_base = s.split('/')[0].upper()
@@ -276,7 +278,6 @@ def check_telegram_updates():
                                 target_symbol = s
                                 break
                     
-                    # 3. الاحتياطي النهائي لو لم تكن موجودة في القائمة المباشرة
                     if not target_symbol:
                         target_symbol = f"{base_coin}/USDT:USDT"
 
@@ -300,8 +301,9 @@ def check_telegram_updates():
                     reason = details.get("reason", "تحليل تحت السيطرة")
 
                     if details.get("trade_valid", False):
+                        dir_txt = "🟢 LONG (شراء)" if direction == "LONG" else "🔴 SHORT (بيع)"
                         reply_msg = (
-                            f"✅ **العملة مؤهلة تماماً وجاهزة لصفقة LONG الفورية!**\n\n"
+                            f"✅ **العملة مؤهلة تماماً وجاهزة لصفقة ({dir_txt}) الفورية!**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⭐️ درجة الجودة: `{score}/100`\n\n"
@@ -313,25 +315,13 @@ def check_telegram_updates():
                             f"🛡️ {details.get('smc_note')}"
                         )
                     else:
-                        suggested_limit_entry = round(current_price * 0.985, 5)
-                        future_sl = round(suggested_limit_entry * 0.97, 5)
-                        future_tp1 = round(suggested_limit_entry * 1.03, 5)
-                        future_tp2 = round(suggested_limit_entry * 1.06, 5)
-                        future_tp3 = round(suggested_limit_entry * 1.10, 5)
-
                         reply_msg = (
-                            f"⏳ **العملة غير جاهزة للـ LONG الفوري حالياً (MM Shield)**\n\n"
+                            f"⏳ **العملة غير جاهزة للتنفيذ الفوري حالياً**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
                             f"⭐️ درجة الجودة الحالية: `{score}/100`\n"
                             f"⚠️ **سبب التريث الفني:** `{reason}`\n\n"
-                            f"🎯 📉 **رؤية المحلل الخبير (خطة الدخول المرتقبة):**\n"
-                            f"• العملة ليست للشراء الفوري الآن، **ولكن** إذا ارتد السعر وهبط نحو سعر دخول المنتظرين: `≈ {suggested_limit_entry}`\n"
-                            f"• حينها ستستوفي الشروط وتعتبر الصفقة **جاهزة تماماً للـ LONG** بالأهداف التالية:\n"
-                            f"  - 🟥 **وقف الخسارة المقترح:** `{future_sl}`\n"
-                            f"  - 🟩 **الهدف الأول (TP1):** `{future_tp1}`\n"
-                            f"  - 🟩 **الهدف الثاني (TP2):** `{future_tp2}`\n"
-                            f"  - 🎯 **الهدف الرئيسي (TP3):** `{future_tp3}`"
+                            f"💡 *يرجى انتظار استقرار السعر في مناطق السيولة أو إعادة المحاولة لاحقاً.*"
                         )
                     
                     send_telegram_message(reply_msg)
