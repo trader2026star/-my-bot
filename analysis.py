@@ -1,12 +1,14 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V21.0 Institutional Strategy Engine
-# Strict Trend, Fixed Institutional Zones & Zero-Tolerance Rules
+# MY EXPERT CRYPTO BOT - V22.0 Institutional Sniper Pro
+# Strict Trend + Institutional Value Areas (VAL/VAH) + Candle Confirmation
+# Signal-only: does NOT place exchange orders.
 # ============================================================
 
 import logging
 import numpy as np
 
 logger = logging.getLogger("InstitutionalEngine")
+
 
 class StrategyEngine:
     def __init__(self, capital=10000, risk_per_trade=0.01):
@@ -115,9 +117,14 @@ class StrategyEngine:
         h4_close = float(h4[-2, 4])
         h4_ma10 = float(np.mean(h4[:-1, 4][-10:]))
 
+        # بيانات الشمعة الحالية والسابقة على فريم 15 دقيقة للتأكيد
+        open_ = float(m15[-2, 1])
         close = float(m15[-2, 4])
-        low = float(m15[-2, 3])
         high = float(m15[-2, 2])
+        low = float(m15[-2, 3])
+
+        candle_range = max(high - low, close * 1e-8)
+        body_ratio = max(0.0, abs(close - open_)) / candle_range
 
         atr = self.calculate_atr(m15[:-1, 2], m15[:-1, 3], m15[:-1, 4], 14)
         poc, val, vah = self.calculate_volume_profile(ohlcv_1h)
@@ -132,12 +139,16 @@ class StrategyEngine:
             return no_trade("الترند العام متذبذب ولا يحقق شروط الأمان المؤسسي")
 
         if is_bullish:
-            # شروط الـ LONG المؤسسي
-            near_val = (val * 0.995 <= close <= val * 1.015) or (val * 0.995 <= low <= val * 1.010)
-            if not near_val:
-                return no_trade("السعر لم يلامس منطقة القيمة الشرائية (VAL) بعد")
+            # شروط الـ LONG مع تأكيد ملامسة VAL وشمعة ارتداد خضراء بجسم لا يقل عن 45%
+            near_val = (val * 0.998 <= low <= val * 1.015) or (val * 0.998 <= close <= val * 1.015)
+            strong_green = (close > open_) and (body_ratio >= 0.45)
 
-            score = 90  # جودة عالية جداً لأن الشروط استوفت تماماً
+            if not near_val:
+                return no_trade("السعر لم يلامس منطقة القيمة الشرائية (VAL)")
+            if not strong_green:
+                return no_trade(f"قريب من VAL لكن شمعة الارتداد ضعيفة (جسم الشمعة: {round(body_ratio*100)}%)")
+
+            score = 92
             stop = float(min(low, val) - (1.2 * atr))
             risk_dist = close - stop
             if risk_dist <= 0:
@@ -152,26 +163,30 @@ class StrategyEngine:
 
             details = {
                 "trade_valid": True,
-                "reason": "Institutional VAL Support & Trend Alignment",
+                "reason": "Institutional VAL Support & Confirmed Green Candle",
                 "stop_loss": self._round(stop),
                 "score": score,
-                "setup": "V21.0 Institutional LONG",
+                "setup": "V22.0 Institutional Confirmed LONG",
                 "risk_management": {
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
                 },
-                "smc_note": f"Institutional LONG | VAL={self._round(val)} | Trend=Bullish"
+                "smc_note": f"Confirmed LONG | VAL={self._round(val)} | Body={round(body_ratio*100)}%"
             }
             return "LONG", self._round(close), details
 
         else:
-            # شروط الـ SHORT المؤسسي
-            near_vah = (vah * 0.985 <= close <= vah * 1.005) or (vah * 0.990 <= high <= vah * 1.015)
-            if not near_vah:
-                return no_trade("السعر لم يلامس منطقة المقاومة البيعية (VAH) بعد")
+            # شروط الـ SHORT مع تأكيد ملامسة VAH وشمعة هبوط حمراء مؤكدة
+            near_vah = (vah * 0.985 <= high <= vah * 1.002) or (vah * 0.985 <= close <= vah * 1.002)
+            strong_red = (close < open_) and (body_ratio >= 0.45)
 
-            score = 90
+            if not near_vah:
+                return no_trade("السعر لم يلامس منطقة المقاومة البيعية (VAH)")
+            if not strong_red:
+                return no_trade(f"قريب من VAH لكن شمعة الرفض ضعيفة (جسم الشمعة: {round(body_ratio*100)}%)")
+
+            score = 92
             stop = float(max(high, vah) + (1.2 * atr))
             risk_dist = stop - close
             if risk_dist <= 0:
@@ -186,15 +201,15 @@ class StrategyEngine:
 
             details = {
                 "trade_valid": True,
-                "reason": "Institutional VAH Resistance & Trend Alignment",
+                "reason": "Institutional VAH Resistance & Confirmed Red Candle",
                 "stop_loss": self._round(stop),
                 "score": score,
-                "setup": "V21.0 Institutional SHORT",
+                "setup": "V22.0 Institutional Confirmed SHORT",
                 "risk_management": {
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
                 },
-                "smc_note": f"Institutional SHORT | VAH={self._round(vah)} | Trend=Bearish"
+                "smc_note": f"Confirmed SHORT | VAH={self._round(vah)} | Body={round(body_ratio*100)}%"
             }
             return "SHORT", self._round(close), details
