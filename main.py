@@ -1,6 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - V21.0 Institutional Main
-# Strict Institutional Analysis & Pure Data Responses
+# MY EXPERT CRYPTO BOT - V26.0 HTF/LTF Main Controller
+# Strict 1H Direction + 5m Precision Entry Integration
 # ==========================================
 import os
 import time
@@ -41,7 +41,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V21.0 Institutional Active!"
+    return "MY EXPERT CRYPTO BOT V26.0 HTF/LTF Master Active!"
 
 @app.route("/health")
 def health():
@@ -106,9 +106,9 @@ def get_all_usdt_symbols():
 
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
-    dir_emoji = "🟢 LONG المؤسسي" if direction == "LONG" else "🔴 SHORT المؤسسي"
+    dir_emoji = "🟢 LONG 1H/5m" if direction == "LONG" else "🔴 SHORT 1H/5m"
     message = (
-        f"🏛️ *قناص النخبة V21.0 - إشارة مؤسسية معتمدة* 🏛️\n\n"
+        f"🏛️ *قناص النخبة V26.0 (1H Direction + 5m Entry)* 🏛️\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{dir_emoji}`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
@@ -136,16 +136,15 @@ def process_symbol(symbol, engine):
         if quote_volume < 4000000:
             return None, None, None
 
-        ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
+        # جلب فريم الـ 1H للاتجاه وفريم الـ 5m للتنفيذ الدقيق
+        ohlcv_5m = bingx_call("fetch_ohlcv", symbol, timeframe="5m", limit=30)
         ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
-        ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-        ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=25)
 
-        if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
+        if not (ohlcv_5m and ohlcv_1h):
             return None, None, None
 
         direction, entry_price, details = engine.analyze_market_structure(
-            ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
+            ohlcv_5m=ohlcv_5m, ohlcv_1h=ohlcv_1h
         )
         scan_stats["scanned_pairs"] += 1
 
@@ -159,9 +158,9 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🏛️ *تم تفعيل بوت قناص النخبة V21.0 (Institutional Strategy)* 🏛️\n"
-        "البوت يعمل الآن وفق قواعد السيولة المؤسسية والترند الصارم.\n"
-        "أرسل الأمر `/scan` لفحص السوق أو اسم أي عملة للتحليل الفني المباشر!"
+        "🏛️ *تم تفعيل بوت قناص النخبة V26.0 (1H Trend + 5m Precision Entry)* 🏛️\n"
+        "البوت يعمل الآن وفق استراتيجية الربط الزمني (اتصال الساعة مع الدقائق الخمس).\n"
+        "أرسل الأمر `/scan` لفحص السوق أو اسم أي عملة للتحليل المباشر!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -189,7 +188,7 @@ def background_scanner():
 
 def run_manual_scan(chat_id, engine):
     try:
-        send_telegram_message("🔍 *جاري تنفيذ الفحص المؤسسي الشامل لجميع العملات (V21.0)... ⏳*")
+        send_telegram_message("🔍 *جاري تنفيذ الفحص الشامل وفق استراتيجية (1H/5m) للعملات... ⏳*")
         all_symbols = get_all_usdt_symbols()
         ready_signals = []
         
@@ -200,7 +199,7 @@ def run_manual_scan(chat_id, engine):
             time.sleep(0.02)
         
         if ready_signals:
-            report = f"🎯 *نتائج الفحص المؤسسي الصارم ({len(ready_signals)} فرصة مطابقة):*\n\n"
+            report = f"🎯 *نتائج الفحص المؤسسي (1H/5m) المتاحة ({len(ready_signals)} فرصة):*\n\n"
             for s, d, ep, det in ready_signals[:10]:
                 rm = det.get("risk_management", {})
                 dir_icon = "🟢 LONG" if d == "LONG" else "🔴 SHORT"
@@ -210,7 +209,7 @@ def run_manual_scan(chat_id, engine):
                 )
             send_telegram_message(report)
         else:
-            send_telegram_message("⚠️ *لم يتم رصد أي عملة مستوفية لشروط القيمة المؤسسية الصارمة حالياً.*")
+            send_telegram_message("⚠️ *لم يتم رصد أي عملة مستوفية لشروط الربط الزمني (1H/5m) حالياً.*")
             
     except Exception as scan_err:
         logger.error(f"Manual scan error: {scan_err}")
@@ -257,7 +256,7 @@ def check_telegram_updates():
                     continue
                 
                 base_coin = text_upper.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 *جاري تشغيل محرك التحليل المؤسسي وإجراء حسابات الاستراتيجية للعملة `{base_coin}`...* ⏳")
+                send_telegram_message(f"🔍 *جاري تحليل العملة `{base_coin}` عبر فريمات الاتجاه (1H) والتنفيذ (5m)...* ⏳")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
@@ -279,35 +278,32 @@ def check_telegram_updates():
                     if not target_symbol:
                         target_symbol = f"{base_coin}/USDT:USDT"
 
-                    ohlcv_15m = bingx_call("fetch_ohlcv", target_symbol, timeframe="15m", limit=30)
+                    ohlcv_5m = bingx_call("fetch_ohlcv", target_symbol, timeframe="5m", limit=30)
                     ohlcv_1h = bingx_call("fetch_ohlcv", target_symbol, timeframe="1h", limit=30)
-                    ohlcv_4h = bingx_call("fetch_ohlcv", target_symbol, timeframe="4h", limit=30)
-                    ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                     
-                    if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات الأربعة للعملة `{base_coin}`.")
+                    if not (ohlcv_5m and ohlcv_1h):
+                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات المطلوبة (1H / 5m) للعملة `{base_coin}`.")
                         continue
                     
-                    # استدعاء المحرك الحقيقي حصراً
                     direction, entry_price, details = engine.analyze_market_structure(
-                        ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
+                        ohlcv_5m=ohlcv_5m, ohlcv_1h=ohlcv_1h
                     )
                     
-                    current_price = float(ohlcv_15m[-2][4])
+                    current_price = float(ohlcv_5m[-2][4])
                     rm = details.get("risk_management", {})
                     stop_loss = details.get("stop_loss")
                     score = details.get("score", 0)
                     reason = details.get("reason", "التحليل الفني غير مكتمل الشروط")
 
                     if details.get("trade_valid", False):
-                        dir_txt = "🟢 LONG المؤسسي" if direction == "LONG" else "🔴 SHORT المؤسسي"
+                        dir_txt = "🟢 LONG (1H/5m)" if direction == "LONG" else "🔴 SHORT (1H/5m)"
                         reply_msg = (
-                            f"✅ **التحليل الفني يؤكد: العملة مستوفية لشروط الاستراتيجية بالكامل!**\n\n"
+                            f"✅ **التحليل الفني المؤكد (1H Direction + 5m Entry):**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"⚖️ الاتجاه الفني: `{dir_txt}`\n"
-                            f"💵 سعر الدخول المقارن: `{entry_price}`\n"
-                            f"⭐️ درجة الجودة الحسابية: `{score}/100`\n\n"
-                            f"🟥 **وقف الخسارة المؤسسي (SL):** `{stop_loss}`\n"
+                            f"💵 سعر الدخول: `{entry_price}`\n"
+                            f"⭐️ الجودة: `{score}/100`\n\n"
+                            f"🟥 **وقف الخسارة (SL):** `{stop_loss}`\n"
                             f"🟩 **الهدف الأول (TP1):** `{rm.get('take_profit_1')}`\n"
                             f"🟩 **الهدف الثاني (TP2):** `{rm.get('take_profit_2')}`\n"
                             f"🎯 **الهدف الرئيسي (TP3):** `{rm.get('take_profit_3')}`\n\n"
@@ -315,12 +311,12 @@ def check_telegram_updates():
                         )
                     else:
                         reply_msg = (
-                            f"⏳ **تقرير التحليل الفني: العملة غير صالحة للتنفيذ حالياً**\n\n"
+                            f"⏳ **تقرير التحليل (1H/5m): العملة غير صالحة للتنفيذ حالياً**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⭐️ الجودة الحسابية: `{score}/100`\n"
-                            f"⚠️ **السبب المبرمج (تحليل بحت):** `{reason}`\n\n"
-                            f"💡 *تم رفض الصفقة رياضياً لمنع الدخول العشوائي وحماية الرصيد.*"
+                            f"⭐️ الجودة: `{score}/100`\n"
+                            f"⚠️ **السبب المبرمج:** `{reason}`\n\n"
+                            f"💡 *تم رفض الصفقة رياضياً لحماية الرصيد.*"
                         )
                     
                     send_telegram_message(reply_msg)
@@ -333,7 +329,7 @@ def check_telegram_updates():
             logger.error(f"Telegram listener error: {e}")
             time.sleep(5)
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="institutional-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="htf-ltf-scanner")
 scanner_thread.start()
 
 telegram_listener_thread = threading.Thread(target=check_telegram_updates, daemon=True, name="telegram-listener")
