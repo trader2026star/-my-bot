@@ -1,11 +1,11 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Institutional Multi-Timeframe Strategy V20
+# MY EXPERT CRYPTO BOT - SMC & Order Block Strategy Engine
 # ============================================================
 
 import logging
 import numpy as np
 
-logger = logging.getLogger("InstitutionalEngine")
+logger = logging.getLogger("SMCEngine")
 
 
 class StrategyEngine:
@@ -83,12 +83,12 @@ class StrategyEngine:
         d1 = self._array(ohlcv_1d, 20)
         h4 = self._array(ohlcv_4h, 20)
         h1 = self._array(ohlcv_1h, 20)
-        m15 = self._array(ohlcv_15m, 20)
+        m15 = self._array(ohlcv_15m, 25)
 
         if d1 is None or h4 is None or h1 is None or m15 is None:
             return no_trade("بيانات الشموع غير صالحة للتحليل")
 
-        # 1. فلتر اتجاه البيتكوين العام (Market Regime)
+        # التحقق من اتجاه البيتكوين العام
         btc_bullish = True
         if btc_ohlcv_1d is not None:
             btc_d1 = self._array(btc_ohlcv_1d, 20)
@@ -103,86 +103,52 @@ class StrategyEngine:
         h4_close = float(h4[-2, 4])
         h4_ma10 = float(np.mean(h4[:-1, 4][-10:]))
 
-        # 2. فلتر فريم الساعة (1H Momentum Filter)
-        h1_close = float(h1[-2, 4])
-        h1_ma10 = float(np.mean(h1[:-1, 4][-10:]))
-
+        # بيانات الشمعة الحالية والسابقة على 15m
         open_ = float(m15[-2, 1])
         close = float(m15[-2, 4])
         high = float(m15[-2, 2])
         low = float(m15[-2, 3])
         volume = float(m15[-2, 5])
 
+        # البحث عن مناطق الـ Order Block (آخر شمعة هابطة قبل صفر قوي للشراء أو العكس)
+        # الكتلة الشرائية (+OB): البحث عن قاع قتلي شكل منطقة دعم قوية في آخر 15 شمعة
+        recent_lows = m15[-15:-2, 3]
+        strong_support = float(np.min(recent_lows))
+        
+        recent_highs = m15[-15:-2, 2]
+        strong_resistance = float(np.max(recent_highs))
+
         avg_vol = float(np.mean(m15[-15:-2, 5]))
-        volume_ok = avg_vol > 0 and volume >= avg_vol * 0.8
+        volume_ok = avg_vol > 0 and volume >= avg_vol * 1.1
         atr = self.calculate_atr(m15[:-1, 2], m15[:-1, 3], m15[:-1, 4], 14)
 
         is_daily_bullish = daily_close >= daily_ma20
         is_h4_bullish = h4_close >= h4_ma10
-        is_h1_bullish = h1_close >= h1_ma10
 
         is_daily_bearish = daily_close < daily_ma20
         is_h4_bearish = h4_close < h4_ma10
-        is_h1_bearish = h1_close < h1_ma10
 
-        candle_range = max(high - low, close * 1e-8)
-        body_ratio = max(0.0, abs(close - open_)) / candle_range
+        # استراتيجية Long بناءً على ارتداد السعر من منطقة Order Block / FVG صاعدة
+        near_ob_support = low <= strong_support * 1.012
+        is_bullish_displacement = close > open_ and (close - open_) >= (high - low) * 0.55
 
-        # فحص صفقات الشراء (LONG)
-        if is_daily_bullish and is_h4_bullish and is_h1_bullish and btc_bullish:
-            if volume_ok and body_ratio >= 0.35 and close > open_:
-                score = 90
-                stop = float(low - (1.2 * atr))
+        if is_daily_bullish and is_h4_bullish and btc_bullish:
+            if (near_ob_support or low <= strong_support * 1.02) and is_bullish_displacement and volume_ok:
+                score = 96
+                stop = float(strong_support - (1.2 * atr))
                 risk_dist = close - stop
                 if risk_dist <= 0:
-                    risk_dist = close * 0.02
+                    risk_dist = close * 0.025
 
-                tp1 = close + (risk_dist * 1.5)
-                tp2 = close + (risk_dist * 2.5)
-                tp3 = close + (risk_dist * 4.0)
-                
-                # حساب حجم العقد الموصى به
-                units, val_usd = self.calculate_position_size(close, stop)
-                
-                details = {
-                    "trade_valid": True,
-                    "reason": "جميع الشروط والسيولة وتوافق الفريمات الأربعة مكتملة (LONG)",
-                    "stop_loss": self._round(stop),
-                    "score": score,
-                    "position_sizing": {
-                        "units": units,
-                        "margin_usd": val_usd,
-                        "risk_amount_usd": self._round(self.total_capital * self.risk_per_trade)
-                    },
-                    "risk_management": {
-                        "take_profit_1": self._round(tp1),
-                        "take_profit_2": self._round(tp2),
-                        "take_profit_3": self._round(tp3),
-                        "breakeven_trigger": self._round(tp1), # تفعيل نقل الوقف لنقطة الدخول عند TP1
-                        "trailing_stop_active": True
-                    },
-                    "smc_note": "توافق تام مع اتجاه البيتكوين والسيولة المؤسسية"
-                }
-                return "LONG", self._round(close), details
-
-        # فحص صفقات البيع (SHORT)
-        if is_daily_bearish and is_h4_bearish and is_h1_bearish and not btc_bullish:
-            if volume_ok and body_ratio >= 0.35 and close < open_:
-                score = 90
-                stop = float(high + (1.2 * atr))
-                risk_dist = stop - close
-                if risk_dist <= 0:
-                    risk_dist = close * 0.02
-
-                tp1 = close - (risk_dist * 1.5)
-                tp2 = close - (risk_dist * 2.5)
-                tp3 = close - (risk_dist * 4.0)
+                tp1 = close + (risk_dist * 2.0)
+                tp2 = close + (risk_dist * 3.5)
+                tp3 = close + (risk_dist * 5.5)
                 
                 units, val_usd = self.calculate_position_size(close, stop)
                 
                 details = {
                     "trade_valid": True,
-                    "reason": "جميع الشروط والسيولة وتوافق الفريمات الأربعة مكتملة (SHORT)",
+                    "reason": "ارتداد مثالي من منطقة Order Block ودعم قوي (+OB / FVG Rejection LONG)",
                     "stop_loss": self._round(stop),
                     "score": score,
                     "position_sizing": {
@@ -197,8 +163,47 @@ class StrategyEngine:
                         "breakeven_trigger": self._round(tp1),
                         "trailing_stop_active": True
                     },
-                    "smc_note": "توافق تراجعي مع سلبية البيتكوين والسيولة"
+                    "smc_note": "الدخول مع إعادة اختبار منطقة السيولة والـ Order Block السفلي"
+                }
+                return "LONG", self._round(close), details
+
+        # استراتيجية Short بناءً على رفض السعر لمنطقة مقاومة / Order Block هابطة
+        near_ob_resistance = high >= strong_resistance * 0.988
+        is_bearish_displacement = close < open_ and (open_ - close) >= (high - low) * 0.55
+
+        if is_daily_bearish and is_h4_bearish and not btc_bullish:
+            if (near_ob_resistance or high >= strong_resistance * 0.98) and is_bearish_displacement and volume_ok:
+                score = 96
+                stop = float(strong_resistance + (1.2 * atr))
+                risk_dist = stop - close
+                if risk_dist <= 0:
+                    risk_dist = close * 0.025
+
+                tp1 = close - (risk_dist * 2.0)
+                tp2 = close - (risk_dist * 3.5)
+                tp3 = close - (risk_dist * 5.5)
+                
+                units, val_usd = self.calculate_position_size(close, stop)
+                
+                details = {
+                    "trade_valid": True,
+                    "reason": "رفض سعري من منطقة Order Block ومقاومة عليا (-OB / Supply Rejection SHORT)",
+                    "stop_loss": self._round(stop),
+                    "score": score,
+                    "position_sizing": {
+                        "units": units,
+                        "margin_usd": val_usd,
+                        "risk_amount_usd": self._round(self.total_capital * self.risk_per_trade)
+                    },
+                    "risk_management": {
+                        "take_profit_1": self._round(tp1),
+                        "take_profit_2": self._round(tp2),
+                        "take_profit_3": self._round(tp3),
+                        "breakeven_trigger": self._round(tp1),
+                        "trailing_stop_active": True
+                    },
+                    "smc_note": "الدخول مع إعادة اختبار منطقة العرض العلوية (Supply Zone)"
                 }
                 return "SHORT", self._round(close), details
 
-        return no_trade("شروط القناس لم تكتمل (فريم 1H، العزم، أو اتجاه BTC العام)")
+        return no_trade("السعر لم يصل لمنطقة Order Block أو FVG المستهدفة بعد")
