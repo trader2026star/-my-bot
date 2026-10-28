@@ -1,5 +1,6 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - V19.0 Sniper Elite Pro (Dual Direction: LONG & SHORT)
+# MY EXPERT CRYPTO BOT - V21.0 Institutional Main
+# Strict Institutional Analysis & Pure Data Responses
 # ==========================================
 import os
 import time
@@ -40,7 +41,7 @@ bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defa
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V19.0 Dual Direction Active!"
+    return "MY EXPERT CRYPTO BOT V21.0 Institutional Active!"
 
 @app.route("/health")
 def health():
@@ -105,9 +106,9 @@ def get_all_usdt_symbols():
 
 def notify_trade_executed(symbol, direction, entry_price, details):
     rm = details.get("risk_management", {})
-    dir_emoji = "🟢 LONG (شراء)" if direction == "LONG" else "🔴 SHORT (بيع)"
+    dir_emoji = "🟢 LONG المؤسسي" if direction == "LONG" else "🔴 SHORT المؤسسي"
     message = (
-        f"💎 *قناص النخبة V19.0 - إشارة صيد مزدوجة الاتجاه* 💎\n\n"
+        f"🏛️ *قناص النخبة V21.0 - إشارة مؤسسية معتمدة* 🏛️\n\n"
         f"🔹 العملة: `{symbol}`\n"
         f"⚖️ الاتجاه: `{dir_emoji}`\n"
         f"💵 سعر الدخول: `{entry_price}`\n"
@@ -116,7 +117,7 @@ def notify_trade_executed(symbol, direction, entry_price, details):
         f"🟩 الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
         f"🟩 الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
         f"🎯 الهدف الرئيسي (TP3): `{rm.get('take_profit_3')}`\n\n"
-        f"🛡️ *تفاصيل الفحص:* `{details.get('smc_note')}`"
+        f"🛡️ *التحليل الفني المبني:* `{details.get('smc_note')}`"
     )
     return send_telegram_message(message)
 
@@ -158,8 +159,9 @@ def process_symbol(symbol, engine):
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "💎 *تم تفعيل بوت قناص النخبة V19.0 (Dual Direction - LONG & SHORT)* 💎\n"
-        "أرسل الأمر `/scan` في أي وقت لفحص السوق وجلب صفقات الشراء والبيع المؤكدة!"
+        "🏛️ *تم تفعيل بوت قناص النخبة V21.0 (Institutional Strategy)* 🏛️\n"
+        "البوت يعمل الآن وفق قواعد السيولة المؤسسية والترند الصارم.\n"
+        "أرسل الأمر `/scan` لفحص السوق أو اسم أي عملة للتحليل الفني المباشر!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -187,7 +189,7 @@ def background_scanner():
 
 def run_manual_scan(chat_id, engine):
     try:
-        send_telegram_message("🔍 *جاري بدء فحص شامل لجميع عملات السوق (V19.0 Dual Direction)... قد يستغرق ذلك دقيقة أو دقيقتين* ⏳")
+        send_telegram_message("🔍 *جاري تنفيذ الفحص المؤسسي الشامل لجميع العملات (V21.0)... ⏳*")
         all_symbols = get_all_usdt_symbols()
         ready_signals = []
         
@@ -198,21 +200,21 @@ def run_manual_scan(chat_id, engine):
             time.sleep(0.02)
         
         if ready_signals:
-            report = f"🎯 *نتائج الفحص الشامل! الفرص الجاهزة للدخول ({len(ready_signals)}):*\n\n"
+            report = f"🎯 *نتائج الفحص المؤسسي الصارم ({len(ready_signals)} فرصة مطابقة):*\n\n"
             for s, d, ep, det in ready_signals[:10]:
                 rm = det.get("risk_management", {})
                 dir_icon = "🟢 LONG" if d == "LONG" else "🔴 SHORT"
                 report += (
-                    f"🔹 **{s}** | الاتجاه: `{dir_icon}` | السعر: `{ep}` | الجودة: `{det.get('score')}/100`\n"
+                    f"🔹 **{s}** | الاتجاه: `{dir_icon}` | الدخول: `{ep}` | الجودة: `{det.get('score')}/100`\n"
                     f"   • SL: `{det.get('stop_loss')}` | TP1: `{rm.get('take_profit_1')}`\n\n"
                 )
             send_telegram_message(report)
         else:
-            send_telegram_message("⚠️ *لم يتم العثور على صفقات مستوفية للشروط الصارمة في هذا الفحص.*")
+            send_telegram_message("⚠️ *لم يتم رصد أي عملة مستوفية لشروط القيمة المؤسسية الصارمة حالياً.*")
             
     except Exception as scan_err:
         logger.error(f"Manual scan error: {scan_err}")
-        send_telegram_message("❌ حدث خطأ أثناء إجراء الفحص الشامل.")
+        send_telegram_message("❌ حدث خطأ أثناء الفحص الشامل.")
 
 def check_telegram_updates():
     last_update_id = 0
@@ -246,31 +248,27 @@ def check_telegram_updates():
                 if not text or str(chat_id) != str(TELEGRAM_CHAT_ID):
                     continue
                 
-                # --- أمر الفحص الشامل /scan ---
                 if text_upper in ["/SCAN", "SCAN", "فحص"]:
                     scan_thread = threading.Thread(target=run_manual_scan, args=(chat_id, engine), daemon=True)
                     scan_thread.start()
                     continue
                 
-                # --- فحص عملة مفردة يدوياً ---
                 if text.startswith("/"):
                     continue
                 
                 base_coin = text_upper.replace("/USDT", "").replace("USDT", "").strip()
-                send_telegram_message(f"🔍 جاري فحص وتحليل استراتيجية V19.0 لعملة `{base_coin}` كخبير...")
+                send_telegram_message(f"🔍 *جاري تشغيل محرك التحليل المؤسسي وإجراء حسابات الاستراتيجية للعملة `{base_coin}`...* ⏳")
                 
                 try:
                     all_symbols = get_all_usdt_symbols()
                     target_symbol = None
                     
-                    # 1. مطابقة تامة
                     for s in all_symbols:
                         s_base = s.split('/')[0].upper()
                         if s_base == base_coin:
                             target_symbol = s
                             break
                     
-                    # 2. احتواء دقيق
                     if not target_symbol:
                         for s in all_symbols:
                             s_base = s.split('/')[0].upper()
@@ -287,54 +285,55 @@ def check_telegram_updates():
                     ohlcv_1d = bingx_call("fetch_ohlcv", target_symbol, timeframe="1d", limit=25)
                     
                     if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
-                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات لعملة `{base_coin}`.")
+                        send_telegram_message(f"❌ تعذر جلب بيانات الفريمات الأربعة للعملة `{base_coin}`.")
                         continue
                     
+                    # استدعاء المحرك الحقيقي حصراً
                     direction, entry_price, details = engine.analyze_market_structure(
                         ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d
                     )
                     
-                    current_price = float(ohlcv_15m[-1][4])
+                    current_price = float(ohlcv_15m[-2][4])
                     rm = details.get("risk_management", {})
                     stop_loss = details.get("stop_loss")
                     score = details.get("score", 0)
-                    reason = details.get("reason", "تحليل تحت السيطرة")
+                    reason = details.get("reason", "التحليل الفني غير مكتمل الشروط")
 
                     if details.get("trade_valid", False):
-                        dir_txt = "🟢 LONG (شراء)" if direction == "LONG" else "🔴 SHORT (بيع)"
+                        dir_txt = "🟢 LONG المؤسسي" if direction == "LONG" else "🔴 SHORT المؤسسي"
                         reply_msg = (
-                            f"✅ **العملة مؤهلة تماماً وجاهزة لصفقة ({dir_txt}) الفورية!**\n\n"
+                            f"✅ **التحليل الفني يؤكد: العملة مستوفية لشروط الاستراتيجية بالكامل!**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
-                            f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⭐️ درجة الجودة: `{score}/100`\n\n"
-                            f"🚀 **سعر الدخول المقترح:** `{entry_price}`\n"
-                            f"🟥 **وقف الخسارة المحمي (SL):** `{stop_loss}`\n"
+                            f"⚖️ الاتجاه الفني: `{dir_txt}`\n"
+                            f"💵 سعر الدخول المقارن: `{entry_price}`\n"
+                            f"⭐️ درجة الجودة الحسابية: `{score}/100`\n\n"
+                            f"🟥 **وقف الخسارة المؤسسي (SL):** `{stop_loss}`\n"
                             f"🟩 **الهدف الأول (TP1):** `{rm.get('take_profit_1')}`\n"
                             f"🟩 **الهدف الثاني (TP2):** `{rm.get('take_profit_2')}`\n"
                             f"🎯 **الهدف الرئيسي (TP3):** `{rm.get('take_profit_3')}`\n\n"
-                            f"🛡️ {details.get('smc_note')}"
+                            f"🛡️ **نتيجة الحساب الفني:** `{details.get('smc_note')}`"
                         )
                     else:
                         reply_msg = (
-                            f"⏳ **العملة غير جاهزة للتنفيذ الفوري حالياً**\n\n"
+                            f"⏳ **تقرير التحليل الفني: العملة غير صالحة للتنفيذ حالياً**\n\n"
                             f"🔹 العملة: `{target_symbol}`\n"
                             f"💵 السعر الحالي: `{current_price}`\n"
-                            f"⭐️ درجة الجودة الحالية: `{score}/100`\n"
-                            f"⚠️ **سبب التريث الفني:** `{reason}`\n\n"
-                            f"💡 *يرجى انتظار استقرار السعر في مناطق السيولة أو إعادة المحاولة لاحقاً.*"
+                            f"⭐️ الجودة الحسابية: `{score}/100`\n"
+                            f"⚠️ **السبب المبرمج (تحليل بحت):** `{reason}`\n\n"
+                            f"💡 *تم رفض الصفقة رياضياً لمنع الدخول العشوائي وحماية الرصيد.*"
                         )
                     
                     send_telegram_message(reply_msg)
                     
                 except Exception as inner_err:
-                    logger.error(f"Analysis inner error for base_coin: {inner_err}")
-                    send_telegram_message(f"❌ حدث خطأ أثناء تحليل العملة `{base_coin}`.")
+                    logger.error(f"Analysis error for base_coin: {inner_err}")
+                    send_telegram_message(f"❌ حدث خطأ تقني أثناء تحليل العملة `{base_coin}`.")
                 
         except Exception as e:
-            logger.error(f"Telegram listener outer error: {e}")
+            logger.error(f"Telegram listener error: {e}")
             time.sleep(5)
 
-scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="mtf-poc-scanner")
+scanner_thread = threading.Thread(target=background_scanner, daemon=True, name="institutional-scanner")
 scanner_thread.start()
 
 telegram_listener_thread = threading.Thread(target=check_telegram_updates, daemon=True, name="telegram-listener")
