@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V19.0 Sniper Elite Pro (Dual Direction: LONG & SHORT + SMC & Momentum)
-# MTF: 1D Bias -> 4H Structure -> 1H Volume Profile -> 15M Trigger (FVG, OB & RSI Check)
+# MY EXPERT CRYPTO BOT - V20.0 Ultra-Safe Sniper Elite
+# Dual Direction: Strict Trend, Liquidity Sweep & 85+ Score Filter
 # Signal-only: does NOT place exchange orders.
 # ============================================================
 
@@ -195,7 +195,7 @@ class StrategyEngine:
                 "debug_trace": list(debug),
                 "trade_valid": False,
                 "score": 0,
-                "setup": "V19.0 Sniper Elite Pro - Dual Direction",
+                "setup": "V20.0 Ultra-Safe Sniper Elite",
             }
             if extra:
                 details.update(extra)
@@ -218,7 +218,6 @@ class StrategyEngine:
         h4_closes = h4[:, 4]
         h4_close = float(h4_closes[-1])
         h4_ma10 = float(np.mean(h4_closes[-10:]))
-        h4_swing_high, h4_swing_low = self._swing_levels(h4, 12)
 
         close = float(m15[-1, 4])
         open_ = float(m15[-1, 1])
@@ -230,7 +229,7 @@ class StrategyEngine:
         body_ratio = max(0.0, abs(close - open_)) / candle_range
         
         avg_volume = float(np.mean(m15[-16:-1, 5]))
-        volume_spike = avg_volume > 0 and volume >= avg_volume * 1.30
+        volume_spike = avg_volume > 0 and volume >= avg_volume * 1.50  # سيولة مؤسسية أعلى
 
         atr = self.calculate_atr(m15[:, 2], m15[:, 3], m15[:, 4], 14)
         if atr <= 0 or not np.isfinite(atr):
@@ -241,56 +240,50 @@ class StrategyEngine:
         if poc is None or val is None or vah is None:
             return no_trade("تعذر حساب Volume Profile على فريم الساعة")
 
-        # ==================== تحديد الاتجاه: LONG أم SHORT ====================
-        is_bullish_env = daily_close >= daily_ma20 and h4_close >= h4_ma10
-        is_bearish_env = daily_close < daily_ma20 or h4_close < h4_ma10
+        # ==================== تحديد الاتجاه بدقة صارمة للغاية ====================
+        strict_bullish = daily_close > daily_ma20 and h4_close > h4_ma10
+        strict_bearish = daily_close < daily_ma20 and h4_close < h4_ma10
 
-        # تفضيل LONG إذا كان السوق صاعداً أو العملة في مناطق تشبع بيعي حقيقي (Oversold)
-        # تفضيل SHORT إذا كان السوق هابطاً أو العملة وصلت لتشبع شرائي مفرط (Overbought)
-        if is_bullish_env or m15_rsi <= 38:
+        if strict_bullish and not strict_bearish:
             direction_intent = "LONG"
-        elif is_bearish_env or m15_rsi >= 62:
+        elif strict_bearish and not strict_bullish:
             direction_intent = "SHORT"
         else:
-            return no_trade(f"السوق في نطاق عرضي وتذبذب غير واضح (RSI: {round(m15_rsi, 1)})")
+            return no_trade(f"الترند غير مستقر بين اليومي و4 ساعات (ممنوع الدخول حفاظاً على الرصيد)")
 
         # ==========================================================
-        # منطق صفقات الـ LONG
+        # منطق صفقات الـ LONG المحصنة (صفر مخاطرة)
         # ==========================================================
         if direction_intent == "LONG":
-            near_profile = (val * 0.997 <= close <= poc * 1.012)
+            near_support = (val * 0.998 <= close <= poc * 1.008)
             fvg = self._bullish_fvg(m15)
             ob = self._bullish_order_block(h1)
-            near_fvg = bool(fvg and fvg[0] <= close <= fvg[1] + 0.25 * atr)
-            near_ob = bool(ob and ob[0] - 0.15 * atr <= close <= ob[1] + 0.15 * atr)
-            location_ok = near_profile or near_fvg or near_ob
+            near_fvg = bool(fvg and fvg[0] <= close <= fvg[1] + 0.1 * atr)
+            near_ob = bool(ob and ob[0] - 0.1 * atr <= close <= ob[1] + 0.1 * atr)
+            
+            if not (near_support or near_fvg or near_ob):
+                return no_trade("السعر ليس في منطقة دعم مؤسسي أو فجوة صحيحة للـ LONG")
 
-            recent_lows = m15[-8:-1, 3]
+            recent_lows = m15[-10:-1, 3]
             sweep_level = float(np.min(recent_lows)) if len(recent_lows) else low
-            liquidity_sweep = bool(low < sweep_level and close > sweep_level and body_ratio >= 0.35)
+            liquidity_sweep = bool(low < sweep_level and close > sweep_level)
 
-            prior_high = float(np.max(m15[-6:-1, 2]))
-            micro_bos = close > prior_high
-            strong_candle = close > open_ and body_ratio >= 0.45
+            strong_green_candle = (close > open_) and (body_ratio >= 0.60) # جسم الشمعة أكبر من 60% تأكيد قاطع
+            if not strong_green_candle and not liquidity_sweep:
+                return no_trade("شمعة الارتداد ضعيفة ولا توجد شمعة تأكيد قوية (جسم < 60%)")
 
-            score = 25
-            score += 20 if near_profile or near_fvg or near_ob else 10
-            score += 20 if liquidity_sweep else 0
-            score += 15 if micro_bos else 0
-            score += 10 if volume_spike else 0
-            score += 10 if m15_rsi < 45 else 5
+            # نظام النقاط الصارم (يجب أن تصل 85 نقطة فما فوق)
+            score = 30
+            score += 25 if (near_support or near_fvg or near_ob) else 0
+            score += 25 if liquidity_sweep else 10
+            score += 15 if volume_spike else 0
             score = min(100, int(score))
 
-            if not location_ok and not liquidity_sweep:
-                return no_trade("السعر لم يمس مناطق الدعم أو السيولة للـ LONG بعد", {"score": score})
-            if not strong_candle and not liquidity_sweep:
-                return no_trade("شمعة الارتداد الصاعد ضعيفة ولا توجد تأكيدات كافية", {"score": score})
-            if score < 65:
-                return no_trade(f"درجة جودة الشراء ({score}/100) منخفضة", {"score": score})
+            if score < 85:
+                return no_trade(f"درجة الأمان ({score}/100) أقل من الحد الأدنى الصارم (85)", {"score": score})
 
-            recent_swing_low = float(np.min(m15[-8:, 3]))
-            structural_floor = min(recent_swing_low, val)
-            stop = min(structural_floor - 0.35 * atr, close - 1.3 * atr)
+            recent_swing_low = float(np.min(m15[-10:, 3]))
+            stop = min(recent_swing_low - 0.25 * atr, close - 1.1 * atr)
             risk_dist = close - stop
             
             if not np.isfinite(risk_dist) or risk_dist <= 0:
@@ -300,13 +293,13 @@ class StrategyEngine:
             qty = min(risk_usd / risk_dist, (self.total_capital * 3.0) / close)
             effective_risk = qty * risk_dist
 
-            tp1 = close + risk_dist * 1.3
-            tp2 = close + risk_dist * 2.2
-            tp3 = close + risk_dist * 3.5
+            tp1 = close + risk_dist * 1.5
+            tp2 = close + risk_dist * 2.5
+            tp3 = close + risk_dist * 4.0
 
-            notes = f"Dual Sniper LONG | RSI={round(m15_rsi, 1)} | Sweep={'نعم' if liquidity_sweep else 'لا'} | OB/FVG Active"
+            notes = f"Ultra-Safe LONG | RSI={round(m15_rsi, 1)} | Sweep={'تم' * int(liquidity_sweep) or 'لا'} | Body={round(body_ratio*100)}%"
             details = {
-                "reason": "V19.0 Sniper Elite: Smart LONG Entry",
+                "reason": "V20.0 Ultra-Safe Sniper: Verified LONG",
                 "trade_valid": True,
                 "stop_loss": self._round(stop),
                 "risk_distance": self._round(risk_dist),
@@ -319,9 +312,9 @@ class StrategyEngine:
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
-                    "reward_ratio": "1:3.5",
+                    "reward_ratio": "1:4.0",
                 },
-                "setup": "V19.0 Dual-Direction SMC LONG",
+                "setup": "V20.0 Ultra-Safe LONG",
                 "score": score,
                 "smc_note": notes,
                 "levels": {"poc": self._round(poc), "val": self._round(val), "vah": self._round(vah), "rsi": round(m15_rsi, 1)},
@@ -330,42 +323,37 @@ class StrategyEngine:
             return "LONG", self._round(close), details
 
         # ==========================================================
-        # منطق صفقات الـ SHORT (حماية من التشبع والانهيارات)
+        # منطق صفقات الـ SHORT المحصنة (صفر مخاطرة)
         # ==========================================================
         else:
-            near_profile_top = (close >= poc * 0.995) or (close >= vah * 0.990)
+            near_resistance = (close >= poc * 0.992) or (close >= vah * 0.988)
             bear_fvg = self._bearish_fvg(m15)
             bear_ob = self._bearish_order_block(h1)
-            near_bear_fvg = bool(bear_fvg and bear_fvg[0] - 0.25 * atr <= close <= bear_fvg[1])
-            near_bear_ob = bool(bear_ob and bear_ob[0] - 0.15 * atr <= close <= bear_ob[1] + 0.15 * atr)
-            resistance_ok = near_profile_top or near_bear_fvg or near_bear_ob
+            near_bear_fvg = bool(bear_fvg and bear_fvg[0] - 0.1 * atr <= close <= bear_fvg[1])
+            near_bear_ob = bool(bear_ob and bear_ob[0] - 0.1 * atr <= close <= bear_ob[1] + 0.1 * atr)
 
-            recent_highs = m15[-8:-1, 2]
+            if not (near_resistance or near_bear_fvg or near_bear_ob):
+                return no_trade("السعر ليس في منطقة مقاومة مؤسسي صحيحة للـ SHORT")
+
+            recent_highs = m15[-10:-1, 2]
             sweep_high_level = float(np.max(recent_highs)) if len(recent_highs) else high
-            bearish_liquidity_sweep = bool(high > sweep_high_level and close < sweep_high_level and body_ratio >= 0.35)
+            bearish_liquidity_sweep = bool(high > sweep_high_level and close < sweep_high_level)
 
-            prior_low = float(np.min(m15[-6:-1, 3]))
-            micro_bos_down = close < prior_low
-            strong_bear_candle = close < open_ and body_ratio >= 0.45
+            strong_red_candle = (close < open_) and (body_ratio >= 0.60) # شمعة هبوط مؤكدة بقوة
+            if not strong_red_candle and not bearish_liquidity_sweep:
+                return no_trade("شمعة الرفض الهابط ضعيفة ولا توجد شمعة تأكيد قوية للبيع")
 
-            score = 25
-            score += 20 if resistance_ok else 10
-            score += 20 if bearish_liquidity_sweep else 0
-            score += 15 if micro_bos_down else 0
-            score += 10 if volume_spike else 0
-            score += 10 if m15_rsi > 55 else 5
+            score = 30
+            score += 25 if (near_resistance or near_bear_fvg or near_bear_ob) else 0
+            score += 25 if bearish_liquidity_sweep else 10
+            score += 15 if volume_spike else 0
             score = min(100, int(score))
 
-            if not resistance_ok and not bearish_liquidity_sweep:
-                return no_trade("السعر لم يصل لمناطق المقاومة أو سيولة القمم للـ SHORT", {"score": score})
-            if not strong_bear_candle and not bearish_liquidity_sweep:
-                return no_trade("شمعة الرفض الهابط ضعيفة ولا توجد تأكيدات كافية للبيع", {"score": score})
-            if score < 65:
-                return no_trade(f"درجة جودة البيع ({score}/100) منخفضة", {"score": score})
+            if score < 85:
+                return no_trade(f"درجة الأمان للبيع ({score}/100) أقل من الحد الأدنى الصارم (85)", {"score": score})
 
-            recent_swing_high = float(np.max(m15[-8:, 2]))
-            structural_ceiling = max(recent_swing_high, vah)
-            stop = max(structural_ceiling + 0.35 * atr, close + 1.3 * atr)
+            recent_swing_high = float(np.max(m15[-10:, 2]))
+            stop = max(recent_swing_high + 0.25 * atr, close + 1.1 * atr)
             risk_dist = stop - close
 
             if not np.isfinite(risk_dist) or risk_dist <= 0:
@@ -375,13 +363,13 @@ class StrategyEngine:
             qty = min(risk_usd / risk_dist, (self.total_capital * 3.0) / close)
             effective_risk = qty * risk_dist
 
-            tp1 = close - risk_dist * 1.3
-            tp2 = close - risk_dist * 2.2
-            tp3 = close - risk_dist * 3.5
+            tp1 = close - risk_dist * 1.5
+            tp2 = close - risk_dist * 2.5
+            tp3 = close - risk_dist * 4.0
 
-            notes = f"Dual Sniper SHORT | RSI={round(m15_rsi, 1)} | Bearish Sweep={'نعم' if bearish_liquidity_sweep else 'لا'} | OB/FVG Active"
+            notes = f"Ultra-Safe SHORT | RSI={round(m15_rsi, 1)} | Bearish Sweep={'تم' * int(bearish_liquidity_sweep) or 'لا'} | Body={round(body_ratio*100)}%"
             details = {
-                "reason": "V19.0 Sniper Elite: Smart SHORT Entry",
+                "reason": "V20.0 Ultra-Safe Sniper: Verified SHORT",
                 "trade_valid": True,
                 "stop_loss": self._round(stop),
                 "risk_distance": self._round(risk_dist),
@@ -394,9 +382,9 @@ class StrategyEngine:
                     "take_profit_1": self._round(tp1),
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
-                    "reward_ratio": "1:3.5",
+                    "reward_ratio": "1:4.0",
                 },
-                "setup": "V19.0 Dual-Direction SMC SHORT",
+                "setup": "V20.0 Ultra-Safe SHORT",
                 "score": score,
                 "smc_note": notes,
                 "levels": {"poc": self._round(poc), "val": self._round(val), "vah": self._round(vah), "rsi": round(m15_rsi, 1)},
