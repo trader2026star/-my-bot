@@ -1,12 +1,12 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V25.0 Demand/Supply Mitigation Elite
-# Exact Strategy: Order Block / Demand Zone Identification, Mitigation & Retest
+# MY EXPERT CRYPTO BOT - V26.0 HTF/LTF Master (1H Direction + 5m Entry)
+# Strict Multi-Timeframe Alignment: 1H Trend Direction & 5m Precision Entry
 # ============================================================
 
 import logging
 import numpy as np
 
-logger = logging.getLogger("MitigationEngine")
+logger = logging.getLogger("HTFLTFEngine")
 
 
 class StrategyEngine:
@@ -62,97 +62,69 @@ class StrategyEngine:
         except Exception:
             return 0.0
 
-    @staticmethod
-    def _find_demand_zone(arr):
-        """البحث عن آخر شمعة هابطة قوية تسببت في دفع السعر للأعلى (Demand Order Block)"""
-        if len(arr) < 15:
-            return None, None
-        for i in range(len(arr) - 3, 5, -1):
-            prev_candle = arr[i]      # الشمعة الهابطة
-            next_candle = arr[i + 1]  # شمعة الانفجار الصاعد
-            # شروط بلوك الطلب: الشمعة السابقة حمراء والتي تليها خضراء قوية اخترقت القمة
-            if prev_candle[4] < prev_candle[1] and next_candle[4] > next_candle[1]:
-                zone_low = float(min(prev_candle[3], next_candle[3]))
-                zone_high = float(max(prev_candle[1], prev_candle[2]))
-                if zone_high > zone_low:
-                    return zone_low, zone_high
-        # افتراضي بناءً على أدنى قاع حديث إذا لم يُوجد بلوك صريح
-        recent_low = float(np.min(arr[-10:-2, 3]))
-        recent_high = float(np.mean(arr[-10:-2, 4]))
-        return recent_low, recent_high * 0.995
-
-    @staticmethod
-    def _find_supply_zone(arr):
-        """البحث عن آخر شمعة صاعدة قبل الانفجار الهابط (Supply Order Block)"""
-        if len(arr) < 15:
-            return None, None
-        for i in range(len(arr) - 3, 5, -1):
-            prev_candle = arr[i]
-            next_candle = arr[i + 1]
-            if prev_candle[4] > prev_candle[1] and next_candle[4] < next_candle[1]:
-                zone_low = float(min(prev_candle[3], next_candle[3]))
-                zone_high = float(max(prev_candle[2], next_candle[2]))
-                if zone_high > zone_low:
-                    return zone_low, zone_high
-        recent_high = float(np.max(arr[-10:-2, 2]))
-        recent_low = float(np.mean(arr[-10:-2, 4]))
-        return recent_low * 1.005, recent_high
-
-    def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None, ohlcv_4h=None, ohlcv_1d=None, **kwargs):
+    def analyze_market_structure(self, ohlcv_5m=None, ohlcv_1h=None, ohlcv_15m=None, ohlcv_4h=None, ohlcv_1d=None, **kwargs):
         def no_trade(reason):
             return "NEUTRAL", 0, {"trade_valid": False, "reason": reason, "score": 0}
 
-        if any(x is None for x in (ohlcv_15m, ohlcv_1h, ohlcv_4h, ohlcv_1d)):
-            return no_trade("بيانات الفريمات غير مكتملة")
+        # الاعتماد على 1H لتحديد الاتجاه (Direction) و 5m للتنفيذ (Entry)
+        if ohlcv_1h is None or ohlcv_5m is None:
+            # توافقاً مع الدالة القديمة إذا أُرسلت الفريمات الأربعة الأساسية
+            if ohlcv_15m is not None and ohlcv_1h is not None:
+                ohlcv_5m = ohlcv_15m # كاحتياط إذا لم يتم توفير 5م منفصلاً
+            else:
+                return no_trade("بيانات فريمات الاتجاه (1H) أو الدخول (5m) غير مكتملة")
 
-        m15 = self._array(ohlcv_15m, 25)
-        d1 = self._array(ohlcv_1d, 20)
-        h4 = self._array(ohlcv_4h, 20)
-        
-        if m15 is None or d1 is None or h4 is None:
-            return no_trade("بيانات الشموع غير صالحة للتحليل")
+        h1 = self._array(ohlcv_1h, 20)
+        m5 = self._array(ohlcv_5m, 20)
 
-        daily_close = float(d1[-2, 4])
-        daily_ma20 = float(np.mean(d1[:-1, 4][-20:]))
-        
-        close = float(m15[-2, 4])
-        open_ = float(m15[-2, 1])
-        high = float(m15[-2, 2])
-        low = float(m15[-2, 3])
-        volume = float(m15[-2, 5])
+        if h1 is None or m5 is None:
+            return no_trade("بيانات الشموع غير صالحة للتحليل الزمني")
 
-        atr = self.calculate_atr(m15[:-1, 2], m15[:-1, 3], m15[:-1, 4], 14)
+        # 1. تحديد اتجاه السوق الأساسي من فريم الساعة (1H Direction) باستخدام متوسط الحركة 20
+        h1_closes = h1[:-1, 4]
+        h1_ma20 = float(np.mean(h1_closes[-20:]))
+        h1_current_close = float(h1[-2, 4])
+
+        is_h1_bullish = h1_current_close >= h1_ma20
+        is_h1_bearish = h1_current_close < h1_ma20
+
+        if not is_h1_bullish and not is_h1_bearish:
+            return no_trade("اتجاه فريم الساعة (1H Direction) متذبذب ولا يحقق شروط الحسم")
+
+        # 2. منطقة البحث والدخول على فريم الـ 5 دقائق (5m Entry)
+        open_ = float(m5[-2, 1])
+        close = float(m5[-2, 4])
+        high = float(m5[-2, 2])
+        low = float(m5[-2, 3])
+
+        atr = self.calculate_atr(m5[:-1, 2], m5[:-1, 3], m5[:-1, 4], 14)
         if atr <= 0:
-            return no_trade("تعذر حساب ATR")
-
-        is_bullish_trend = daily_close >= daily_ma20
-        is_bearish_trend = daily_close < daily_ma20
-
-        # استخراج منطقة الطلب أو العرض حسب الشارت تماماً
-        demand_low, demand_high = self._find_demand_zone(m15)
-        supply_low, supply_high = self._find_supply_zone(m15)
+            return no_trade("تعذر حساب نطاق الحركة ATR على فريم 5م")
 
         candle_range = max(high - low, close * 1e-8)
         body_ratio = max(0.0, abs(close - open_)) / candle_range
 
-        # تطبيق استراتيجية الشارت: ملامسة المنطقة (Mitigation/Retest) + ارتداد مؤكد
-        if is_bullish_trend and demand_low is not None:
-            # التحقق مما إذا كان السعر قد دخل في منطقة الطلب (Demand Zone Retest)
-            in_demand_zone = (demand_low * 0.995 <= low <= demand_high * 1.005) or (demand_low * 0.995 <= close <= demand_high * 1.005)
-            strong_rejection = (close > open_) and (body_ratio >= 0.35) # شمعة ارتداد خضراء من المنطقة
+        # استخراج مناطق السيولة والارتداد على فريم 5 دقائق
+        recent_5m_low = float(np.min(m5[-10:-2, 3]))
+        recent_5m_high = float(np.max(m5[-10:-2, 2]))
 
-            if not in_demand_zone:
-                return no_trade("السعر لم يقم بإعادة اختبار (Mitigation) لمنطقة الطلب بعد")
-            if not strong_rejection:
-                return no_trade("السعر داخل منطقة الطلب لكن لم تظهر شمعة ارتداد مؤكدة بعد")
+        if is_h1_bullish:
+            # شروط الشراء: الاتجاه على 1H صاعد، والدخول على 5m بعد لمس قاع أو سيولة سفلية مع ارتداد
+            near_support = (recent_5m_low * 0.998 <= low <= recent_5m_low * 1.008) or (close >= recent_5m_low)
+            strong_green = (close > open_) and (body_ratio >= 0.35)
 
-            score = 88
-            stop = float(demand_low - (1.2 * atr))  # وقف الخسارة تحت منطقة الطلب مباشرة كما في الاستراتيجية
+            if not near_support:
+                return no_trade("السعر لم يصل لمنطقة الدخول المثالية على فريم 5m بعد")
+            if not strong_green:
+                return no_trade("السعر عند الدعم لكن شمعة الـ 5m لم تعطِ تأكيد صعود قوي بعد")
+
+            score = 90
+            stop = float(recent_5m_low - (1.1 * atr)) # وقف الخسارة تحت قاع الـ 5 دقائق تماماً كما في الشارت
             risk_dist = close - stop
             max_allowed_risk = close * 0.045
 
             if not np.isfinite(risk_dist) or risk_dist <= 0 or risk_dist > max_allowed_risk:
-                return no_trade("مسافة وقف الخسارة غير صالحة أو بعيدة جداً")
+                return no_trade("مسافة وقف الخسارة على فريم 5m غير صالحة")
 
             risk_usd = self.total_capital * self.risk_per_trade
             qty = risk_usd / risk_dist
@@ -164,10 +136,10 @@ class StrategyEngine:
 
             details = {
                 "trade_valid": True,
-                "reason": "Exact Strategy: Demand Zone Mitigation & Rejection Retest",
+                "reason": "1H Direction Bullish + 5m Entry Liquidity Rejection",
                 "stop_loss": self._round(stop),
                 "score": score,
-                "setup": "V25.0 Demand Mitigation LONG",
+                "setup": "V26.0 1H/5m Master LONG",
                 "risk_management": {
                     "allowed_risk_usd": round(risk_usd, 2),
                     "estimated_risk_usd": round(effective_risk_usd, 2),
@@ -176,26 +148,27 @@ class StrategyEngine:
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
                 },
-                "smc_note": f"Demand Retest LONG | Zone=[{self._round(demand_low)} - {self._round(demand_high)}] | Score={score}"
+                "smc_note": f"1H/5m LONG | H1 Trend=Bullish | 5m Support={self._round(recent_5m_low)}"
             }
             return "LONG", self._round(close), details
 
-        elif is_bearish_trend and supply_low is not None:
-            in_supply_zone = (supply_low * 0.995 <= high <= supply_high * 1.005) or (supply_low * 0.995 <= close <= supply_high * 1.005)
-            strong_rejection_bear = (close < open_) and (body_ratio >= 0.35)
+        else:
+            # شروط البيع: الاتجاه على 1H هابط، والدخول على 5m من قمة أو سيولة علوية
+            near_resistance = (recent_5m_high * 0.992 <= high <= recent_5m_high * 1.002) or (close <= recent_5m_high)
+            strong_red = (close < open_) and (body_ratio >= 0.35)
 
-            if not in_supply_zone:
-                return no_trade("السعر لم يقم بإعادة اختبار (Mitigation) لمنطقة العرض بعد")
-            if not strong_rejection_bear:
-                return no_trade("السعر داخل منطقة العرض لكن لم تظهر شمعة رفض هابط مؤكدة بعد")
+            if not near_resistance:
+                return no_trade("السعر لم يصل لمنطقة المقاومة على فريم 5m بعد")
+            if not strong_red:
+                return no_trade("السعر عند المقاومة لكن شمعة الـ 5m لم تعطِ تأكيد هبوط قوي بعد")
 
-            score = 88
-            stop = float(supply_high + (1.2 * atr))
+            score = 90
+            stop = float(recent_5m_high + (1.1 * atr)) # وقف الخسارة فوق قمة الـ 5 دقائق تماماً كما في الشارت
             risk_dist = stop - close
             max_allowed_risk = close * 0.045
 
             if not np.isfinite(risk_dist) or risk_dist <= 0 or risk_dist > max_allowed_risk:
-                return no_trade("مسافة وقف الخسارة للبيع غير صالحة أو بعيدة جداً")
+                return no_trade("مسافة وقف الخسارة على فريم 5m للبيع غير صالحة")
 
             risk_usd = self.total_capital * self.risk_per_trade
             qty = risk_usd / risk_dist
@@ -207,10 +180,10 @@ class StrategyEngine:
 
             details = {
                 "trade_valid": True,
-                "reason": "Exact Strategy: Supply Zone Mitigation & Rejection Retest",
+                "reason": "1H Direction Bearish + 5m Entry Liquidity Rejection",
                 "stop_loss": self._round(stop),
                 "score": score,
-                "setup": "V25.0 Supply Mitigation SHORT",
+                "setup": "V26.0 1H/5m Master SHORT",
                 "risk_management": {
                     "allowed_risk_usd": round(risk_usd, 2),
                     "estimated_risk_usd": round(effective_risk_usd, 2),
@@ -219,9 +192,6 @@ class StrategyEngine:
                     "take_profit_2": self._round(tp2),
                     "take_profit_3": self._round(tp3),
                 },
-                "smc_note": f"Supply Retest SHORT | Zone=[{self._round(supply_low)} - {self._round(supply_high)}] | Score={score}"
+                "smc_note": f"1H/5m SHORT | H1 Trend=Bearish | 5m Resistance={self._round(recent_5m_high)}"
             }
             return "SHORT", self._round(close), details
-
-        else:
-            return no_trade("السعر ليس في منطقة إعادة اختبار (Mitigation Zone) مطابقة للاستراتيجية")
