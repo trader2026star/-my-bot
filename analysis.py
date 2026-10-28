@@ -1,11 +1,11 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - SMC & Order Block Strategy Engine
+# MY EXPERT CRYPTO BOT - Multi-Timeframe SMC & Order Blocks Engine
 # ============================================================
 
 import logging
 import numpy as np
 
-logger = logging.getLogger("SMCEngine")
+logger = logging.getLogger("MultiTimeframeSMCEngine")
 
 
 class StrategyEngine:
@@ -78,7 +78,7 @@ class StrategyEngine:
             return "NEUTRAL", 0, {"trade_valid": False, "reason": reason, "score": 0}
 
         if any(x is None for x in (ohlcv_15m, ohlcv_1h, ohlcv_4h, ohlcv_1d)):
-            return no_trade("بيانات الفريمات غير مكتملة")
+            return no_trade("بيانات الفريمات الأربعة غير مكتملة")
 
         d1 = self._array(ohlcv_1d, 20)
         h4 = self._array(ohlcv_4h, 20)
@@ -88,7 +88,7 @@ class StrategyEngine:
         if d1 is None or h4 is None or h1 is None or m15 is None:
             return no_trade("بيانات الشموع غير صالحة للتحليل")
 
-        # التحقق من اتجاه البيتكوين العام
+        # 1. التحقق من اتجاه البيتكوين العام
         btc_bullish = True
         if btc_ohlcv_1d is not None:
             btc_d1 = self._array(btc_ohlcv_1d, 20)
@@ -97,44 +97,48 @@ class StrategyEngine:
                 btc_ma20 = float(np.mean(btc_d1[:-1, 4][-20:]))
                 btc_bullish = btc_close >= btc_ma20
 
+        # 2. تحليل الفريم اليومي (1D) وفريم الأربع ساعات (4H) للاتجاه الهيكلي
         daily_close = float(d1[-2, 4])
         daily_ma20 = float(np.mean(d1[:-1, 4][-20:]))
-        
-        h4_close = float(h4[-2, 4])
-        h4_ma10 = float(np.mean(h4[:-1, 4][-10:]))
+        is_daily_bullish = daily_close >= daily_ma20
+        is_daily_bearish = daily_close < daily_ma20
 
-        # بيانات الشمعة الحالية والسابقة على 15m
+        h4_close = float(h4[-2, 4])
+        h4_ma10 = float(np.mean(h4[-10:, 4]))
+        is_h4_bullish = h4_close >= h4_ma10
+        is_h4_bearish = h4_close < h4_ma10
+
+        # 3. تحليل فريم الساعة (1H) للزخم وفجوات القيمة العادلة (FVG)
+        h1_close = float(h1[-2, 4])
+        h1_open = float(h1[-2, 1])
+        is_h1_bullish = h1_close >= h1_open
+        is_h1_bearish = h1_close < h1_open
+
+        # 4. تحليل فريم 15 دقيقة (15M) لتحديد مناطق الـ Order Block والسيولة وتنفيذ الدخول
         open_ = float(m15[-2, 1])
         close = float(m15[-2, 4])
         high = float(m15[-2, 2])
         low = float(m15[-2, 3])
         volume = float(m15[-2, 5])
 
-        # البحث عن مناطق الـ Order Block (آخر شمعة هابطة قبل صفر قوي للشراء أو العكس)
-        # الكتلة الشرائية (+OB): البحث عن قاع قتلي شكل منطقة دعم قوية في آخر 15 شمعة
-        recent_lows = m15[-15:-2, 3]
-        strong_support = float(np.min(recent_lows))
-        
-        recent_highs = m15[-15:-2, 2]
-        strong_resistance = float(np.max(recent_highs))
+        # استخراج مناطق الدعم والمقاومة (Order Blocks / Strong Low & High)
+        strong_support = float(np.min(m15[-15:-2, 3]))
+        strong_resistance = float(np.max(m15[-15:-2, 2]))
 
         avg_vol = float(np.mean(m15[-15:-2, 5]))
         volume_ok = avg_vol > 0 and volume >= avg_vol * 1.1
         atr = self.calculate_atr(m15[:-1, 2], m15[:-1, 3], m15[:-1, 4], 14)
 
-        is_daily_bullish = daily_close >= daily_ma20
-        is_h4_bullish = h4_close >= h4_ma10
+        candle_range = max(high - low, close * 1e-8)
+        body_ratio = max(0.0, abs(close - open_)) / candle_range
 
-        is_daily_bearish = daily_close < daily_ma20
-        is_h4_bearish = h4_close < h4_ma10
+        # شروط صفقات الشراء (LONG) - توافق الفريمات الأربعة مع ارتداد Order Block صاعد
+        if is_daily_bullish and is_h4_bullish and is_h1_bullish and btc_bullish:
+            near_support = low <= strong_support * 1.015
+            is_bullish_reaction = close > open_ and body_ratio >= 0.4
 
-        # استراتيجية Long بناءً على ارتداد السعر من منطقة Order Block / FVG صاعدة
-        near_ob_support = low <= strong_support * 1.012
-        is_bullish_displacement = close > open_ and (close - open_) >= (high - low) * 0.55
-
-        if is_daily_bullish and is_h4_bullish and btc_bullish:
-            if (near_ob_support or low <= strong_support * 1.02) and is_bullish_displacement and volume_ok:
-                score = 96
+            if near_support and is_bullish_reaction and volume_ok:
+                score = 97
                 stop = float(strong_support - (1.2 * atr))
                 risk_dist = close - stop
                 if risk_dist <= 0:
@@ -148,7 +152,7 @@ class StrategyEngine:
                 
                 details = {
                     "trade_valid": True,
-                    "reason": "ارتداد مثالي من منطقة Order Block ودعم قوي (+OB / FVG Rejection LONG)",
+                    "reason": "توافق الفريمات الأربعة مع ارتداد Order Block و Strong Low (LONG)",
                     "stop_loss": self._round(stop),
                     "score": score,
                     "position_sizing": {
@@ -163,17 +167,17 @@ class StrategyEngine:
                         "breakeven_trigger": self._round(tp1),
                         "trailing_stop_active": True
                     },
-                    "smc_note": "الدخول مع إعادة اختبار منطقة السيولة والـ Order Block السفلي"
+                    "smc_note": "ارتداد مثالي من منطقة الطلب (+OB) مع تأكيد الفريمات الكبرى"
                 }
                 return "LONG", self._round(close), details
 
-        # استراتيجية Short بناءً على رفض السعر لمنطقة مقاومة / Order Block هابطة
-        near_ob_resistance = high >= strong_resistance * 0.988
-        is_bearish_displacement = close < open_ and (open_ - close) >= (high - low) * 0.55
+        # شروط صفقات البيع (SHORT) - توافق الفريمات الأربعة مع رفض Order Block هابط
+        if is_daily_bearish and is_h4_bearish and is_h1_bearish and not btc_bullish:
+            near_resistance = high >= strong_resistance * 0.985
+            is_bearish_reaction = close < open_ and body_ratio >= 0.4
 
-        if is_daily_bearish and is_h4_bearish and not btc_bullish:
-            if (near_ob_resistance or high >= strong_resistance * 0.98) and is_bearish_displacement and volume_ok:
-                score = 96
+            if near_resistance and is_bearish_reaction and volume_ok:
+                score = 97
                 stop = float(strong_resistance + (1.2 * atr))
                 risk_dist = stop - close
                 if risk_dist <= 0:
@@ -187,7 +191,7 @@ class StrategyEngine:
                 
                 details = {
                     "trade_valid": True,
-                    "reason": "رفض سعري من منطقة Order Block ومقاومة عليا (-OB / Supply Rejection SHORT)",
+                    "reason": "توافق الفريمات الأربعة مع رفض Order Block و Strong High (SHORT)",
                     "stop_loss": self._round(stop),
                     "score": score,
                     "position_sizing": {
@@ -202,8 +206,8 @@ class StrategyEngine:
                         "breakeven_trigger": self._round(tp1),
                         "trailing_stop_active": True
                     },
-                    "smc_note": "الدخول مع إعادة اختبار منطقة العرض العلوية (Supply Zone)"
+                    "smc_note": "رفض سعري من منطقة العرض (-OB) مع سلبية الفريمات الكبرى"
                 }
                 return "SHORT", self._round(close), details
 
-        return no_trade("السعر لم يصل لمنطقة Order Block أو FVG المستهدفة بعد")
+        return no_trade("في انتظار تفاعل السعر مع مناطق الـ Order Block عبر الفريمات الأربعة")
