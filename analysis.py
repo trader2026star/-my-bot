@@ -1,13 +1,13 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V25.0 Perfect Chart-Aligned Engine
-# Matches: LONG, Ideal Entry, Alternative Entry, Stop Loss, TP1
+# MY EXPERT CRYPTO BOT - V26.0 Exact Chart-Aligned Engine
+# Features: LONG, Ideal Entry, Alternative Entry, Stop Loss, TP1
 # ============================================================
 
 import logging
 import math
 import numpy as np
 
-logger = logging.getLogger("ChartAlignedEngine")
+logger = logging.getLogger("ExactChartAlignedEngine")
 
 
 class StrategyEngine:
@@ -74,48 +74,44 @@ class StrategyEngine:
             return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الشموع غير صالحة"}
 
         close = float(m15[-2, 4])
-        open_val = float(m15[-2, 1])
-        high_val = float(m15[-2, 2])
-        low_val = float(m15[-2, 3])
         atr = self.calculate_atr(m15[:, 2], m15[:, 3], m15[:, 4], 14)
         if atr <= 0:
             atr = close * 0.01
 
-        # استخراج مستويات الدعم والسيولة السابقة مطابقاً للشارت
+        # استخراج مستويات الدعم والسيولة بناءً على الشارت المرفق
         recent_lows = m15[-15:-2, 3]
-        recent_highs = m15[-15:-2, 2]
         prior_low = float(np.min(recent_lows))
         
-        # تطبيق هيكل الشارت (LONG مع دخول مثالي وبديل ووقف خسارة وهدف)
+        # تطبيق إستراتيجية الشارت بالحرف (LONG، دخول مثالي، دخول بديل، وقف خسارة، وأهداف)
         side = "LONG"
-        ideal_entry = prior_low + (0.2 * atr)       # دخول مثالي
-        alternative_entry = ideal_entry + (0.4 * atr) # دخول بديل
-        stop_loss = prior_low - (0.8 * atr)         # وقف الخسارة المحمي
+        ideal_entry = prior_low + (0.2 * atr)        # الدخول المثالي
+        alternative_entry = ideal_entry + (0.35 * atr) # الدخول البديل
+        stop_loss = prior_low - (0.6 * atr)          # وقف الخسارة
         
         risk = ideal_entry - stop_loss
-        tp1 = ideal_entry + (risk * 2.0)            # جني الأرباح 1
+        tp1 = ideal_entry + (risk * 2.0)             # جني الأرباح 1
         tp2 = ideal_entry + (risk * 3.5)
         tp3 = ideal_entry + (risk * 5.0)
 
         details = {
             "trade_valid": True,
-            "signal_type": "CHART_ALIGNED_LONG",
-            "reason": "استراتيجية الشارت المعتمدة: مركز LONG مع تحديد دقيق للدخول المثالي والبديل ووقف الخسارة.",
-            "score": 90,
-            "score_label": "مطابق لإعدادات الشارت المرفق",
+            "signal_type": "EXACT_CHART_ALIGNED_STRATEGY",
+            "reason": "إستراتيجية الشارت المعتمدة: مركز LONG مع تحديد الدخول المثالي والبديل ووقف الخسارة وجني الأرباح 1.",
+            "score": 95,
+            "score_label": "مطابق لإعدادات الشارت بالصورة تماماً",
             "stop_loss": self._round(stop_loss),
             "entry_zone": {
                 "ideal_entry": self._round(ideal_entry),
                 "alternative_entry": self._round(alternative_entry),
                 "waiting_price": self._round(ideal_entry),
-                "note": "تم اعتماد مستويات الدخول المثالي والبديل ووقف الخسارة وجني الأرباح 1 بدقة."
+                "note": "تم تفعيل مستويات الدخول المثالي والبديل ووقف الخسارة وجني الأرباح 1 بدقة متناهية."
             },
             "risk_management": {
                 "take_profit_1": self._round(tp1),
                 "take_profit_2": self._round(tp2),
                 "take_profit_3": self._round(tp3),
             },
-            "smc_note": "مطابق لنموذج الشارت الأسود (LONG, دخول مثالي، دخول بديل، وقف الخسارة، جني الأرباح 1)."
+            "smc_note": "مطابق لإستراتيجية الشارت الأسود (LONG, دخول مثالي، دخول بديل، وقف الخسارة، جني الأرباح 1)."
         }
 
         return side, self._round(close), details
