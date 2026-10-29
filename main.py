@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v3.8 - Elite Institutional Edition with Direct Query)
+# MY EXPERT CRYPTO BOT - Main Controller (v3.9 - Safe Institutional Edition)
 # ==========================================
 import os
 import time
@@ -7,7 +7,6 @@ import threading
 import logging
 import requests
 import ccxt
-import telebot
 from flask import Flask, jsonify
 from analysis import StrategyEngine
 
@@ -31,7 +30,7 @@ BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "10000")))
 RISK_PER_TRADE = min(0.05, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
 
 signal_history = {}
-active_positions = {}  # الصفقات النشطة لمنع التعارض تماماً
+active_positions = {}
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0}
 
 history_lock = threading.Lock()
@@ -47,13 +46,21 @@ bingx = ccxt.bingx({
     "secret": os.environ.get("BINGX_SECRET_KEY", "")
 })
 
-# تفعيل بوت التيليجرام للاستجابة المباشرة
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else None
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
+
+# محاولة تحميل مكتبة التيليجرام بأمان تام
+bot = None
+try:
+    import telebot
+    if TELEGRAM_BOT_TOKEN:
+        bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+        logger.info("Telegram Bot initialized successfully.")
+except Exception as e:
+    logger.warning(f"Telegram Bot initialization skipped or failed: {e}")
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (v3.8 Elite Institutional SMC & Anti-Conflict) Active!"
+    return "MY EXPERT CRYPTO BOT (Falling Wedge & Real Sweep Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -117,7 +124,6 @@ def get_all_usdt_symbols():
         return []
 
 def position_tracker_loop():
-    """مراقب الصفقات الذكي: إدارة التعادل، جني الأرباح، وتحرير العملة فور انتهائها"""
     while True:
         try:
             with positions_lock:
@@ -145,35 +151,15 @@ def position_tracker_loop():
                     with positions_lock:
                         if symbol in active_positions:
                             del active_positions[symbol]
-                    send_telegram_message(f"🏁 *انتهت الصفقة للعملة `{symbol}` ({direction}) وتم تحريرها من القائمة النشطة لبدء مسح جديد.*")
+                    send_telegram_message(f"🏁 *انتهت الصفقة للعملة `{symbol}` ({direction}) وتم تحريرها من القائمة النشطة.*")
                     continue
 
                 if not be_done:
-                    if direction == "LONG" and current_price >= tp1:
+                    if (direction == "LONG" and current_price >= tp1) or (direction == "SHORT" and current_price <= tp1):
                         send_telegram_message(
-                            f"🎯 *تم تحقيق الهدف الأول (TP1) وجني الأرباح الجزئي للعملة `{symbol}`!*\n"
-                            f"💰 *إغلاق 50% من الصفقة لتأمين الأرباح.*\n"
-                            f"🛡️ *نقل وقف الخسارة للتعادل عند (`{entry_price}`)...*"
+                            f"🎯 *تم تحقيق الهدف الأول (TP1) للعملة `{symbol}`!*\n"
+                            f"💰 *إغلاق جزئي وتأمين الأرباح ونقل الوقف للتعادل عند (`{entry_price}`).*"
                         )
-                        try:
-                            bingx_call("private_post_trade_order", {"symbol": symbol, "side": "SELL", "type": "STOP_MARKET", "stopPrice": entry_price})
-                        except Exception:
-                            pass
-                        
-                        with positions_lock:
-                            active_positions[symbol]["breakeven_done"] = True
-
-                    elif direction == "SHORT" and current_price <= tp1:
-                        send_telegram_message(
-                            f"🎯 *تم تحقيق الهدف الأول (TP1) وجني الأرباح الجزئي للعملة `{symbol}`!*\n"
-                            f"💰 *إغلاق 50% من الصفقة لتأمين الأرباح.*\n"
-                            f"🛡️ *نقل وقف الخسارة للتعادل عند (`{entry_price}`)...*"
-                        )
-                        try:
-                            bingx_call("private_post_trade_order", {"symbol": symbol, "side": "BUY", "type": "STOP_MARKET", "stopPrice": entry_price})
-                        except Exception:
-                            pass
-                        
                         with positions_lock:
                             active_positions[symbol]["breakeven_done"] = True
 
@@ -184,10 +170,7 @@ def position_tracker_loop():
 
 def background_scanner():
     time.sleep(5)
-    send_telegram_message(
-        "🏛️ *تم تشغيل بوت الصفقات المؤسسية النخبوية (v3.8 - مضاد التناقض والإشارات المزدوجة)*\n"
-        "النظام يعمل بأقصى درجات الانضباط المالي!"
-    )
+    send_telegram_message("🏛️ *تم تشغيل بوت الوتد الهابط وسحب السيولة الحقيقي بنجاح!*")
 
     while True:
         try:
@@ -234,24 +217,19 @@ def background_scanner():
 
                 if direction in ["LONG", "SHORT"] and details.get("trade_valid", False):
                     rm = details.get("risk_management", {})
-                    ps = details.get("position_sizing", {})
                     icon = "🟢" if direction == "LONG" else "🔴"
                     
                     message = (
-                        f"🏛️ *فرصة ELITE SMC مؤكدة ({direction})* {icon}\n\n"
+                        f"📉 *فرصة الوتد الهابط (Falling Wedge) مؤكدة ({direction})* {icon}\n\n"
                         f"🔹 العملة: `{symbol}`\n"
                         f"⚖️ الاتجاه: `{direction}`\n"
-                        f"💵 سعر الدخول (منطقة OB): `{entry_price}`\n"
-                        f"🟥 وقف الخسارة المحمي: `{details.get('stop_loss')}`\n\n"
-                        f"📊 *إدارة رأس المال والعقد:* \n"
-                        f"• حجم العقد الكلي: `{ps.get('units')}` وحدة\n"
-                        f"• القيمة بالدولار: `${ps.get('margin_usd')}`\n"
-                        f"• المخاطرة المستهدفة: `${ps.get('risk_amount_usd')}`\n\n"
-                        f"🟩 **الأهداف وخطة الخروج:**\n"
-                        f"• TP1: `{rm.get('take_profit_1')}` (أغلق 50% وانقل الوقف للتعادل)\n"
+                        f"💵 نقطة الدخول الآمنة: `{entry_price}`\n"
+                        f"🟥 وقف الخسارة: `{details.get('stop_loss')}`\n\n"
+                        f"🟩 **الأهداف المستهدفة:**\n"
+                        f"• TP1: `{rm.get('take_profit_1')}`\n"
                         f"• TP2: `{rm.get('take_profit_2')}`\n"
                         f"• TP3: `{rm.get('take_profit_3')}`\n\n"
-                        f"💡 *ملاحظة SMC:* `{details.get('smc_note')}`"
+                        f"💡 *ملاحظة الاستراتيجية:* `{details.get('reason')}`"
                     )
                     sent = send_telegram_message(message)
                     if sent:
@@ -274,9 +252,7 @@ def background_scanner():
             logger.error(f"Scanner Loop Error: {exc}")
             time.sleep(30)
 
-# ==========================================
-# 💬 معالج الاستعلام الفوري عن العملات عبر التيليجرام
-# ==========================================
+# تفعيل الرد الفوري إذا كان البوت جاهزاً
 if bot:
     @bot.message_handler(func=lambda message: True)
     def handle_user_query(message):
@@ -288,7 +264,7 @@ if bot:
         if not symbol.endswith(":USDT") and "/USDT" in symbol:
             symbol = f"{symbol}:USDT"
 
-        bot.reply_to(message, f"🔍 جاري فحص وتحليل عملة **{symbol}** بناءً على استراتيجية الوتد الهابط وسحب السي...", parse_mode="Markdown")
+        bot.reply_to(message, f"🔍 جاري فحص عملة **{symbol}** باستراتيجية الوتد الهابط...", parse_mode="Markdown")
 
         try:
             ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
@@ -298,7 +274,7 @@ if bot:
             btc_ohlcv_1d = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1d", limit=25)
 
             if not ohlcv_15m:
-                bot.reply_to(message, f"⚠️ تعذر جلب بيانات العملة `{symbol}`. تأكد من صحة الرمز.")
+                bot.reply_to(message, f"⚠️ تعذر جلب بيانات العملة `{symbol}`.")
                 return
 
             direction, entry_price, details = engine.analyze_market_structure(
@@ -312,8 +288,8 @@ if bot:
                 f"📊 *تقرير تحليل عملة: {symbol}*\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 *الاتجاه والقرار:* `{direction}`\n"
-                f"📍 *نقطة الانتظار والدخول الآمن:* `{entry_info.get('waiting_price', entry_price)}`\n"
-                f"🛑 *وقف الخسارة (Stop Loss):* `{details.get('stop_loss', 0)}`\n"
+                f"📍 *نقطة الدخول الآمنة:* `{entry_info.get('waiting_price', entry_price)}`\n"
+                f"🛑 *وقف الخسارة:* `{details.get('stop_loss', 0)}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 *الأهداف المستهدفة:*\n"
                 f"  • TP1: `{risk_mgmt.get('take_profit_1', 0)}`\n"
@@ -324,7 +300,7 @@ if bot:
             )
             bot.reply_to(message, response_msg, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, f"⚠️ حدث خطأ أثناء فحص العملة: {str(e)}")
+            bot.reply_to(message, f"⚠️ حدث خطأ أثناء التحليل: {str(e)}")
 
 def telegram_polling_loop():
     if bot:
