@@ -1,13 +1,12 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Flexible Analytical SMC Engine (v44.0)
-# Comprehensive On-Demand Analysis & Structured Levels
+# MY EXPERT CRYPTO BOT - Smart Scenario SMC Engine (v45.0)
 # ============================================================
 
 import logging
 import math
 import numpy as np
 
-logger = logging.getLogger("FlexibleAnalyticalEngine")
+logger = logging.getLogger("SmartScenarioEngine")
 
 class StrategyEngine:
     def __init__(self, capital=10000, risk_per_trade=0.01, **kwargs):
@@ -74,92 +73,48 @@ class StrategyEngine:
         h1_closes = h1[:, 4]
         trend_bullish = h1_closes[-1] > h1_closes[-10]
         trend_bearish = h1_closes[-1] < h1_closes[-10]
-
         market_trend_str = "صاعد (Bullish)" if trend_bullish else ("هابط (Bearish)" if trend_bearish else "عرضي (Sideways)")
 
         current_close = float(m5[-1, 4])
-        current_open = float(m5[-1, 1])
-        current_high = float(m5[-1, 2])
-        current_low = float(m5[-1, 3])
-
         recent_highs = m5[-20:-2, 2]
         recent_lows = m5[-20:-2, 3]
         prior_high = float(np.max(recent_highs))
         prior_low = float(np.min(recent_lows))
         rsi_current = self.calculate_rsi(m5[:, 4], 14)
 
-        # محاولة رصد شروط صفقات النخبة (LONG / SHORT) إن وجدت بالكامل
-        if trend_bullish:
-            sweep_triggered = (current_low < prior_low) and (current_close > prior_low)
-            if sweep_triggered:
-                entry_price = current_close
-                stop_loss = prior_low - (prior_low * 0.002)
-                tp1 = prior_high
-                risk = entry_price - stop_loss
-                tp2 = entry_price + (max(risk, entry_price * 0.005) * 2)
-                details = {
-                    "trade_valid": True,
-                    "signal_type": "SMC_LONG_SETUP",
-                    "market_trend": market_trend_str,
-                    "rsi": self._round(rsi_current),
-                    "reason": "تأكيد صيد السيولة (Sweep) الصاعد مع ارتداد إيجابي واكتملت شروط الـ SMC.",
-                    "stop_loss": self._round(stop_loss),
-                    "entry_zone": {"ideal_entry": self._round(entry_price), "breakout_level": self._round(prior_high)},
-                    "risk_management": {"take_profit_1": self._round(tp1), "take_profit_2": self._round(tp2)}
-                }
-                return "LONG", self._round(entry_price), details
+        # 1. تحديد أي السيناريوهين هو الأقرب بناءً على موقع السعر الحالي
+        dist_to_high = abs(prior_high - current_close)
+        dist_to_low = abs(current_close - prior_low)
 
-        elif trend_bearish:
-            sweep_triggered = (current_high > prior_high) and (current_close < prior_high)
-            if sweep_triggered:
-                entry_price = current_close
-                stop_loss = prior_high + (prior_high * 0.002)
-                tp1 = prior_low
-                risk = stop_loss - entry_price
-                tp2 = entry_price - (max(risk, entry_price * 0.005) * 2)
-                details = {
-                    "trade_valid": True,
-                    "signal_type": "SMC_SHORT_SETUP",
-                    "market_trend": market_trend_str,
-                    "rsi": self._round(rsi_current),
-                    "reason": "تأكيد صيد السيولة (Sweep) الهابط للقمة مع تفاعل سلبي.",
-                    "stop_loss": self._round(stop_loss),
-                    "entry_zone": {"ideal_entry": self._round(entry_price), "breakout_level": self._round(prior_low)},
-                    "risk_management": {"take_profit_1": self._round(tp1), "take_profit_2": self._round(tp2)}
-                }
-                return "SHORT", self._round(entry_price), details
-
-        # ==========================================
-        # في حال لم تكتمل شروط الصفقة المثالية 100%، نعطي تحليلاً هيكلياً شاملاً ومستويات الاختراق والدخول
-        # ==========================================
-        base_dir = "LONG" if trend_bullish or (not trend_bearish) else "SHORT"
-        
-        # حساب مستويات اختراق واقعية وأهداف بناءً على القمم والقيعان الحالية
-        if base_dir == "LONG":
-            breakout_price = prior_high * 1.001  # سعر الاختراق فوق المقاومة بقليل
-            ideal_entry = current_close
-            stop_loss = prior_low * 0.998        # وقف الخسارة تحت القاع الأخير
-            tp1 = prior_high
-            tp2 = prior_high * 1.025
-            reason_text = f"الاتجاه العام على فريم 1H هو '{market_trend_str}'. السعر يتحرك لاختبار مستويات السيولة. ننتظر الاختراق المؤكد أو الشراء من مناطق الدعم."
+        # إذا كان السعر أقرب للقمة أو الاتجاه صاعد قوي -> سيناريو الاختراق هو الأقرب
+        if dist_to_high <= dist_to_low or trend_bullish:
+            closest_scenario = "BREAKOUT"  # سيناريو الاختراق
+            trigger_price = prior_high * 1.0015  # سعر تأكيد الاختراق فوق المقاومة
+            ideal_entry = trigger_price
+            stop_loss = prior_high * 0.995       # الوقف تحت مستوى الاختراق
+            tp1 = trigger_price * 1.015          # الهدف الأول (1.5%)
+            tp2 = trigger_price * 1.035          # الهدف الثاني (3.5%)
+            scenario_desc = f"السيناريو الأقرب هو 'اختراق المقاومة'. ينصح بالدخول عند كسر وتأكيد السعر الموضح."
         else:
-            breakout_price = prior_low * 0.999   # سعر كسر الدعم للبيع
-            ideal_entry = current_close
-            stop_loss = prior_high * 1.002       # وقف الخسارة فوق القمة
-            tp1 = prior_low
-            tp2 = prior_low * 0.975
-            reason_text = f"الاتجاه العام على فريم 1H هو '{market_trend_str}'. الضغوط البيعية مستمرة، ونراقب مستويات الكسر."
+            closest_scenario = "SUPPORT_RETEST"  # سيناريو الشراء من الدعم
+            trigger_price = prior_low * 1.001    # سعر الدعم المؤكد للارتداد
+            ideal_entry = trigger_price
+            stop_loss = prior_low * 0.993        # الوقف تحت القاع
+            tp1 = current_close                  # الهدف الأول عند السعر الحالي
+            tp2 = prior_high                     # الهدف الثاني عند القمة السابقة
+            scenario_desc = f"السيناريو الأقرب هو 'الارتداد من الدعم'. ينصح بالشراء بالقرب من منطقة الدعم."
 
         details = {
-            "trade_valid": False,  # تحليل توجيهي استباقي مفصل وليس صفقة عمياء
-            "signal_type": f"ANALYTICAL_{base_dir}_VIEW",
+            "trade_valid": False,
+            "signal_type": closest_scenario,
             "market_trend": market_trend_str,
             "rsi": self._round(rsi_current),
-            "reason": reason_text,
+            "reason": scenario_desc,
+            "closest_scenario": closest_scenario,
+            "trigger_price": self._round(trigger_price),
             "stop_loss": self._round(stop_loss),
             "entry_zone": {
                 "ideal_entry": self._round(ideal_entry),
-                "breakout_level": self._round(breakout_price),
                 "support_level": self._round(prior_low),
                 "resistance_level": self._round(prior_high)
             },
@@ -168,4 +123,4 @@ class StrategyEngine:
                 "take_profit_2": self._round(tp2)
             }
         }
-        return base_dir, self._round(ideal_entry), details
+        return "LONG" if trend_bullish else "SHORT", self._round(current_close), details
