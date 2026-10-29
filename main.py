@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v45.0 - Silent & Clean Polling Edition)
+# MY EXPERT CRYPTO BOT - Main Controller (v46.0 - Clean, Bi-Directional & Conflict-Free Edition)
 # ==========================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Silent Polling Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Clean Server Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -170,7 +170,8 @@ def position_tracker_loop():
 
 def background_scanner():
     time.sleep(5)
-    send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC) بنجاح!*")
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC) بنجاح والاستعداد لرصد السوق!*")
 
     while True:
         try:
@@ -245,62 +246,9 @@ def background_scanner():
             logger.error(f"Scanner Loop Error: {exc}")
             time.sleep(30)
 
-if bot:
-    @bot.message_handler(func=lambda message: True)
-    def handle_query(message):
-        text = message.text.strip().upper()
-        if not text or text.startswith("/"):
-            return
-        symbol = f"{text}/USDT:USDT" if "USDT" not in text else text
-        bot.reply_to(message, f"🔍 جارٍ فحص الشروط الصارمة للعملة **{symbol}**...", parse_mode="Markdown")
-        try:
-            ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
-            ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
-            ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
-            btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
-
-            direction, entry_price, details = engine.analyze_market_structure(
-                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, btc_ohlcv_15m=btc_ohlcv_15m
-            )
-            
-            if not details.get("trade_valid", False):
-                bot.reply_to(message, f"❌ العملة لا تتطابق مع الشروط:\n_{details.get('reason')}_", parse_mode="Markdown")
-                return
-
-            rm = details.get("risk_management", {})
-            msg = (
-                f"🟢 *نتيجة فحص العملة `{symbol}` ({direction}): تطابق تام!*\n"
-                f"📍 الدخول: `{entry_price}`\n"
-                f"🛑 وقف الخسارة: `{details.get('stop_loss')}`\n"
-                f"🎯 TP1: `{rm.get('take_profit_1')}` | TP2: `{rm.get('take_profit_2')}`\n"
-                f"💡 {details.get('reason')}"
-            )
-            bot.reply_to(message, msg, parse_mode="Markdown")
-        except Exception as e:
-            bot.reply_to(message, f"⚠️ خطأ أثناء الفحص: {str(e)}")
-
-# إزالة الـ Webhook القديم بأمان
-if bot:
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except Exception:
-        pass
-
-# تشغيل خيوط الخلفية
+# تشغيل خيوط الخلفية للماسح ومتابع الصفقات بأمان تام بدون تعارض
 threading.Thread(target=background_scanner, daemon=True, name="scanner").start()
 threading.Thread(target=position_tracker_loop, daemon=True, name="tracker").start()
-
-if bot:
-    def run_polling():
-        while True:
-            try:
-                # تشغيل آمن صامت يتجاوز أي تعارض محتمل 409 بدون طباعة أخطاء مزعجة
-                bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True)
-            except Exception:
-                time.sleep(15) # انتظار هادئ وإعادة المحاولة في الخلفية
-
-    threading.Thread(target=run_polling, daemon=True, name="polling").start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
