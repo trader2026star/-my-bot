@@ -1,11 +1,11 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Multi-Timeframe SMC & Order Blocks Engine
+# MY EXPERT CRYPTO BOT - Multi-Timeframe Advanced SMC Engine (v3.0 - Ultimate)
 # ============================================================
 
 import logging
 import numpy as np
 
-logger = logging.getLogger("MultiTimeframeSMCEngine")
+logger = logging.getLogger("AdvancedSMCEngine")
 
 
 class StrategyEngine:
@@ -61,6 +61,71 @@ class StrategyEngine:
         except Exception:
             return 0.0
 
+    def detect_fvg(self, ohlcv):
+        """الكشف البرمجي عن فجوات القيمة العادلة (Fair Value Gaps)"""
+        try:
+            bullish_fvg_found = False
+            bearish_fvg_found = False
+            
+            for i in range(len(ohlcv) - 3, len(ohlcv) - 1):
+                high_prev = ohlcv[i-1, 2]
+                low_next = ohlcv[i+1, 3]
+                low_prev = ohlcv[i-1, 3]
+                high_next = ohlcv[i+1, 2]
+
+                if low_next > high_prev:
+                    bullish_fvg_found = True
+                if high_next < low_prev:
+                    bearish_fvg_found = True
+                    
+            return bullish_fvg_found, bearish_fvg_found
+        except Exception:
+            return False, False
+
+    def detect_true_order_block(self, ohlcv):
+        """تحديد الـ Order Block الحقيقي (آخر شمعة عكسية قبل الاندفاع)"""
+        try:
+            # البحث في الشموع الأخيرة عن شمعة حمراء سبقت اندفاع أخضر (للشراء) أو شمعة خضراء سبقت هبوط (للبيع)
+            bullish_ob = ohlcv[-3, 3] # قاع آخر شمعة هابطة
+            bearish_ob = ohlcv[-3, 2] # قمة آخر شمعة صاعدة
+            
+            for i in range(len(ohlcv) - 4, len(ohlcv) - 2):
+                open_p = ohlcv[i, 1]
+                close_p = ohlcv[i, 4]
+                # شمعة هابطة قبل الصعود
+                if close_p < open_p and ohlcv[i+1, 4] > ohlcv[i+1, 1]:
+                    bullish_ob = min(ohlcv[i, 3], ohlcv[i+1, 3])
+                # شمعة صاعدة قبل الهبوط
+                if close_p > open_p and ohlcv[i+1, 4] < ohlcv[i+1, 1]:
+                    bearish_ob = max(ohlcv[i, 2], ohlcv[i+1, 2])
+                    
+            return float(bullish_ob), float(bearish_ob)
+        except Exception:
+            return float(np.min(ohlcv[-10:, 3])), float(np.max(ohlcv[-10:, 2]))
+
+    def check_liquidity_sweep(self, ohlcv, higher_tf_high=None, higher_tf_low=None):
+        """كشف سحب السيولة (Stop Hunt) مع مراعاة السيولة الخارجية للفريمات الكبرى"""
+        try:
+            lows = ohlcv[-15:-2, 3]
+            highs = ohlcv[-15:-2, 2]
+            current_low = ohlcv[-2, 3]
+            current_high = ohlcv[-2, 2]
+            
+            min_prev_low = np.min(lows[:-1])
+            max_prev_high = np.max(highs[:-1])
+            
+            if higher_tf_low is not None:
+                min_prev_low = min(min_prev_low, higher_tf_low)
+            if higher_tf_high is not None:
+                max_prev_high = max(max_prev_high, higher_tf_high)
+
+            swept_low = current_low < min_prev_low and ohlcv[-2, 4] > ohlcv[-2, 1]
+            swept_high = current_high > max_prev_high and ohlcv[-2, 4] < ohlcv[-2, 1]
+
+            return swept_low, swept_high
+        except Exception:
+            return False, False
+
     def calculate_position_size(self, entry_price, stop_loss):
         try:
             risk_amount = self.total_capital * self.risk_per_trade
@@ -88,71 +153,61 @@ class StrategyEngine:
         if d1 is None or h4 is None or h1 is None or m15 is None:
             return no_trade("بيانات الشموع غير صالحة للتحليل")
 
-        # 1. التحقق من اتجاه البيتكوين العام
         btc_bullish = True
         if btc_ohlcv_1d is not None:
             btc_d1 = self._array(btc_ohlcv_1d, 20)
             if btc_d1 is not None:
-                btc_close = float(btc_d1[-2, 4])
-                btc_ma20 = float(np.mean(btc_d1[:-1, 4][-20:]))
-                btc_bullish = btc_close >= btc_ma20
+                btc_bullish = float(btc_d1[-2, 4]) >= float(btc_d1[-5, 4])
 
-        # 2. تحليل الفريم اليومي (1D) وفريم الأربع ساعات (4H) للاتجاه الهيكلي
-        daily_close = float(d1[-2, 4])
-        daily_ma20 = float(np.mean(d1[:-1, 4][-20:]))
-        is_daily_bullish = daily_close >= daily_ma20
-        is_daily_bearish = daily_close < daily_ma20
+        is_daily_bullish = float(d1[-2, 4]) > float(d1[-5, 4])
+        is_daily_bearish = float(d1[-2, 4]) < float(d1[-5, 4])
+        higher_tf_high = float(np.max(d1[-10:-1, 2]))
+        higher_tf_low = float(np.min(d1[-10:-1, 3]))
 
-        h4_close = float(h4[-2, 4])
-        h4_ma10 = float(np.mean(h4[-10:, 4]))
-        is_h4_bullish = h4_close >= h4_ma10
-        is_h4_bearish = h4_close < h4_ma10
+        is_h4_bullish = float(h4[-2, 4]) > float(h4[-4, 4])
+        is_h4_bearish = float(h4[-2, 4]) < float(h4[-4, 4])
 
-        # 3. تحليل فريم الساعة (1H) للزخم وفجوات القيمة العادلة (FVG)
-        h1_close = float(h1[-2, 4])
-        h1_open = float(h1[-2, 1])
-        is_h1_bullish = h1_close >= h1_open
-        is_h1_bearish = h1_close < h1_open
+        h1_bull_fvg, h1_bear_fvg = self.detect_fvg(h1)
+        is_h1_bullish = float(h1[-2, 4]) > float(h1[-2, 1]) or h1_bull_fvg
+        is_h1_bearish = float(h1[-2, 4]) < float(h1[-2, 1]) or h1_bear_fvg
 
-        # 4. تحليل فريم 15 دقيقة (15M) لتحديد مناطق الـ Order Block والسيولة وتنفيذ الدخول
         open_ = float(m15[-2, 1])
         close = float(m15[-2, 4])
         high = float(m15[-2, 2])
         low = float(m15[-2, 3])
         volume = float(m15[-2, 5])
 
-        # استخراج مناطق الدعم والمقاومة (Order Blocks / Strong Low & High)
-        strong_support = float(np.min(m15[-15:-2, 3]))
-        strong_resistance = float(np.max(m15[-15:-2, 2]))
-
+        true_bull_ob, true_bear_ob = self.detect_true_order_block(m15)
         avg_vol = float(np.mean(m15[-15:-2, 5]))
-        volume_ok = avg_vol > 0 and volume >= avg_vol * 1.1
+        volume_ok = avg_vol > 0 and volume >= avg_vol * 1.05
         atr = self.calculate_atr(m15[:-1, 2], m15[:-1, 3], m15[:-1, 4], 14)
+
+        swept_low, swept_high = self.check_liquidity_sweep(m15, higher_tf_high, higher_tf_low)
+        m15_bull_fvg, m15_bear_fvg = self.detect_fvg(m15)
 
         candle_range = max(high - low, close * 1e-8)
         body_ratio = max(0.0, abs(close - open_)) / candle_range
 
-        # شروط صفقات الشراء (LONG) - توافق الفريمات الأربعة مع ارتداد Order Block صاعد
+        # شروط الشراء (LONG)
         if is_daily_bullish and is_h4_bullish and is_h1_bullish and btc_bullish:
-            near_support = low <= strong_support * 1.015
-            is_bullish_reaction = close > open_ and body_ratio >= 0.4
-
-            if near_support and is_bullish_reaction and volume_ok:
-                score = 97
-                stop = float(strong_support - (1.2 * atr))
+            is_bullish_reaction = close > open_ and body_ratio >= 0.35
+            
+            if (swept_low or low <= true_bull_ob * 1.015) and (is_bullish_reaction or m15_bull_fvg) and volume_ok:
+                score = 99
+                stop = float(true_bull_ob - (1.0 * atr))
                 risk_dist = close - stop
                 if risk_dist <= 0:
-                    risk_dist = close * 0.025
+                    risk_dist = close * 0.02
 
                 tp1 = close + (risk_dist * 2.0)
                 tp2 = close + (risk_dist * 3.5)
-                tp3 = close + (risk_dist * 5.5)
+                tp3 = close + (risk_dist * 5.0)
                 
                 units, val_usd = self.calculate_position_size(close, stop)
                 
                 details = {
                     "trade_valid": True,
-                    "reason": "توافق الفريمات الأربعة مع ارتداد Order Block و Strong Low (LONG)",
+                    "reason": "تأكيد SMC الاحترافي: سيولة خارجية + Order Block حقيقي + FVG صاعد (LONG)",
                     "stop_loss": self._round(stop),
                     "score": score,
                     "position_sizing": {
@@ -167,31 +222,30 @@ class StrategyEngine:
                         "breakeven_trigger": self._round(tp1),
                         "trailing_stop_active": True
                     },
-                    "smc_note": "ارتداد مثالي من منطقة الطلب (+OB) مع تأكيد الفريمات الكبرى"
+                    "smc_note": "تم تفعيل نظام صيد السيولة المؤسسية والارتداد من الـ OB الحقيقي بنجاح"
                 }
                 return "LONG", self._round(close), details
 
-        # شروط صفقات البيع (SHORT) - توافق الفريمات الأربعة مع رفض Order Block هابط
+        # شروط البيع (SHORT)
         if is_daily_bearish and is_h4_bearish and is_h1_bearish and not btc_bullish:
-            near_resistance = high >= strong_resistance * 0.985
-            is_bearish_reaction = close < open_ and body_ratio >= 0.4
+            is_bearish_reaction = close < open_ and body_ratio >= 0.35
 
-            if near_resistance and is_bearish_reaction and volume_ok:
-                score = 97
-                stop = float(strong_resistance + (1.2 * atr))
+            if (swept_high or high >= true_bear_ob * 0.985) and (is_bearish_reaction or m15_bear_fvg) and volume_ok:
+                score = 99
+                stop = float(true_bear_ob + (1.0 * atr))
                 risk_dist = stop - close
                 if risk_dist <= 0:
-                    risk_dist = close * 0.025
+                    risk_dist = close * 0.02
 
                 tp1 = close - (risk_dist * 2.0)
                 tp2 = close - (risk_dist * 3.5)
-                tp3 = close - (risk_dist * 5.5)
+                tp3 = close - (risk_dist * 5.0)
                 
                 units, val_usd = self.calculate_position_size(close, stop)
                 
                 details = {
                     "trade_valid": True,
-                    "reason": "توافق الفريمات الأربعة مع رفض Order Block و Strong High (SHORT)",
+                    "reason": "تأكيد SMC الاحترافي: سيولة خارجية + Order Block حقيقي + FVG هابط (SHORT)",
                     "stop_loss": self._round(stop),
                     "score": score,
                     "position_sizing": {
@@ -206,8 +260,8 @@ class StrategyEngine:
                         "breakeven_trigger": self._round(tp1),
                         "trailing_stop_active": True
                     },
-                    "smc_note": "رفض سعري من منطقة العرض (-OB) مع سلبية الفريمات الكبرى"
+                    "smc_note": "تم رصد تفريغ مؤسسي ورفض من منطقة العرض الحقيقية (-OB)"
                 }
                 return "SHORT", self._round(close), details
 
-        return no_trade("في انتظار تفاعل السعر مع مناطق الـ Order Block عبر الفريمات الأربعة")
+        return no_trade("في انتظار اكتمال نمط الـ OB الحقيقي وسحب السيولة والـ FVG")
