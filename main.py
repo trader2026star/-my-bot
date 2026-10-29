@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Main Controller (v48.0 - With On-Demand Analysis)
+# MY EXPERT CRYPTO BOT - Main Controller (v49.0 - Direct Message & On-Demand Analysis)
 # ============================================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & On-Demand Analysis) Active!"
+    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Direct Message Analysis) Active!"
 
 @app.route("/health")
 def health():
@@ -94,18 +94,19 @@ def bingx_safe_call(method_name, *args, **kwargs):
     return None
 
 # ==========================================
-# ميزة تحليل العملات عند الطلب عبر تليجرام
+# معالج رسائل تليجرام الفوري (يستجيب لأي اسم عملة ترسله مباشرة)
 # ==========================================
 if bot:
-    @bot.message_handler(commands=['analyze', 'check', 'تحليل'])
-    def handle_coin_analysis(message):
+    @bot.message_handler(func=lambda message: True)
+    def handle_all_messages(message):
         try:
-            text_parts = message.text.strip().split()
-            if len(text_parts) < 2:
-                bot.reply_to(message, "⚠️ الرجاء كتابة اسم العملة بجانب الأمر. مثال:\n`/analyze BTC` أو `/analyze ETH`", parse_mode="Markdown")
-                return
+            text = message.text.strip()
+            clean_text = text.replace("/", "").strip()
             
-            coin_name = text_parts[1].upper()
+            if not clean_text or len(clean_text) > 10:
+                return  # تجاهل الجمل الطويلة لعدم تداخل الردود
+
+            coin_name = clean_text.upper()
             if "/" not in coin_name:
                 symbol = f"{coin_name}/USDT:USDT"
             else:
@@ -113,7 +114,7 @@ if bot:
                 if not symbol.endswith(":USDT"):
                     symbol += ":USDT"
 
-            bot.reply_to(message, f"🔍 جاري فحص وتحليل العملة `{symbol}` باستخدام استراتيجية SMC، التفضل بالانتظار...", parse_mode="Markdown")
+            bot.reply_to(message, f"🔍 جاري فحص وتحليل العملة `{symbol}` الآن، يرجى الانتظار...", parse_mode="Markdown")
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
             ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
@@ -121,7 +122,7 @@ if bot:
             btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
 
             if not ohlcv_5m or not ohlcv_1h:
-                bot.reply_to(message, f"❌ تعذر جلب بيانات العملة `{symbol}` من المنصة. تأكد من صحة الاسم.")
+                bot.reply_to(message, f"❌ تعذر جلب بيانات العملة `{symbol}` من المنصة. تأكد من صحة اسم الرمز.")
                 return
 
             direction, entry_price, details = engine.analyze_market_structure(
@@ -160,12 +161,11 @@ if bot:
 
             bot.reply_to(message, report, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"Error in manual analysis command: {e}")
-            bot.reply_to(message, "⚠️ حدث خطأ أثناء معالجة طلب التحليل.")
+            logger.error(f"Error in message handler: {e}")
 
 def telegram_listener():
     if bot:
-        logger.info("Starting Telegram Bot listener for on-demand commands...")
+        logger.info("Starting Telegram Bot listener for direct messages...")
         bot.infinity_polling(none_stop=True, interval=1)
 
 def position_tracker_loop():
@@ -245,7 +245,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC) مع خاصية التحليل الفوري بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC) مع خاصية التحليل الفوري المباشر بنجاح!*")
 
     while True:
         try:
@@ -320,7 +320,7 @@ def background_scanner():
             logger.error(f"Scanner Loop Error: {exc}")
             time.sleep(30)
 
-# تشغيل خيوط الخلفية (الماسح، ومتابع الصفقات، واستماع تليجرام للتحليل الفوري)
+# تشغيل خيوط الخلفية
 threading.Thread(target=background_scanner, daemon=True, name="scanner").start()
 threading.Thread(target=position_tracker_loop, daemon=True, name="tracker").start()
 if bot:
