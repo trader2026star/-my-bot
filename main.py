@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v3.0 - Auto-Breakeven Edition)
+# MY EXPERT CRYPTO BOT - Main Controller (v3.8 - Elite Institutional Edition)
 # ==========================================
 import os
 import time
@@ -30,7 +30,7 @@ BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "10000")))
 RISK_PER_TRADE = min(0.05, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
 
 signal_history = {}
-active_positions = {}  # لتتبع الصفقات المفتوحة وتحديث وقف الخسارة للتعادل تلقائياً
+active_positions = {}  # الصفقات النشطة لمنع التعارض تماماً
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0}
 
 history_lock = threading.Lock()
@@ -48,7 +48,7 @@ bingx = ccxt.bingx({
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (v3.0 Ultimate SMC & Auto-Breakeven) Active!"
+    return "MY EXPERT CRYPTO BOT (v3.8 Elite Institutional SMC & Anti-Conflict) Active!"
 
 @app.route("/health")
 def health():
@@ -112,7 +112,7 @@ def get_all_usdt_symbols():
         return []
 
 def position_tracker_loop():
-    """مراقب الصفقات الخلفي لنقل وقف الخسارة إلى نقطة التعادل (Breakeven) تلقائياً عند ضرب الهدف الأول"""
+    """مراقب الصفقات الذكي: إدارة التعادل، جني الأرباح، وتحرير العملة فور انتهائها"""
     while True:
         try:
             with positions_lock:
@@ -127,26 +127,45 @@ def position_tracker_loop():
                     continue
 
                 direction = pos_data["direction"]
-                tp1 = pos_data["tp1"]
                 entry_price = pos_data["entry"]
+                tp1 = pos_data["tp1"]
+                tp3 = pos_data["tp3"]
+                stop_loss = pos_data["stop_loss"]
                 be_done = pos_data["breakeven_done"]
 
+                # التحقق من ضرب وقف الخسارة (SL) أو الهدف النهائي (TP3) لتطهير القائمة
+                is_stopped_out = (direction == "LONG" and current_price <= stop_loss) or (direction == "SHORT" and current_price >= stop_loss)
+                is_fully_target_hit = (direction == "LONG" and current_price >= tp3) or (direction == "SHORT" and current_price <= tp3)
+
+                if is_stopped_out or is_fully_target_hit:
+                    with positions_lock:
+                        if symbol in active_positions:
+                            del active_positions[symbol]
+                    send_telegram_message(f"🏁 *انتهت الصفقة للعملة `{symbol}` ({direction}) وتم تحريرها من القائمة النشطة لبدء مسح جديد.*")
+                    continue
+
+                # تفعيل نقطة التعادل عند ضرب الهدف الأول (TP1)
                 if not be_done:
                     if direction == "LONG" and current_price >= tp1:
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للعملة `{symbol}`!*\n🛡️ *جارٍ نقل وقف الخسارة إلى نقطة التعادل (Breakeven) تلقائياً...*")
-                        # محاولة تعديل أمر الوقف على المنصة إذا توفرت مفاتيح الAPI
+                        send_telegram_message(
+                            f"🎯 *تم تحقيق الهدف الأول (TP1) وجني الأرباح الجزئي للعملة `{symbol}`!*\n"
+                            f"💰 *إغلاق 50% من الصفقة لتأمين الأرباح.*\n"
+                            f"🛡️ *نقل وقف الخسارة للتعادل عند (`{entry_price}`)...*"
+                        )
                         try:
-                            # مثال لتعديل أمر وقف الخسارة (Stop-Loss Order) على بينج إكس
                             bingx_call("private_post_trade_order", {"symbol": symbol, "side": "SELL", "type": "STOP_MARKET", "stopPrice": entry_price})
                         except Exception:
                             pass
                         
                         with positions_lock:
                             active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(f"✅ *تم تأمين الصفقة وأصبح وقف الخسارة عند سعر الدخول (`{entry_price}`)* 🛡️")
 
                     elif direction == "SHORT" and current_price <= tp1:
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للعملة `{symbol}`!*\n🛡️ *جارٍ نقل وقف الخسارة إلى نقطة التعادل (Breakeven) تلقائياً...*")
+                        send_telegram_message(
+                            f"🎯 *تم تحقيق الهدف الأول (TP1) وجني الأرباح الجزئي للعملة `{symbol}`!*\n"
+                            f"💰 *إغلاق 50% من الصفقة لتأمين الأرباح.*\n"
+                            f"🛡️ *نقل وقف الخسارة للتعادل عند (`{entry_price}`)...*"
+                        )
                         try:
                             bingx_call("private_post_trade_order", {"symbol": symbol, "side": "BUY", "type": "STOP_MARKET", "stopPrice": entry_price})
                         except Exception:
@@ -154,7 +173,6 @@ def position_tracker_loop():
                         
                         with positions_lock:
                             active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(f"✅ *تم تأمين الصفقة وأصبح وقف الخسارة عند سعر الدخول (`{entry_price}`)* 🛡️")
 
             time.sleep(15)
         except Exception as e:
@@ -164,8 +182,8 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     send_telegram_message(
-        "🏛️ *تم تشغيل بوت الصفقات المؤسسية (الإصدار الاحترافي الشامل v3.0)*\n"
-        "يتم الآن فحص الـ Order Blocks الحقيقية، السيولة الخارجية، ومراقبة الصفقات تلقائياً!"
+        "🏛️ *تم تشغيل بوت الصفقات المؤسسية النخبوية (v3.8 - مضاد التناقض والإشارات المزدوجة)*\n"
+        "النظام يعمل بأقصى درجات الانضباط المالي!"
     )
     engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
@@ -182,6 +200,11 @@ def background_scanner():
                 if symbol == "BTC/USDT:USDT":
                     continue
                 
+                # 🛑 حراسة صارمة: تخطي العملة تماماً إذا كانت تمتلك صفقة نشطة حالياً
+                with positions_lock:
+                    if symbol in active_positions:
+                        continue
+
                 now = time.time()
                 with history_lock:
                     if now - signal_history.get(symbol, 0) < SIGNAL_COOLDOWN_SECONDS:
@@ -214,17 +237,17 @@ def background_scanner():
                     icon = "🟢" if direction == "LONG" else "🔴"
                     
                     message = (
-                        f"🏛️ *فرصة SMC مؤسسية فائقة الدقة ({direction})* {icon}\n\n"
+                        f"🏛️ *فرصة ELITE SMC مؤكدة ({direction})* {icon}\n\n"
                         f"🔹 العملة: `{symbol}`\n"
                         f"⚖️ الاتجاه: `{direction}`\n"
                         f"💵 سعر الدخول (منطقة OB): `{entry_price}`\n"
                         f"🟥 وقف الخسارة المحمي: `{details.get('stop_loss')}`\n\n"
                         f"📊 *إدارة رأس المال والعقد:* \n"
-                        f"• حجم العقد: `{ps.get('units')}` وحدة\n"
+                        f"• حجم العقد الكلي: `{ps.get('units')}` وحدة\n"
                         f"• القيمة بالدولار: `${ps.get('margin_usd')}`\n"
                         f"• المخاطرة المستهدفة: `${ps.get('risk_amount_usd')}`\n\n"
-                        f"🟩 **الأهداف ومتابعة الصفقة:**\n"
-                        f"• TP1: `{rm.get('take_profit_1')}` (سينقل الوقف للتعادل أوتوماتيكياً)\n"
+                        f"🟩 **الأهداف وخطة الخروج:**\n"
+                        f"• TP1: `{rm.get('take_profit_1')}` (أغلق 50% وانقل الوقف للتعادل)\n"
                         f"• TP2: `{rm.get('take_profit_2')}`\n"
                         f"• TP3: `{rm.get('take_profit_3')}`\n\n"
                         f"💡 *ملاحظة SMC:* `{details.get('smc_note')}`"
@@ -238,7 +261,9 @@ def background_scanner():
                             active_positions[symbol] = {
                                 "direction": direction,
                                 "entry": entry_price,
+                                "stop_loss": details.get("stop_loss"),
                                 "tp1": rm.get("take_profit_1"),
+                                "tp3": rm.get("take_profit_3"),
                                 "breakeven_done": False
                             }
                 time.sleep(SYMBOL_PAUSE_SECONDS)
