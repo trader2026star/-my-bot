@@ -1,4 +1,7 @@
 Flask
 ccxt
 numpy
+pandas
+pandas_ta
 pyTelegramBotAPI
+requests
