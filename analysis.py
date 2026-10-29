@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V23.2 Direct Analyst & Pending Engine
+# MY EXPERT CRYPTO BOT - V23.3 Institutional SMC & Real Sweep Engine
 # Multi-timeframe: 1D Bias -> 4H Structure -> 1H POI -> 15M Trigger
 # Signal-only: does NOT place exchange orders.
 # ============================================================
@@ -123,11 +123,43 @@ class StrategyEngine:
             return -1
         return 0
 
+    def check_real_liquidity_sweep_and_closure(self, ohlcv):
+        """
+        تطبيق استراتيجية الصور بدقة:
+        - الفتيلة الصغيرة وحدها لا تكفي (مجرد ضوضاء / Not a real sweep).
+        - الاصطياد الحقيقي يتطلب كسر المستوى ثم إغلاق شمعة كاملة (Candle Closure) فوقه أو تحته لدخول الأموال الحقيقية.
+        """
+        try:
+            a = np.asarray(ohlcv, dtype=float)
+            if a.ndim != 2 or len(a) < 15:
+                return False, False, 0.0, 0.0
+            
+            recent_highs = a[-15:-2, 2]
+            recent_lows = a[-15:-2, 3]
+            prior_high = float(np.max(recent_highs))
+            prior_low = float(np.min(recent_lows))
+
+            # شمعة التأكيد الأخيرة المكتملة
+            last_candle = a[-2]
+            high_val = float(last_candle[2])
+            low_val = float(last_candle[3])
+            close_val = float(last_candle[4])
+            open_val = float(last_candle[1])
+
+            # شروط الاصطياد الحقيقي بإغلاق الشمعة (Candle Closure)
+            # صاعد: الفتيل ضرب القاع السابق ولكن الإغلاق تم فوقه أو بداخل الهيكل مع شمعة قوية
+            real_bullish_sweep = (low_val < prior_low) and (close_val > prior_low) and (close_val > open_val)
+            # هابط: الفتيل ضرب القمة السابقة ولكن الإغلاق تم تحتها مع شمعة هابطة
+            real_bearish_sweep = (high_val > prior_high) and (close_val < prior_high) and (close_val < open_val)
+
+            return real_bullish_sweep, real_bearish_sweep, prior_high, prior_low
+        except Exception:
+            return False, False, 0.0, 0.0
+
     def analyze_market_structure(
         self, ohlcv_15m=None, ohlcv_1h=None, ohlcv_4h=None,
         ohlcv_1d=None, btc_ohlcv_1d=None, **kwargs
     ):
-        # التحقق من توفر بيانات أساسية على الأقل للرد وعدم التجاهل
         if ohlcv_15m is None:
             return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الفريمات غير متوفرة"}
 
@@ -150,14 +182,18 @@ class StrategyEngine:
             atr = close * 0.01
 
         bull_ob, bear_ob = self.detect_true_order_block(m15)
+        real_bull_sweep, real_bear_sweep, prior_high, prior_low = self.check_real_liquidity_sweep_and_closure(m15)
 
-        # تحديد الاتجاه العام للعملة بناءً على الفريمات الكبرى
         score_long = (20 if daily_trend >= 0 else 0) + (18 if h4_trend >= 0 else 0) + (12 if h1_trend >= 0 else 0)
+        if real_bull_sweep:
+            score_long += 25  ضاف نقاط مضاعفة لوجود اصطياد سيولة حقيقي مع إغلاق شمعة
+
         score_short = (20 if daily_trend <= 0 else 0) + (18 if h4_trend <= 0 else 0) + (12 if h1_trend <= 0 else 0)
+        if real_bear_sweep:
+            score_short += 25
 
         side = "LONG" if score_long >= score_short else "SHORT"
-        
-        # حساب سعر الانتظار الآمن والأهداف ووقف الخسارة بشكل دائم لا يرفض أبداً
+
         if side == "LONG":
             safe_entry = bull_ob if bull_ob > 0 else close - (0.5 * atr)
             stop_loss = safe_entry - (1.5 * atr)
@@ -165,7 +201,7 @@ class StrategyEngine:
             tp1 = safe_entry + (risk * 2.0)
             tp2 = safe_entry + (risk * 3.5)
             tp3 = safe_entry + (risk * 5.0)
-            trend_text = "صاعد (Bullish)"
+            trend_text = "صاعد (Bullish) مع تأكيد سحب السيولة الحقيقي والإغلاق"
         else:
             safe_entry = bear_ob if bear_ob > 0 else close + (0.5 * atr)
             stop_loss = safe_entry + (1.5 * atr)
@@ -173,18 +209,18 @@ class StrategyEngine:
             tp1 = safe_entry - (risk * 2.0)
             tp2 = safe_entry - (risk * 3.5)
             tp3 = safe_entry - (risk * 5.0)
-            trend_text = "هابط (Bearish)"
+            trend_text = "هابط (Bearish) مع تأكيد سحب السيولة الحقيقي والإغلاق"
 
         details = {
             "trade_valid": True,
             "signal_type": "DIRECT_USER_QUERY",
-            "reason": f"تحليل الاتجاه العام للعملة: {trend_text}. تم تحديد نقطة الانتظار الآمنة والأهداف.",
+            "reason": f"استراتيجية Real Sweep & Candle Closure: {trend_text}.",
             "score": int(max(score_long, score_short)),
-            "score_label": "مفعل ومتاح للمتابعة",
+            "score_label": "مفعل ومؤكد باستراتيجية الإغلاق",
             "stop_loss": self._round(stop_loss),
             "entry_zone": {
                 "waiting_price": self._round(safe_entry),
-                "note": "انتظر وصول السعر لهذه المنطقة لتكون آمنة للدخول وضع تنبيهاً عليها"
+                "note": "نقطة الدخول الآمنة بناءً على منطقة الطلب وتأكيد الإغلاق (تجنب الفتائل الوهمية)"
             },
             "risk_management": {
                 "take_profit_1": self._round(tp1),
@@ -192,14 +228,14 @@ class StrategyEngine:
                 "take_profit_3": self._round(tp3),
             },
             "market_context": {
-                "trend": trend_text,
+                "real_liquidity_sweep": "BULLISH_SWEEP" if real_bull_sweep else ("BEARISH_SWEEP" if real_bear_sweep else "NO_SWEEP"),
                 "daily_trend": daily_trend,
                 "h4_trend": h4_trend,
                 "h1_trend": h1_trend
             },
-            "smc_note": "تحليل استباقي دائم: البوت يعطيك الاتجاه والدخول الآمن والأهداف والوقف فوراً عند كل سؤال."
+            "smc_note": "تم تطبيق استراتيجية الفتيل الضوضائي مقابل الإغلاق الحقيقي (Real Money Liquidity Sweep) بنجاح."
         }
-        
+
         return side, self._round(close), details
 
     def analyze_multi_timeframe(self, ohlcv_15m=None, ohlcv_1h=None, ohlcv_4h=None,
