@@ -1,13 +1,15 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Ultimate Institutional Masterpiece (v35.0)
-# Fixes all structural, multi-timeframe, sweep, and risk issues.
+# MY EXPERT CRYPTO BOT - Ultimate SMC & Market Guard Engine (v40.0)
+# Strict adherence to 5 conditions: Market Guard, Sweep, FVG/OB, RSI Div, Risk Management.
 # ============================================================
 
 import logging
 import math
 import numpy as np
+import pandas as pd
+import pandas_ta as ta
 
-logger = logging.getLogger("UltimateMasterpieceEngine")
+logger = logging.getLogger("StrictSMCEngine")
 
 
 class StrategyEngine:
@@ -23,12 +25,12 @@ class StrategyEngine:
             self.risk_per_trade = 0.01
 
     @staticmethod
-    def _array(data, minimum=30):
+    def _to_dataframe(ohlcv):
         try:
-            a = np.asarray(data, dtype=float)
-            if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
-                return None
-            return a[:, :6]
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = df[col].astype(float)
+            return df
         except Exception:
             return None
 
@@ -43,168 +45,125 @@ class StrategyEngine:
         decimals = max(2, min(12, int(-math.floor(math.log10(abs(value)))) + 3))
         return round(value, decimals)
 
-    def calculate_atr(self, highs, lows, closes, period=14):
-        try:
-            h = np.asarray(highs, dtype=float).reshape(-1)
-            l = np.asarray(lows, dtype=float).reshape(-1)
-            c = np.asarray(closes, dtype=float).reshape(-1)
-            n = min(len(h), len(l), len(c))
-            if n < 2:
-                return 0.0
-            tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
-            return float(np.mean(tr[-max(1, int(period)):]))
-        except Exception:
-            return 0.0
+    def check_market_guard(self, btc_ohlcv_15m):
+        """1. فلتر حماية السوق: التحقق من استقرار البيتكوين وعدم وجود هبوط عنيف (Crash)"""
+        if btc_ohlcv_15m is None:
+            return False, "بيانات البيتكوين غير متوفرة لفحص الحماية."
+        
+        df_btc = self._to_dataframe(btc_ohlcv_15m)
+        if df_btc is None or len(df_btc) < 10:
+            return False, "بيانات الـ BTC غير كافية."
 
-    def calculate_ema(self, closes, period):
-        try:
-            c = np.asarray(closes, dtype=float)
-            if len(c) < period:
-                return float(np.mean(c))
-            weights = np.exp(np.linspace(-1., 0., period))
-            weights /= weights.sum()
-            return float(np.convolve(c, weights, mode='valid')[-1])
-        except Exception:
-            return float(closes[-1])
+        # حساب التغير في آخر شمعتين أو تذبذب العائد
+        btc_returns = df_btc['close'].pct_change().tail(3)
+        if (btc_returns < -0.015).any():  # هبوط بأكثر من 1.5% بشكل مفاجئ
+            return False, "فلتر الحماية مفعل: تم رصد هبوط حاد أو تذبذب عنيف في الـ BTC."
+        
+        return True, "البيتكوين مستقر وآمن."
 
     def analyze_market_structure(
-        self, ohlcv_15m=None, ohlcv_1h=None, ohlcv_4h=None,
-        ohlcv_1d=None, btc_ohlcv_1d=None, **kwargs
+        self, ohlcv_5m=None, ohlcv_15m=None, ohlcv_1h=None,
+        ohlcv_4h=None, btc_ohlcv_15m=None, **kwargs
     ):
-        if ohlcv_15m is None:
-            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الفريمات غير متوفرة"}
+        # 1. تطبيق فلتر حماية السوق (Market Guard)
+        guard_passed, guard_msg = self.check_market_guard(btc_ohlcv_15m)
+        if not guard_passed:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": guard_msg}
 
-        m15 = self._array(ohlcv_15m, 35)
-        h1 = self._array(ohlcv_1h, 30) if ohlcv_1h is not None else m15
-        h4 = self._array(ohlcv_4h, 30) if ohlcv_4h is not None else m15
-        d1 = self._array(ohlcv_1d, 25) if ohlcv_1d is not None else m15
+        if ohlcv_5m is None or ohlcv_15m is None or ohlcv_1h is None:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الأطر الزمنية غير متوفرة بالكامل."}
 
-        if m15 is None or h1 is None or h4 is None or d1 is None:
-            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الشموع غير كافية للحسابات الآمنة"}
+        df_5m = self._to_dataframe(ohlcv_5m)
+        df_15m = self._to_dataframe(ohlcv_15m)
+        df_1h = self._to_dataframe(ohlcv_1h)
 
-        # استخراج أسعار الإغلاق والشموع
-        closes_15m = m15[:, 4]
-        close = float(closes_15m[-2])
-        open_val = float(m15[-2, 1])
-        high_val = float(m15[-2, 2])
-        low_val = float(m15[-2, 3])
+        if df_5m is None or df_15m is None or df_1h is None or len(df_15m) < 30:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الشموع غير صالحة أو غير كافية."}
 
-        # اتجاه الفريمات الكبرى (1D و 4H) لتأكيد التوافق الحقيقي
-        closes_1d = d1[:, 4]
-        closes_4h = h4[:, 4]
-        trend_1d = 1 if closes_1d[-1] > closes_1d[-10] else -1
-        trend_4h = 1 if closes_4h[-1] > closes_4h[-10] else -1
+        # 2. فلتر الاتجاه والسيولة (Trend on 1H & Liquidity Sweep on 15M/5M)
+        # التحقق من أن اتجاه 1H صاعد (قاع وقمة صاعدة)
+        closes_1h = df_1h['close'].values
+        trend_1h_bullish = closes_1h[-1] > closes_1h[-10] and closes_1h[-5] > closes_1h[-15]
+        if not trend_1h_bullish:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "الاتجاه العام على فريم 1H ليس صاعداً (لم يتحقق هيكل MSS)."}
 
-        if trend_1d != trend_4h:
-            return "NEUTRAL", self._round(close), {
-                "trade_valid": False,
-                "reason": "عدم توافق الأطر الكبرى: الفريم اليومي (1D) والـ (4H) متعاكسان."
-            }
+        # رصد صيد السيولة (Liquidity Sweep) على فريم 15M
+        recent_lows = df_15m['low'].iloc[-15:-2].values
+        prior_low = float(np.min(recent_lows))
+        
+        current_candle = df_15m.iloc[-2]
+        low_val = current_candle['low']
+        close_val = current_candle['close']
+        open_val = current_candle['open']
 
-        atr = self.calculate_atr(m15[:, 2], m15[:, 3], closes_15m, 14)
-        if atr <= 0:
-            atr = close * 0.01
+        # شرط صيد السيولة: كسر القاع السابق ثم الارتداد والإغلاق فوقه
+        liquidity_sweep = (low_val < prior_low) and (close_val > prior_low) and (close_val > open_val)
+        if not liquidity_sweep:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "لم يتم رصد عملية صيد سيولة حقيقية (Sweep) على فريم 15M."}
 
-        # استبعاد الشمعة الحالية لمنع حسابات خاطئة لـ prior_low / prior_high
-        historical_lows = m15[:-2, 3]
-        historical_highs = m15[:-2, 2]
-        prior_low = float(np.min(historical_lows[-15:]))
-        prior_high = float(np.max(historical_highs[-15:]))
+        # 3. منطقة الدخول الفنية (Fair Value Gap - FVG & Order Block - OB)
+        # البحث عن فجوة سعرية (FVG) في الشموع الثلاثة الأخيرة
+        fvg_detected = False
+        ob_level = prior_low
+        for i in range(len(df_15m) - 4, len(df_15m) - 1):
+            prev_high = df_15m['high'].iloc[i - 1]
+            next_low = df_15m['low'].iloc[i + 1]
+            if next_low > prev_high:  # FVG صاعد
+                fvg_detected = True
+                ob_level = df_15m['low'].iloc[i]  # حدود الـ Order Block
 
-        # التحقق الفعلي من سحب السيولة (Sweep) وكسر الهيكل (BOS)
-        real_bullish_sweep = (low_val < prior_low) and (close > prior_low) and (close > open_val)
-        real_bearish_sweep = (high_val > prior_high) and (close < prior_high) and (close < open_val)
+        if not fvg_detected:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "لم يتم رصد فجوة سعرية (FVG) متزامنة مع منطقة الطلب."}
 
-        ema_20 = self.calculate_ema(closes_15m, min(20, len(closes_15m)))
-        ema_50 = self.calculate_ema(closes_15m, min(50, len(closes_15m)))
+        # 4. تأكيد الزخم (Bullish Divergence على مؤشر RSI بـ 14 على فريم 5M)
+        df_5m['rsi'] = ta.rsi(df_5m['close'], length=14)
+        rsi_values = df_5m['rsi'].dropna().values
+        price_values = df_5m['close'].dropna().values
 
-        side = "NEUTRAL"
-        score = 60
+        if len(rsi_values) < 10:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات مؤشر RSI غير كافية على فريم 5M."}
 
-        if trend_1d == 1 and (real_bullish_sweep or (ema_20 > ema_50 and close > ema_20)):
-            side = "LONG"
-            score = 88 if real_bullish_sweep else 78
-        elif trend_1d == -1 and (real_bearish_sweep or (ema_20 < ema_50 and close < ema_20)):
-            side = "SHORT"
-            score = 88 if real_bearish_sweep else 78
-        else:
-            return "NEUTRAL", self._round(close), {
-                "trade_valid": False,
-                "reason": "الشروط الفنية للسيولة (Sweep/BOS) أو اتجاه الأطر الكبرى لم تكتمل."
-            }
+        # فحص الانحراف الإيجابي البسيط (السعر يصنع قاعاً أقل، وRSI يصنع قاعاً أعلى)
+        bullish_divergence = (price_values[-1] < price_values[-5]) and (rsi_values[-1] > rsi_values[-5])
+        if not bullish_divergence:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "شروط الزخم لم تكتمل: لا يوجد انحراف إيجابي (Bullish Divergence) على مؤشر RSI."}
 
-        # حساب مناطق الدخول المثالي والبديل بدقة
-        if side == "LONG":
-            ideal_entry = prior_low + (0.2 * atr)
-            alternative_entry = ideal_entry + (0.4 * atr)
-            
-            # التحقق من صلاحية منطقة الدخول (عدم ابتعاد السعر كثيراً)
-            if abs(close - ideal_entry) > (3.0 * atr):
-                return "NEUTRAL", self._round(close), {
-                    "trade_valid": False,
-                    "reason": "السعر ابتعد كثيراً عن منطقة الدخول المثالية، تم إلغاء الصفقة لتجنب المطاردة."
-                }
+        # 5. إدارة المخاطر الذكية (Stop Loss & Take Profits & Breakeven)
+        entry_price = close_val
+        stop_loss = prior_low - (prior_low * 0.002)  # أسفل قاع صيد السيولة بمسافة أمان 0.2%
+        
+        # الأهداف الذكية
+        recent_high = float(np.max(df_15m['high'].iloc[-20:-2].values))
+        tp1 = recent_high  # أقرب قمة رئيسية مقاومة
+        
+        risk = entry_price - stop_loss
+        if risk <= 0:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "خطأ في حساب مسافة المخاطرة."}
 
-            stop_loss = prior_low - (1.0 * atr)
-            risk = ideal_entry - stop_loss
-            tp1 = ideal_entry + (risk * 2.0)
-            tp2 = ideal_entry + (risk * 3.5)
-            tp3 = ideal_entry + (risk * 5.0)
-            reason_text = "توافق اتجاه 1D و 4H مع تأكيد سحب السيولة الصعودي (Bullish Sweep & BOS)."
-        else:
-            ideal_entry = prior_high - (0.2 * atr)
-            alternative_entry = ideal_entry - (0.4 * atr)
-            
-            if abs(close - ideal_entry) > (3.0 * atr):
-                return "NEUTRAL", self._round(close), {
-                    "trade_valid": False,
-                    "reason": "السعر ابتعد كثيراً عن منطقة الدخول المثالية، تم إلغاء الصفقة."
-                }
+        tp2 = entry_price + (risk * 2.5)  # عائد إلى مخاطرة لا يقل عن 1:2.5
 
-            stop_loss = prior_high + (1.0 * atr)
-            risk = stop_loss - ideal_entry
-            tp1 = ideal_entry - (risk * 2.0)
-            tp2 = ideal_entry - (risk * 3.5)
-            tp3 = ideal_entry - (risk * 5.0)
-            reason_text = "توافق اتجاه 1D و 4H مع تأكيد سحب السيولة الهبوطي (Bearish Sweep & BOS)."
-
-        # إدارة المخاطر وحجم الصفقة بناءً على رأس المال والمخاطرة
-        position_risk_amount = self.total_capital * self.risk_per_trade
-        unit_risk = abs(ideal_entry - stop_loss)
-        position_size = (position_risk_amount / unit_risk) if unit_risk > 0 else 0
+        # حساب حجم الصفقة لإدارة رأس المال
+        risk_amount_usd = self.total_capital * self.risk_per_trade
+        position_size = risk_amount_usd / risk
 
         details = {
             "trade_valid": True,
-            "signal_type": "INSTITUTIONAL_SWEEP_BOS_ENGINE",
-            "reason": reason_text,
-            "score": score,
-            "score_label": f"تقييم دقيق بناءً على الشروط المكتملة ({score}/100)",
+            "signal_type": "ULTIMATE_SMC_MARKET_GUARD_LONG",
+            "reason": "تم تحقق الشروط الـ 5 مجتمعة: حماية السوق مستقرة، صيد سيولة حقيقي، FVG مع OB، انحراف RSI إيجابي، وإدارة مخاطر ذكية.",
+            "score": 100,
             "stop_loss": self._round(stop_loss),
             "entry_zone": {
-                "ideal_entry": self._round(ideal_entry),
-                "alternative_entry": self._round(alternative_entry),
-                "waiting_price": self._round(ideal_entry),
-                "note": "تم التحقق من صلاحية المنطقة وعدم ابتعاد السعر."
+                "ideal_entry": self._round(entry_price),
+                "order_block": self._round(ob_level),
+                "waiting_price": self._round(entry_price),
             },
             "risk_management": {
                 "take_profit_1": self._round(tp1),
                 "take_profit_2": self._round(tp2),
-                "take_profit_3": self._round(tp3),
+                "breakeven_trigger": self._round(tp1),
                 "position_size_units": self._round(position_size),
-                "risk_amount_usd": self._round(position_risk_amount)
-            },
-            "market_context": {
-                "trend_1d": trend_1d,
-                "trend_4h": trend_4h,
-                "real_sweep_confirmed": bool(real_bullish_sweep or real_bearish_sweep)
+                "risk_usd": self._round(risk_amount_usd)
             }
         }
 
-        return side, self._round(close), details
-
-    def analyze_multi_timeframe(self, ohlcv_15m=None, ohlcv_1h=None, ohlcv_4h=None,
-                                ohlcv_1d=None, btc_ohlcv_1d=None, **kwargs):
-        return self.analyze_market_structure(
-            ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h,
-            ohlcv_1d=ohlcv_1d, btc_ohlcv_1d=btc_ohlcv_1d, **kwargs
-        )
+        return "LONG", self._round(entry_price), details
