@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v46.0 - Clean, Bi-Directional & Conflict-Free Edition)
+# MY EXPERT CRYPTO BOT - Main Controller (v47.0 - Ultimate Stable & Rate-Limit Free Edition)
 # ==========================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Clean Server Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Optimized Rate-Limit Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -76,15 +76,15 @@ def bingx_safe_call(method_name, *args, **kwargs):
         return None
     
     retries = 3
-    delay = 2.0
+    delay = 2.5
     for attempt in range(retries):
         try:
-            time.sleep(0.4)
+            time.sleep(0.6)
             return method(*args, **kwargs)
         except Exception as e:
             err_str = str(e)
             if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
-                logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة... (محاولة {attempt+1})")
+                logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة بأمان... (محاولة {attempt+1})")
                 time.sleep(delay * (attempt + 1))
             else:
                 if attempt == retries - 1:
@@ -239,7 +239,8 @@ def background_scanner():
                     logger.error(f"Error scanning {symbol}: {sub_exc}")
                     continue
 
-                time.sleep(0.8)
+                # فاصل زمني محسن وآمن تماماً لمنع ضغط الطلبات (Rate Limit)
+                time.sleep(1.8)
 
             time.sleep(60)
         except Exception as exc:
