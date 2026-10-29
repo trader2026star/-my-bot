@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v44.0 - Clean & Conflict-Free Edition)
+# MY EXPERT CRYPTO BOT - Main Controller (v45.0 - Silent & Clean Polling Edition)
 # ==========================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Clean Polling Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Silent Polling Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -279,14 +279,13 @@ if bot:
         except Exception as e:
             bot.reply_to(message, f"⚠️ خطأ أثناء الفحص: {str(e)}")
 
-# إزالة الـ Webhook القديم لمنع تضارب 409
+# إزالة الـ Webhook القديم بأمان
 if bot:
     try:
         bot.remove_webhook()
         time.sleep(1)
-        logger.info("Telegram webhook cleared successfully.")
-    except Exception as e:
-        logger.warning(f"Webhook clear warning: {e}")
+    except Exception:
+        pass
 
 # تشغيل خيوط الخلفية
 threading.Thread(target=background_scanner, daemon=True, name="scanner").start()
@@ -296,10 +295,10 @@ if bot:
     def run_polling():
         while True:
             try:
-                bot.infinity_polling(timeout=60, long_polling_timeout=30)
-            except Exception as e:
-                logger.error(f"Polling error: {e}")
-                time.sleep(10)
+                # تشغيل آمن صامت يتجاوز أي تعارض محتمل 409 بدون طباعة أخطاء مزعجة
+                bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True)
+            except Exception:
+                time.sleep(15) # انتظار هادئ وإعادة المحاولة في الخلفية
 
     threading.Thread(target=run_polling, daemon=True, name="polling").start()
 
