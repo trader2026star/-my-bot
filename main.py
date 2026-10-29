@@ -1,6 +1,6 @@
-# ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v47.0 - Ultimate Stable & Rate-Limit Free Edition)
-# ==========================================
+# ============================================================
+# MY EXPERT CRYPTO BOT - Main Controller (v48.0 - With On-Demand Analysis)
+# ============================================================
 import os
 import time
 import threading
@@ -48,20 +48,21 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Optimized Rate-Limit Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & On-Demand Analysis) Active!"
 
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy", "stats": scan_stats, "active_positions_count": len(active_positions)}), 200
 
-def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+def send_telegram_message(message, chat_id=None):
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not target_chat:
         return False
     try:
         import requests
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True},
+            json={"chat_id": target_chat, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True},
             timeout=15
         )
         return response.status_code == 200
@@ -70,7 +71,6 @@ def send_telegram_message(message):
         return False
 
 def bingx_safe_call(method_name, *args, **kwargs):
-    """دالة اتصال آمنة لمنصة بينجكس مع معالجة ذكية لتجاوز حد الطلبات (Rate Limit 100410)"""
     method = getattr(bingx, method_name, None)
     if not method:
         return None
@@ -84,7 +84,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
         except Exception as e:
             err_str = str(e)
             if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
-                logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة بأمان... (محاولة {attempt+1})")
+                logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة... (محاولة {attempt+1})")
                 time.sleep(delay * (attempt + 1))
             else:
                 if attempt == retries - 1:
@@ -93,8 +93,82 @@ def bingx_safe_call(method_name, *args, **kwargs):
                 time.sleep(1.0)
     return None
 
+# ==========================================
+# ميزة تحليل العملات عند الطلب عبر تليجرام
+# ==========================================
+if bot:
+    @bot.message_handler(commands=['analyze', 'check', 'تحليل'])
+    def handle_coin_analysis(message):
+        try:
+            text_parts = message.text.strip().split()
+            if len(text_parts) < 2:
+                bot.reply_to(message, "⚠️ الرجاء كتابة اسم العملة بجانب الأمر. مثال:\n`/analyze BTC` أو `/analyze ETH`", parse_mode="Markdown")
+                return
+            
+            coin_name = text_parts[1].upper()
+            if "/" not in coin_name:
+                symbol = f"{coin_name}/USDT:USDT"
+            else:
+                symbol = coin_name
+                if not symbol.endswith(":USDT"):
+                    symbol += ":USDT"
+
+            bot.reply_to(message, f"🔍 جاري فحص وتحليل العملة `{symbol}` باستخدام استراتيجية SMC، التفضل بالانتظار...", parse_mode="Markdown")
+
+            ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
+            ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
+            ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
+            btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
+
+            if not ohlcv_5m or not ohlcv_1h:
+                bot.reply_to(message, f"❌ تعذر جلب بيانات العملة `{symbol}` من المنصة. تأكد من صحة الاسم.")
+                return
+
+            direction, entry_price, details = engine.analyze_market_structure(
+                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, btc_ohlcv_15m=btc_ohlcv_15m
+            )
+
+            rm = details.get("risk_management", {})
+            ent = details.get("entry_zone", {})
+            
+            if details.get("trade_valid", False):
+                emoji = "🟢" if direction == "LONG" else "🔴"
+                report = (
+                    f"📊 *تقرير تحليل العملة الفوري ({direction})* {emoji}\n"
+                    f"🔹 العملة: `{symbol}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"📍 *أفضل سعر دخول (Entry):* `{entry_price}`\n"
+                    f"📍 *منطقة الطلب/العرض (OB):* `{ent.get('order_block')}`\n"
+                    f"🛑 *وقف الخسارة (Stop Loss):* `{details.get('stop_loss')}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎯 *الأهداف الاستراتيجية:*\n"
+                    f"  • الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
+                    f"  • الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 *التحليل الفني:* {details.get('reason')}\n"
+                    f"⚖️ *القرار:* *العملة صالحة للدخول وفق الشروط المؤكدة.*"
+                )
+            else:
+                report = (
+                    f"📊 *تقرير تحليل العملة (NEUTRAL)* ⚪\n"
+                    f"🔹 العملة: `{symbol}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"❌ *الحالة:* لا توجد فرصة صفقة مؤكدة حالياً.\n"
+                    f"💡 *السبب الفني:* {details.get('reason')}\n"
+                    f"⚖️ *القرار:* *العملة غير صالحة للدخول في الوقت الحالي، يُنصح بالانتظار.*"
+                )
+
+            bot.reply_to(message, report, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Error in manual analysis command: {e}")
+            bot.reply_to(message, "⚠️ حدث خطأ أثناء معالجة طلب التحليل.")
+
+def telegram_listener():
+    if bot:
+        logger.info("Starting Telegram Bot listener for on-demand commands...")
+        bot.infinity_polling(none_stop=True, interval=1)
+
 def position_tracker_loop():
-    """متابع الصفقات (LONG & SHORT) لتنفيذ Breakeven تلقائياً عند ضرب TP1"""
     while True:
         try:
             with positions_lock:
@@ -171,7 +245,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC) بنجاح والاستعداد لرصد السوق!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC) مع خاصية التحليل الفوري بنجاح!*")
 
     while True:
         try:
@@ -239,7 +313,6 @@ def background_scanner():
                     logger.error(f"Error scanning {symbol}: {sub_exc}")
                     continue
 
-                # فاصل زمني محسن وآمن تماماً لمنع ضغط الطلبات (Rate Limit)
                 time.sleep(1.8)
 
             time.sleep(60)
@@ -247,9 +320,11 @@ def background_scanner():
             logger.error(f"Scanner Loop Error: {exc}")
             time.sleep(30)
 
-# تشغيل خيوط الخلفية للماسح ومتابع الصفقات بأمان تام بدون تعارض
+# تشغيل خيوط الخلفية (الماسح، ومتابع الصفقات، واستماع تليجرام للتحليل الفوري)
 threading.Thread(target=background_scanner, daemon=True, name="scanner").start()
 threading.Thread(target=position_tracker_loop, daemon=True, name="tracker").start()
+if bot:
+    threading.Thread(target=telegram_listener, daemon=True, name="telegram_listener").start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
