@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V23.1 Institutional SMC Engine (Alert & Pending Zones)
+# MY EXPERT CRYPTO BOT - V23.2 Direct Analyst & Pending Engine
 # Multi-timeframe: 1D Bias -> 4H Structure -> 1H POI -> 15M Trigger
 # Signal-only: does NOT place exchange orders.
 # ============================================================
@@ -62,15 +62,6 @@ class StrategyEngine:
         decimals = max(2, min(12, int(-math.floor(math.log10(abs(value)))) + 3))
         return round(value, decimals)
 
-    @staticmethod
-    def _safe_mean(values):
-        try:
-            x = np.asarray(values, dtype=float)
-            x = x[np.isfinite(x)]
-            return float(np.mean(x)) if len(x) else 0.0
-        except Exception:
-            return 0.0
-
     def calculate_atr(self, highs, lows, closes, period=14):
         try:
             h = np.asarray(highs, dtype=float).reshape(-1)
@@ -94,43 +85,11 @@ class StrategyEngine:
     def _atr_from_array(self, a, period=14):
         return self.calculate_atr(a[:, 2], a[:, 3], a[:, 4], period)
 
-    def detect_fvg(self, ohlcv):
-        try:
-            a = np.asarray(ohlcv, dtype=float)
-            if a.ndim != 2 or len(a) < 5 or a.shape[1] < 6:
-                return False, False
-            end = len(a) - 1
-            bullish = bearish = False
-            start = max(2, end - 12)
-            for i in range(start, end):
-                left, middle, right = a[i - 2], a[i - 1], a[i]
-                if right[3] > left[2] and middle[4] > middle[1]:
-                    bullish = True
-                if right[2] < left[3] and middle[4] < middle[1]:
-                    bearish = True
-            return bullish, bearish
-        except Exception:
-            return False, False
-
-    def _latest_fvg(self, a, direction, lookback=30):
-        try:
-            end = len(a) - 1
-            start = max(2, end - int(lookback))
-            for i in range(end - 1, start - 1, -1):
-                left, middle, right = a[i - 2], a[i - 1], a[i]
-                if direction == "bull" and right[3] > left[2] and middle[4] > middle[1]:
-                    return float(left[2]), float(right[3])
-                if direction == "bear" and right[2] < left[3] and middle[4] < middle[1]:
-                    return float(right[2]), float(left[3])
-            return None
-        except Exception:
-            return None
-
     def detect_true_order_block(self, ohlcv):
         try:
             a = np.asarray(ohlcv, dtype=float)
             if a.ndim != 2 or len(a) < 8 or a.shape[1] < 6:
-                raise ValueError("insufficient candles")
+                return 0.0, 0.0
             atr = self._atr_from_array(a, 14)
             end = len(a) - 1
             bullish_ob = bearish_ob = None
@@ -140,118 +99,16 @@ class StrategyEngine:
                 nxt = a[i + 1]
                 body_next = abs(nxt[4] - nxt[1])
                 displacement = atr > 0 and body_next >= 0.8 * atr
-                if (current[4] < current[1] and nxt[4] > nxt[1]
-                        and displacement and bullish_ob is None):
+                if (current[4] < current[1] and nxt[4] > nxt[1] and displacement and bullish_ob is None):
                     bullish_ob = float(min(current[3], current[1], current[4]))
-                if (current[4] > current[1] and nxt[4] < nxt[1]
-                        and displacement and bearish_ob is None):
+                if (current[4] > current[1] and nxt[4] < nxt[1] and displacement and bearish_ob is None):
                     bearish_ob = float(max(current[2], current[1], current[4]))
                 if bullish_ob is not None and bearish_ob is not None:
                     break
             recent = a[max(0, end - 10):end]
-            if bullish_ob is None:
-                bullish_ob = float(np.min(recent[:, 3]))
-            if bearish_ob is None:
-                bearish_ob = float(np.max(recent[:, 2]))
-            return bullish_ob, bearish_ob
-        except Exception:
-            try:
-                a = np.asarray(ohlcv, dtype=float)
-                return float(np.min(a[-10:, 3])), float(np.max(a[-10:, 2]))
-            except Exception:
-                return 0.0, 0.0
-
-    def _liquidity_levels(self, a, lookback=20):
-        end = len(a) - 1
-        sample = a[max(0, end - lookback):end]
-        if len(sample) < 5:
-            return 0.0, 0.0
-        return float(np.max(sample[:, 2])), float(np.min(sample[:, 3]))
-
-    def check_liquidity_sweep(self, ohlcv, higher_tf_high=None, higher_tf_low=None):
-        try:
-            a = np.asarray(ohlcv, dtype=float)
-            if a.ndim != 2 or len(a) < 20:
-                return False, False
-            candle = a[-2]
-            prior = a[-22:-2]
-            prior_low = float(np.min(prior[:, 3]))
-            prior_high = float(np.max(prior[:, 2]))
-            if higher_tf_low is not None and np.isfinite(higher_tf_low) and higher_tf_low > 0:
-                prior_low = min(prior_low, float(higher_tf_low))
-            if higher_tf_high is not None and np.isfinite(higher_tf_high) and higher_tf_high > 0:
-                prior_high = max(prior_high, float(higher_tf_high))
-            swept_low = candle[3] < prior_low and candle[4] > prior_low
-            swept_high = candle[2] > prior_high and candle[4] < prior_high
-            return bool(swept_low), bool(swept_high)
-        except Exception:
-            return False, False
-
-    def check_market_structure_shift(self, ohlcv):
-        try:
-            a = np.asarray(ohlcv, dtype=float)
-            if a.ndim != 2 or len(a) < 10:
-                return False, False
-            reference = a[-7:-2]
-            close = float(a[-2, 4])
-            return bool(close > np.max(reference[:, 2])), bool(close < np.min(reference[:, 3]))
-        except Exception:
-            return False, False
-
-    def calculate_position_size(self, entry_price, stop_loss):
-        try:
-            entry = float(entry_price)
-            stop = float(stop_loss)
-            if not np.isfinite(entry) or not np.isfinite(stop) or entry <= 0 or stop <= 0:
-                return 0.0, 0.0
-            risk_amount = self.total_capital * self.risk_per_trade
-            risk_per_unit = abs(entry - stop)
-            if risk_per_unit <= 0:
-                return 0.0, 0.0
-            units = risk_amount / risk_per_unit
-            notional = units * entry
-            if not np.isfinite(units) or not np.isfinite(notional):
-                return 0.0, 0.0
-            return self._round(units), self._round(notional)
+            return (bullish_ob or float(np.min(recent[:, 3]))), (bearish_ob or float(np.max(recent[:, 2])))
         except Exception:
             return 0.0, 0.0
-
-    def calculate_risk_management(self, entry_price, stop_loss, direction=None, atr=None, **kwargs):
-        try:
-            entry = float(entry_price)
-            stop = float(stop_loss)
-            side = str(direction or ("LONG" if stop < entry else "SHORT")).upper()
-            if entry <= 0 or stop <= 0 or not np.isfinite(entry + stop):
-                return {"valid": False, "reason": "سعر الدخول أو وقف الخسارة غير صالح"}
-            if side == "LONG" and stop >= entry:
-                return {"valid": False, "reason": "وقف LONG يجب أن يكون أسفل الدخول"}
-            if side == "SHORT" and stop <= entry:
-                return {"valid": False, "reason": "وقف SHORT يجب أن يكون أعلى الدخول"}
-            risk = abs(entry - stop)
-            r_pct = risk / entry
-            if r_pct < self.min_stop_pct or r_pct > self.max_stop_pct:
-                return {"valid": False, "reason": "مسافة وقف الخسارة خارج الحدود المسموحة"}
-            sign = 1.0 if side == "LONG" else -1.0
-            tps = [entry + sign * risk * r for r in (2.0, 3.5, 5.0)]
-            units, notional = self.calculate_position_size(entry, stop)
-            return {
-                "valid": True,
-                "stop_loss": self._round(stop),
-                "take_profit_1": self._round(tps[0]),
-                "take_profit_2": self._round(tps[1]),
-                "take_profit_3": self._round(tps[2]),
-                "breakeven_trigger": self._round(tps[0]),
-                "partial_tp_ratio": 0.5,
-                "trailing_stop_active": True,
-                "position_sizing": {
-                    "units": units,
-                    "margin_usd": notional,
-                    "notional_usd": notional,
-                    "risk_amount_usd": self._round(self.total_capital * self.risk_per_trade),
-                },
-            }
-        except Exception:
-            return {"valid": False, "reason": "تعذر حساب إدارة المخاطر"}
 
     def _trend(self, a):
         closes = a[:-1, 4]
@@ -266,207 +123,83 @@ class StrategyEngine:
             return -1
         return 0
 
-    def _volume_ratio(self, a):
-        try:
-            last_vol = float(a[-2, 5])
-            baseline = self._safe_mean(a[-22:-2, 5])
-            return (last_vol / baseline) if baseline > 0 else 0.0
-        except Exception:
-            return 0.0
-
     def analyze_market_structure(
         self, ohlcv_15m=None, ohlcv_1h=None, ohlcv_4h=None,
         ohlcv_1d=None, btc_ohlcv_1d=None, **kwargs
     ):
-        def no_trade(reason, score=0, extra=None):
-            details = {"trade_valid": False, "reason": reason, "score": int(max(0, min(100, score)))}
-            if extra:
-                details.update(extra)
-            return "NEUTRAL", 0, details
+        # التحقق من توفر بيانات أساسية على الأقل للرد وعدم التجاهل
+        if ohlcv_15m is None:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الفريمات غير متوفرة"}
 
-        if any(x is None for x in (ohlcv_15m, ohlcv_1h, ohlcv_4h, ohlcv_1d)):
-            return no_trade("بيانات الفريمات الأربعة غير مكتملة")
-
-        d1 = self._array(ohlcv_1d, 25)
-        h4 = self._array(ohlcv_4h, 25)
-        h1 = self._array(ohlcv_1h, 25)
         m15 = self._array(ohlcv_15m, 30)
-        if any(x is None for x in (d1, h4, h1, m15)):
-            return no_trade("بيانات الشموع غير صالحة أو عددها أقل من الحد المطلوب")
+        if m15 is None:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الشموع غير صالحة"}
 
-        btc_trend = None
-        if btc_ohlcv_1d is not None:
-            btc = self._array(btc_ohlcv_1d, 25)
-            if btc is None:
-                return no_trade("بيانات BTC اليومية غير صالحة؛ تم إيقاف الإشارة للحماية")
-            btc_trend = self._trend(btc)
+        d1 = self._array(ohlcv_1d, 25) if ohlcv_1d is not None else m15
+        h4 = self._array(ohlcv_4h, 25) if ohlcv_4h is not None else m15
+        h1 = self._array(ohlcv_1h, 25) if ohlcv_1h is not None else m15
 
         daily_trend = self._trend(d1)
         h4_trend = self._trend(h4)
         h1_trend = self._trend(h1)
 
         candle = m15[-2]
-        open_, high, low, close, volume = map(float, (candle[1], candle[2], candle[3], candle[4], candle[5]))
-        if close <= 0:
-            return no_trade("سعر الإغلاق غير صالح")
-
+        close = float(candle[4])
         atr = self._atr_from_array(m15[:-1], 14)
-        if atr <= 0 or not np.isfinite(atr):
-            return no_trade("تعذر حساب ATR بشكل موثوق")
+        if atr <= 0:
+            atr = close * 0.01
 
-        candle_range = max(high - low, close * 1e-10)
-        body_ratio = abs(close - open_) / candle_range
-        volume_ratio = self._volume_ratio(m15)
-        volume_ok = volume_ratio >= 1.20
-
-        prior_high, prior_low = self._liquidity_levels(m15, 20)
-        swept_low, swept_high = self.check_liquidity_sweep(m15)
-        mss_bull, mss_bear = self.check_market_structure_shift(m15)
-        bull_fvg, bear_fvg = self.detect_fvg(m15)
-        bull_fvg_zone = self._latest_fvg(m15, "bull")
-        bear_fvg_zone = self._latest_fvg(m15, "bear")
         bull_ob, bear_ob = self.detect_true_order_block(m15)
 
-        long_score = 0
-        short_score = 0
-        long_evidence = []
-        short_evidence = []
+        # تحديد الاتجاه العام للعملة بناءً على الفريمات الكبرى
+        score_long = (20 if daily_trend >= 0 else 0) + (18 if h4_trend >= 0 else 0) + (12 if h1_trend >= 0 else 0)
+        score_short = (20 if daily_trend <= 0 else 0) + (18 if h4_trend <= 0 else 0) + (12 if h1_trend <= 0 else 0)
 
-        if daily_trend == 1:
-            long_score += 20; long_evidence.append("انحياز يومي صاعد")
-        elif daily_trend == -1:
-            short_score += 20; short_evidence.append("انحياز يومي هابط")
-
-        if h4_trend == 1:
-            long_score += 18; long_evidence.append("اتجاه 4H صاعد")
-        elif h4_trend == -1:
-            short_score += 18; short_evidence.append("اتجاه 4H هابط")
-
-        if h1_trend == 1:
-            long_score += 12; long_evidence.append("اتجاه 1H صاعد")
-        elif h1_trend == -1:
-            short_score += 12; short_evidence.append("اتجاه 1H هابط")
-
-        if btc_trend == 1:
-            long_score += 8; long_evidence.append("سياق BTC اليومي داعم للصعود")
-            short_score -= 5
-        elif btc_trend == -1:
-            short_score += 8; short_evidence.append("سياق BTC اليومي داعم للهبوط")
-            long_score -= 5
-
-        if swept_low: long_score += 14; long_evidence.append("سحب سيولة أسفل القيعان")
-        if swept_high: short_score += 14; short_evidence.append("سحب سيولة أعلى القمم")
-        if mss_bull: long_score += 16; long_evidence.append("MSS صاعد")
-        if mss_bear: short_score += 16; short_evidence.append("MSS هابط")
-        if bull_fvg: long_score += 7; long_evidence.append("FVG صاعد حديث")
-        if bear_fvg: short_score += 7; short_evidence.append("FVG هابط حديث")
-
-        long_score = int(max(0, min(100, long_score)))
-        short_score = int(max(0, min(100, short_score)))
-
-        bull_reaction = close > open_ and body_ratio >= 0.40
-        bear_reaction = close < open_ and body_ratio >= 0.40
-        near_bull_ob = bull_ob > 0 and low <= bull_ob + 0.35 * atr and close >= bull_ob - 0.15 * atr
-        near_bear_ob = bear_ob > 0 and high >= bear_ob - 0.35 * atr and close <= bear_ob + 0.15 * atr
-
-        candidates = []
-        # 1. شروط الدخول الفوري (EXECUTE NOW)
-        if daily_trend == h4_trend == h1_trend == 1 and long_score >= self.signal_threshold:
-            if (swept_low or near_bull_ob) and mss_bull and bull_reaction and volume_ok:
-                structural_low = min(float(np.min(m15[-12:-1, 3])), bull_ob if bull_ob > 0 else low)
-                stop = structural_low - 0.35 * atr
-                risk = close - stop
-                stop_pct = risk / close if close > 0 else 1.0
-                if risk > 0 and self.min_stop_pct <= stop_pct <= self.max_stop_pct:
-                    candidates.append(("LONG", long_score, stop, long_evidence, "EXECUTE"))
-
-        btc_allows_short = (btc_trend is None or btc_trend == -1)
-        if daily_trend == h4_trend == h1_trend == -1 and btc_allows_short and short_score >= self.signal_threshold:
-            if (swept_high or near_bear_ob) and mss_bear and bear_reaction and volume_ok:
-                structural_high = max(float(np.max(m15[-12:-1, 2])), bear_ob if bear_ob > 0 else high)
-                stop = structural_high + 0.35 * atr
-                risk = stop - close
-                stop_pct = risk / close if close > 0 else 1.0
-                if risk > 0 and self.min_stop_pct <= stop_pct <= self.max_stop_pct:
-                    candidates.append(("SHORT", short_score, stop, short_evidence, "EXECUTE"))
-
-        # 2. إذا لم تتحقق شروط الدخول الفوري، ولكن الاتجاه العام واضح، نقترح "سعر انتظار (PENDING_ALERT)"
-        if not candidates:
-            best_dir = "LONG" if long_score >= short_score else "SHORT"
-            best_score = max(long_score, short_score)
-            
-            if best_score >= 60:  # إذا كان هناك اهتمام بالعملة واتجاه إيجابي
-                suggested_entry = bull_ob if best_dir == "LONG" and bull_ob > 0 else (bear_ob if bear_ob > 0 else close)
-                suggested_stop = suggested_entry - (1.5 * atr) if best_dir == "LONG" else suggested_entry + (1.5 * atr)
-                risk_dist = abs(suggested_entry - suggested_stop)
-                sign = 1.0 if best_dir == "LONG" else -1.0
-                
-                tp1 = suggested_entry + sign * risk_dist * 2.0
-                tp2 = suggested_entry + sign * risk_dist * 3.5
-                tp3 = suggested_entry + sign * risk_dist * 5.0
-                units, notional = self.calculate_position_size(suggested_entry, suggested_stop)
-
-                details = {
-                    "trade_valid": True,  # مفعل كمنطقة انتظار وتنبيه
-                    "signal_type": "PENDING_ALERT",
-                    "reason": f"منطقة مراقبة استباقية ({best_dir}): السعر لم يدخل منطقة الاهتمام بعد.",
-                    "score": int(best_score),
-                    "score_label": "انتظار وتحت المراقبة",
-                    "stop_loss": self._round(suggested_stop),
-                    "entry_zone": {
-                        "waiting_price": self._round(suggested_entry),
-                        "note": "ضع تنبيهاً عند هذا السعر لمراقبة ردة الفعل"
-                    },
-                    "risk_management": {
-                        "take_profit_1": self._round(tp1),
-                        "take_profit_2": self._round(tp2),
-                        "take_profit_3": self._round(tp3),
-                    },
-                    "position_sizing": {
-                        "units": units,
-                        "notional_usd": notional,
-                        "risk_amount_usd": self._round(self.total_capital * self.risk_per_trade),
-                    },
-                    "smc_note": "هذه العملة قيد المراقبة والاستباق؛ انتظر وصول السعر لنقطة الدخول المقترحة لتفعيل التنبيه."
-                }
-                return best_dir, self._round(suggested_entry), details
-
-            return no_trade("لا توجد فرصة أو اتجاه واضح يستحق المراقبة حالياً", best_score)
-
-        side, score, stop, evidence, mode = candidates[0]
-        risk_dist = abs(close - stop)
-        sign = 1.0 if side == "LONG" else -1.0
-        tp1 = close + sign * risk_dist * 2.0
-        tp2 = close + sign * risk_dist * 3.5
-        tp3 = close + sign * risk_dist * 5.0
-
-        units, notional = self.calculate_position_size(close, stop)
-        risk_amount = self.total_capital * self.risk_per_trade
+        side = "LONG" if score_long >= score_short else "SHORT"
+        
+        # حساب سعر الانتظار الآمن والأهداف ووقف الخسارة بشكل دائم لا يرفض أبداً
+        if side == "LONG":
+            safe_entry = bull_ob if bull_ob > 0 else close - (0.5 * atr)
+            stop_loss = safe_entry - (1.5 * atr)
+            risk = safe_entry - stop_loss
+            tp1 = safe_entry + (risk * 2.0)
+            tp2 = safe_entry + (risk * 3.5)
+            tp3 = safe_entry + (risk * 5.0)
+            trend_text = "صاعد (Bullish)"
+        else:
+            safe_entry = bear_ob if bear_ob > 0 else close + (0.5 * atr)
+            stop_loss = safe_entry + (1.5 * atr)
+            risk = stop_loss - safe_entry
+            tp1 = safe_entry - (risk * 2.0)
+            tp2 = safe_entry - (risk * 3.5)
+            tp3 = safe_entry - (risk * 5.0)
+            trend_text = "هابط (Bearish)"
 
         details = {
             "trade_valid": True,
-            "signal_type": "EXECUTE_NOW",
-            "reason": "تأكيد V23 SMC فوري: " + " + ".join(evidence),
-            "score": int(score),
-            "score_label": "قوي جداً",
-            "stop_loss": self._round(stop),
+            "signal_type": "DIRECT_USER_QUERY",
+            "reason": f"تحليل الاتجاه العام للعملة: {trend_text}. تم تحديد نقطة الانتظار الآمنة والأهداف.",
+            "score": int(max(score_long, score_short)),
+            "score_label": "مفعل ومتاح للمتابعة",
+            "stop_loss": self._round(stop_loss),
             "entry_zone": {
-                "low": self._round(min(close, close - sign * 0.20 * atr)),
-                "high": self._round(max(close, close - sign * 0.20 * atr)),
+                "waiting_price": self._round(safe_entry),
+                "note": "انتظر وصول السعر لهذه المنطقة لتكون آمنة للدخول وضع تنبيهاً عليها"
             },
             "risk_management": {
                 "take_profit_1": self._round(tp1),
                 "take_profit_2": self._round(tp2),
                 "take_profit_3": self._round(tp3),
-                "breakeven_trigger": self._round(tp1),
             },
-            "position_sizing": {
-                "units": units,
-                "notional_usd": notional,
-                "risk_amount_usd": self._round(risk_amount),
+            "market_context": {
+                "trend": trend_text,
+                "daily_trend": daily_trend,
+                "h4_trend": h4_trend,
+                "h1_trend": h1_trend
             },
-            "smc_note": "فرصة فورية مطابقة لكافة المعايير المؤسسية."
+            "smc_note": "تحليل استباقي دائم: البوت يعطيك الاتجاه والدخول الآمن والأهداف والوقف فوراً عند كل سؤال."
         }
+        
         return side, self._round(close), details
 
     def analyze_multi_timeframe(self, ohlcv_15m=None, ohlcv_1h=None, ohlcv_4h=None,
