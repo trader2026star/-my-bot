@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v40.0 - Safe Execution Edition)
+# MY EXPERT CRYPTO BOT - Main Controller (v43.0 - Bi-Directional & Safe Rate-Limit)
 # ==========================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Ultimate SMC & Market Guard Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Rate-Limit Protection Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -69,51 +69,103 @@ def send_telegram_message(message):
         logger.error(f"Telegram error: {e}")
         return False
 
+def bingx_safe_call(method_name, *args, **kwargs):
+    """دالة اتصال آمنة لمنصة بينجكس مع معالجة ذكية لتجاوز حد الطلبات (Rate Limit 100410)"""
+    method = getattr(bingx, method_name, None)
+    if not method:
+        return None
+    
+    retries = 3
+    delay = 2.0
+    for attempt in range(retries):
+        try:
+            time.sleep(0.4)  # فاصل زمني بسيط بين الطلبات لحماية السيرفر
+            return method(*args, **kwargs)
+        except Exception as e:
+            err_str = str(e)
+            if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
+                logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة... (محاولة {attempt+1})")
+                time.sleep(delay * (attempt + 1))
+            else:
+                if attempt == retries - 1:
+                    logger.error(f"خطأ في استدعاء BingX {method_name}: {e}")
+                    return None
+                time.sleep(1.0)
+    return None
+
 def position_tracker_loop():
-    """متابع الصفقات لتنفيذ خاصية Breakeven تلقائياً عند ضرب الهدف الأول TP1"""
+    """متابع الصفقات (LONG & SHORT) لتنفيذ Breakeven تلقائياً عند ضرب TP1"""
     while True:
         try:
             with positions_lock:
                 positions_to_check = list(active_positions.items())
 
             for symbol, pos in positions_to_check:
-                ticker = bingx.fetch_ticker(symbol)
+                ticker = bingx_safe_call("fetch_ticker", symbol)
                 if not ticker:
                     continue
                 current_price = float(ticker.get("last", 0))
                 if current_price <= 0:
                     continue
 
+                side = pos["side"]
                 entry = pos["entry"]
                 tp1 = pos["tp1"]
                 tp2 = pos["tp2"]
                 stop_loss = pos["stop_loss"]
                 be_done = pos["breakeven_done"]
 
-                # التحقق من ضرب وقف الخسارة أو الهدف الثاني
-                if current_price <= stop_loss:
-                    with positions_lock:
-                        if symbol in active_positions:
-                            del active_positions[symbol]
-                    send_telegram_message(f"🛑 *ضرب وقف الخسارة للعملة `{symbol}` وتم الخروج.*")
-                    continue
+                if side == "LONG":
+                    # التحقق من ضرب وقف الخسارة أو الهدف الثاني للونج
+                    if current_price <= stop_loss:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء (LONG) للعملة `{symbol}` وتم الخروج.*")
+                        continue
 
-                if current_price >= tp2:
-                    with positions_lock:
-                        if symbol in active_positions:
-                            del active_positions[symbol]
-                    send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) بالكامل للعملة `{symbol}`! تبريكات الأرباح.*")
-                    continue
+                    if current_price >= tp2:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) بالكامل لصفقة (LONG) على العملة `{symbol}`! تبريكات الأرباح.*")
+                        continue
 
-                # تفعيل Breakeven عند ضرب الهدف الأول TP1
-                if not be_done and current_price >= tp1:
-                    active_positions[symbol]["stop_loss"] = entry  # نقل الوقف لسعر الدخول
-                    active_positions[symbol]["breakeven_done"] = True
-                    send_telegram_message(
-                        f"🛡️ *تفعيل حماية رأس المال (Breakeven) للعملة `{symbol}`!*\n"
-                        f"• تم ضرب الهدف الأول (`{tp1}`).\n"
-                        f"• تم نقل وقف الخسارة تلقائياً إلى سعر الدخول (`{entry}`) لضمان صفقة خالية من المخاطر."
-                    )
+                    # تفعيل Breakeven للونج عند ضرب TP1
+                    if not be_done and current_price >= tp1:
+                        active_positions[symbol]["stop_loss"] = entry
+                        active_positions[symbol]["breakeven_done"] = True
+                        send_telegram_message(
+                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) لصفقة (LONG) على العملة `{symbol}`!*\n"
+                            f"• تم ضرب الهدف الأول (`{tp1}`).\n"
+                            f"• تم نقل وقف الخسارة تلقائياً إلى سعر الدخول (`{entry}`)."
+                        )
+
+                elif side == "SHORT":
+                    # التحقق من ضرب وقف الخسارة أو الهدف الثاني للشورت
+                    if current_price >= stop_loss:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع (SHORT) للعملة `{symbol}` وتم الخروج.*")
+                        continue
+
+                    if current_price <= tp2:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) بالكامل لصفقة (SHORT) على العملة `{symbol}`! تبريكات الأرباح.*")
+                        continue
+
+                    # تفعيل Breakeven للشورت عند ضرب TP1 (السعر يهبط للهدف الأول)
+                    if not be_done and current_price <= tp1:
+                        active_positions[symbol]["stop_loss"] = entry
+                        active_positions[symbol]["breakeven_done"] = True
+                        send_telegram_message(
+                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) لصفقة (SHORT) على العملة `{symbol}`!*\n"
+                            f"• تم ضرب الهدف الأول (`{tp1}`).\n"
+                            f"• تم نقل وقف الخسارة تلقائياً إلى سعر الدخول (`{entry}`)."
+                        )
 
             time.sleep(15)
         except Exception as e:
@@ -122,15 +174,18 @@ def position_tracker_loop():
 
 def background_scanner():
     time.sleep(5)
-    send_telegram_message("🛡️ *تم تفعيل بوت التداول الآمن (Market Guard + SMC) بنجاح والاستعداد للرصد الصارم!*")
+    send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC + Rate-Limit Protection) بنجاح!*")
 
     while True:
         try:
-            markets = bingx.load_markets()
+            markets = bingx_safe_call("load_markets")
+            if not markets:
+                time.sleep(30)
+                continue
+                
             symbols = [s for s, m in markets.items() if m.get("linear") and m.get("quote") == "USDT" and m.get("swap")]
             
-            # جلب بيانات البيتكوين أولاً لفلتر الحماية
-            btc_ohlcv_15m = bingx.fetch_ohlcv("BTC/USDT:USDT", timeframe="15m", limit=30)
+            btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
 
             for symbol in symbols:
                 if symbol == "BTC/USDT:USDT":
@@ -141,11 +196,11 @@ def background_scanner():
                         continue
 
                 try:
-                    ohlcv_5m = bingx.fetch_ohlcv(symbol, timeframe="5m", limit=35)
-                    ohlcv_15m = bingx.fetch_ohlcv(symbol, timeframe="15m", limit=35)
-                    ohlcv_1h = bingx.fetch_ohlcv(symbol, timeframe="1h", limit=35)
+                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
+                    ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
+                    ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
 
-                    if not (ohlcv_5m and ohlcv_15m and ohlcv_1h):
+                    if not (ohlcv_5m and ohlcv_1h):
                         continue
 
                     direction, entry_price, details = engine.analyze_market_structure(
@@ -153,16 +208,17 @@ def background_scanner():
                     )
                     scan_stats["scanned_pairs"] += 1
 
-                    if direction == "LONG" and details.get("trade_valid", False):
+                    if direction in ["LONG", "SHORT"] and details.get("trade_valid", False):
                         rm = details.get("risk_management", {})
                         ent = details.get("entry_zone", {})
+                        emoji = "🟢" if direction == "LONG" else "🔴"
                         
                         message = (
-                            f"🚀 *فرصة صفقات نخبة مؤكدة (LONG)* 🟢\n"
+                            f"🚀 *فرصة صفقات نخبة مؤكدة ({direction})* {emoji}\n"
                             f"🔹 العملة: `{symbol}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"📍 *السعر الحالي / الدخول:* `{entry_price}`\n"
-                            f"📍 *منطقة الطلب (OB):* `{ent.get('order_block')}`\n"
+                            f"📍 *منطقة الطلب/العرض (OB):* `{ent.get('order_block')}`\n"
                             f"🛑 *وقف الخسارة الأمان:* `{details.get('stop_loss')}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"🎯 *الأهداف الاستراتيجية:*\n"
@@ -176,6 +232,7 @@ def background_scanner():
                             scan_stats["signals_sent"] += 1
                             with positions_lock:
                                 active_positions[symbol] = {
+                                    "side": direction,
                                     "entry": entry_price,
                                     "stop_loss": details.get("stop_loss"),
                                     "tp1": rm.get("take_profit_1"),
@@ -186,7 +243,7 @@ def background_scanner():
                     logger.error(f"Error scanning {symbol}: {sub_exc}")
                     continue
 
-                time.sleep(0.2)
+                time.sleep(0.8)  # فاصل زمني آمن تماماً بين كل عملة وأخرى لتجنب خطأ 100410
 
             time.sleep(60)
         except Exception as exc:
@@ -200,12 +257,12 @@ if bot:
         if not text or text.startswith("/"):
             return
         symbol = f"{text}/USDT:USDT" if "USDT" not in text else text
-        bot.reply_to(message, f"🔍 جارٍ فحص الشروط الـ 5 الصارمة للعملة **{symbol}**...", parse_mode="Markdown")
+        bot.reply_to(message, f"🔍 جارٍ فحص الشروط الـ 4 الصارمة للعملة **{symbol}**...", parse_mode="Markdown")
         try:
-            ohlcv_5m = bingx.fetch_ohlcv(symbol, timeframe="5m", limit=35)
-            ohlcv_15m = bingx.fetch_ohlcv(symbol, timeframe="15m", limit=35)
-            ohlcv_1h = bingx.fetch_ohlcv(symbol, timeframe="1h", limit=35)
-            btc_ohlcv_15m = bingx.fetch_ohlcv("BTC/USDT:USDT", timeframe="15m", limit=30)
+            ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
+            ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
+            ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
+            btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
 
             direction, entry_price, details = engine.analyze_market_structure(
                 ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, btc_ohlcv_15m=btc_ohlcv_15m
@@ -217,7 +274,7 @@ if bot:
 
             rm = details.get("risk_management", {})
             msg = (
-                f"🟢 *نتيجة فحص العملة `{symbol}`: تطابق تام!*\n"
+                f"🟢 *نتيجة فحص العملة `{symbol}` ({direction}): تطابق تام!*\n"
                 f"📍 الدخول: `{entry_price}`\n"
                 f"🛑 وقف الخسارة: `{details.get('stop_loss')}`\n"
                 f"🎯 TP1: `{rm.get('take_profit_1')}` | TP2: `{rm.get('take_profit_2')}`\n"
