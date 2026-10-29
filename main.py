@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v43.0 - Bi-Directional & Safe Rate-Limit)
+# MY EXPERT CRYPTO BOT - Main Controller (v44.0 - Clean & Conflict-Free Edition)
 # ==========================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Rate-Limit Protection Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Bi-Directional SMC & Clean Polling Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -79,7 +79,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
     delay = 2.0
     for attempt in range(retries):
         try:
-            time.sleep(0.4)  # فاصل زمني بسيط بين الطلبات لحماية السيرفر
+            time.sleep(0.4)
             return method(*args, **kwargs)
         except Exception as e:
             err_str = str(e)
@@ -116,7 +116,6 @@ def position_tracker_loop():
                 be_done = pos["breakeven_done"]
 
                 if side == "LONG":
-                    # التحقق من ضرب وقف الخسارة أو الهدف الثاني للونج
                     if current_price <= stop_loss:
                         with positions_lock:
                             if symbol in active_positions:
@@ -131,7 +130,6 @@ def position_tracker_loop():
                         send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) بالكامل لصفقة (LONG) على العملة `{symbol}`! تبريكات الأرباح.*")
                         continue
 
-                    # تفعيل Breakeven للونج عند ضرب TP1
                     if not be_done and current_price >= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
@@ -142,7 +140,6 @@ def position_tracker_loop():
                         )
 
                 elif side == "SHORT":
-                    # التحقق من ضرب وقف الخسارة أو الهدف الثاني للشورت
                     if current_price >= stop_loss:
                         with positions_lock:
                             if symbol in active_positions:
@@ -157,7 +154,6 @@ def position_tracker_loop():
                         send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) بالكامل لصفقة (SHORT) على العملة `{symbol}`! تبريكات الأرباح.*")
                         continue
 
-                    # تفعيل Breakeven للشورت عند ضرب TP1 (السعر يهبط للهدف الأول)
                     if not be_done and current_price <= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
@@ -174,7 +170,7 @@ def position_tracker_loop():
 
 def background_scanner():
     time.sleep(5)
-    send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC + Rate-Limit Protection) بنجاح!*")
+    send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي (Bi-Directional SMC) بنجاح!*")
 
     while True:
         try:
@@ -184,7 +180,6 @@ def background_scanner():
                 continue
                 
             symbols = [s for s, m in markets.items() if m.get("linear") and m.get("quote") == "USDT" and m.get("swap")]
-            
             btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
 
             for symbol in symbols:
@@ -243,7 +238,7 @@ def background_scanner():
                     logger.error(f"Error scanning {symbol}: {sub_exc}")
                     continue
 
-                time.sleep(0.8)  # فاصل زمني آمن تماماً بين كل عملة وأخرى لتجنب خطأ 100410
+                time.sleep(0.8)
 
             time.sleep(60)
         except Exception as exc:
@@ -257,7 +252,7 @@ if bot:
         if not text or text.startswith("/"):
             return
         symbol = f"{text}/USDT:USDT" if "USDT" not in text else text
-        bot.reply_to(message, f"🔍 جارٍ فحص الشروط الـ 4 الصارمة للعملة **{symbol}**...", parse_mode="Markdown")
+        bot.reply_to(message, f"🔍 جارٍ فحص الشروط الصارمة للعملة **{symbol}**...", parse_mode="Markdown")
         try:
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
             ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
@@ -269,7 +264,7 @@ if bot:
             )
             
             if not details.get("trade_valid", False):
-                bot.reply_to(message, f"❌ العملة لا تتطابق مع الشروط الصارمة:\n_{details.get('reason')}_", parse_mode="Markdown")
+                bot.reply_to(message, f"❌ العملة لا تتطابق مع الشروط:\n_{details.get('reason')}_", parse_mode="Markdown")
                 return
 
             rm = details.get("risk_management", {})
@@ -284,12 +279,29 @@ if bot:
         except Exception as e:
             bot.reply_to(message, f"⚠️ خطأ أثناء الفحص: {str(e)}")
 
+# إزالة الـ Webhook القديم لمنع تضارب 409
+if bot:
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        logger.info("Telegram webhook cleared successfully.")
+    except Exception as e:
+        logger.warning(f"Webhook clear warning: {e}")
+
 # تشغيل خيوط الخلفية
 threading.Thread(target=background_scanner, daemon=True, name="scanner").start()
 threading.Thread(target=position_tracker_loop, daemon=True, name="tracker").start()
 
 if bot:
-    threading.Thread(target=bot.infinity_polling, daemon=True, name="polling").start()
+    def run_polling():
+        while True:
+            try:
+                bot.infinity_polling(timeout=60, long_polling_timeout=30)
+            except Exception as e:
+                logger.error(f"Polling error: {e}")
+                time.sleep(10)
+
+    threading.Thread(target=run_polling, daemon=True, name="polling").start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
