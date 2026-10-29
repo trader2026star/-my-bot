@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Multi-Timeframe Advanced SMC Engine (v3.5 - Elite)
+# MY EXPERT CRYPTO BOT - Multi-Timeframe Advanced SMC Engine (v3.8 - Elite Institutional)
 # ============================================================
 
 import logging
@@ -62,7 +62,6 @@ class StrategyEngine:
             return 0.0
 
     def detect_fvg(self, ohlcv):
-        """الكشف البرمجي عن فجوات القيمة العادلة (Fair Value Gaps)"""
         try:
             bullish_fvg_found = False
             bearish_fvg_found = False
@@ -83,7 +82,6 @@ class StrategyEngine:
             return False, False
 
     def detect_true_order_block(self, ohlcv):
-        """تحديد الـ Order Block الحقيقي"""
         try:
             bullish_ob = ohlcv[-3, 3]
             bearish_ob = ohlcv[-3, 2]
@@ -101,7 +99,6 @@ class StrategyEngine:
             return float(np.min(ohlcv[-10:, 3])), float(np.max(ohlcv[-10:, 2]))
 
     def check_liquidity_sweep(self, ohlcv, higher_tf_high=None, higher_tf_low=None):
-        """كشف سحب السيولة (Stop Hunt)"""
         try:
             lows = ohlcv[-15:-2, 3]
             highs = ohlcv[-15:-2, 2]
@@ -124,9 +121,7 @@ class StrategyEngine:
             return False, False
 
     def check_market_structure_shift(self, ohlcv):
-        """التحقق من تغير الهيكل (MSS / ChoCH) على فريم التنفيذ"""
         try:
-            # كسر أحدث قمة هابطة أو قاع صاعد في آخر 5 شمعات
             recent_highs = ohlcv[-6:-2, 2]
             recent_lows = ohlcv[-6:-2, 3]
             current_close = ohlcv[-2, 4]
@@ -136,7 +131,7 @@ class StrategyEngine:
             
             return mss_bullish, mss_bearish
         except Exception:
-            return True, True  # تمرير افتراضي في حال عدم توفر البيانات الكافية
+            return True, True
 
     def calculate_position_size(self, entry_price, stop_loss):
         try:
@@ -201,7 +196,7 @@ class StrategyEngine:
         candle_range = max(high - low, close * 1e-8)
         body_ratio = max(0.0, abs(close - open_)) / candle_range
 
-        # شروط الشراء (LONG) مع مرشح الهيكل MSS
+        # شروط الشراء (LONG)
         if is_daily_bullish and is_h4_bullish and is_h1_bullish and btc_bullish:
             is_bullish_reaction = close > open_ and body_ratio >= 0.35
             
@@ -215,7 +210,6 @@ class StrategyEngine:
                 tp2 = close + (risk_dist * 3.5)
                 tp3 = close + (risk_dist * 5.0)
                 
-                # فلتر RRR: التأكد من أن نسبة العائد للمخاطرة للهدف الأول >= 1.5
                 if (tp1 - close) / risk_dist < 1.5:
                     return no_trade("نسبة العائد إلى المخاطرة أقل من الحد الأدنى المقبول")
 
@@ -223,7 +217,7 @@ class StrategyEngine:
                 
                 details = {
                     "trade_valid": True,
-                    "reason": "تأكيد Elite SMC: سيولة + OB + FVG صاعد + تأكيد تغير الهيكل (MSS) (LONG)",
+                    "reason": "تأكيد Elite SMC: سيولة + OB + FVG صاعد + تأكيد تغير الهيكل (LONG)",
                     "stop_loss": self._round(stop),
                     "score": 99,
                     "position_sizing": {
@@ -236,14 +230,14 @@ class StrategyEngine:
                         "take_profit_2": self._round(tp2),
                         "take_profit_3": self._round(tp3),
                         "breakeven_trigger": self._round(tp1),
-                        "partial_tp_ratio": 0.5,  # إغلاق 50% عند الهدف الأول
+                        "partial_tp_ratio": 0.5,
                         "trailing_stop_active": True
                     },
-                    "smc_note": "تم رصد سحب السيولة، تأكيد MSS، والانعكاس من منطقة الطلب الحقيقية"
+                    "smc_note": "سحب سيولة مؤسسي مع ارتداد مؤكد من منطقة الطلب"
                 }
                 return "LONG", self._round(close), details
 
-        # شروط البيع (SHORT) مع مرشح الهيكل MSS
+        # شروط البيع (SHORT)
         if is_daily_bearish and is_h4_bearish and is_h1_bearish and not btc_bullish:
             is_bearish_reaction = close < open_ and body_ratio >= 0.35
 
@@ -264,7 +258,7 @@ class StrategyEngine:
                 
                 details = {
                     "trade_valid": True,
-                    "reason": "تأكيد Elite SMC: سيولة + OB + FVG هابط + تأكيد تغير الهيكل (MSS) (SHORT)",
+                    "reason": "تأكيد Elite SMC: سيولة + OB + FVG هابط + تأكيد تغير الهيكل (SHORT)",
                     "stop_loss": self._round(stop),
                     "score": 99,
                     "position_sizing": {
@@ -280,7 +274,7 @@ class StrategyEngine:
                         "partial_tp_ratio": 0.5,
                         "trailing_stop_active": True
                     },
-                    "smc_note": "تم رصد تفريغ مؤسسي، تأكيد MSS، والرفض من منطقة العرض"
+                    "smc_note": "تفريغ مؤسسي ورفض قاطع من منطقة العرض"
                 }
                 return "SHORT", self._round(close), details
 
