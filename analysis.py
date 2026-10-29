@@ -124,11 +124,6 @@ class StrategyEngine:
         return 0
 
     def check_real_liquidity_sweep_and_closure(self, ohlcv):
-        """
-        تطبيق استراتيجية الصور بدقة:
-        - الفتيلة الصغيرة وحدها لا تكفي (مجرد ضوضاء / Not a real sweep).
-        - الاصطياد الحقيقي يتطلب كسر المستوى ثم إغلاق شمعة كاملة (Candle Closure) فوقه أو تحته لدخول الأموال الحقيقية.
-        """
         try:
             a = np.asarray(ohlcv, dtype=float)
             if a.ndim != 2 or len(a) < 15:
@@ -139,17 +134,13 @@ class StrategyEngine:
             prior_high = float(np.max(recent_highs))
             prior_low = float(np.min(recent_lows))
 
-            # شمعة التأكيد الأخيرة المكتملة
             last_candle = a[-2]
             high_val = float(last_candle[2])
             low_val = float(last_candle[3])
             close_val = float(last_candle[4])
             open_val = float(last_candle[1])
 
-            # شروط الاصطياد الحقيقي بإغلاق الشمعة (Candle Closure)
-            # صاعد: الفتيل ضرب القاع السابق ولكن الإغلاق تم فوقه أو بداخل الهيكل مع شمعة قوية
             real_bullish_sweep = (low_val < prior_low) and (close_val > prior_low) and (close_val > open_val)
-            # هابط: الفتيل ضرب القمة السابقة ولكن الإغلاق تم تحتها مع شمعة هابطة
             real_bearish_sweep = (high_val > prior_high) and (close_val < prior_high) and (close_val < open_val)
 
             return real_bullish_sweep, real_bearish_sweep, prior_high, prior_low
@@ -186,7 +177,7 @@ class StrategyEngine:
 
         score_long = (20 if daily_trend >= 0 else 0) + (18 if h4_trend >= 0 else 0) + (12 if h1_trend >= 0 else 0)
         if real_bull_sweep:
-            score_long += 25  ضاف نقاط مضاعفة لوجود اصطياد سيولة حقيقي مع إغلاق شمعة
+            score_long += 25
 
         score_short = (20 if daily_trend <= 0 else 0) + (18 if h4_trend <= 0 else 0) + (12 if h1_trend <= 0 else 0)
         if real_bear_sweep:
