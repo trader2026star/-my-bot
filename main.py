@@ -1,5 +1,5 @@
 # ==========================================
-# MY EXPERT CRYPTO BOT - Main Controller (v3.10 - Final Stable Edition)
+# MY EXPERT CRYPTO BOT - Main Controller (v3.11 - Pro Momentum Edition)
 # ==========================================
 import os
 import time
@@ -47,7 +47,6 @@ bingx = ccxt.bingx({
 
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
-# تحميل تيليجرام بأمان تام
 bot = None
 try:
     import telebot
@@ -60,7 +59,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Ultimate Edition) Active!"
+    return "MY EXPERT CRYPTO BOT (Pro Momentum Edition) Active!"
 
 @app.route("/health")
 def health():
@@ -168,7 +167,7 @@ def position_tracker_loop():
 
 def background_scanner():
     time.sleep(5)
-    send_telegram_message("🏛️ *تم تشغيل البوت بنجاح واستعداد تام لفحص السوق!*")
+    send_telegram_message("🚀 *تم تفعيل بوت استراتيجية الزخم والسيولة بنجاح!*")
 
     while True:
         try:
@@ -176,8 +175,6 @@ def background_scanner():
             if not symbols:
                 time.sleep(30)
                 continue
-
-            btc_ohlcv_1d = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1d", limit=25)
 
             for symbol in symbols:
                 if symbol == "BTC/USDT:USDT":
@@ -202,14 +199,12 @@ def background_scanner():
 
                 ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
                 ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
-                ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-                ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=25)
 
-                if not (ohlcv_15m and ohlcv_1h and ohlcv_4h and ohlcv_1d):
+                if not (ohlcv_15m and ohlcv_1h):
                     continue
 
                 direction, entry_price, details = engine.analyze_market_structure(
-                    ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d, btc_ohlcv_1d=btc_ohlcv_1d
+                    ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h
                 )
                 scan_stats["scanned_pairs"] += 1
 
@@ -264,21 +259,18 @@ if bot:
         if not symbol.endswith(":USDT") and "/USDT" in symbol:
             symbol = f"{symbol}:USDT"
 
-        bot.reply_to(message, f"🔍 جاري فحص عملة **{symbol}**...", parse_mode="Markdown")
+        bot.reply_to(message, f"🔍 جاري فحص عملة **{symbol}** بنظام الزخم والسيولة...", parse_mode="Markdown")
 
         try:
             ohlcv_15m = bingx_call("fetch_ohlcv", symbol, timeframe="15m", limit=30)
             ohlcv_1h = bingx_call("fetch_ohlcv", symbol, timeframe="1h", limit=30)
-            ohlcv_4h = bingx_call("fetch_ohlcv", symbol, timeframe="4h", limit=30)
-            ohlcv_1d = bingx_call("fetch_ohlcv", symbol, timeframe="1d", limit=25)
-            btc_ohlcv_1d = bingx_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="1d", limit=25)
 
             if not ohlcv_15m:
                 bot.reply_to(message, f"⚠️ تعذر جلب بيانات العملة `{symbol}`.")
                 return
 
             direction, entry_price, details = engine.analyze_market_structure(
-                ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h, ohlcv_1d=ohlcv_1d, btc_ohlcv_1d=btc_ohlcv_1d
+                ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h
             )
 
             ent = details.get('entry_zone', {})
