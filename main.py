@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v61.0 - Quant Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v61.1 - Clean Quant Edition)
 # ============================================================
 import os
 import time
@@ -35,7 +35,7 @@ bingx = ccxt.bingx({
     "secret": os.environ.get("BINGX_SECRET_KEY", "")
 })
 
-# تهيئة المحرك الكمي الجديد
+# تهيئة المحرك الكمي
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
 bot = None
@@ -240,7 +240,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل البوت الكمي للمضاربة والارتداد (Quantitative Engine v61.0)!*")
+        send_telegram_message("🛡️ *تم تفعيل البوت الكمي للمضاربة والارتداد (Quantitative Engine v61.1)!*")
 
     while True:
         try:
