@@ -1,293 +1,190 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.3_SNIPER_FINAL)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Analysis Engine (v63.4_FIXED_PRECISION)
 # ============================================================
-import os
-import time
-import threading
+import numpy as np
+import pandas as pd
 import logging
-import ccxt
-import requests
-from flask import Flask, jsonify
-from analysis import StrategyEngine
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger("MainBot")
+logger = logging.getLogger("StrategyEngine")
 
-app = Flask(__name__)
+class StrategyEngine:
+    def __init__(self, capital=10000.0, risk_per_trade=0.01):
+        self.capital = capital
+        self.risk_per_trade = risk_per_trade
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "10000")))
-RISK_PER_TRADE = min(0.05, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-
-active_positions = {}
-positions_lock = threading.Lock()
-scan_stats = {"scanned_pairs": 0, "signals_sent": 0}
-
-bingx = ccxt.bingx({
-    "enableRateLimit": True,
-    "timeout": 20000,
-    "options": {"defaultType": "swap"},
-    "apiKey": os.environ.get("BINGX_API_KEY", ""),
-    "secret": os.environ.get("BINGX_SECRET_KEY", "")
-})
-
-# تهيئة محرك التحليل المطور (Sniper Pro)
-engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
-
-bot = None
-try:
-    import telebot
-    if TELEGRAM_BOT_TOKEN:
-        bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-        logger.info("Telegram Bot initialized successfully.")
-except Exception as e:
-    logger.warning(f"Telegram initialization warning: {e}")
-
-@app.route("/")
-def home():
-    return "MY INSTITUTIONAL SNIPER BOT (v63.3) Active!"
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "healthy", "stats": scan_stats, "active_positions_count": len(active_positions)}), 200
-
-def send_telegram_message(message, chat_id=None):
-    target_chat = chat_id or TELEGRAM_CHAT_ID
-    if not TELEGRAM_BOT_TOKEN or not target_chat:
-        return False
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": target_chat, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True},
-            timeout=15
-        )
-        return response.status_code == 200
-    except Exception as e:
-        logger.error(f"Telegram error: {e}")
-        return False
-
-def bingx_safe_call(method_name, *args, **kwargs):
-    method = getattr(bingx, method_name, None)
-    if not method:
-        return None
-    
-    retries = 3
-    delay = 2.5
-    for attempt in range(retries):
+    def calculate_atr(self, df, period=14):
         try:
-            time.sleep(0.5)
-            return method(*args, **kwargs)
-        except Exception as e:
-            err_str = str(e)
-            if "109415" in err_str:
-                return None
-            if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
-                logger.warning("ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة...")
-                time.sleep(delay * (attempt + 1))
-            else:
-                if attempt == retries - 1:
-                    return None
-                time.sleep(1.0)
-    return None
-
-def calculate_position_size(current_price, stop_loss, asset_type):
-    try:
-        risk_amount_usd = BOT_CAPITAL_USD * RISK_PER_TRADE
-        risk_per_unit = abs(current_price - stop_loss)
-        if risk_per_unit == 0:
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            tr1 = high - low
+            tr2 = np.abs(high - close.shift())
+            tr3 = np.abs(low - close.shift())
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(window=period).mean()
+            val = float(atr.iloc[-1])
+            return val if not np.isnan(val) and val > 0 else 0.0
+        except Exception:
             return 0.0
-        raw_size = risk_amount_usd / risk_per_unit
-        return round(raw_size, 3) if asset_type == "crypto" else round(raw_size, 2)
-    except Exception:
-        return 0.0
 
-if bot:
-    @bot.message_handler(func=lambda message: True)
-    def handle_all_messages(message):
+    def calculate_cmf(self, df, period=20):
         try:
-            text = message.text.strip()
-            clean_text = text.replace("/", "").replace("_", "").strip().upper()
-            if not clean_text or len(clean_text) > 12:
-                return
-
-            bot.reply_to(message, f"🎯 *جاري فحص دفاتر الطلبات ورصد فجوات الـ SMC والسيولة للرمز* (`{clean_text}`)...", parse_mode="Markdown")
-
-            possible_symbols = []
-            asset_type = "crypto"
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            volume = df['volume']
             
-            if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
-                possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"]
-                asset_type = "stock"
-            elif clean_text in ["AAPL", "TSLA", "NVDA", "MSFT", "AMZN"]:
-                possible_symbols = [f"{clean_text}/USDT", f"{clean_text}USDT"]
-                asset_type = "stock"
-            else:
-                possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
+            mf_multiplier = ((close - low) - (high - close)) / (high - low + 1e-9)
+            mf_volume = mf_multiplier * volume
+            cmf = mf_volume.rolling(window=period).sum() / (volume.rolling(window=period).sum() + 1e-9)
+            val = float(cmf.iloc[-1])
+            return val if not np.isnan(val) else 0.0
+        except Exception:
+            return 0.0
 
-            ohlcv_15m = None
-            resolved_symbol = None
-
-            for sym in possible_symbols:
-                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
-                if ohlcv_15m and len(ohlcv_15m) >= 50:
-                    resolved_symbol = sym
-                    break
-
-            if not resolved_symbol:
-                try:
-                    spot_bingx = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "spot"}})
-                    for sym in possible_symbols:
-                        spot_sym = sym.replace(":USDT", "")
-                        ohlcv_15m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="15m", limit=300)
-                        if ohlcv_15m and len(ohlcv_15m) >= 50:
-                            resolved_symbol = spot_sym
-                            break
-                except Exception:
-                    pass
-
-            if not resolved_symbol or not ohlcv_15m:
-                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية للرمز `{clean_text}`.")
-                return
-
-            ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=300)
-
-            # استدعاء محرك القناص المطور
-            direction, current_price, details = engine.analyze_market_structure(
-                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
-            )
-
-            scan_stats["scanned_pairs"] += 1
-            position_size = 0.0
-
-            if details.get("trade_valid"):
-                position_size = calculate_position_size(current_price, details.get("stop_loss"), asset_type)
-                with positions_lock:
-                    active_positions[resolved_symbol] = {
-                        "side": direction,
-                        "entry": current_price,
-                        "size": position_size,
-                        "tp1": details["risk_management"]["take_profit_1"],
-                        "tp2": details["risk_management"]["take_profit_2"],
-                        "stop_loss": details["stop_loss"],
-                        "breakeven_done": False
-                    }
-                scan_stats["signals_sent"] += 1
-
-            rm = details.get("risk_management", {})
-            ent = details.get("entry_zone", {})
-            emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
-
-            # تقرير احترافي يوضح تفاصيل الـ SMC والسيولة للمستخدم
-            report = (
-                f"🎯 *تقرير قناص السيولة المؤسسي (SMC)* (`{resolved_symbol}`) {emoji}\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🔹 *السعر الحالي:* `{current_price}`\n"
-                f"🔹 *اتجاه الهيكل (SMC Bias):* `{ent.get('smc_bias')}`\n"
-                f"🔹 *تدفق سيولة الحيتان (CMF):* `{ent.get('z_score')}`\n"
-                f"🔹 *متوسط النطاق الحقيقي (ATR):* `{details.get('atr')}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 *التأكيدات الفنية المكتشفة:*\n"
-                f"  • الفجوة السعرية (FVG Up): `{'نعم 🟢' if ent.get('fvg_up') else 'لا ⚪'}`\n"
-                f"  • شفط السيولة (Sweep): `{'تم بنجاح ⚡' if ent.get('sweep_down') else 'غير متوفر'}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 *حجم العقد المقترح:* `{position_size}` Units\n"
-                f"🎯 *سعر الدخول المناسب:* `{current_price}`\n"
-                f"🛑 *وقف الخسارة الآمن (2.0x ATR):* `{details.get('stop_loss')}`\n\n"
-                f"🎯 *الأهداف الاستراتيجية:*\n"
-                f"  • الهدف الأول (جني أرباح وتأمين): `{rm.get('take_profit_1')}`\n"
-                f"  • الهدف الثاني (امتداد الاتجاه): `{rm.get('take_profit_2')}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 *التحليل الفني والسبب:* {details.get('reason')}"
-            )
-
-            bot.reply_to(message, report, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Error in message handler: {e}")
-
-def telegram_listener():
-    if bot:
-        logger.info("Starting Telegram Bot listener...")
-        bot.infinity_polling(none_stop=True, interval=1)
-
-def position_tracker_loop():
-    while True:
+    def detect_smart_money_elements(self, df):
         try:
-            time.sleep(5)
-            with positions_lock:
-                positions_to_check = list(active_positions.items())
+            if len(df) < 10:
+                return {"bullish_fvg": False, "bearish_fvg": False, "sweep_long": False, "sweep_short": False, "bias": "NEUTRAL"}
 
-            for symbol, pos in positions_to_check:
-                ticker = bingx_safe_call("fetch_ticker", symbol)
-                if not ticker:
-                    continue
-                current_price = float(ticker.get("last", 0))
-                if current_price <= 0:
-                    continue
+            high_1 = df['high'].iloc[-3]
+            low_3 = df['low'].iloc[-1]
+            bullish_fvg = low_3 > high_1
 
-                side = pos["side"]
-                entry = pos["entry"]
-                tp1 = pos["tp1"]
-                tp2 = pos["tp2"]
-                stop_loss = pos["stop_loss"]
-                be_done = pos["breakeven_done"]
+            low_1 = df['low'].iloc[-3]
+            high_3 = df['high'].iloc[-1]
+            bearish_fvg = high_3 < low_1
 
-                if side == "LONG":
-                    if current_price <= stop_loss:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء للرمز `{symbol}` عند السعر `{current_price}`.*")
-                        continue
-                    
-                    if current_price >= tp1 and not be_done:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                active_positions[symbol]["breakeven_done"] = True
-                                active_positions[symbol]["stop_loss"] = entry
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل وقف الخسارة إلى نقطة الدخول (Breakeven).*")
-                        
-                    if current_price >= tp2:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) بنجاح للرمز `{symbol}`! تم إغلاق الصفقة بربح ممتاز.*")
+            recent_low = df['low'].iloc[-10:-2].min()
+            current_low = df['low'].iloc[-1]
+            current_close = df['close'].iloc[-1]
+            
+            recent_high = df['high'].iloc[-10:-2].max()
+            current_high = df['high'].iloc[-1]
 
-                elif side == "SHORT":
-                    if current_price >= stop_loss:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع للرمز `{symbol}` عند السعر `{current_price}`.*")
-                        continue
-                    
-                    if current_price <= tp1 and not be_done:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                active_positions[symbol]["breakeven_done"] = True
-                                active_positions[symbol]["stop_loss"] = entry
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) لصفقة البيع `{symbol}`! تم تأمين الصفقة.*")
-                        
-                    if current_price <= tp2:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) للبيع بنجاح للرمز `{symbol}`!*")
+            sweep_long = current_low < recent_low and current_close > recent_low
+            sweep_short = current_high > recent_high and current_close < recent_high
+
+            bias = "NEUTRAL"
+            if bullish_fvg or sweep_long:
+                bias = "BULLISH"
+            elif bearish_fvg or sweep_short:
+                bias = "BEARISH"
+
+            return {
+                "bullish_fvg": bool(bullish_fvg),
+                "bearish_fvg": bool(bearish_fvg),
+                "sweep_long": bool(sweep_long),
+                "sweep_short": bool(sweep_short),
+                "bias": bias
+            }
+        except Exception:
+            return {"bullish_fvg": False, "bearish_fvg": False, "sweep_long": False, "sweep_short": False, "bias": "NEUTRAL"}
+
+    def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto"):
+        default_details = {
+            "trade_valid": False,
+            "trigger_price": 0.0,
+            "stop_loss": 0.0,
+            "atr": 0.0,
+            "entry_zone": {},
+            "risk_management": {},
+            "reason": "بيانات غير كافية أو السوق في حالة تذبذب عرضي."
+        }
+
+        try:
+            if not ohlcv_5m or not ohlcv_15m or len(ohlcv_5m) < 50 or len(ohlcv_15m) < 50:
+                return "NEUTRAL", 0.0, default_details
+
+            df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+            current_price = float(df_5m['close'].iloc[-1])
+
+            df_5m['ema20'] = df_5m['close'].ewm(span=20, adjust=False).mean()
+            df_5m['ema50'] = df_5m['close'].ewm(span=50, adjust=False).mean()
+
+            vwap_baseline = float(df_5m['ema20'].iloc[-1])
+            atr_val = float(self.calculate_atr(df_5m, period=14))
+            cmf_val = float(self.calculate_cmf(df_5m, period=20))
+
+            # حل مشكلة الأسعار الصغيرة جداً (مثل XPIN أو الميم كوينز) لو الـ ATR طلع صفر أو صغير جداً
+            if atr_val <= 0 or np.isnan(atr_val):
+                atr_val = current_price * 0.01  # 1% من السعر كحد أدنى آمن
+
+            smc_data = self.detect_smart_money_elements(df_5m)
+
+            is_bullish_trend = current_price > vwap_baseline and df_5m['ema20'].iloc[-1] > df_5m['ema50'].iloc[-1]
+            is_bearish_trend = current_price < vwap_baseline and df_5m['ema20'].iloc[-1] < df_5m['ema50'].iloc[-1]
+
+            direction = "NEUTRAL"
+            trade_valid = False
+            reason = ""
+
+            # تحديد عدد الخانات العشرية ديناميكياً بناءً على حجم السعر
+            decimals = 8 if current_price < 1 else (4 if current_price < 100 else 2)
+
+            if (is_bullish_trend or smc_data["bullish_fvg"] or smc_data["sweep_long"]) and cmf_val > -0.08:
+                direction = "LONG"
+                trade_valid = True
+                
+                # حساب الستوب لوز بدقة تحت السعر الحالي
+                stop_loss = round(current_price - (2.0 * atr_val), decimals)
+                if stop_loss >= current_price: # تأكيد إضافي لمنع أي خطأ منطقي
+                    stop_loss = round(current_price * 0.98, decimals)
+
+                tp1 = round(current_price + (1.5 * atr_val), decimals)
+                tp2 = round(current_price + (3.0 * atr_val), decimals)
+                
+                reasons_list = []
+                if smc_data["sweep_long"]: reasons_list.append("شفط سيولة ناجح (Liquidity Sweep)")
+                if smc_data["bullish_fvg"]: reasons_list.append("رصد فجوة سعرية صاعدة (Bullish FVG)")
+                if is_bullish_trend: reasons_list.append("إيجابية المتوسطات والزخم")
+                reason = " + ".join(reasons_list) if reasons_list else "دعم المؤسسات وصفقة شراء عالية الاحتمالية."
+
+            elif (is_bearish_trend or smc_data["bearish_fvg"] or smc_data["sweep_short"]) and cmf_val < 0.08:
+                direction = "SHORT"
+                trade_valid = True
+                
+                stop_loss = round(current_price + (2.0 * atr_val), decimals)
+                if stop_loss <= current_price:
+                    stop_loss = round(current_price * 1.02, decimals)
+
+                tp1 = round(current_price - (1.5 * atr_val), decimals)
+                tp2 = round(current_price - (3.0 * atr_val), decimals)
+                
+                reasons_list = []
+                if smc_data["sweep_short"]: reasons_list.append("شفط سيولة للقمم (Sweep Short)")
+                if smc_data["bearish_fvg"]: reasons_list.append("رصد فجوة سعرية هابطة (Bearish FVG)")
+                if is_bearish_trend: reasons_list.append("سلبية المتوسطات والزخم")
+                reason = " + ".join(reasons_list) if reasons_list else "ضغط بيعي مؤسسي وصفقة بيع عالية الاحتمالية."
+            else:
+                stop_loss = round(current_price * 0.98, decimals)
+                tp1 = current_price
+                tp2 = current_price
+                reason = "السوق عرضي أو السيولة متوازنة - لا توجد إشارة دخول قوية حالياً."
+
+            details = {
+                "trade_valid": trade_valid,
+                "trigger_price": current_price,
+                "stop_loss": stop_loss,
+                "atr": round(atr_val, decimals),
+                "entry_zone": {
+                    "vwap_baseline": round(vwap_baseline, decimals),
+                    "z_score": round(cmf_val, 4),
+                    "smc_bias": smc_data["bias"],
+                    "fvg_up": smc_data["bullish_fvg"],
+                    "sweep_down": smc_data["sweep_long"]
+                },
+                "risk_management": {
+                    "take_profit_1": tp1,
+                    "take_profit_2": tp2
+                },
+                "reason": reason
+            }
+
+            return direction, current_price, details
 
         except Exception as e:
-            logger.error(f"Error in position tracker loop: {e}")
-
-if __name__ == "__main__":
-    tracker_thread = threading.Thread(target=position_tracker_loop, daemon=True)
-    tracker_thread.start()
-
-    if bot:
-        tg_thread = threading.Thread(target=telegram_listener, daemon=True)
-        tg_thread.start()
-
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+            logger.error(f"Error in StrategyEngine analysis: {e}")
+            return "NEUTRAL", 0.0, default_details
