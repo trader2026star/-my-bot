@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.2_PRO_FINAL)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.3_SNIPER_FINAL)
 # ============================================================
 import os
 import time
@@ -36,6 +36,7 @@ bingx = ccxt.bingx({
     "secret": os.environ.get("BINGX_SECRET_KEY", "")
 })
 
+# تهيئة محرك التحليل المطور (Sniper Pro)
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
 bot = None
@@ -49,7 +50,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY INSTITUTIONAL TREND FOLLOWING BOT Active!"
+    return "MY INSTITUTIONAL SNIPER BOT (v63.3) Active!"
 
 @app.route("/health")
 def health():
@@ -114,7 +115,7 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"📈 جاري جلب البيانات وإجراء تحليل السيولة والزخم (`{clean_text}`)...", parse_mode="Markdown")
+            bot.reply_to(message, f"🎯 *جاري فحص دفاتر الطلبات ورصد فجوات الـ SMC والسيولة للرمز* (`{clean_text}`)...", parse_mode="Markdown")
 
             possible_symbols = []
             asset_type = "crypto"
@@ -155,6 +156,7 @@ if bot:
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=300)
 
+            # استدعاء محرك القناص المطور
             direction, current_price, details = engine.analyze_market_structure(
                 ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
             )
@@ -180,22 +182,27 @@ if bot:
             ent = details.get("entry_zone", {})
             emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
 
+            # تقرير احترافي يوضح تفاصيل الـ SMC والسيولة للمستخدم
             report = (
-                f"📊 *تحليل الزخم والتدفق النقدى للمؤسسات* (`{resolved_symbol}`) {emoji}\n"
+                f"🎯 *تقرير قناص السيولة المؤسسي (SMC)* (`{resolved_symbol}`) {emoji}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
-                f"🔹 *خط الاتجاه (EMA 20):* `{ent.get('vwap_baseline')}`\n"
+                f"🔹 *اتجاه الهيكل (SMC Bias):* `{ent.get('smc_bias')}`\n"
                 f"🔹 *تدفق سيولة الحيتان (CMF):* `{ent.get('z_score')}`\n"
                 f"🔹 *متوسط النطاق الحقيقي (ATR):* `{details.get('atr')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 *التأكيدات الفنية المكتشفة:*\n"
+                f"  • الفجوة السعرية (FVG Up): `{'نعم 🟢' if ent.get('fvg_up') else 'لا ⚪'}`\n"
+                f"  • شفط السيولة (Sweep): `{'تم بنجاح ⚡' if ent.get('sweep_down') else 'غير متوفر'}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 *حجم العقد المقترح:* `{position_size}` Units\n"
-                f"🎯 *سعر الدخول:* `{details.get('trigger_price')}`\n"
-                f"🛑 *وقف الخسارة الآمن (2.5x ATR):* `{details.get('stop_loss')}`\n\n"
+                f"🎯 *سعر الدخول المناسب:* `{current_price}`\n"
+                f"🛑 *وقف الخسارة الآمن (2.0x ATR):* `{details.get('stop_loss')}`\n\n"
                 f"🎯 *الأهداف الاستراتيجية:*\n"
                 f"  • الهدف الأول (جني أرباح وتأمين): `{rm.get('take_profit_1')}`\n"
                 f"  • الهدف الثاني (امتداد الاتجاه): `{rm.get('take_profit_2')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 *التحقق الفني:* {details.get('reason')}"
+                f"💡 *التحليل الفني والسبب:* {details.get('reason')}"
             )
 
             bot.reply_to(message, report, parse_mode="Markdown")
@@ -275,15 +282,12 @@ def position_tracker_loop():
             logger.error(f"Error in position tracker loop: {e}")
 
 if __name__ == "__main__":
-    # تشغيل مراقب الصفقات في خلفية مستقلة
     tracker_thread = threading.Thread(target=position_tracker_loop, daemon=True)
     tracker_thread.start()
 
-    # تشغيل بوت تليجرام في خلفية مستقلة إذا كان مفَعلاً
     if bot:
         tg_thread = threading.Thread(target=telegram_listener, daemon=True)
         tg_thread.start()
 
-    # تشغيل خادم الويب Flask (مطلوب لكي يستمر البوت بالعمل على منصات الاستضافة مثل Render)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
