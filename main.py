@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v51.0)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v52.0 - Full Edition)
 # ============================================================
 import os
 import time
@@ -27,7 +27,7 @@ active_positions = {}
 positions_lock = threading.Lock()
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0}
 
-# تهيئة الاتصال بمنصة BingX مع تفعيل الدعم الشامل للأسواق التقليدية والـ CFD
+# تهيئة الاتصال بمنصة BingX مع الدعم الشامل للعقود والأسواق التقليدية
 bingx = ccxt.bingx({
     "enableRateLimit": True,
     "timeout": 20000,
@@ -95,7 +95,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
     return None
 
 # ==========================================
-# معالج رسائل تليجرام المباشر (يدعم العملات والذهب ومركبات CFD)
+# معالج رسائل تليجرام المباشر (مع تصحيح رموز الذهب و CFD تلقائياً)
 # ==========================================
 if bot:
     @bot.message_handler(func=lambda message: True)
@@ -109,8 +109,7 @@ if bot:
 
             query_name = clean_text.upper()
             
-            # توجيه ذكي لرمز الذهب أو الفوركس أو العملات الرقمية
-            if query_name in ["GOLD", "XAU", "GOLDUSDT"]:
+            if query_name in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
                 symbol = "GOLD/USDT:USDT"
             elif "/" not in query_name:
                 symbol = f"{query_name}/USDT:USDT"
@@ -119,14 +118,22 @@ if bot:
                 if not symbol.endswith(":USDT") and "GOLD" not in symbol:
                     symbol += ":USDT"
 
-            bot.reply_to(message, f"🔍 جاري تحليل سوق `{symbol}` (شامل العقود الدائمة و CFD) واستخراج المستويات...", parse_mode="Markdown")
+            bot.reply_to(message, f"🔍 جاري البحث وتحليل الرمز `{symbol}`...", parse_mode="Markdown")
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
+            
+            if not ohlcv_5m and "GOLD" in symbol:
+                for alt_sym in ["XAU/USDT:USDT", "GOLD/USDT", "XAUUSDT"]:
+                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", alt_sym, timeframe="5m", limit=35)
+                    if ohlcv_5m:
+                        symbol = alt_sym
+                        break
+
             ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
             ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
 
             if not ohlcv_5m or not ohlcv_1h:
-                bot.reply_to(message, f"❌ تعذر جلب بيانات الرمز `{symbol}` من المنصة. تأكد من صحة الاسم (مثال: GOLD أو BTC أو GBPJPY).")
+                bot.reply_to(message, f"❌ تعذر جلب بيانات الرمز `{symbol}` من المنصة. قد يكون هذا السوق مقفلاً حالياً أو يتبع صيغة مختلفة.")
                 return
 
             direction, current_price, details = engine.analyze_market_structure(
@@ -144,7 +151,7 @@ if bot:
                 trigger_label = "📍 سعر الدعم المؤكد للشراء:"
 
             report = (
-                f"📊 *التحليل الفني المباشر (عقود و CFD)* (`{symbol}`)\n"
+                f"📊 *التحليل الفني المباشر* (`{symbol}`)\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
                 f"🔹 *الاتجاه العام (1H):* `{details.get('market_trend')}`\n"
@@ -254,10 +261,8 @@ def background_scanner():
                 time.sleep(30)
                 continue
                 
-            # جلب الرموز التي تتضمن العملات الرقمية وعقود الـ CFD المتاحة
             symbols = [s for s, m in markets.items() if (m.get("linear") or m.get("swap")) and m.get("quote") in ["USDT", "USD"]]
             
-            # إضافة الذهب والعملات الهامة يدوياً لضمان فحصها دائماً
             priority_symbols = ["GOLD/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
             for ps in priority_symbols:
                 if ps in markets and ps not in symbols:
