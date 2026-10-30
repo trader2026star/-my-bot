@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.0_PRO)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.1_FIXED)
 # ============================================================
 import os
 import time
@@ -35,7 +35,6 @@ bingx = ccxt.bingx({
     "secret": os.environ.get("BINGX_SECRET_KEY", "")
 })
 
-# تهيئة المحرك الكمي المطور لتتبع الاتجاه والسيولة
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
 bot = None
@@ -96,22 +95,13 @@ def bingx_safe_call(method_name, *args, **kwargs):
     return None
 
 def calculate_position_size(current_price, stop_loss, asset_type):
-    """
-    حساب حجم العقد الآمن بناءً على الستوب لوز لحماية المحفظة من الانعكاسات.
-    """
     try:
         risk_amount_usd = BOT_CAPITAL_USD * RISK_PER_TRADE
         risk_per_unit = abs(current_price - stop_loss)
-        
         if risk_per_unit == 0:
             return 0.0
-            
         raw_size = risk_amount_usd / risk_per_unit
-        
-        if asset_type == "crypto":
-            return round(raw_size, 3)
-        else:
-            return round(raw_size, 2)
+        return round(raw_size, 3) if asset_type == "crypto" else round(raw_size, 2)
     except Exception:
         return 0.0
 
@@ -121,7 +111,6 @@ if bot:
         try:
             text = message.text.strip()
             clean_text = text.replace("/", "").replace("_", "").strip().upper()
-            
             if not clean_text or len(clean_text) > 12:
                 return
 
@@ -142,7 +131,6 @@ if bot:
             ohlcv_15m = None
             resolved_symbol = None
 
-            # تم رفع الـ limit إلى 300 شمعة لحساب دقيق ومستقر للمتوسطات ومؤشر تدفق السيولة CMF
             for sym in possible_symbols:
                 ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
                 if ohlcv_15m and len(ohlcv_15m) >= 50:
@@ -167,7 +155,6 @@ if bot:
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=300)
 
-            # استدعاء محرك تتبع الاتجاه والسيولة v63.0_PRO الجديد
             direction, current_price, details = engine.analyze_market_structure(
                 ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
             )
@@ -177,7 +164,6 @@ if bot:
 
             if details.get("trade_valid"):
                 position_size = calculate_position_size(current_price, details.get("stop_loss"), asset_type)
-                
                 with positions_lock:
                     active_positions[resolved_symbol] = {
                         "side": direction,
@@ -222,9 +208,6 @@ def telegram_listener():
         bot.infinity_polling(none_stop=True, interval=1)
 
 def position_tracker_loop():
-    """
-    مراقبة وإدارة الصفقات النشطة لضمان الخروج الآمن عند الأهداف أو الستوب لوز الحجمي.
-    """
     while True:
         try:
             time.sleep(5)
@@ -251,3 +234,11 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء للرمز `{symbol}` عند السعر `{current_price}`.*")
+                        continue
+                    
+                    if current_price >= tp1 and not be_done:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                active_positions[symbol]["breakeven_done"] = True
+                                active_positions[symbol]["stop_loss"] = entry
