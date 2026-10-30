@@ -108,8 +108,9 @@ class StrategyEngine:
             atr_val = float(self.calculate_atr(df_5m, period=14))
             cmf_val = float(self.calculate_cmf(df_5m, period=20))
 
+            # حل مشكلة الأسعار الصغيرة جداً (مثل XPIN أو الميم كوينز) لو الـ ATR طلع صفر أو صغير جداً
             if atr_val <= 0 or np.isnan(atr_val):
-                atr_val = current_price * 0.01
+                atr_val = current_price * 0.01  # 1% من السعر كحد أدنى آمن
 
             smc_data = self.detect_smart_money_elements(df_5m)
 
@@ -120,14 +121,16 @@ class StrategyEngine:
             trade_valid = False
             reason = ""
 
+            # تحديد عدد الخانات العشرية ديناميكياً بناءً على حجم السعر
             decimals = 8 if current_price < 1 else (4 if current_price < 100 else 2)
 
             if (is_bullish_trend or smc_data["bullish_fvg"] or smc_data["sweep_long"]) and cmf_val > -0.08:
                 direction = "LONG"
                 trade_valid = True
                 
+                # حساب الستوب لوز بدقة تحت السعر الحالي
                 stop_loss = round(current_price - (2.0 * atr_val), decimals)
-                if stop_loss >= current_price:
+                if stop_loss >= current_price: # تأكيد إضافي لمنع أي خطأ منطقي
                     stop_loss = round(current_price * 0.98, decimals)
 
                 tp1 = round(current_price + (1.5 * atr_val), decimals)
