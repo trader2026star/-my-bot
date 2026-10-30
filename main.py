@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v54.0 - Clean Filter Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v55.0 - Full Complete Edition)
 # ============================================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO & TradFi CFD BOT (Clean Filter) Active!"
+    return "MY EXPERT CRYPTO & TradFi CFD BOT Active!"
 
 @app.route("/health")
 def health():
@@ -84,7 +84,6 @@ def bingx_safe_call(method_name, *args, **kwargs):
         except Exception as e:
             err_str = str(e)
             if "109415" in err_str:
-                # عقد متوقف مؤقتاً من المنصة، نتجاهله فوراً بدون محاولات مكررة لتوفير السرعة
                 return None
             if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
                 logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة... (محاولة {attempt+1})")
@@ -96,7 +95,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
     return None
 
 # ==========================================
-# معالج رسائل تليجرام المباشر للبحث الذكي
+# معالج رسائل تليجرام المباشر الشامل (عقود، سبوت، ذهب، فوركس)
 # ==========================================
 if bot:
     @bot.message_handler(func=lambda message: True)
@@ -108,13 +107,22 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🔍 جاري البحث والتحليل للرمز `{clean_text}`...", parse_mode="Markdown")
+            bot.reply_to(message, f"🔍 جاري البحث الذكي عن الرمز `{clean_text}` في كافة أسواق المنصة...", parse_mode="Markdown")
 
             possible_symbols = []
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
-                possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT"]
+                possible_symbols = [
+                    "GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"
+                ]
+            elif len(clean_text) == 6:
+                forex_pair = f"{clean_text[:3]}/{clean_text[3:]}"
+                possible_symbols = [
+                    f"{forex_pair}/USDT:USDT", f"{forex_pair}/USDT", f"{forex_pair}", clean_text
+                ]
             else:
-                possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
+                possible_symbols = [
+                    f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"
+                ]
 
             ohlcv_5m = None
             resolved_symbol = None
@@ -125,8 +133,20 @@ if bot:
                     resolved_symbol = sym
                     break
 
+            if not resolved_symbol:
+                try:
+                    spot_bingx = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "spot"}})
+                    for sym in possible_symbols:
+                        spot_sym = sym.replace(":USDT", "")
+                        ohlcv_5m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="5m", limit=35)
+                        if ohlcv_5m and len(ohlcv_5m) >= 10:
+                            resolved_symbol = spot_sym
+                            break
+                except Exception:
+                    pass
+
             if not resolved_symbol or not ohlcv_5m:
-                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`.")
+                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`. تأكد من صحة كتابة الرمز.")
                 return
 
             ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=35)
@@ -252,7 +272,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل (فلترة تلقائية للأسواق النشطة) بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل مع محرك البحث الذكي بنجاح!*")
 
     while True:
         try:
@@ -261,16 +281,14 @@ def background_scanner():
                 time.sleep(30)
                 continue
                 
-            # فلترة ذكية لاستبعاد العقود المتوقفة أو غير النشطة تلقائياً
             symbols = []
             for s, m in markets.items():
                 if (m.get("linear") or m.get("swap")) and m.get("quote") in ["USDT", "USD"]:
-                    # استبعاد الرموز الغريبة أو أسهم الـ CFD المتوقفة لتلافى الأخطاء
                     if any(x in s for x in ["USD-", "USDT-", "NCSK", "PAUSE"]):
                         continue
                     symbols.append(s)
             
-            priority_symbols = ["GOLD/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
+            priority_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
             for ps in priority_symbols:
                 if ps in markets and ps not in symbols:
                     symbols.insert(0, ps)
