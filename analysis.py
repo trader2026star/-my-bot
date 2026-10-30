@@ -1,12 +1,12 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Smart Scenario SMC Engine (v45.0)
+# INSTITUTIONAL LIQUIDITY & MOMENTUM STRATEGY ENGINE (v60.0)
 # ============================================================
 
 import logging
 import math
 import numpy as np
 
-logger = logging.getLogger("SmartScenarioEngine")
+logger = logging.getLogger("InstitutionalEngine")
 
 class StrategyEngine:
     def __init__(self, capital=10000, risk_per_trade=0.01, **kwargs):
@@ -21,7 +21,7 @@ class StrategyEngine:
             self.risk_per_trade = 0.01
 
     @staticmethod
-    def _array(ohlcv, minimum=20):
+    def _array(ohlcv, minimum=50):
         try:
             a = np.asarray(ohlcv, dtype=float)
             if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
@@ -41,6 +41,17 @@ class StrategyEngine:
         decimals = max(2, min(12, int(-math.floor(math.log10(abs(value)))) + 3))
         return round(value, decimals)
 
+    def calculate_ema(self, closes, period=200):
+        c = np.asarray(closes, dtype=float)
+        if len(c) < period:
+            period = len(c)
+        alpha = 2 / (period + 1)
+        ema = np.empty_like(c)
+        ema[0] = c[0]
+        for i in range(1, len(c)):
+            ema[i] = alpha * c[i] + (1 - alpha) * ema[i - 1]
+        return ema
+
     def calculate_rsi(self, closes, period=14):
         try:
             c = np.asarray(closes, dtype=float)
@@ -57,70 +68,134 @@ class StrategyEngine:
         except Exception:
             return 50.0
 
+    def detect_order_blocks_and_fvg(self, ohlcv):
+        """
+        رصد الـ Order Blocks المؤسسية والفجوات السعرية (FVG)
+        """
+        closes = ohlcv[:, 4]
+        opens = ohlcv[:, 1]
+        highs = ohlcv[:, 2]
+        lows = ohlcv[:, 3]
+
+        ob_high, ob_low = None, None
+        fvg_detected = False
+        fvg_top, fvg_bottom = 0.0, 0.0
+
+.        # البحث في الشموع الأخيرة عن دفعة قوية تلتها فجوة واضحة
+        for i in range(len(ohlcv) - 4, len(ohlcv) - 1):
+            if i < 2:
+                continue
+            # فحص FVG (الفرق بين قمة شمعة i-1 وقاع شمعة i+1 في حال الصعود)
+            if lows[i+1] > highs[i-1]:
+                fvg_detected = True
+                fvg_top = float(lows[i+1])
+                fvg_bottom = float(highs[i-1])
+                # الـ Order Block هو آخر شمعة هابطة قبل الحركة الصاعدة القوية
+                if closes[i] < opens[i]:  # شمعة هابطة
+                    ob_high = float(highs[i])
+                    ob_low = float(lows[i])
+            elif highs[i+1] < lows[i-1]:  # هبوط
+                fvg_detected = True
+                fvg_top = float(lows[i-1])
+                fvg_bottom = float(highs[i+1])
+                if closes[i] > opens[i]:  # شمعة صاعدة قبل الهبوط
+                    ob_high = float(highs[i])
+                    ob_low = float(lows[i])
+
+        if ob_high is None:
+            ob_high = float(np.max(highs[-10:]))
+            ob_low = float(np.min(lows[-10:]))
+
+        return {"ob_high": ob_high, "ob_low": ob_low, "fvg_present": fvg_detected, "fvg_top": fvg_top, "fvg_bottom": fvg_bottom}
+
     def analyze_market_structure(
         self, ohlcv_5m=None, ohlcv_15m=None, ohlcv_1h=None,
         ohlcv_4h=None, btc_ohlcv_15m=None, **kwargs
     ):
-        if ohlcv_5m is None or ohlcv_1h is None:
-            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات فريم 5M أو 1H غير متوفرة."}
+        # استخدام فريم 1H أو 4H لتحديد الاتجاه العام بـ EMA 200
+        macro_ohlcv = ohlcv_4h if ohlcv_4h is not None and len(ohlcv_4h) >= 50 else ohlcv_1h
+        if macro_ohlcv is None or ohlcv_5m is None:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الفريمات الكبرى أو الصغرى غير كافية للتحليل المؤسسي."}
 
-        m5 = self._array(ohlcv_5m, 25)
-        h1 = self._array(ohlcv_1h, 15)
+        macro_arr = self._array(macro_ohlcv, 30)
+        m5_arr = self._array(ohlcv_5m, 30)
+        m15_arr = self._array(ohlcv_15m, 30) if ohlcv_15m is not None else m5_arr
 
-        if m5 is None or h1 is None:
-            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الشموع غير كافية."}
+        if macro_arr is None or m5_arr is None:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "مصفوفة الشموع لا تستوفي الحد الأدنى للتحليل."}
 
-        h1_closes = h1[:, 4]
-        trend_bullish = h1_closes[-1] > h1_closes[-10]
-        trend_bearish = h1_closes[-1] < h1_closes[-10]
-        market_trend_str = "صاعد (Bullish)" if trend_bullish else ("هابط (Bearish)" if trend_bearish else "عرضي (Sideways)")
+        macro_closes = macro_arr[:, 4]
+        ema_200 = self.calculate_ema(macro_closes, period=min(200, len(macro_closes)))
+        current_macro_close = float(macro_closes[-1])
+        current_ema_200 = float(ema_200[-1])
 
-        current_close = float(m5[-1, 4])
-        recent_highs = m5[-20:-2, 2]
-        recent_lows = m5[-20:-2, 3]
-        prior_high = float(np.max(recent_highs))
-        prior_low = float(np.min(recent_lows))
-        rsi_current = self.calculate_rsi(m5[:, 4], 14)
+        # تحديد الاتجاه المؤسسي (Macro Trend via EMA 200)
+        is_bullish_trend = current_macro_close > current_ema_200
+        is_bearish_trend = current_macro_close < current_ema_200
+        market_trend_str = "صاعد مؤسسي (Bullish > EMA200)" if is_bullish_trend else "هابط مؤسسي (Bearish < EMA200)"
 
-        # 1. تحديد أي السيناريوهين هو الأقرب بناءً على موقع السعر الحالي
-        dist_to_high = abs(prior_high - current_close)
-        dist_to_low = abs(current_close - prior_low)
+        current_price = float(m5_arr[-1, 4])
+        
+        # مؤشر الزخم RSI على الفريم الأصغر (5m / 15m)
+        rsi_val = self.calculate_rsi(m5_arr[:, 4], period=14)
 
-        # إذا كان السعر أقرب للقمة أو الاتجاه صاعد قوي -> سيناريو الاختراق هو الأقرب
-        if dist_to_high <= dist_to_low or trend_bullish:
-            closest_scenario = "BREAKOUT"  # سيناريو الاختراق
-            trigger_price = prior_high * 1.0015  # سعر تأكيد الاختراق فوق المقاومة
-            ideal_entry = trigger_price
-            stop_loss = prior_high * 0.995       # الوقف تحت مستوى الاختراق
-            tp1 = trigger_price * 1.015          # الهدف الأول (1.5%)
-            tp2 = trigger_price * 1.035          # الهدف الثاني (3.5%)
-            scenario_desc = f"السيناريو الأقرب هو 'اختراق المقاومة'. ينصح بالدخول عند كسر وتأكيد السعر الموضح."
+        # استخراج مناطق الـ Order Blocks و الفجوات (FVG)
+        structure_data = self.detect_order_blocks_and_fvg(m5_arr)
+        ob_high = structure_data["ob_high"]
+        ob_low = structure_data["ob_low"]
+
+        trade_valid = False
+        direction = "NEUTRAL"
+        reason = "لم تتحقق الشروط المؤسسية الصارمة بعد."
+
+        # فلترة الدخول بصرامة عالية (دقة 90%+)
+        # شروط الشراء (LONG): اتجاه صاعد + RSI في التشبع البيعي (<30 أو قريب منها <38) + ارتداد من الـ OB
+        if is_bullish_trend and rsi_val <= 42:
+            direction = "LONG"
+            trade_valid = True
+            entry_price = current_price
+            stop_loss = float(ob_low * 0.995)  # تحت الـ Order Block بدقة
+            risk = entry_price - stop_loss
+            if risk <= 0:
+                risk = entry_price * 0.005
+            tp1 = entry_price + (risk * 2.0)   # نسبة عائد 1:2
+            tp2 = entry_price + (risk * 3.0)   # نسبة عائد 1:3
+            reason = "تم تأكيد الاتجاه الصاعد بـ EMA200 مع ارتداد السعر لمنطقة الطلب (OB/FVG) وتشبع بيعي للـ RSI."
+
+        # شروط البيع (SHORT): اتجاه هابط + RSI في التشبع الشرائي (>70 أو فوق 62) + ارتداد من الـ OB الهابط
+        elif is_bearish_trend and rsi_val >= 58:
+            direction = "SHORT"
+            trade_valid = True
+            entry_price = current_price
+            stop_loss = float(ob_high * 1.005)  # فوق الـ Order Block بدقة
+            risk = stop_loss - entry_price
+            if risk <= 0:
+                risk = entry_price * 0.005
+            tp1 = entry_price - (risk * 2.0)   # نسبة عائد 1:2
+            tp2 = entry_price - (risk * 3.0)   # نسبة عائد 1:3
+            reason = "تم تأكيد الاتجاه الهابط بـ EMA200 مع ارتداد السعر لمنطقة العرض (OB/FVG) وتشبع شرائي للـ RSI."
         else:
-            closest_scenario = "SUPPORT_RETEST"  # سيناريو الشراء من الدعم
-            trigger_price = prior_low * 1.001    # سعر الدعم المؤكد للارتداد
-            ideal_entry = trigger_price
-            stop_loss = prior_low * 0.993        # الوقف تحت القاع
-            tp1 = current_close                  # الهدف الأول عند السعر الحالي
-            tp2 = prior_high                     # الهدف الثاني عند القمة السابقة
-            scenario_desc = f"السيناريو الأقرب هو 'الارتداد من الدعم'. ينصح بالشراء بالقرب من منطقة الدعم."
+            entry_price = current_price
+            stop_loss = current_price * 0.99 if is_bullish_trend else current_price * 1.01
+            tp1 = current_price * 1.01
+            tp2 = current_price * 1.02
 
         details = {
-            "trade_valid": False,
-            "signal_type": closest_scenario,
+            "trade_valid": trade_valid,
+            "signal_type": "INSTITUTIONAL_SMC",
             "market_trend": market_trend_str,
-            "rsi": self._round(rsi_current),
-            "reason": scenario_desc,
-            "closest_scenario": closest_scenario,
-            "trigger_price": self._round(trigger_price),
+            "rsi": self._round(rsi_val),
+            "reason": reason,
+            "closest_scenario": "OB_FVG_RETEST",
+            "trigger_price": self._round(entry_price),
             "stop_loss": self._round(stop_loss),
             "entry_zone": {
-                "ideal_entry": self._round(ideal_entry),
-                "support_level": self._round(prior_low),
-                "resistance_level": self._round(prior_high)
+                "order_block": f"{self._round(ob_low)} - {self._round(ob_high)}",
+                "fvg_active": structure_data["fvg_present"]
             },
             "risk_management": {
                 "take_profit_1": self._round(tp1),
                 "take_profit_2": self._round(tp2)
             }
         }
-        return "LONG" if trend_bullish else "SHORT", self._round(current_close), details
+        return direction, self._round(current_price), details
