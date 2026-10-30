@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL TREND & MOMENTUM ENGINE (v63.0_PRO)
+# INSTITUTIONAL TREND & MOMENTUM ENGINE (v63.1_FIXED)
 # ============================================================
 
 import logging
@@ -63,29 +63,26 @@ class StrategyEngine:
         self, ohlcv_5m=None, ohlcv_15m=None, ohlcv_1h=None,
         ohlcv_4h=None, asset_type="crypto", **kwargs
     ):
-        """
-        محرك تتبع الزخم والسيولة المؤسسية - يمنع دخول الصفقات المعاكسة للاتجاه.
-        """
-        # الاعتماد على فريم الـ 15 دقيقة كحد أدنى وتفضيل الفريمات الأكبر لعزل الضوضاء
         target_ohlcv = ohlcv_15m if ohlcv_15m is not None and len(ohlcv_15m) >= 25 else ohlcv_5m
         df = self._to_dataframe(target_ohlcv, minimum=25)
         
         if df is None:
-            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات غير كافية."}
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات غير كافية للتحليل الكمي."}
 
         current_price = float(df["close"].iloc[-1])
         
-        # 1. حساب المتوسطات الأسية السريعة والبطيئة لتحديد الاتجاه بدقة (EMA 20 & EMA 50)
         df["ema_fast"] = df["close"].ewm(span=20, adjust=False).mean()
         df["ema_slow"] = df["close"].ewm(span=50, adjust=False).mean()
         
         current_ema_fast = float(df["ema_fast"].iloc[-1])
         current_ema_slow = float(df["ema_slow"].iloc[-1])
 
-        # 2. حساب مؤشر تدفق الأموال (Chaikin Money Flow - CMF) لمعرفة دخل الحيتان
-        tp = (df["high"] + df["low"] + df["close"]) / 3.0
-        mfv = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / (df["high"] - df["low"]).replace(0, 1e-6)
+        tp_price = (df["high"] + df["low"] + df["close"]) / 3.0
+        # حساب ميزان التدفق المالي بدقة منعا للقسمة على صفر
+        diff_high_low = (df["high"] - df["low"]).replace(0, 1e-6)
+        mfv = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / diff_high_low
         mfv = mfv * df["volume"]
+        
         cmf = mfv.rolling(window=20).sum() / df["volume"].rolling(window=20).sum().replace(0, 1e-6)
         current_cmf = float(cmf.iloc[-1]) if not np.isnan(cmf.iloc[-1]) else 0.0
 
@@ -100,17 +97,14 @@ class StrategyEngine:
         take_profit_1 = 0.0
         take_profit_2 = 0.0
 
-        # شروط الدخول الصارمة تتبع الزخم (Win Rate > 90%):
-        # شراء: السعر فوق المتوسطات، والمتوسط السريع فوق البطيء، والسيولة إيجابية جداً دخل السوق (> 0.10)
         if current_price > current_ema_fast and current_ema_fast > current_ema_slow and current_cmf > 0.10:
             direction = "LONG"
             trade_valid = True
-            stop_loss = current_price - (2.5 * current_atr) # وقف خسارة مريح بعيد عن تلاعب الحيتان
+            stop_loss = current_price - (2.5 * current_atr)
             take_profit_1 = current_price + (1.5 * current_atr)
             take_profit_2 = current_price + (3.0 * current_atr)
             reason = f"انطلاق صعودي مع الحيتان: تدفق سيولة إيجابي قوي ({current_cmf:.2f}) ودعم من المتوسطات الأسية."
 
-        # بيع: السعر تحت المتوسطات، والسريع تحت البطيء، والسيولة سلبية جداً تخرج من السوق (< -0.10)
         elif current_price < current_ema_fast and current_ema_fast < current_ema_slow and current_cmf < -0.10:
             direction = "SHORT"
             trade_valid = True
@@ -123,7 +117,7 @@ class StrategyEngine:
             "trade_valid": trade_valid,
             "signal_type": "INSTITUTIONAL_TREND_FOLLOWING",
             "market_trend": "Bullish Trend" if direction == "LONG" else ("Bearish Trend" if direction == "SHORT" else "Ranging"),
-            "z_score": 0.0, # للحفاظ على التوافق مع ملف الماين
+            "z_score": self._round(current_cmf),
             "adx": 30.0 if trade_valid else 15.0,
             "atr": self._round(current_atr),
             "reason": reason,
