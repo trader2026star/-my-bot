@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v62.0_PRO)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.0_PRO)
 # ============================================================
 import os
 import time
@@ -35,7 +35,7 @@ bingx = ccxt.bingx({
     "secret": os.environ.get("BINGX_SECRET_KEY", "")
 })
 
-# تهيئة المحرك الكمي المطور
+# تهيئة المحرك الكمي المطور لتتبع الاتجاه والسيولة
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
 bot = None
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY QUANTITATIVE MEAN REVERSION BOT Active!"
+    return "MY INSTITUTIONAL TREND FOLLOWING BOT Active!"
 
 @app.route("/health")
 def health():
@@ -62,7 +62,7 @@ def send_telegram_message(message, chat_id=None):
     try:
         import requests
         response = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            f"https://telegram.org{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": target_chat, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True},
             timeout=15
         )
@@ -97,7 +97,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
 
 def calculate_position_size(current_price, stop_loss, asset_type):
     """
-    نظام إدارة المخاطر الكمي لحساب حجم العقد (Position Sizing) بناءً على الـ Stop Loss الإحصائي.
+    حساب حجم العقد الآمن بناءً على الستوب لوز لحماية المحفظة من الانعكاسات.
     """
     try:
         risk_amount_usd = BOT_CAPITAL_USD * RISK_PER_TRADE
@@ -108,10 +108,9 @@ def calculate_position_size(current_price, stop_loss, asset_type):
             
         raw_size = risk_amount_usd / risk_per_unit
         
-        # قواعد التقريب المناسبة لطبيعة الأصل لضمان عدم رفض المنصة للأمر
         if asset_type == "crypto":
             return round(raw_size, 3)
-        else: # الأسهم أو الذهب
+        else:
             return round(raw_size, 2)
     except Exception:
         return 0.0
@@ -126,15 +125,14 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"📈 جاري إجراء التحليل الكمي للتقلبات والارتداد (`{clean_text}`)...", parse_mode="Markdown")
+            bot.reply_to(message, f"📈 جاري جلب البيانات وإجراء تحليل السيولة والزخم (`{clean_text}`)...", parse_mode="Markdown")
 
             possible_symbols = []
             asset_type = "crypto"
             
-            # التمييز الذكي بين فئات الأصول لتفعيل الفلاتر الإحصائية الخاصة بها
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
                 possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"]
-                asset_type = "stock" # تعامل معاملة التداول التقليدي من حيث الفتح والإغلاق والسيولة
+                asset_type = "stock"
             elif clean_text in ["AAPL", "TSLA", "NVDA", "MSFT", "AMZN"]:
                 possible_symbols = [f"{clean_text}/USDT", f"{clean_text}USDT"]
                 asset_type = "stock"
@@ -144,9 +142,10 @@ if bot:
             ohlcv_15m = None
             resolved_symbol = None
 
+            # تم رفع الـ limit إلى 300 شمعة لحساب دقيق ومستقر للمتوسطات ومؤشر تدفق السيولة CMF
             for sym in possible_symbols:
-                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=50)
-                if ohlcv_15m and len(ohlcv_15m) >= 25:
+                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
+                if ohlcv_15m and len(ohlcv_15m) >= 50:
                     resolved_symbol = sym
                     break
 
@@ -155,8 +154,8 @@ if bot:
                     spot_bingx = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "spot"}})
                     for sym in possible_symbols:
                         spot_sym = sym.replace(":USDT", "")
-                        ohlcv_15m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="15m", limit=50)
-                        if ohlcv_15m and len(ohlcv_15m) >= 25:
+                        ohlcv_15m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="15m", limit=300)
+                        if ohlcv_15m and len(ohlcv_15m) >= 50:
                             resolved_symbol = spot_sym
                             break
                 except Exception:
@@ -166,17 +165,17 @@ if bot:
                 bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية للرمز `{clean_text}`.")
                 return
 
-            ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=50)
+            ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=300)
 
-            # استدعاء المحرك الكمي v62.0_PRO المطور
+            # استدعاء محرك تتبع الاتجاه والسيولة v63.0_PRO الجديد
             direction, current_price, details = engine.analyze_market_structure(
                 ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
             )
 
             scan_stats["scanned_pairs"] += 1
+            position_size = 0.0
 
             if details.get("trade_valid"):
-                # حساب الحجم المؤسسي الآمن للصفقة
                 position_size = calculate_position_size(current_price, details.get("stop_loss"), asset_type)
                 
                 with positions_lock:
@@ -196,21 +195,21 @@ if bot:
             emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
 
             report = (
-                f"📊 *التحليل الكمي للارتداد السعري* (`{resolved_symbol}`) {emoji}\n"
+                f"📊 *تحليل الزخم والتدفق النقدى للمؤسسات* (`{resolved_symbol}`) {emoji}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
-                f"🔹 *متوسط السعر (VWAP):* `{ent.get('vwap_baseline')}`\n"
-                f"🔹 *مؤشر Z-Score:* `{details.get('z_score')}`\n"
-                f"🔹 *مؤشر الاتجاه (ADX):* `{details.get('adx')}` | *ATR:* `{details.get('atr')}`\n"
+                f"🔹 *خط الاتجاه (EMA 20):* `{ent.get('vwap_baseline')}`\n"
+                f"🔹 *تدفق سيولة الحيتان (CMF):* `{ent.get('z_score')}`\n"
+                f"🔹 *متوسط النطاق الحقيقي (ATR):* `{details.get('atr')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 *حجم العقد الآمن:* `{position_size if details.get('trade_valid') else 0.0}`Units\n"
-                f"🎯 *سعر الدخول المقترح:* `{details.get('trigger_price')}`\n"
-                f"🛑 *وقف الخسارة الإحصائي:* `{details.get('stop_loss')}`\n\n"
-                f"🎯 *الأهداف الاستراتيجية (القيمة العادلة):*\n"
-                f"  • الهدف الأول (الـ VWAP الرئيسي): `{rm.get('take_profit_1')}`\n"
-                f"  • الهدف الثاني (امتداد الانحراف): `{rm.get('take_profit_2')}`\n"
+                f"🎯 *حجم العقد المقترح:* `{position_size}` Units\n"
+                f"🎯 *سعر الدخول:* `{details.get('trigger_price')}`\n"
+                f"🛑 *وقف الخسارة الآمن (2.5x ATR):* `{details.get('stop_loss')}`\n\n"
+                f"🎯 *الأهداف الاستراتيجية:*\n"
+                f"  • الهدف الأول (جني أرباح وتأمين): `{rm.get('take_profit_1')}`\n"
+                f"  • الهدف الثاني (امتداد الاتجاه): `{rm.get('take_profit_2')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 *التحقق الفني للمؤسسات:* {details.get('reason')}"
+                f"💡 *التحقق الفني:* {details.get('reason')}"
             )
 
             bot.reply_to(message, report, parse_mode="Markdown")
@@ -224,7 +223,7 @@ def telegram_listener():
 
 def position_tracker_loop():
     """
-    حلقة مراقبة وإدارة الصفقات النشطة وحمايتها وتحديث حالتها إحصائياً.
+    مراقبة وإدارة الصفقات النشطة لضمان الخروج الآمن عند الأهداف أو الستوب لوز الحجمي.
     """
     while True:
         try:
@@ -250,3 +249,5 @@ def position_tracker_loop():
                 if side == "LONG":
                     if current_price <= stop_loss:
                         with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
