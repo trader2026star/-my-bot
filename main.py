@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v60.2 - Clean Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v61.0 - Quant Edition)
 # ============================================================
 import os
 import time
@@ -35,6 +35,7 @@ bingx = ccxt.bingx({
     "secret": os.environ.get("BINGX_SECRET_KEY", "")
 })
 
+# تهيئة المحرك الكمي الجديد
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
 bot = None
@@ -48,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO INSTITUTIONAL BOT Active!"
+    return "MY QUANTITATIVE MEAN REVERSION BOT Active!"
 
 @app.route("/health")
 def health():
@@ -104,20 +105,21 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🔍 جاري التحليل المؤسسي الشامل للرمز `{clean_text}`...", parse_mode="Markdown")
+            bot.reply_to(message, f"📈 جاري إجراء التحليل الكمي للتقلبات والارتداد (`{clean_text}`)...", parse_mode="Markdown")
 
             possible_symbols = []
+            asset_type = "crypto"
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
                 possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"]
             else:
                 possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
 
-            ohlcv_5m = None
+            ohlcv_15m = None
             resolved_symbol = None
 
             for sym in possible_symbols:
-                ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=50)
-                if ohlcv_5m and len(ohlcv_5m) >= 20:
+                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=50)
+                if ohlcv_15m and len(ohlcv_15m) >= 25:
                     resolved_symbol = sym
                     break
 
@@ -126,27 +128,21 @@ if bot:
                     spot_bingx = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "spot"}})
                     for sym in possible_symbols:
                         spot_sym = sym.replace(":USDT", "")
-                        ohlcv_5m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="5m", limit=50)
-                        if ohlcv_5m and len(ohlcv_5m) >= 20:
+                        ohlcv_15m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="15m", limit=50)
+                        if ohlcv_15m and len(ohlcv_15m) >= 25:
                             resolved_symbol = spot_sym
                             break
                 except Exception:
                     pass
 
-            if not resolved_symbol or not ohlcv_5m:
-                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`.")
+            if not resolved_symbol or not ohlcv_15m:
+                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية للرمز `{clean_text}`.")
                 return
 
-            ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=50)
-            ohlcv_1h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="1h", limit=100)
-            ohlcv_4h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="4h", limit=220)
-
-            if not ohlcv_1h:
-                bot.reply_to(message, f"❌ تعذر استكمال بيانات الفريمات الكبرى للرمز `{resolved_symbol}`.")
-                return
+            ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=50)
 
             direction, current_price, details = engine.analyze_market_structure(
-                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h
+                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
             )
 
             rm = details.get("risk_management", {})
@@ -154,18 +150,18 @@ if bot:
             emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
 
             report = (
-                f"📊 *التحليل المؤسسي المباشر* (`{resolved_symbol}`) {emoji}\n"
+                f"📊 *التحليل الكمي للارتداد السعري* (`{resolved_symbol}`) {emoji}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
-                f"🔹 *الاتجاه المؤسسي:* `{details.get('market_trend')}`\n"
-                f"🔹 *مؤشر الزخم (RSI):* `{details.get('rsi')}`\n"
+                f"🔹 *متوسط السعر (VWAP):* `{ent.get('vwap_baseline')}`\n"
+                f"🔹 *مؤشر Z-Score:* `{details.get('z_score')}`\n"
+                f"🔹 *مؤشر الاتجاه (ADX):* `{details.get('adx')}` | *ATR:* `{details.get('atr')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📍 *منطقة الـ OB:* `{ent.get('order_block')}`\n"
                 f"🎯 *سعر الدخول المقترح:* `{details.get('trigger_price')}`\n"
-                f"🛑 *وقف الخسارة (SL):* `{details.get('stop_loss')}`\n\n"
+                f"🛑 *وقف الخسارة (2x ATR):* `{details.get('stop_loss')}`\n\n"
                 f"🎯 *الأهداف الاستراتيجية:*\n"
-                f"  • الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
-                f"  • الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
+                f"  • الهدف الأول (العودة للـ VWAP): `{rm.get('take_profit_1')}`\n"
+                f"  • الهدف الثاني (الامتداد): `{rm.get('take_profit_2')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"💡 *التحقق الفني:* {details.get('reason')}"
             )
@@ -211,12 +207,12 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`!*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني الكامل (TP2) للرمز `{symbol}`!*")
                         continue
                     if not be_done and current_price >= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
+                        send_telegram_message(f"🛡️ *السعر وصل لمستوى الـ VWAP! تم تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
 
                 elif side == "SHORT":
                     if current_price >= stop_loss:
@@ -229,12 +225,12 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`!*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني الكامل (TP2) للرمز `{symbol}`!*")
                         continue
                     if not be_done and current_price <= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
+                        send_telegram_message(f"🛡️ *السعر وصل لمستوى الـ VWAP! تم تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
 
             time.sleep(15)
         except Exception as e:
@@ -244,7 +240,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التحليل المؤسسي بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل البوت الكمي للمضاربة والارتداد (Quantitative Engine v61.0)!*")
 
     while True:
         try:
@@ -271,19 +267,14 @@ def background_scanner():
                         continue
 
                 try:
-                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
-                    if not ohlcv_5m:
-                        continue
-
                     ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
-                    ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=100)
-                    ohlcv_4h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="4h", limit=220)
-
-                    if not ohlcv_4h:
+                    if not ohlcv_15m or len(ohlcv_15m) < 25:
                         continue
+
+                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
 
                     direction, entry_price, details = engine.analyze_market_structure(
-                        ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h
+                        ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto"
                     )
                     scan_stats["scanned_pairs"] += 1
 
@@ -293,18 +284,19 @@ def background_scanner():
                         emoji = "🟢" if direction == "LONG" else "🔴"
                         
                         message = (
-                            f"🚀 *فرصة مؤسسية عالية الدقة ({direction})* {emoji}\n"
+                            f"🚀 *فرصة كمية عالية الدقة ({direction})* {emoji}\n"
                             f"🔹 الرمز: `{symbol}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📍 *السعر الحالي / الدخول:* `{entry_price}`\n"
-                            f"📍 *منطقة الـ OB:* `{ent.get('order_block')}`\n"
-                            f"🛑 *وقف الخسارة الأمان:* `{details.get('stop_loss')}`\n"
+                            f"📍 *سعر الدخول:* `{entry_price}`\n"
+                            f"📍 *مستوى الـ VWAP:* `{ent.get('vwap_baseline')}`\n"
+                            f"📊 *Z-Score:* `{details.get('z_score')}` | *ADX:* `{details.get('adx')}`\n"
+                            f"🛑 *وقف الخسارة (2x ATR):* `{details.get('stop_loss')}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"🎯 *الأهداف الاستراتيجية:*\n"
-                            f"  • TP1 (تحويل Breakeven): `{rm.get('take_profit_1')}`\n"
-                            f"  • TP2 (عائد 1:3): `{rm.get('take_profit_2')}`\n"
+                            f"  • TP1 (العودة للـ VWAP): `{rm.get('take_profit_1')}`\n"
+                            f"  • TP2 (الهدف الممتد): `{rm.get('take_profit_2')}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"💡 *التحقق الفني:* {details.get('reason')}"
+                            f"💡 *السبب الفني:* {details.get('reason')}"
                         )
                         sent = send_telegram_message(message)
                         if sent:
