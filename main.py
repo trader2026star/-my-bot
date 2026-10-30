@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v55.0 - Full Complete Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v60.0 - Institutional Edition)
 # ============================================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO & TradFi CFD BOT Active!"
+    return "MY EXPERT CRYPTO INSTITUTIONAL BOT Active!"
 
 @app.route("/health")
 def health():
@@ -95,7 +95,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
     return None
 
 # ==========================================
-# معالج رسائل تليجرام المباشر الشامل (عقود، سبوت، ذهب، فوركس)
+# معالج رسائل تليجرام المباشر الشامل (مع استدعاء الفريمات المؤسسية 4H/1H/15m/5m)
 # ==========================================
 if bot:
     @bot.message_handler(func=lambda message: True)
@@ -107,17 +107,12 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🔍 جاري البحث الذكي عن الرمز `{clean_text}` في كافة أسواق المنصة...", parse_mode="Markdown")
+            bot.reply_to(message, f"🔍 جاري التحليل المؤسسي الشامل للرمز `{clean_text}`...", parse_mode="Markdown")
 
             possible_symbols = []
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
                 possible_symbols = [
                     "GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"
-                ]
-            elif len(clean_text) == 6:
-                forex_pair = f"{clean_text[:3]}/{clean_text[3:]}"
-                possible_symbols = [
-                    f"{forex_pair}/USDT:USDT", f"{forex_pair}/USDT", f"{forex_pair}", clean_text
                 ]
             else:
                 possible_symbols = [
@@ -128,8 +123,8 @@ if bot:
             resolved_symbol = None
 
             for sym in possible_symbols:
-                ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=35)
-                if ohlcv_5m and len(ohlcv_5m) >= 10:
+                ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=50)
+                if ohlcv_5m and len(ohlcv_5m) >= 20:
                     resolved_symbol = sym
                     break
 
@@ -138,52 +133,49 @@ if bot:
                     spot_bingx = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "spot"}})
                     for sym in possible_symbols:
                         spot_sym = sym.replace(":USDT", "")
-                        ohlcv_5m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="5m", limit=35)
-                        if ohlcv_5m and len(ohlcv_5m) >= 10:
+                        ohlcv_5m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="5m", limit=50)
+                        if ohlcv_5m and len(ohlcv_5m) >= 20:
                             resolved_symbol = spot_sym
                             break
                 except Exception:
                     pass
 
             if not resolved_symbol or not ohlcv_5m:
-                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`. تأكد من صحة كتابة الرمز.")
+                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`.")
                 return
 
-            ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=35)
-            ohlcv_1h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="1h", limit=35)
+            # جلب الفريمات المتعددة لتطبيق استراتيجية EMA 200 و OB و Fvg بدقة
+            ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=50)
+            ohlcv_1h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="1h", limit=100)
+            ohlcv_4h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="4h", limit=220)
 
             if not ohlcv_1h:
                 bot.reply_to(message, f"❌ تعذر استكمال بيانات الفريمات الكبرى للرمز `{resolved_symbol}`.")
                 return
 
             direction, current_price, details = engine.analyze_market_structure(
-                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h
+                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h
             )
 
             rm = details.get("risk_management", {})
-            scenario = details.get("closest_scenario")
-
-            if scenario == "BREAKOUT":
-                scenario_title = "🚀 السيناريو الأقرب: (اختراق المقاومة)"
-                trigger_label = "📍 سعر الاختراق المؤكد للدخول:"
-            else:
-                scenario_title = "🛡️ السيناريو الأقرب: (الارتداد من الدعم)"
-                trigger_label = "📍 سعر الدعم المؤكد للشراء:"
+            ent = details.get("entry_zone", {})
+            emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
 
             report = (
-                f"📊 *التحليل الفني المباشر* (`{resolved_symbol}`)\n"
+                f"📊 *التحليل المؤسسي المباشر* (`{resolved_symbol}`) {emoji}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
-                f"🔹 *الاتجاه العام (1H):* `{details.get('market_trend')}`\n"
+                f"🔹 *الاتجاه المؤسسي:* `{details.get('market_trend')}`\n"
+                f"🔹 *مؤشر الزخم (RSI):* `{details.get('rsi')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"{scenario_title}\n\n"
-                f"{trigger_label} `{details.get('trigger_price')}`\n"
+                f"📍 *منطقة الطلب/العرض (OB):* `{ent.get('order_block')}`\n"
+                f"🎯 *سعر الدخول المقترح:* `{details.get('trigger_price')}`\n"
                 f"🛑 *وقف الخسارة (SL):* `{details.get('stop_loss')}`\n\n"
-                f"🎯 *الأهداف المؤكدة:*\n"
+                f"🎯 *الأهداف الاستراتيجية (1:2 / 1:3):*\n"
                 f"  • الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
                 f"  • الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 *رؤية التحليل:* {details.get('reason')}"
+                f"💡 *التحقق الفني:* {details.get('reason')}"
             )
 
             bot.reply_to(message, report, parse_mode="Markdown")
@@ -228,7 +220,7 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح المؤسسية.*")
                         continue
 
                     if not be_done and current_price >= tp1:
@@ -252,7 +244,7 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح المؤسسية.*")
                         continue
 
                     if not be_done and current_price <= tp1:
@@ -272,7 +264,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل مع محرك البحث الذكي بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التحليل المؤسسي (السيولة والزخم) بنجاح!*")
 
     while True:
         try:
@@ -288,12 +280,10 @@ def background_scanner():
                         continue
                     symbols.append(s)
             
-            priority_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
+            priority_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
             for ps in priority_symbols:
                 if ps in markets and ps not in symbols:
                     symbols.insert(0, ps)
-
-            btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
 
             for symbol in symbols:
                 with positions_lock:
@@ -301,18 +291,19 @@ def background_scanner():
                         continue
 
                 try:
-                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
+                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
                     if not ohlcv_5m:
                         continue
 
-                    ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
-                    ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
+                    ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
+                    ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=100)
+                    ohlcv_4h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="4h", limit=220)
 
-                    if not ohlcv_1h:
+                    if not ohlcv_4h:
                         continue
 
                     direction, entry_price, details = engine.analyze_market_structure(
-                        ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, btc_ohlcv_15m=btc_ohlcv_15m
+                        ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h
                     )
                     scan_stats["scanned_pairs"] += 1
 
@@ -322,16 +313,16 @@ def background_scanner():
                         emoji = "🟢" if direction == "LONG" else "🔴"
                         
                         message = (
-                            f"🚀 *فرصة صفقات نخبة مؤكدة ({direction})* {emoji}\n"
-                            f"🔹 الرمز / السوق: `{symbol}`\n"
+                            f"🚀 *فرصة مؤسسية عالية الدقة ({direction})* {emoji}\n"
+                            f"🔹 الرمز: `{symbol}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"📍 *السعر الحالي / الدخول:* `{entry_price}`\n"
-                            f"📍 *منطقة الطلب/العرض (OB):* `{ent.get('order_block')}`\n"
+                            f"📍 *منطقة الـ OB:* `{ent.get('order_block')}`\n"
                             f"🛑 *وقف الخسارة الأمان:* `{details.get('stop_loss')}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"🎯 *الأهداف الاستراتيجية:*\n"
                             f"  • TP1 (تحويل Breakeven): `{rm.get('take_profit_1')}`\n"
-                            f"  • TP2 (1:2.5 العائد): `{rm.get('take_profit_2')}`\n"
+                            f"  • TP2 (عائد 1:3): `{rm.get('take_profit_2')}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"💡 *التحقق الفني:* {details.get('reason')}"
                         )
@@ -350,7 +341,7 @@ def background_scanner():
                 except Exception as sub_exc:
                     continue
 
-                time.sleep(1.2)
+                time.sleep(1.5)
 
             time.sleep(60)
         except Exception as exc:
