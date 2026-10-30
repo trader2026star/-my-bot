@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Analysis Engine (v63.2_PRO)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Analysis Engine (v63.3_SNIPER_PRO)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -22,14 +22,11 @@ class StrategyEngine:
             tr3 = np.abs(low - close.shift())
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr = tr.rolling(window=period).mean()
-            return atr.iloc[-1]
+            return float(atr.iloc[-1])
         except Exception:
             return 0.0
 
     def calculate_cmf(self, df, period=20):
-        """
-        حساب تدفق الأموال (Chaikin Money Flow - CMF) لقياس سيولة الحيتان والشراء/البيع المؤسسي.
-        """
         try:
             high = df['high']
             low = df['low']
@@ -43,10 +40,51 @@ class StrategyEngine:
         except Exception:
             return 0.0
 
+    def detect_smart_money_elements(self, df):
+        """
+        محرك رصد الفجوات السعرية (FVG) وعمليات شفط السيولة (Liquidity Sweeps) (SMC/ICT).
+        """
+        try:
+            if len(df) < 10:
+                return {"bullish_fvg": False, "bearish_fvg": False, "sweep_long": False, "sweep_short": False, "bias": "NEUTRAL"}
+
+            # فحص الفجوة السعرية (Fair Value Gap - FVG)
+            high_1 = df['high'].iloc[-3]
+            low_3 = df['low'].iloc[-1]
+            bullish_fvg = low_3 > high_1 # قاع الشمعة الثالثة أعلى من قمة الشمعة الأولى
+
+            low_1 = df['low'].iloc[-3]
+            high_3 = df['high'].iloc[-1]
+            bearish_fvg = high_3 < low_1 # قمة الشمعة الثالثة أقل من قاع الشمعة الأولى
+
+            # فحص شفط السيولة (Liquidity Sweep) تحت القيعان أو فوق القمم السابقة
+            recent_low = df['low'].iloc[-10:-2].min()
+            current_low = df['low'].iloc[-1]
+            current_close = df['close'].iloc[-1]
+            
+            recent_high = df['high'].iloc[-10:-2].max()
+            current_high = df['high'].iloc[-1]
+
+            sweep_long = current_low < recent_low and current_close > recent_low # كسر كاذب للقاع ثم الارتداد لداخل النطاق
+            sweep_short = current_high > recent_high and current_close < recent_high # كسر كاذب للقمة ثم الهبوط
+
+            bias = "NEUTRAL"
+            if bullish_fvg or sweep_long:
+                bias = "BULLISH"
+            elif bearish_fvg or sweep_short:
+                bias = "BEARISH"
+
+            return {
+                "bullish_fvg": bool(bullish_fvg),
+                "bearish_fvg": bool(bearish_fvg),
+                "sweep_long": bool(sweep_long),
+                "sweep_short": bool(sweep_short),
+                "bias": bias
+            }
+        except Exception:
+            return {"bullish_fvg": False, "bearish_fvg": False, "sweep_long": False, "sweep_short": False, "bias": "NEUTRAL"}
+
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto"):
-        """
-        تحليل بنية السوق والزخم والسيولة بناءً على الشموع للإطارين 5m و 15m.
-        """
         default_details = {
             "trade_valid": False,
             "trigger_price": 0.0,
@@ -61,13 +99,12 @@ class StrategyEngine:
             if not ohlcv_5m or not ohlcv_15m or len(ohlcv_5m) < 50 or len(ohlcv_15m) < 50:
                 return "NEUTRAL", 0.0, default_details
 
-            # تحويل البيانات إلى DataFrames
             df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
             current_price = float(df_5m['close'].iloc[-1])
 
-            # حساب المتوسطات ومؤشرات الزخم
+            # حساب المتوسطات ومؤشرات الزخم والسيولة
             df_5m['ema20'] = df_5m['close'].ewm(span=20, adjust=False).mean()
             df_5m['ema50'] = df_5m['close'].ewm(span=50, adjust=False).mean()
 
@@ -76,9 +113,11 @@ class StrategyEngine:
             cmf_val = float(self.calculate_cmf(df_5m, period=20))
 
             if atr_val <= 0:
-                atr_val = current_price * 0.005  # قيمة افتراضية آمنة في حال انعدام الـ ATR
+                atr_val = current_price * 0.005
 
-            # شروط الدخول بناءً على الاتجاه والسيولة (Smart Money / Trend Following)
+            # تشغيل قناص الـ SMC وشفط السيولة
+            smc_data = self.detect_smart_money_elements(df_5m)
+
             is_bullish_trend = current_price > vwap_baseline and df_5m['ema20'].iloc[-1] > df_5m['ema50'].iloc[-1]
             is_bearish_trend = current_price < vwap_baseline and df_5m['ema20'].iloc[-1] < df_5m['ema50'].iloc[-1]
 
@@ -86,28 +125,37 @@ class StrategyEngine:
             trade_valid = False
             reason = ""
 
-            # اعتماد صفقات الشراء (LONG) عند إيجابية الزخم وسيولة المؤسسات
-            if is_bullish_trend and cmf_val > -0.05:
+            # دمج شروط الزخم المؤسسي مع تأكيدات الـ SMC (FVG أو Liquidity Sweep)
+            if (is_bullish_trend or smc_data["bullish_fvg"] or smc_data["sweep_long"]) and cmf_val > -0.08:
                 direction = "LONG"
                 trade_valid = True
-                stop_loss = round(current_price - (2.5 * atr_val), 4)
+                stop_loss = round(current_price - (2.0 * atr_val), 4)
                 tp1 = round(current_price + (1.5 * atr_val), 4)
                 tp2 = round(current_price + (3.0 * atr_val), 4)
-                reason = "ارتكاز السعر فوق المتوسط المتحرك مع تدفق سيولة إيجابي ومؤشرات هيكلية صاعدة."
+                
+                reasons_list = []
+                if smc_data["sweep_long"]: reasons_list.append("شفط سيولة ناجح (Liquidity Sweep) عند القاع")
+                if smc_data["bullish_fvg"]: reasons_list.append("رصد فجوة سعرية صاعدة (Bullish FVG)")
+                if is_bullish_trend: reasons_list.append("إيجابية المتوسطات والزخم")
+                reason = " + ".join(reasons_list) if reasons_list else "دعم المؤسسات وصفقة شراء عالية الاحتمالية."
 
-            # اعتماد صفقات البيع (SHORT) عند سلبية الزخم وضغط البيع
-            elif is_bearish_trend and cmf_val < 0.05:
+            elif (is_bearish_trend or smc_data["bearish_fvg"] or smc_data["sweep_short"]) and cmf_val < 0.08:
                 direction = "SHORT"
                 trade_valid = True
-                stop_loss = round(current_price + (2.5 * atr_val), 4)
+                stop_loss = round(current_price + (2.0 * atr_val), 4)
                 tp1 = round(current_price - (1.5 * atr_val), 4)
                 tp2 = round(current_price - (3.0 * atr_val), 4)
-                reason = "كسر المتوسطات الهابطة مع ضغط بيعي مؤسسي وسيولة سلبية."
+                
+                reasons_list = []
+                if smc_data["sweep_short"]: reasons_list.append("شفط سيولة للقمم (Sweep Short)")
+                if smc_data["bearish_fvg"]: reasons_list.append("رصد فجوة سعرية هابطة (Bearish FVG)")
+                if is_bearish_trend: reasons_list.append("سلبية المتوسطات والزخم")
+                reason = " + ".join(reasons_list) if reasons_list else "ضغط بيعي مؤسسي وصفقة بيع عالية الاحتمالية."
             else:
-                stop_loss = round(current_price - (2.0 * atr_val), 4) if is_bullish_trend else round(current_price + (2.0 * atr_val), 4)
+                stop_loss = round(current_price - (2.0 * atr_val), 4)
                 tp1 = current_price
                 tp2 = current_price
-                reason = "السوق في مرحلة ترشيح أو توقف مؤقت (Consolidation) - لا توجد إشارة واضحة."
+                reason = "السوق عرضي أو السيولة متوازنة - لا توجد إشارة دخول قوية حالياً."
 
             details = {
                 "trade_valid": trade_valid,
@@ -116,7 +164,10 @@ class StrategyEngine:
                 "atr": round(atr_val, 4),
                 "entry_zone": {
                     "vwap_baseline": round(vwap_baseline, 4),
-                    "z_score": round(cmf_val, 4)
+                    "z_score": round(cmf_val, 4),
+                    "smc_bias": smc_data["bias"],
+                    "fvg_up": smc_data["bullish_fvg"],
+                    "sweep_down": smc_data["sweep_long"]
                 },
                 "risk_management": {
                     "take_profit_1": tp1,
