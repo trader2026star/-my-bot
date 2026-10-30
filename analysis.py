@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Analysis Engine (v63.4_FIXED_PRECISION)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Analysis Engine (v63.5_SNIPER_PRO_FVG)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -43,23 +43,37 @@ class StrategyEngine:
             return 0.0
 
     def detect_smart_money_elements(self, df):
+        """
+        محرك رصد الفجوات (FVG) عبر مسح نطاق أوسع، وعمليات شفط السيولة (Liquidity Sweeps) (SMC/ICT).
+        """
         try:
-            if len(df) < 10:
+            if len(df) < 20:
                 return {"bullish_fvg": False, "bearish_fvg": False, "sweep_long": False, "sweep_short": False, "bias": "NEUTRAL"}
 
-            high_1 = df['high'].iloc[-3]
-            low_3 = df['low'].iloc[-1]
-            bullish_fvg = low_3 > high_1
+            # فحص الفجوة السعرية الصاعدة (Bullish FVG) في نطاق آخر 20 شمعة
+            bullish_fvg = False
+            for i in range(3, len(df)):
+                high_1 = df['high'].iloc[i-3]
+                low_3 = df['low'].iloc[i]
+                if low_3 > high_1:
+                    bullish_fvg = True
+                    break
 
-            low_1 = df['low'].iloc[-3]
-            high_3 = df['high'].iloc[-1]
-            bearish_fvg = high_3 < low_1
+            # فحص الفجوة السعرية الهابطة (Bearish FVG) في نطاق آخر 20 شمعة
+            bearish_fvg = False
+            for i in range(3, len(df)):
+                low_1 = df['low'].iloc[i-3]
+                high_3 = df['high'].iloc[i]
+                if high_3 < low_1:
+                    bearish_fvg = True
+                    break
 
-            recent_low = df['low'].iloc[-10:-2].min()
+            # فحص شفط السيولة (Liquidity Sweep) تحت القيعان أو فوق القمم السابقة
+            recent_low = df['low'].iloc[-20:-2].min()
             current_low = df['low'].iloc[-1]
             current_close = df['close'].iloc[-1]
             
-            recent_high = df['high'].iloc[-10:-2].max()
+            recent_high = df['high'].iloc[-20:-2].max()
             current_high = df['high'].iloc[-1]
 
             sweep_long = current_low < recent_low and current_close > recent_low
@@ -108,9 +122,8 @@ class StrategyEngine:
             atr_val = float(self.calculate_atr(df_5m, period=14))
             cmf_val = float(self.calculate_cmf(df_5m, period=20))
 
-            # حل مشكلة الأسعار الصغيرة جداً (مثل XPIN أو الميم كوينز) لو الـ ATR طلع صفر أو صغير جداً
             if atr_val <= 0 or np.isnan(atr_val):
-                atr_val = current_price * 0.01  # 1% من السعر كحد أدنى آمن
+                atr_val = current_price * 0.01
 
             smc_data = self.detect_smart_money_elements(df_5m)
 
@@ -121,16 +134,14 @@ class StrategyEngine:
             trade_valid = False
             reason = ""
 
-            # تحديد عدد الخانات العشرية ديناميكياً بناءً على حجم السعر
             decimals = 8 if current_price < 1 else (4 if current_price < 100 else 2)
 
             if (is_bullish_trend or smc_data["bullish_fvg"] or smc_data["sweep_long"]) and cmf_val > -0.08:
                 direction = "LONG"
                 trade_valid = True
                 
-                # حساب الستوب لوز بدقة تحت السعر الحالي
                 stop_loss = round(current_price - (2.0 * atr_val), decimals)
-                if stop_loss >= current_price: # تأكيد إضافي لمنع أي خطأ منطقي
+                if stop_loss >= current_price:
                     stop_loss = round(current_price * 0.98, decimals)
 
                 tp1 = round(current_price + (1.5 * atr_val), decimals)
