@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Main Controller (v50.0 - Direct Price & Scenario Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v51.0)
 # ============================================================
 import os
 import time
@@ -27,6 +27,7 @@ active_positions = {}
 positions_lock = threading.Lock()
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0}
 
+# تهيئة الاتصال بمنصة BingX مع تفعيل الدعم الشامل للأسواق التقليدية والـ CFD
 bingx = ccxt.bingx({
     "enableRateLimit": True,
     "timeout": 20000,
@@ -48,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT (Direct Price & Scenario Analysis) Active!"
+    return "MY EXPERT CRYPTO & TradFi CFD BOT Active!"
 
 @app.route("/health")
 def health():
@@ -94,7 +95,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
     return None
 
 # ==========================================
-# معالج رسائل تليجرام المباشر لاستخراج الأسعار والسيناريو الأقرب
+# معالج رسائل تليجرام المباشر (يدعم العملات والذهب ومركبات CFD)
 # ==========================================
 if bot:
     @bot.message_handler(func=lambda message: True)
@@ -103,22 +104,29 @@ if bot:
             text = message.text.strip()
             clean_text = text.replace("/", "").strip()
             
-            if not clean_text or len(clean_text) > 10:
+            if not clean_text or len(clean_text) > 12:
                 return
 
-            coin_name = clean_text.upper()
-            symbol = f"{coin_name}/USDT:USDT" if "/" not in coin_name else coin_name
-            if not symbol.endswith(":USDT"):
-                symbol += ":USDT"
+            query_name = clean_text.upper()
+            
+            # توجيه ذكي لرمز الذهب أو الفوركس أو العملات الرقمية
+            if query_name in ["GOLD", "XAU", "GOLDUSDT"]:
+                symbol = "GOLD/USDT:USDT"
+            elif "/" not in query_name:
+                symbol = f"{query_name}/USDT:USDT"
+            else:
+                symbol = query_name
+                if not symbol.endswith(":USDT") and "GOLD" not in symbol:
+                    symbol += ":USDT"
 
-            bot.reply_to(message, f"🔍 جاري تحليل العملة `{symbol}` واستخراج الأسعار والسيناريو الأقرب...", parse_mode="Markdown")
+            bot.reply_to(message, f"🔍 جاري تحليل سوق `{symbol}` (شامل العقود الدائمة و CFD) واستخراج المستويات...", parse_mode="Markdown")
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
             ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
             ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
 
             if not ohlcv_5m or not ohlcv_1h:
-                bot.reply_to(message, f"❌ تعذر جلب بيانات العملة `{symbol}`. تأكد من صحة الرمز.")
+                bot.reply_to(message, f"❌ تعذر جلب بيانات الرمز `{symbol}` من المنصة. تأكد من صحة الاسم (مثال: GOLD أو BTC أو GBPJPY).")
                 return
 
             direction, current_price, details = engine.analyze_market_structure(
@@ -136,7 +144,7 @@ if bot:
                 trigger_label = "📍 سعر الدعم المؤكد للشراء:"
 
             report = (
-                f"📊 *التحليل الفني المباشر للعملة* (`{symbol}`)\n"
+                f"📊 *التحليل الفني المباشر (عقود و CFD)* (`{symbol}`)\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
                 f"🔹 *الاتجاه العام (1H):* `{details.get('market_trend')}`\n"
@@ -157,7 +165,7 @@ if bot:
 
 def telegram_listener():
     if bot:
-        logger.info("Starting Telegram Bot listener for direct price messages...")
+        logger.info("Starting Telegram Bot listener for CFD & Crypto...")
         bot.infinity_polling(none_stop=True, interval=1)
 
 def position_tracker_loop():
@@ -186,23 +194,23 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء (LONG) للعملة `{symbol}` وتم الخروج.*")
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء (LONG) للرمز `{symbol}` وتم الخروج.*")
                         continue
 
                     if current_price >= tp2:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) بالكامل لصفقة (LONG) على العملة `{symbol}`! تبريكات الأرباح.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح.*")
                         continue
 
                     if not be_done and current_price >= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
                         send_telegram_message(
-                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) لصفقة (LONG) على العملة `{symbol}`!*\n"
+                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*\n"
                             f"• تم ضرب الهدف الأول (`{tp1}`).\n"
-                            f"• تم نقل وقف الخسارة تلقائياً إلى سعر الدخول (`{entry}`)."
+                            f"• نقل وقف الخسارة إلى سعر الدخول (`{entry}`)."
                         )
 
                 elif side == "SHORT":
@@ -210,23 +218,23 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع (SHORT) للعملة `{symbol}` وتم الخروج.*")
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع (SHORT) للرمز `{symbol}` وتم الخروج.*")
                         continue
 
                     if current_price <= tp2:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) بالكامل لصفقة (SHORT) على العملة `{symbol}`! تبريكات الأرباح.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح.*")
                         continue
 
                     if not be_done and current_price <= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
                         send_telegram_message(
-                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) لصفقة (SHORT) على العملة `{symbol}`!*\n"
+                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*\n"
                             f"• تم ضرب الهدف الأول (`{tp1}`).\n"
-                            f"• تم نقل وقف الخسارة تلقائياً إلى سعر الدخول (`{entry}`)."
+                            f"• نقل وقف الخسارة إلى سعر الدخول (`{entry}`)."
                         )
 
             time.sleep(15)
@@ -237,7 +245,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التداول الذكي مع ميزة استخراج الأسعار المباشرة بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل (Crypto & TradFi CFD) بنجاح!*")
 
     while True:
         try:
@@ -246,13 +254,18 @@ def background_scanner():
                 time.sleep(30)
                 continue
                 
-            symbols = [s for s, m in markets.items() if m.get("linear") and m.get("quote") == "USDT" and m.get("swap")]
+            # جلب الرموز التي تتضمن العملات الرقمية وعقود الـ CFD المتاحة
+            symbols = [s for s, m in markets.items() if (m.get("linear") or m.get("swap")) and m.get("quote") in ["USDT", "USD"]]
+            
+            # إضافة الذهب والعملات الهامة يدوياً لضمان فحصها دائماً
+            priority_symbols = ["GOLD/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
+            for ps in priority_symbols:
+                if ps in markets and ps not in symbols:
+                    symbols.insert(0, ps)
+
             btc_ohlcv_15m = bingx_safe_call("fetch_ohlcv", "BTC/USDT:USDT", timeframe="15m", limit=30)
 
             for symbol in symbols:
-                if symbol == "BTC/USDT:USDT":
-                    continue
-                
                 with positions_lock:
                     if symbol in active_positions:
                         continue
@@ -277,7 +290,7 @@ def background_scanner():
                         
                         message = (
                             f"🚀 *فرصة صفقات نخبة مؤكدة ({direction})* {emoji}\n"
-                            f"🔹 العملة: `{symbol}`\n"
+                            f"🔹 الرمز / السوق: `{symbol}`\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"📍 *السعر الحالي / الدخول:* `{entry_price}`\n"
                             f"📍 *منطقة الطلب/العرض (OB):* `{ent.get('order_block')}`\n"
@@ -297,8 +310,8 @@ def background_scanner():
                                     "side": direction,
                                     "entry": entry_price,
                                     "stop_loss": details.get("stop_loss"),
-                                    "tp1": rm.get("take_profit_1"),
-                                    "tp2": rm.get("take_profit_2"),
+                                    "tp1": rm.get('take_profit_1'),
+                                    "tp2": rm.get('take_profit_2'),
                                     "breakeven_done": False
                                 }
                 except Exception as sub_exc:
