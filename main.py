@@ -1,11 +1,12 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.1_FIXED)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.2_PRO_FINAL)
 # ============================================================
 import os
 import time
 import threading
 import logging
 import ccxt
+import requests
 from flask import Flask, jsonify
 from analysis import StrategyEngine
 
@@ -59,9 +60,8 @@ def send_telegram_message(message, chat_id=None):
     if not TELEGRAM_BOT_TOKEN or not target_chat:
         return False
     try:
-        import requests
         response = requests.post(
-            f"https://telegram.org{TELEGRAM_BOT_TOKEN}/sendMessage",
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": target_chat, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True},
             timeout=15
         )
@@ -242,3 +242,48 @@ def position_tracker_loop():
                             if symbol in active_positions:
                                 active_positions[symbol]["breakeven_done"] = True
                                 active_positions[symbol]["stop_loss"] = entry
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل وقف الخسارة إلى نقطة الدخول (Breakeven).*")
+                        
+                    if current_price >= tp2:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) بنجاح للرمز `{symbol}`! تم إغلاق الصفقة بربح ممتاز.*")
+
+                elif side == "SHORT":
+                    if current_price >= stop_loss:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع للرمز `{symbol}` عند السعر `{current_price}`.*")
+                        continue
+                    
+                    if current_price <= tp1 and not be_done:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                active_positions[symbol]["breakeven_done"] = True
+                                active_positions[symbol]["stop_loss"] = entry
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) لصفقة البيع `{symbol}`! تم تأمين الصفقة.*")
+                        
+                    if current_price <= tp2:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) للبيع بنجاح للرمز `{symbol}`!*")
+
+        except Exception as e:
+            logger.error(f"Error in position tracker loop: {e}")
+
+if __name__ == "__main__":
+    # تشغيل مراقب الصفقات في خلفية مستقلة
+    tracker_thread = threading.Thread(target=position_tracker_loop, daemon=True)
+    tracker_thread.start()
+
+    # تشغيل بوت تليجرام في خلفية مستقلة إذا كان مفَعلاً
+    if bot:
+        tg_thread = threading.Thread(target=telegram_listener, daemon=True)
+        tg_thread.start()
+
+    # تشغيل خادم الويب Flask (مطلوب لكي يستمر البوت بالعمل على منصات الاستضافة مثل Render)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
