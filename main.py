@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v61.1 - Clean Quant Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v62.0_PRO)
 # ============================================================
 import os
 import time
@@ -35,7 +35,7 @@ bingx = ccxt.bingx({
     "secret": os.environ.get("BINGX_SECRET_KEY", "")
 })
 
-# تهيئة المحرك الكمي
+# تهيئة المحرك الكمي المطور
 engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 
 bot = None
@@ -95,6 +95,27 @@ def bingx_safe_call(method_name, *args, **kwargs):
                 time.sleep(1.0)
     return None
 
+def calculate_position_size(current_price, stop_loss, asset_type):
+    """
+    نظام إدارة المخاطر الكمي لحساب حجم العقد (Position Sizing) بناءً على الـ Stop Loss الإحصائي.
+    """
+    try:
+        risk_amount_usd = BOT_CAPITAL_USD * RISK_PER_TRADE
+        risk_per_unit = abs(current_price - stop_loss)
+        
+        if risk_per_unit == 0:
+            return 0.0
+            
+        raw_size = risk_amount_usd / risk_per_unit
+        
+        # قواعد التقريب المناسبة لطبيعة الأصل لضمان عدم رفض المنصة للأمر
+        if asset_type == "crypto":
+            return round(raw_size, 3)
+        else: # الأسهم أو الذهب
+            return round(raw_size, 2)
+    except Exception:
+        return 0.0
+
 if bot:
     @bot.message_handler(func=lambda message: True)
     def handle_all_messages(message):
@@ -109,8 +130,14 @@ if bot:
 
             possible_symbols = []
             asset_type = "crypto"
+            
+            # التمييز الذكي بين فئات الأصول لتفعيل الفلاتر الإحصائية الخاصة بها
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
                 possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"]
+                asset_type = "stock" # تعامل معاملة التداول التقليدي من حيث الفتح والإغلاق والسيولة
+            elif clean_text in ["AAPL", "TSLA", "NVDA", "MSFT", "AMZN"]:
+                possible_symbols = [f"{clean_text}/USDT", f"{clean_text}USDT"]
+                asset_type = "stock"
             else:
                 possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
 
@@ -141,9 +168,28 @@ if bot:
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=50)
 
+            # استدعاء المحرك الكمي v62.0_PRO المطور
             direction, current_price, details = engine.analyze_market_structure(
                 ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
             )
+
+            scan_stats["scanned_pairs"] += 1
+
+            if details.get("trade_valid"):
+                # حساب الحجم المؤسسي الآمن للصفقة
+                position_size = calculate_position_size(current_price, details.get("stop_loss"), asset_type)
+                
+                with positions_lock:
+                    active_positions[resolved_symbol] = {
+                        "side": direction,
+                        "entry": current_price,
+                        "size": position_size,
+                        "tp1": details["risk_management"]["take_profit_1"],
+                        "tp2": details["risk_management"]["take_profit_2"],
+                        "stop_loss": details["stop_loss"],
+                        "breakeven_done": False
+                    }
+                scan_stats["signals_sent"] += 1
 
             rm = details.get("risk_management", {})
             ent = details.get("entry_zone", {})
@@ -157,13 +203,14 @@ if bot:
                 f"🔹 *مؤشر Z-Score:* `{details.get('z_score')}`\n"
                 f"🔹 *مؤشر الاتجاه (ADX):* `{details.get('adx')}` | *ATR:* `{details.get('atr')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 *حجم العقد الآمن:* `{position_size if details.get('trade_valid') else 0.0}`Units\n"
                 f"🎯 *سعر الدخول المقترح:* `{details.get('trigger_price')}`\n"
-                f"🛑 *وقف الخسارة (2x ATR):* `{details.get('stop_loss')}`\n\n"
-                f"🎯 *الأهداف الاستراتيجية:*\n"
-                f"  • الهدف الأول (العودة للـ VWAP): `{rm.get('take_profit_1')}`\n"
-                f"  • الهدف الثاني (الامتداد): `{rm.get('take_profit_2')}`\n"
+                f"🛑 *وقف الخسارة الإحصائي:* `{details.get('stop_loss')}`\n\n"
+                f"🎯 *الأهداف الاستراتيجية (القيمة العادلة):*\n"
+                f"  • الهدف الأول (الـ VWAP الرئيسي): `{rm.get('take_profit_1')}`\n"
+                f"  • الهدف الثاني (امتداد الانحراف): `{rm.get('take_profit_2')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 *التحقق الفني:* {details.get('reason')}"
+                f"💡 *التحقق الفني للمؤسسات:* {details.get('reason')}"
             )
 
             bot.reply_to(message, report, parse_mode="Markdown")
@@ -176,8 +223,12 @@ def telegram_listener():
         bot.infinity_polling(none_stop=True, interval=1)
 
 def position_tracker_loop():
+    """
+    حلقة مراقبة وإدارة الصفقات النشطة وحمايتها وتحديث حالتها إحصائياً.
+    """
     while True:
         try:
+            time.sleep(5)
             with positions_lock:
                 positions_to_check = list(active_positions.items())
 
@@ -199,132 +250,3 @@ def position_tracker_loop():
                 if side == "LONG":
                     if current_price <= stop_loss:
                         with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء للرمز `{symbol}`.*")
-                        continue
-                    if current_price >= tp2:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني الكامل (TP2) للرمز `{symbol}`!*")
-                        continue
-                    if not be_done and current_price >= tp1:
-                        active_positions[symbol]["stop_loss"] = entry
-                        active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(f"🛡️ *السعر وصل لمستوى الـ VWAP! تم تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
-
-                elif side == "SHORT":
-                    if current_price >= stop_loss:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع للرمز `{symbol}`.*")
-                        continue
-                    if current_price <= tp2:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني الكامل (TP2) للرمز `{symbol}`!*")
-                        continue
-                    if not be_done and current_price <= tp1:
-                        active_positions[symbol]["stop_loss"] = entry
-                        active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(f"🛡️ *السعر وصل لمستوى الـ VWAP! تم تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
-
-            time.sleep(15)
-        except Exception as e:
-            logger.error(f"Tracker Error: {e}")
-            time.sleep(30)
-
-def background_scanner():
-    time.sleep(5)
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل البوت الكمي للمضاربة والارتداد (Quantitative Engine v61.1)!*")
-
-    while True:
-        try:
-            markets = bingx_safe_call("load_markets")
-            if not markets:
-                time.sleep(30)
-                continue
-                
-            symbols = []
-            for s, m in markets.items():
-                if (m.get("linear") or m.get("swap")) and m.get("quote") in ["USDT", "USD"]:
-                    if any(x in s for x in ["USD-", "USDT-", "NCSK", "PAUSE"]):
-                        continue
-                    symbols.append(s)
-            
-            priority_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
-            for ps in priority_symbols:
-                if ps in markets and ps not in symbols:
-                    symbols.insert(0, ps)
-
-            for symbol in symbols:
-                with positions_lock:
-                    if symbol in active_positions:
-                        continue
-
-                try:
-                    ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=50)
-                    if not ohlcv_15m or len(ohlcv_15m) < 25:
-                        continue
-
-                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=50)
-
-                    direction, entry_price, details = engine.analyze_market_structure(
-                        ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto"
-                    )
-                    scan_stats["scanned_pairs"] += 1
-
-                    if direction in ["LONG", "SHORT"] and details.get("trade_valid", False):
-                        rm = details.get("risk_management", {})
-                        ent = details.get("entry_zone", {})
-                        emoji = "🟢" if direction == "LONG" else "🔴"
-                        
-                        message = (
-                            f"🚀 *فرصة كمية عالية الدقة ({direction})* {emoji}\n"
-                            f"🔹 الرمز: `{symbol}`\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📍 *سعر الدخول:* `{entry_price}`\n"
-                            f"📍 *مستوى الـ VWAP:* `{ent.get('vwap_baseline')}`\n"
-                            f"📊 *Z-Score:* `{details.get('z_score')}` | *ADX:* `{details.get('adx')}`\n"
-                            f"🛑 *وقف الخسارة (2x ATR):* `{details.get('stop_loss')}`\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"🎯 *الأهداف الاستراتيجية:*\n"
-                            f"  • TP1 (العودة للـ VWAP): `{rm.get('take_profit_1')}`\n"
-                            f"  • TP2 (الهدف الممتد): `{rm.get('take_profit_2')}`\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"💡 *السبب الفني:* {details.get('reason')}"
-                        )
-                        sent = send_telegram_message(message)
-                        if sent:
-                            scan_stats["signals_sent"] += 1
-                            with positions_lock:
-                                active_positions[symbol] = {
-                                    "side": direction,
-                                    "entry": entry_price,
-                                    "stop_loss": details.get("stop_loss"),
-                                    "tp1": rm.get('take_profit_1'),
-                                    "tp2": rm.get('take_profit_2'),
-                                    "breakeven_done": False
-                                }
-                except Exception as sub_exc:
-                    continue
-
-                time.sleep(1.5)
-
-            time.sleep(60)
-        except Exception as exc:
-            logger.error(f"Scanner Loop Error: {exc}")
-            time.sleep(30)
-
-threading.Thread(target=background_scanner, daemon=True, name="scanner").start()
-threading.Thread(target=position_tracker_loop, daemon=True, name="tracker").start()
-if bot:
-    threading.Thread(target=telegram_listener, daemon=True, name="telegram_listener").start()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
