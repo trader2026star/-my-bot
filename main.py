@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO, STOCKS & FOREX CFD BOT - Main Controller (v61.2)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v61.1 - Clean Quant Edition)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY MULTI-MARKET QUANTITATIVE BOT Active!"
+    return "MY QUANTITATIVE MEAN REVERSION BOT Active!"
 
 @app.route("/health")
 def health():
@@ -87,7 +87,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
             if "109415" in err_str:
                 return None
             if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
-                logger.warning("ضغط الطلبات (Rate Limit)، جاري إعادة المحاولة...")
+                logger.warning("ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة...")
                 time.sleep(delay * (attempt + 1))
             else:
                 if attempt == retries - 1:
@@ -105,23 +105,12 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"📈 جاري التحليل الشامل (كريبتو، أسهم، فوركس) للرمز `{clean_text}`...", parse_mode="Markdown")
+            bot.reply_to(message, f"📈 جاري إجراء التحليل الكمي للتقلبات والارتداد (`{clean_text}`)...", parse_mode="Markdown")
 
             possible_symbols = []
             asset_type = "crypto"
-
-            # تصنيف نوع الأصول بناءً على الرمز المدخل
-            stock_symbols = ["AAPL", "TSLA", "MSFT", "NVDA", "AMZN", "GOOGL", "SPY", "QQQ"]
-            forex_symbols = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
-
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
-                possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT"]
-            elif clean_text in stock_symbols:
-                asset_type = "stock"
-                possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USD", f"{clean_text}"]
-            elif clean_text in forex_symbols or "USD" in clean_text and len(clean_text) == 6:
-                asset_type = "forex"
-                possible_symbols = [f"{clean_text[:3]}/{clean_text[3:]}", clean_text]
+                possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"]
             else:
                 possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
 
@@ -152,7 +141,6 @@ if bot:
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=50)
 
-            # استدعاء المحرك مع تحديد نوع السوق (crypto, stock, forex)
             direction, current_price, details = engine.analyze_market_structure(
                 ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
             )
@@ -162,9 +150,8 @@ if bot:
             emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
 
             report = (
-                f"📊 *التحليل الكمي متعدد الأسواق* (`{resolved_symbol}`) {emoji}\n"
+                f"📊 *التحليل الكمي للارتداد السعري* (`{resolved_symbol}`) {emoji}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🔹 *نوع الأصول:* `{asset_type.upper()}`\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
                 f"🔹 *متوسط السعر (VWAP):* `{ent.get('vwap_baseline')}`\n"
                 f"🔹 *مؤشر Z-Score:* `{details.get('z_score')}`\n"
@@ -253,7 +240,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل البوت الكمي متعدد الأسواق (v61.2) بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل البوت الكمي للمضاربة والارتداد (Quantitative Engine v61.1)!*")
 
     while True:
         try:
