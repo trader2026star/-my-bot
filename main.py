@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v60.0 - Institutional Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v60.2 - Clean Edition)
 # ============================================================
 import os
 import time
@@ -86,7 +86,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
             if "109415" in err_str:
                 return None
             if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
-                logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة... (محاولة {attempt+1})")
+                logger.warning("ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة...")
                 time.sleep(delay * (attempt + 1))
             else:
                 if attempt == retries - 1:
@@ -94,9 +94,6 @@ def bingx_safe_call(method_name, *args, **kwargs):
                 time.sleep(1.0)
     return None
 
-# ==========================================
-# معالج رسائل تليجرام المباشر الشامل (مع استدعاء الفريمات المؤسسية 4H/1H/15m/5m)
-# ==========================================
 if bot:
     @bot.message_handler(func=lambda message: True)
     def handle_all_messages(message):
@@ -111,13 +108,9 @@ if bot:
 
             possible_symbols = []
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
-                possible_symbols = [
-                    "GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"
-                ]
+                possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"]
             else:
-                possible_symbols = [
-                    f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"
-                ]
+                possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
 
             ohlcv_5m = None
             resolved_symbol = None
@@ -144,7 +137,6 @@ if bot:
                 bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`.")
                 return
 
-            # جلب الفريمات المتعددة لتطبيق استراتيجية EMA 200 و OB و Fvg بدقة
             ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=50)
             ohlcv_1h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="1h", limit=100)
             ohlcv_4h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="4h", limit=220)
@@ -168,10 +160,10 @@ if bot:
                 f"🔹 *الاتجاه المؤسسي:* `{details.get('market_trend')}`\n"
                 f"🔹 *مؤشر الزخم (RSI):* `{details.get('rsi')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📍 *منطقة الطلب/العرض (OB):* `{ent.get('order_block')}`\n"
+                f"📍 *منطقة الـ OB:* `{ent.get('order_block')}`\n"
                 f"🎯 *سعر الدخول المقترح:* `{details.get('trigger_price')}`\n"
                 f"🛑 *وقف الخسارة (SL):* `{details.get('stop_loss')}`\n\n"
-                f"🎯 *الأهداف الاستراتيجية (1:2 / 1:3):*\n"
+                f"🎯 *الأهداف الاستراتيجية:*\n"
                 f"  • الهدف الأول (TP1): `{rm.get('take_profit_1')}`\n"
                 f"  • الهدف الثاني (TP2): `{rm.get('take_profit_2')}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
@@ -213,48 +205,36 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء (LONG) للرمز `{symbol}` وتم الخروج.*")
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء للرمز `{symbol}`.*")
                         continue
-
                     if current_price >= tp2:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح المؤسسية.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`!*")
                         continue
-
                     if not be_done and current_price >= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(
-                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*\n"
-                            f"• تم ضرب الهدف الأول (`{tp1}`).\n"
-                            f"• نقل وقف الخسارة إلى سعر الدخول (`{entry}`)."
-                        )
+                        send_telegram_message(f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
 
                 elif side == "SHORT":
                     if current_price >= stop_loss:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع (SHORT) للرمز `{symbol}` وتم الخروج.*")
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع للرمز `{symbol}`.*")
                         continue
-
                     if current_price <= tp2:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`! تبريكات الأرباح المؤسسية.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الثاني (TP2) للرمز `{symbol}`!*")
                         continue
-
                     if not be_done and current_price <= tp1:
                         active_positions[symbol]["stop_loss"] = entry
                         active_positions[symbol]["breakeven_done"] = True
-                        send_telegram_message(
-                            f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*\n"
-                            f"• تم ضرب الهدف الأول (`{tp1}`).\n"
-                            f"• نقل وقف الخسارة إلى سعر الدخول (`{entry}`)."
-                        )
+                        send_telegram_message(f"🛡️ *تفعيل حماية رأس المال (Breakeven) للرمز `{symbol}`!*")
 
             time.sleep(15)
         except Exception as e:
@@ -264,7 +244,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التحليل المؤسسي (السيولة والزخم) بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التحليل المؤسسي بنجاح!*")
 
     while True:
         try:
@@ -348,7 +328,6 @@ def background_scanner():
             logger.error(f"Scanner Loop Error: {exc}")
             time.sleep(30)
 
-# تشغيل خيوط الخلفية
 threading.Thread(target=background_scanner, daemon=True, name="scanner").start()
 threading.Thread(target=position_tracker_loop, daemon=True, name="tracker").start()
 if bot:
