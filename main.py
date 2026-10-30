@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v52.0 - Full Edition)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v53.0 - Smart Symbol Resolver)
 # ============================================================
 import os
 import time
@@ -27,7 +27,6 @@ active_positions = {}
 positions_lock = threading.Lock()
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0}
 
-# تهيئة الاتصال بمنصة BingX مع الدعم الشامل للعقود والأسواق التقليدية
 bingx = ccxt.bingx({
     "enableRateLimit": True,
     "timeout": 20000,
@@ -95,45 +94,58 @@ def bingx_safe_call(method_name, *args, **kwargs):
     return None
 
 # ==========================================
-# معالج رسائل تليجرام المباشر (مع تصحيح رموز الذهب و CFD تلقائياً)
+# معالج رسائل تليجرام المباشر (مع محرك بحث مرن لاكتشاف صيغ الذهب والـ CFD)
 # ==========================================
 if bot:
     @bot.message_handler(func=lambda message: True)
     def handle_all_messages(message):
         try:
             text = message.text.strip()
-            clean_text = text.replace("/", "").strip()
+            clean_text = text.replace("/", "").replace("_", "").strip().upper()
             
             if not clean_text or len(clean_text) > 12:
                 return
 
-            query_name = clean_text.upper()
-            
-            if query_name in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
-                symbol = "GOLD/USDT:USDT"
-            elif "/" not in query_name:
-                symbol = f"{query_name}/USDT:USDT"
+            bot.reply_to(message, f"🔍 جاري البحث الذكي عن الرمز `{clean_text}` في أسواق المنصة...", parse_mode="Markdown")
+
+            # توليد قائمة صيغ محتملة للبحث الشامل (عقود، سبوت، فوركس، وذهب)
+            possible_symbols = []
+            if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
+                possible_symbols = [
+                    "GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", 
+                    "GOLDUSDT", "XAUUSDT", "GOLD/USD", "XAU/USD"
+                ]
+            elif "JPY" in clean_text or "EUR" in clean_text or "GBP" in clean_text or "AUD" in clean_text:
+                # صيغ الفوركس وأزواج الـ CFD التقليدية
+                formatted_forex = f"{clean_text[:3]}/{clean_text[3:]}" if len(clean_text) == 6 else clean_text
+                possible_symbols = [
+                    f"{formatted_forex}:USDT", f"{formatted_forex}/USDT:USDT", 
+                    f"{formatted_forex}/USDT", formatted_forex, clean_text
+                ]
             else:
-                symbol = query_name
-                if not symbol.endswith(":USDT") and "GOLD" not in symbol:
-                    symbol += ":USDT"
+                possible_symbols = [
+                    f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"
+                ]
 
-            bot.reply_to(message, f"🔍 جاري البحث وتحليل الرمز `{symbol}`...", parse_mode="Markdown")
+            ohlcv_5m = None
+            resolved_symbol = None
 
-            ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
-            
-            if not ohlcv_5m and "GOLD" in symbol:
-                for alt_sym in ["XAU/USDT:USDT", "GOLD/USDT", "XAUUSDT"]:
-                    ohlcv_5m = bingx_safe_call("fetch_ohlcv", alt_sym, timeframe="5m", limit=35)
-                    if ohlcv_5m:
-                        symbol = alt_sym
-                        break
+            # محاولة جلب البيانات عبر أي صيغة ناجحة من القائمة
+            for sym in possible_symbols:
+                ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=35)
+                if ohlcv_5m and len(ohlcv_5m) >= 10:
+                    resolved_symbol = sym
+                    break
 
-            ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
-            ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
+            if not resolved_symbol or not ohlcv_5m:
+                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`. تأكد من إدخال الرمز صحيحاً (مثال: `GOLD` أو `GBPJPY` أو `BTC`).")
+                return
 
-            if not ohlcv_5m or not ohlcv_1h:
-                bot.reply_to(message, f"❌ تعذر جلب بيانات الرمز `{symbol}` من المنصة. قد يكون هذا السوق مقفلاً حالياً أو يتبع صيغة مختلفة.")
+            ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=35)
+            ohlcv_1h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="1h", limit=35)
+
+            if not ohlcv_1h:
+                bot.reply_to(message, f"❌ تعذر استكمال بيانات الفريمات الكبرى للرمز `{resolved_symbol}`.")
                 return
 
             direction, current_price, details = engine.analyze_market_structure(
@@ -151,7 +163,7 @@ if bot:
                 trigger_label = "📍 سعر الدعم المؤكد للشراء:"
 
             report = (
-                f"📊 *التحليل الفني المباشر* (`{symbol}`)\n"
+                f"📊 *التحليل الفني المباشر* (`{resolved_symbol}`)\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 *السعر الحالي:* `{current_price}`\n"
                 f"🔹 *الاتجاه العام (1H):* `{details.get('market_trend')}`\n"
@@ -172,7 +184,7 @@ if bot:
 
 def telegram_listener():
     if bot:
-        logger.info("Starting Telegram Bot listener for CFD & Crypto...")
+        logger.info("Starting Telegram Bot listener with Smart Resolver...")
         bot.infinity_polling(none_stop=True, interval=1)
 
 def position_tracker_loop():
@@ -252,7 +264,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل (Crypto & TradFi CFD) بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل مع محرك البحث الذكي للأسواق بنجاح!*")
 
     while True:
         try:
@@ -263,7 +275,7 @@ def background_scanner():
                 
             symbols = [s for s, m in markets.items() if (m.get("linear") or m.get("swap")) and m.get("quote") in ["USDT", "USD"]]
             
-            priority_symbols = ["GOLD/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
+            priority_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
             for ps in priority_symbols:
                 if ps in markets and ps not in symbols:
                     symbols.insert(0, ps)
