@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v53.0 - Smart Symbol Resolver)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v54.0 - Clean Filter Edition)
 # ============================================================
 import os
 import time
@@ -48,7 +48,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO & TradFi CFD BOT Active!"
+    return "MY EXPERT CRYPTO & TradFi CFD BOT (Clean Filter) Active!"
 
 @app.route("/health")
 def health():
@@ -79,22 +79,24 @@ def bingx_safe_call(method_name, *args, **kwargs):
     delay = 2.5
     for attempt in range(retries):
         try:
-            time.sleep(0.6)
+            time.sleep(0.5)
             return method(*args, **kwargs)
         except Exception as e:
             err_str = str(e)
+            if "109415" in err_str:
+                # عقد متوقف مؤقتاً من المنصة، نتجاهله فوراً بدون محاولات مكررة لتوفير السرعة
+                return None
             if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
                 logger.warning(f"ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة... (محاولة {attempt+1})")
                 time.sleep(delay * (attempt + 1))
             else:
                 if attempt == retries - 1:
-                    logger.error(f"خطأ في استدعاء BingX {method_name}: {e}")
                     return None
                 time.sleep(1.0)
     return None
 
 # ==========================================
-# معالج رسائل تليجرام المباشر (مع محرك بحث مرن لاكتشاف صيغ الذهب والـ CFD)
+# معالج رسائل تليجرام المباشر للبحث الذكي
 # ==========================================
 if bot:
     @bot.message_handler(func=lambda message: True)
@@ -106,31 +108,17 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🔍 جاري البحث الذكي عن الرمز `{clean_text}` في أسواق المنصة...", parse_mode="Markdown")
+            bot.reply_to(message, f"🔍 جاري البحث والتحليل للرمز `{clean_text}`...", parse_mode="Markdown")
 
-            # توليد قائمة صيغ محتملة للبحث الشامل (عقود، سبوت، فوركس، وذهب)
             possible_symbols = []
             if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
-                possible_symbols = [
-                    "GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", 
-                    "GOLDUSDT", "XAUUSDT", "GOLD/USD", "XAU/USD"
-                ]
-            elif "JPY" in clean_text or "EUR" in clean_text or "GBP" in clean_text or "AUD" in clean_text:
-                # صيغ الفوركس وأزواج الـ CFD التقليدية
-                formatted_forex = f"{clean_text[:3]}/{clean_text[3:]}" if len(clean_text) == 6 else clean_text
-                possible_symbols = [
-                    f"{formatted_forex}:USDT", f"{formatted_forex}/USDT:USDT", 
-                    f"{formatted_forex}/USDT", formatted_forex, clean_text
-                ]
+                possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT"]
             else:
-                possible_symbols = [
-                    f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"
-                ]
+                possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
 
             ohlcv_5m = None
             resolved_symbol = None
 
-            # محاولة جلب البيانات عبر أي صيغة ناجحة من القائمة
             for sym in possible_symbols:
                 ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=35)
                 if ohlcv_5m and len(ohlcv_5m) >= 10:
@@ -138,7 +126,7 @@ if bot:
                     break
 
             if not resolved_symbol or not ohlcv_5m:
-                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`. تأكد من إدخال الرمز صحيحاً (مثال: `GOLD` أو `GBPJPY` أو `BTC`).")
+                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات نشطة للرمز `{clean_text}`.")
                 return
 
             ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=35)
@@ -184,7 +172,7 @@ if bot:
 
 def telegram_listener():
     if bot:
-        logger.info("Starting Telegram Bot listener with Smart Resolver...")
+        logger.info("Starting Telegram Bot listener...")
         bot.infinity_polling(none_stop=True, interval=1)
 
 def position_tracker_loop():
@@ -264,7 +252,7 @@ def position_tracker_loop():
 def background_scanner():
     time.sleep(5)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل مع محرك البحث الذكي للأسواق بنجاح!*")
+        send_telegram_message("🛡️ *تم تفعيل بوت التداول الشامل (فلترة تلقائية للأسواق النشطة) بنجاح!*")
 
     while True:
         try:
@@ -273,9 +261,16 @@ def background_scanner():
                 time.sleep(30)
                 continue
                 
-            symbols = [s for s, m in markets.items() if (m.get("linear") or m.get("swap")) and m.get("quote") in ["USDT", "USD"]]
+            # فلترة ذكية لاستبعاد العقود المتوقفة أو غير النشطة تلقائياً
+            symbols = []
+            for s, m in markets.items():
+                if (m.get("linear") or m.get("swap")) and m.get("quote") in ["USDT", "USD"]:
+                    # استبعاد الرموز الغريبة أو أسهم الـ CFD المتوقفة لتلافى الأخطاء
+                    if any(x in s for x in ["USD-", "USDT-", "NCSK", "PAUSE"]):
+                        continue
+                    symbols.append(s)
             
-            priority_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
+            priority_symbols = ["GOLD/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT"]
             for ps in priority_symbols:
                 if ps in markets and ps not in symbols:
                     symbols.insert(0, ps)
@@ -289,10 +284,13 @@ def background_scanner():
 
                 try:
                     ohlcv_5m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="5m", limit=35)
+                    if not ohlcv_5m:
+                        continue
+
                     ohlcv_15m = bingx_safe_call("fetch_ohlcv", symbol, timeframe="15m", limit=35)
                     ohlcv_1h = bingx_safe_call("fetch_ohlcv", symbol, timeframe="1h", limit=35)
 
-                    if not (ohlcv_5m and ohlcv_1h):
+                    if not ohlcv_1h:
                         continue
 
                     direction, entry_price, details = engine.analyze_market_structure(
@@ -332,10 +330,9 @@ def background_scanner():
                                     "breakeven_done": False
                                 }
                 except Exception as sub_exc:
-                    logger.error(f"Error scanning {symbol}: {sub_exc}")
                     continue
 
-                time.sleep(1.8)
+                time.sleep(1.2)
 
             time.sleep(60)
         except Exception as exc:
