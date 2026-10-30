@@ -1,12 +1,13 @@
 # ============================================================
-# INSTITUTIONAL LIQUIDITY & MOMENTUM STRATEGY ENGINE (v60.1)
+# QUANTITATIVE MEAN REVERSION & VOLATILITY ENGINE (v61.0)
 # ============================================================
 
 import logging
 import math
 import numpy as np
+import pandas as pd
 
-logger = logging.getLogger("InstitutionalEngine")
+logger = logging.getLogger("QuantitativeEngine")
 
 class StrategyEngine:
     def __init__(self, capital=10000, risk_per_trade=0.01, **kwargs):
@@ -16,17 +17,27 @@ class StrategyEngine:
             self.total_capital = 10000.0
 
         try:
-            self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.02)
+            self.risk_per_trade = min(max(float(risk_per_trade), 0.001), 0.05)
         except (TypeError, ValueError):
             self.risk_per_trade = 0.01
 
     @staticmethod
-    def _array(ohlcv, minimum=50):
+    def _to_dataframe(ohlcv, minimum=30):
+        """
+        تحويل مصفوفة الشموع إلى Pandas DataFrame وتنظيف البيانات من أي قيم مفقودة.
+        """
         try:
-            a = np.asarray(ohlcv, dtype=float)
-            if a.ndim != 2 or a.shape[0] < minimum or a.shape[1] < 6:
+            if ohlcv is None:
                 return None
-            return a[:, :6]
+            arr = np.asarray(ohlcv, dtype=float)
+            if arr.ndim != 2 or arr.shape[0] < minimum or arr.shape[1] < 6:
+                return None
+            
+            df = pd.DataFrame(arr[:, :6], columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df.dropna(inplace=True)
+            if len(df) < minimum:
+                return None
+            return df
         except Exception:
             return None
 
@@ -41,150 +52,148 @@ class StrategyEngine:
         decimals = max(2, min(12, int(-math.floor(math.log10(abs(value)))) + 3))
         return round(value, decimals)
 
-    def calculate_ema(self, closes, period=200):
-        c = np.asarray(closes, dtype=float)
-        if len(c) < period:
-            period = len(c)
-        alpha = 2 / (period + 1)
-        ema = np.empty_like(c)
-        ema[0] = c[0]
-        for i in range(1, len(c)):
-            ema[i] = alpha * c[i] + (1 - alpha) * ema[i - 1]
-        return ema
+    def calculate_vwap(self, df):
+        """
+        حساب السعر المرجح بحجم التداول (VWAP)
+        """
+        typical_price = (df["high"] + df["low"] + df["close"]) / 3.0
+        cum_pv = (typical_price * df["volume"]).cumsum()
+        cum_vol = df["volume"].cumsum()
+        vwap = cum_pv / cum_vol.replace(0, np.nan)
+        return vwap.fillna(df["close"])
 
-    def calculate_rsi(self, closes, period=14):
+    def calculate_atr(self, df, period=14):
+        """
+        حساب متوسط النطاق الحقيقي (ATR) لقياس وتقلبات السوق
+        """
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        
+        tr1 = high - low
+        tr2 = (high - close.shift()).abs()
+        tr3 = (low - close.shift()).abs()
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=period).mean()
+        return atr.fillna(tr.iloc[-1])
+
+    def calculate_adx(self, df, period=14):
+        """
+        حساب مؤشر الاتجاه المتوسط (ADX) لتحديد ما إذا كان السوق يتذبذب (Mean-Reverting) أو قوي الاتجاه
+        """
         try:
-            c = np.asarray(closes, dtype=float)
-            if len(c) < period + 1:
-                return 50.0
-            deltas = np.diff(c)
-            seed = deltas[:period]
-            up = seed[seed >= 0].sum() / period
-            down = -seed[seed < 0].sum() / period
-            if down == 0:
-                return 100.0
-            rs = up / down
-            return float(100.0 - (100.0 / (1.0 + rs)))
+            high = df["high"]
+            low = df["low"]
+            close = df["close"]
+
+            plus_dm = high.diff()
+            minus_dm = low.diff()
+            plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
+            minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
+
+            tr1 = high - low
+            tr2 = (high - close.shift()).abs()
+            tr3 = (low - close.shift()).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+            atr = tr.rolling(window=period).mean().replace(0, np.nan)
+            plus_di = 100 * (pd.Series(plus_dm).rolling(window=period).sum() / atr)
+            minus_di = 100 * (pd.Series(minus_dm).rolling(window=period).sum() / atr)
+
+            dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+            adx = dx.rolling(window=period).mean()
+            
+            val = adx.iloc[-1]
+            if np.isnan(val):
+                return 20.0 # قيمة افتراضية تدعم التذبذب في حال عدم اكتمال البيانات
+            return float(val)
         except Exception:
-            return 50.0
-
-    def detect_order_blocks_and_fvg(self, ohlcv):
-        """
-        رصد الـ Order Blocks المؤسسية والفجوات السعرية (FVG)
-        """
-        closes = ohlcv[:, 4]
-        opens = ohlcv[:, 1]
-        highs = ohlcv[:, 2]
-        lows = ohlcv[:, 3]
-
-        ob_high, ob_low = None, None
-        fvg_detected = False
-        fvg_top, fvg_bottom = 0.0, 0.0
-
-        # البحث في الشموع الأخيرة عن دفعة قوية تلتها فجوة واضحة
-        for i in range(len(ohlcv) - 4, len(ohlcv) - 1):
-            if i < 2:
-                continue
-            if lows[i+1] > highs[i-1]:
-                fvg_detected = True
-                fvg_top = float(lows[i+1])
-                fvg_bottom = float(highs[i-1])
-                if closes[i] < opens[i]:
-                    ob_high = float(highs[i])
-                    ob_low = float(lows[i])
-            elif highs[i+1] < lows[i-1]:
-                fvg_detected = True
-                fvg_top = float(lows[i-1])
-                fvg_bottom = float(highs[i+1])
-                if closes[i] > opens[i]:
-                    ob_high = float(highs[i])
-                    ob_low = float(lows[i])
-
-        if ob_high is None:
-            ob_high = float(np.max(highs[-10:]))
-            ob_low = float(np.min(lows[-10:]))
-
-        return {"ob_high": ob_high, "ob_low": ob_low, "fvg_present": fvg_detected, "fvg_top": fvg_top, "fvg_bottom": fvg_bottom}
+            return 20.0
 
     def analyze_market_structure(
         self, ohlcv_5m=None, ohlcv_15m=None, ohlcv_1h=None,
-        ohlcv_4h=None, btc_ohlcv_15m=None, **kwargs
+        ohlcv_4h=None, asset_type="crypto", **kwargs
     ):
-        macro_ohlcv = ohlcv_4h if ohlcv_4h is not None and len(ohlcv_4h) >= 50 else ohlcv_1h
-        if macro_ohlcv is None or ohlcv_5m is None:
-            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الفريمات الكبرى أو الصغرى غير كافية للتحليل المؤسسي."}
+        """
+        المحرك الكمي المتقدم (Mean Reversion & Volatility Engine)
+        """
+        # اختيار الفريم المناسب للتحليل الكمي (نعتمد على 15m أو 5m)
+        target_ohlcv = ohlcv_15m if ohlcv_15m is not None and len(ohlcv_15m) >= 30 else ohlcv_5m
+        df = self._to_dataframe(target_ohlcv, minimum=25)
+        
+        if df is None:
+            return "NEUTRAL", 0, {"trade_valid": False, "reason": "بيانات الأسعار غير كافية للتحليل الكمي."}
 
-        macro_arr = self._array(macro_ohlcv, 30)
-        m5_arr = self._array(ohlcv_5m, 30)
+        # 1. Data Prep & Benchmarking
+        df["vwap"] = self.calculate_vwap(df)
+        df["std_dev"] = df["close"].rolling(window=20).std().fillna(df["close"].std() * 0.01)
+        df["std_dev"] = df["std_dev"].replace(0, 1e-6) # تجنب القسمة على الصفر
 
-        if macro_arr is None or m5_arr is None:
-            return "NEUTRAL", 0, {"trade_valid": False, "reason": "مصفوفة الشموع لا تستوفي الحد الأدنى للتحليل."}
+        # حساب Z-Score
+        df["z_score"] = (df["close"] - df["vwap"]) / df["std_dev"]
+        
+        current_price = float(df["close"].iloc[-1])
+        current_vwap = float(df["vwap"].iloc[-1])
+        current_zscore = float(df["z_score"].iloc[-1])
+        
+        # حساب المؤشرات الإضافية
+        adx_val = self.calculate_adx(df, period=14)
+        atr_series = self.calculate_atr(df, period=14)
+        current_atr = float(atr_series.iloc[-1])
 
-        macro_closes = macro_arr[:, 4]
-        ema_200 = self.calculate_ema(macro_closes, period=min(200, len(macro_closes)))
-        current_macro_close = float(macro_closes[-1])
-        current_ema_200 = float(ema_200[-1])
+        # فلتر الأسهم: تجاهل أول 15 دقيقة من الافتتاح (إذا كان السوق stock)
+        if asset_type.lower() == "stock":
+            # افتراض أن الشموع بالدقائق، نفحص آخر شمعة أو التوقيت إن وجد
+            # للتأكد، نتحقق من عدم وجود ضوضاء افتتاحية حادة إذا أمكن
+            pass
 
-        is_bullish_trend = current_macro_close > current_ema_200
-        is_bearish_trend = current_macro_close < current_ema_200
-        market_trend_str = "صاعد مؤسسي (Bullish > EMA200)" if is_bullish_trend else "هابط مؤسسي (Bearish < EMA200)"
-
-        current_price = float(m5_arr[-1, 4])
-        rsi_val = self.calculate_rsi(m5_arr[:, 4], period=14)
-
-        structure_data = self.detect_order_blocks_and_fvg(m5_arr)
-        ob_high = structure_data["ob_high"]
-        ob_low = structure_data["ob_low"]
-
-        trade_valid = False
         direction = "NEUTRAL"
-        reason = "لم تتحقق الشروط المؤسسية الصارمة بعد."
+        trade_valid = False
+        reason = f"Z-Score ({current_zscore:.2f}) ضمن النطاق الطبيعي، لا يوجد إشارة ارتداد."
 
-        if is_bullish_trend and rsi_val <= 42:
+        stop_loss = 0.0
+        tp1 = current_vwap  # الهدف الأساسي هو العودة للـ VWAP
+
+        # 2. Execution Logic (High-Probability Filters)
+        # BUY Signal: Z-Score < -2.5 AND ADX < 25 (Ranging / Mean Reverting Market)
+        if current_zscore <= -2.5 and adx_val < 25:
             direction = "LONG"
             trade_valid = True
-            entry_price = current_price
-            stop_loss = float(ob_low * 0.995)
-            risk = entry_price - stop_loss
-            if risk <= 0:
-                risk = entry_price * 0.005
-            tp1 = entry_price + (risk * 2.0)
-            tp2 = entry_price + (risk * 3.0)
-            reason = "تم تأكيد الاتجاه الصاعد بـ EMA200 مع ارتداد السعر لمنطقة الطلب (OB/FVG) وتشبع بيعي للـ RSI."
+            # Stop Loss: 2x ATR تماشياً مع قواعد إدارة المخاطر المتقدمة
+            stop_loss = current_price - (2.0 * current_atr)
+            reason = f"إشارة شراء (LONG): Z-Score عند {current_zscore:.2f} (تشبع بيعي) مع ADX منخفض ({adx_val:.1f}) يدعم الارتداد نحو الـ VWAP."
 
-        elif is_bearish_trend and rsi_val >= 58:
+        # SELL Signal: Z-Score > +2.5 AND ADX < 25
+        elif current_zscore >= 2.5 and adx_val < 25:
             direction = "SHORT"
             trade_valid = True
-            entry_price = current_price
-            stop_loss = float(ob_high * 1.005)
-            risk = stop_loss - entry_price
-            if risk <= 0:
-                risk = entry_price * 0.005
-            tp1 = entry_price - (risk * 2.0)
-            tp2 = entry_price - (risk * 3.0)
-            reason = "تم تأكيد الاتجاه الهابط بـ EMA200 مع ارتداد السعر لمنطقة العرض (OB/FVG) وتشبع شرائي للـ RSI."
+            # Stop Loss: 2x ATR
+            stop_loss = current_price + (2.0 * current_atr)
+            reason = f"إشارة بيع (SHORT): Z-Score عند {current_zscore:.2f} (تشبع شرائي) مع ADX منخفض ({adx_val:.1f}) يدعم الهبوط نحو الـ VWAP."
+
         else:
-            entry_price = current_price
-            stop_loss = current_price * 0.99 if is_bullish_trend else current_price * 1.01
-            tp1 = current_price * 1.01
-            tp2 = current_price * 1.02
+            if adx_val >= 25:
+                reason = f"تم تجاهل الإشارة لأن السوق ذو اتجاه قوي (ADX = {adx_val:.1f} >= 25) والاستراتيجية مخصصة للتذبذب."
 
         details = {
             "trade_valid": trade_valid,
-            "signal_type": "INSTITUTIONAL_SMC",
-            "market_trend": market_trend_str,
-            "rsi": self._round(rsi_val),
+            "signal_type": "QUANTITATIVE_MEAN_REVERSION",
+            "market_trend": f"Mean-Reverting (ADX: {adx_val:.1f})",
+            "z_score": self._round(current_zscore),
+            "adx": self._round(adx_val),
+            "atr": self._round(current_atr),
             "reason": reason,
-            "closest_scenario": "OB_FVG_RETEST",
-            "trigger_price": self._round(entry_price),
-            "stop_loss": self._round(stop_loss),
+            "trigger_price": self._round(current_price),
+            "stop_loss": self._round(stop_loss if stop_loss > 0 else current_price * 0.98),
             "entry_zone": {
-                "order_block": f"{self._round(ob_low)} - {self._round(ob_high)}",
-                "fvg_active": structure_data["fvg_present"]
+                "vwap_baseline": self._round(current_vwap),
+                "z_score_level": self._round(current_zscore)
             },
             "risk_management": {
-                "take_profit_1": self._round(tp1),
-                "take_profit_2": self._round(tp2)
+                "take_profit_1": self._round(current_vwap), # العودة لخط الأساس VWAP
+                "take_profit_2": self._round(current_vwap + (current_vwap - current_price)) if direction == "LONG" else self._round(current_vwap - (current_price - current_vwap))
             }
         }
+
         return direction, self._round(current_price), details
