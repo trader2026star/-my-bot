@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v68.1_DIVERGENCE)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.0_STABLE)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v68.1) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.0 Stable) Active!"
 
 @app.route("/health")
 def health():
@@ -134,7 +134,7 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
     tp3_formatted = price_str_format.format(rm.get('take_profit_3'))
     atr_formatted = price_str_format.format(details.get('atr'))
 
-    valid_status = "✅ إشارة دايفيرجنس صحيحة" if details.get("trade_valid") else "❌ لا توجد إشارة دايفيرجنس حالياً"
+    valid_status = "✅ إشارة دايفيرجنس صحيحة ومؤكدة" if details.get("trade_valid") else "❌ لا توجد إشارة دايفيرجنس حالياً"
 
     report = (
         f"🚨 **إشارة دخول من القاع (Divergence) لعملة `{resolved_symbol}`** 🚨 {emoji}\n"
@@ -149,7 +149,7 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
         f"🎯 *الهدف الأول:* `{tp1_formatted}`\n"
         f"🎯 *الهدف الثاني:* `{tp2_formatted}`\n"
         f"🎯 *الهدف الثالث:* `{tp3_formatted}`\n"
-        f"🛑 *الستوب لوز (ATR):* `{sl_formatted}`\n"
+        f"🛑 *الستوب لوز (ATR/القاع):* `{sl_formatted}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"💡 *نصيحة للبوت: عند ضرب الهدف الأول، انقل الستوب لوز فوراً إلى نقطة الدخول لتأمين الصفقة.*\n\n"
         f"📝 *السبب الفني:* {details.get('reason')}"
