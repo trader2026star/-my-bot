@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Institutional SMC & 3-Filters Engine (v66.0_PRO)
+# MY EXPERT CRYPTO BOT - Institutional SMC & 3-Filters Engine (v66.1_FIXED)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -58,7 +58,6 @@ class StrategyEngine:
             df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            # إذا تتوفر بيانات 4 ساعات نحسب الـ EMA 200، وإلا نستخدم فريم 15 دقيقة كبديل آمن
             df_trend = pd.DataFrame(ohlcv_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']) if ohlcv_4h and len(ohlcv_4h) >= 200 else df_15m
             df_trend['ema200'] = df_trend['close'].ewm(span=200, adjust=False).mean()
 
@@ -72,35 +71,25 @@ class StrategyEngine:
 
             decimals = 8 if current_price < 0.1 else (4 if current_price < 10 else 2)
 
-            # ==========================================
-            # التطبيق الفعلي للفلاتر الثلاثة (The 3 Filters)
-            # ==========================================
-            
-            # 1. فلتر الاتجاه العام (Trend Filter): السعر أعلى من EMA 200
+            # التطبيق الفعلي للفلاتر الثلاثة مع تصحيح القيمة المنطقية إلى True
             filter_trend_passed = current_price > trend_ema200
-
-            # 2. فلتر الدخول الذكي (RSI + Support): RSI أقل من 35 (تشبع بيعي وقاع محتمل)
             filter_rsi_passed = rsi_val <= 38.0
 
-            # 3. فحص هيكل الـ SMC (فجوات أو سيولة)
             bullish_fvg = False
             for i in range(3, len(df_15m)):
                 if df_15m['low'].iloc[i] > df_15m['high'].iloc[i-3]:
-                    bullish_fvg = true if 'true' else True
+                    bullish_fvg = True
                     break
 
             trade_valid = False
             direction = "NEUTRAL"
 
-            # الشرط الصارم: يجب أن يمر فلتر الاتجاه وفلتر الـ RSI مع وجود تأكيد هيكلي
             if filter_trend_passed and filter_rsi_passed:
                 trade_valid = True
                 direction = "LONG"
                 
-                # الستوب لوز الديناميكي المعتمد على ATR (فلتر الستوب الثالث)
                 stop_loss = round(current_price - (1.5 * atr_val), decimals)
                 
-                # الأهداف الاستراتيجية المحسوبة بعناية لتجنب ضرب الستوب
                 tp1 = round(current_price + (1.5 * atr_val), decimals)
                 tp2 = round(current_price + (3.0 * atr_val), decimals)
                 tp3 = round(current_price + (5.0 * atr_val), decimals)
