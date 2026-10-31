@@ -125,14 +125,13 @@ class StrategyEngine:
             if atr_val <= 0 or np.isnan(atr_val):
                 atr_val = current_price * 0.01
 
-            smc = self.detect_smc_structure(df_15m)  # فحص الهيكل على 15 دقيقة للأهداف الهيكلية
+            smc = self.detect_smc_structure(df_15m)
 
             direction = smc["bias"]
             trade_valid = False
 
             decimals = 8 if current_price < 0.1 else (4 if current_price < 10 else 2)
 
-            # رصد القمم والقيعان الهيكلية لاستخراج الأهداف بدقة
             high_15m = float(df_15m['high'].iloc[-20:].max())
             low_15m = float(df_15m['low'].iloc[-20:].min())
 
@@ -143,7 +142,6 @@ class StrategyEngine:
                 if stop_loss >= current_price or stop_loss == 0:
                     stop_loss = round(current_price * 0.98, decimals)
 
-                # حساب الأهداف الهيكلية (SMC Structural Targets)
                 tp1 = round(max(current_price + (1.5 * atr_val), current_price + (high_15m - current_price) * 0.5), decimals)
                 tp2 = round(max(current_price + (3.5 * atr_val), high_15m), decimals)
                 tp3 = round(max(current_price + (6.0 * atr_val), high_15m + (2.0 * atr_val)), decimals)
