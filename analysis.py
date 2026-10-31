@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.2_PRO_FINAL)
+# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.3_PRO_FIXED)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -78,11 +78,16 @@ class StrategyEngine:
                     bullish_fvg = True
                     break
 
+            # التصحيح الذكي: تفعيل الاتجاه صعودياً فور تحقق شروط الـ OB أو الـ FVG والسيولة
             bias = "NEUTRAL"
             reason = "لا يوجد تأكيد هيكلي صاعد أو هابط."
-            if is_bullish_structure and (is_mitigated or bullish_fvg):
+            
+            if (is_mitigated or bullish_fvg) and (is_bullish_structure or ob_zone > 0):
                 bias = "BULLISH"
-                reason = "اختراق BOS/CHoCH صعودي مع اختبار Order Block مدعوم بالسيولة."
+                reason = "اختبار ناجح لمنطقة Order Block + فجوة صاعدة وسيولة إيجابية."
+            elif is_bullish_structure:
+                bias = "BULLISH"
+                reason = "اختراق هيكلي صاعد (BOS/CHoCH)."
             elif df['close'].iloc[-1] < recent_low:
                 bias = "BEARISH"
                 reason = "كسر هيكل هابط."
