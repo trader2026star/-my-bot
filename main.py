@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.1_VERBOSE)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.2_FIXED)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.1) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.2 Fixed) Active!"
 
 @app.route("/health")
 def health():
@@ -96,6 +96,8 @@ def bingx_safe_call(method_name, *args, **kwargs):
 
 def calculate_position_size(current_price, stop_loss, asset_type):
     try:
+        if current_price <= 0 or stop_loss <= 0:
+            return 0.0
         risk_amount_usd = BOT_CAPITAL_USD * RISK_PER_TRADE
         risk_per_unit = abs(current_price - stop_loss)
         if risk_per_unit == 0:
@@ -106,7 +108,7 @@ def calculate_position_size(current_price, stop_loss, asset_type):
         return 0.0
 
 def generate_analysis_report(resolved_symbol, direction, current_price, details, asset_type="crypto"):
-    position_size = calculate_position_size(current_price, details.get("stop_loss"), asset_type)
+    position_size = calculate_position_size(current_price, details.get("stop_loss", 0), asset_type)
     
     if details.get("trade_valid"):
         with positions_lock:
@@ -127,11 +129,11 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
 
     price_str_format = "{:.8f}" if current_price < 0.1 else ("{:.4f}" if current_price < 10 else "{:.2f}")
 
-    cur_formatted = price_str_format.format(current_price)
-    sl_formatted = price_str_format.format(details.get('stop_loss', current_price * 0.98))
-    tp1_formatted = price_str_format.format(rm.get('take_profit_1', current_price))
-    tp2_formatted = price_str_format.format(rm.get('take_profit_2', current_price))
-    tp3_formatted = price_str_format.format(rm.get('take_profit_3', current_price))
+    cur_formatted = price_str_format.format(current_price) if current_price > 0 else "0.0000"
+    sl_formatted = price_str_format.format(details.get('stop_loss', 0)) if details.get('stop_loss', 0) > 0 else "0.0000"
+    tp1_formatted = price_str_format.format(rm.get('take_profit_1', 0)) if rm.get('take_profit_1', 0) > 0 else "0.0000"
+    tp2_formatted = price_str_format.format(rm.get('take_profit_2', 0)) if rm.get('take_profit_2', 0) > 0 else "0.0000"
+    tp3_formatted = price_str_format.format(rm.get('take_profit_3', 0)) if rm.get('take_profit_3', 0) > 0 else "0.0000"
     atr_formatted = price_str_format.format(details.get('atr', 0))
 
     valid_status = "✅ إشارة دايفيرجنس صحيحة ومؤكدة" if details.get("trade_valid") else "❌ لا توجد إشارة دايفيرجنس حالياً"
@@ -167,18 +169,42 @@ if bot:
 
             bot.reply_to(message, f"🎯 *جاري فحص الدايفيرجنس الإيجابي والـ RSI للرمز* (`{clean_text}`)...", parse_mode="Markdown")
 
-            possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
-            ohlcv_15m = None
-            resolved_symbol = None
+            # تحميل الأسواق للتأكد من الصيغة الصحيحة في بينج إكس
+            try:
+                bingx.load_markets()
+            except Exception:
+                pass
 
+            possible_symbols = [
+                f"{clean_text}/USDT:USDT",
+                f"{clean_text}/USDT",
+                f"{clean_text}USDT"
+            ]
+            
+            # البحث المباشر في أسواق المنصة المتاحة
             for sym in possible_symbols:
-                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=100)
-                if ohlcv_15m and len(ohlcv_15m) >= 40:
+                if sym in bingx.markets:
                     resolved_symbol = sym
                     break
+            else:
+                # إذا لم تجد مطابقة تامة، جرب البحث الجزئي
+                resolved_symbol = None
+                for m in bingx.symbols:
+                    if clean_text in m and "USDT" in m:
+                        resolved_symbol = m
+                        break
+                if not resolved_symbol:
+                    resolved_symbol = possible_symbols[0]
 
-            if not resolved_symbol or not ohlcv_15m:
-                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية للرمز `{clean_text}`.")
+            ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=100)
+            
+            if not ohlcv_15m or len(ohlcv_15m) < 20:
+                # محاولة بالصيغة البديلة إذا فشلت الأولى
+                resolved_symbol = f"{clean_text}/USDT"
+                ohlcv_15m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="15m", limit=100)
+
+            if not resolved_symbol or not ohlcv_15m or len(ohlcv_15m) < 20:
+                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية أو تداول للرمز `{clean_text}` على المنصة.")
                 return
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=30)
@@ -190,6 +216,7 @@ if bot:
             bot.reply_to(message, report, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in message handler: {e}")
+            bot.reply_to(message, f"❌ حدث خطأ أثناء معالجة الطلب: {str(e)}")
 
 def telegram_listener():
     if bot:
@@ -205,18 +232,18 @@ def automated_signal_scanner_loop():
             
             if tickers:
                 for symbol, data in tickers.items():
-                    if "/USDT:USDT" in symbol or ("/USDT" in symbol and ":" not in symbol):
+                    if "/USDT" in symbol:
                         volume_24h = data.get("quoteVolume", 0) or 0
-                        if volume_24h > 1000000:
+                        if volume_24h > 500000:
                             candidate_symbols.append(symbol)
 
             active_symbols = candidate_symbols[:15]
             if not active_symbols:
-                active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"]
+                active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 
             for sym in active_symbols:
                 ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=100)
-                if not ohlcv_15m or len(ohlcv_15m) < 40:
+                if not ohlcv_15m or len(ohlcv_15m) < 30:
                     continue
                 
                 ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=30)
@@ -238,7 +265,7 @@ def automated_signal_scanner_loop():
             logger.error(f"Error in automated signal scanner loop: {e}")
 
 def position_tracker_loop():
-    while Time.sleep(5) or True:
+    while True:
         try:
             time.sleep(5)
             with positions_lock:
