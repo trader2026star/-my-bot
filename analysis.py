@@ -83,13 +83,13 @@ class StrategyEngine:
             reason = "لا يوجد تأكيد هيكلي صاعد أو هابط."
             
             if (is_mitigated or bullish_fvg) and (is_bullish_structure or ob_zone > 0):
-                bias = "BULLISH"
+                bias = "LONG"
                 reason = "اختبار ناجح لمنطقة Order Block + فجوة صاعدة وسيولة إيجابية."
             elif is_bullish_structure:
-                bias = "BULLISH"
+                bias = "LONG"
                 reason = "اختراق هيكلي صاعد (BOS/CHoCH)."
             elif df['close'].iloc[-1] < recent_low:
-                bias = "BEARISH"
+                bias = "SHORT"
                 reason = "كسر هيكل هابط."
 
             return {
@@ -142,16 +142,13 @@ class StrategyEngine:
 
             decimals = 8 if current_price < 1 else (4 if current_price < 100 else 2)
 
-            # السماح بتفعيل الصفقة عند تأكيد اتجاه الـ BULLISH دون اشتراط CMF موجب حصراً
-            if direction == "BULLISH":
+            if direction == "LONG":
                 trade_valid = True
                 
-                # وقف الخسارة الاحترافي أسفل منطقة الـ Order Block المؤسسي (+OB) تماماً
                 stop_loss = round(min(smc["ob_zone"], current_price - (2.5 * atr_val)), decimals)
                 if stop_loss >= current_price:
                     stop_loss = round(current_price * 0.98, decimals)
 
-                # الأهداف الاستراتيجية المطابقة للتحليل الهيكلي والقمم وفجوات السيولة
                 tp1 = round(current_price + (2.0 * atr_val), decimals)
                 tp2 = round(current_price + (4.5 * atr_val), decimals)
                 tp3 = round(current_price + (7.0 * atr_val), decimals)
@@ -164,7 +161,7 @@ class StrategyEngine:
                 
                 reason = " + ".join(reasons) if reasons else "تأكيد هيكلي مؤسسي مدعوم بالسيولة."
 
-            elif direction == "BEARISH":
+            elif direction == "SHORT":
                 trade_valid = True
                 
                 stop_loss = round(max(current_price + (2.5 * atr_val), current_price + 0.005), decimals)
