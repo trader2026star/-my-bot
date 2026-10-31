@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Analysis Engine (v64.0_INSTITUTIONAL_SMC)
+# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.0_PRO)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -27,7 +27,7 @@ class StrategyEngine:
         except Exception:
             return 0.0
 
-    def calculate_cmf(self, df, period=20):
+    def calculate_cmf(self, df, period=period=20):
         try:
             high = df['high']
             low = df['low']
@@ -42,64 +42,64 @@ class StrategyEngine:
         except Exception:
             return 0.0
 
-    def detect_institutional_smc(self, df):
+    def detect_smc_structure(self, df):
         """
-        محرك رصد البصمة المؤسسية: Order Blocks, FVG المتسلسلة، وشفط السيولة (Liquidity Sweeps).
+        محرك الـ SMC الاحترافي: رصد الـ CHoCH/BOS، الـ Order Blocks المؤسسية، والـ FVG الحقيقية.
         """
         try:
-            if len(df) < 25:
-                return {"bullish_fvg": False, "bearish_fvg": False, "sweep_long": False, "sweep_short": False, "ob_zone": 0.0, "bias": "NEUTRAL"}
+            if len(df) < 30:
+                return {"bias": "NEUTRAL", "bullish_fvg": False, "bearish_fvg": False, "ob_zone": 0.0, "is_mitigated": False, "reason": "بيانات غير كافية"}
 
-            # 1. رصد الفجوات السعرية (FVG) في نطاق أوسع
+            # 1. رصد الـ Order Blocks (OB): نبحث عن آخر شمعة بيعية قبل الانفجار الصعودي أو العكس
+            ob_zone = 0.0
+            is_mitigated = False
+            for i in range(len(df)-2, 10, -1):
+                # Bullish Order Block نموذجى (+OB) تماماً كما في الشارت
+                if df['close'].iloc[i] < df['open'].iloc[i] and df['close'].iloc[i+1] > df['open'].iloc[i+1]:
+                    ob_zone = float(df['low'].iloc[i])
+                    # التحقق مما إذا كان السعر قد عاد ملامستها Mitigated أم لا
+                    mitigating_price = df['low'].iloc[-1]
+                    if mitigating_price <= df['high'].iloc[i]:
+                        is_mitigated = True
+                    break
+
+            # 2. رصد هيكل السوق: كسر الهيكل الصاعد (BOS) نموذجى
+            is_bullish_structure = False
+            is_choch = False
+            recent_high = df['high'].iloc[-15:-2].max()
+            if df['close'].iloc[-1] > recent_high:
+                is_bullish_structure = True
+                # للتبسيط، نعتبر أول BOS صاعد هو CHoCH
+                is_choch = True 
+
+            # 3. رصد الفجوات السعرية (FVG) في نطاق الفحص
             bullish_fvg = False
             for i in range(3, len(df)):
                 if df['low'].iloc[i] > df['high'].iloc[i-3]:
                     bullish_fvg = True
                     break
 
-            bearish_fvg = False
-            for i in range(3, len(df)):
-                if df['high'].iloc[i] < df['low'].iloc[i-3]:
-                    bearish_fvg = True
-                    break
-
-            # 2. رصد شفط السيولة (Liquidity Sweep / Mitigation) تحت القيعان أو فوق القمم السابقة
-            recent_low = df['low'].iloc[-20:-2].min()
-            current_low = df['low'].iloc[-1]
-            current_close = df['close'].iloc[-1]
-            
-            recent_high = df['high'].iloc[-20:-2].max()
-            current_high = df['high'].iloc[-1]
-
-            # كسر كاذب للقاع ثم الارتداد لداخل النطاق (شفط سيولة الشراء)
-            sweep_long = current_low < recent_low and current_close > recent_low
-            # كسر كاذب للقمة ثم الهبوط (شفط سيولة البيع)
-            sweep_short = current_high > recent_high and current_close < recent_high
-
-            # 3. تحديد منطقة الـ Order Block (+OB أو -OB) كقاعدة انطلاق السعر
-            # نبحث عن آخر شمعة هابطة قبل الانفجار الصعودي أو العكس
-            ob_zone = float(recent_low)
-            for i in range(len(df)-2, 5, -1):
-                if df['close'].iloc[i] < df['open'].iloc[i] and df['close'].iloc[i+1] > df['open'].iloc[i+1]:
-                    ob_zone = float(df['low'].iloc[i])
-                    break
-
             bias = "NEUTRAL"
-            if bullish_fvg or sweep_long:
+            reason = "لا يوجد تأكيد هيكلي صاعد أو هابط."
+            if is_bullish_structure and (is_mitigated or bullish_fvg):
                 bias = "BULLISH"
-            elif bearish_fvg or sweep_short:
+                reason = "اختراق BOS/CHoCH صعودي مع اختبار Order Block مدعوم بالسيولة."
+            elif df['close'].iloc[-1] < recent_low and bearish_fvg:
+                # هذا جزء تبسيطي للهيكل الهابط
                 bias = "BEARISH"
+                reason = "كسر هيكل هابط مدعوم بالفجوات (Bearish FVG)."
 
             return {
+                "bias": bias,
                 "bullish_fvg": bool(bullish_fvg),
-                "bearish_fvg": bool(bearish_fvg),
-                "sweep_long": bool(sweep_long),
-                "sweep_short": bool(sweep_short),
+                "bearish_fvg": bool(df['high'].iloc[-1] < df['low'].iloc[-3]), # فحص FVG هابط لحظي
                 "ob_zone": ob_zone,
-                "bias": bias
+                "is_mitigated": is_mitigated,
+                "is_choch": is_choch,
+                "reason": reason
             }
-        except Exception:
-            return {"bullish_fvg": False, "bearish_fvg": False, "sweep_long": False, "sweep_short": False, "ob_zone": 0.0, "bias": "NEUTRAL"}
+        except Exception as e:
+            return {"bias": "NEUTRAL", "bullish_fvg": False, "bearish_fvg": False, "ob_zone": 0.0, "is_mitigated": False, "reason": f"خطأ برمجى: {e}"}
 
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto"):
         default_details = {
@@ -126,62 +126,65 @@ class StrategyEngine:
 
             vwap_baseline = float(df_5m['ema20'].iloc[-1])
             atr_val = float(self.calculate_atr(df_5m, period=14))
-            cmf_val = float(self.calculate_cmf(df_5m, period=20))
+            cmf_val = float(self.calculate_cmf(df_5m, period=period=20))
 
             if atr_val <= 0 or np.isnan(atr_val):
                 atr_val = current_price * 0.01
 
-            # استدعاء تحليلات الـ SMC المؤسسية
-            smc = self.detect_institutional_smc(df_5m)
+            # استدعاء تحليلات الـ SMC الاحترافية على إطار الـ 5 دقائق
+            smc = self.detect_smc_structure(df_5m)
 
-            is_bullish_trend = current_price > vwap_baseline and df_5m['ema20'].iloc[-1] > df_5m['ema50'].iloc[-1]
-            is_bearish_trend = current_price < vwap_baseline and df_5m['ema20'].iloc[-1] < df_5m['ema50'].iloc[-1]
-
-            direction = "NEUTRAL"
+            # تحديد الاتجاه المؤسسي بناءً على الـ CHoCH/BOS والـ Order Block
+            direction = smc["bias"]
             trade_valid = False
-            reason = ""
+            reason = smc["reason"]
 
             decimals = 8 if current_price < 1 else (4 if current_price < 100 else 2)
 
-            # منطق الدخول المؤسسي بناءً على شفط السيولة أو الـ FVG مع توافق الهيكل
-            if (is_bullish_trend or smc["bullish_fvg"] or smc["sweep_long"]) and cmf_val > -0.08:
-                direction = "LONG"
+            # منطق الدخول المؤسسي بناءً على اختبار منطقة الـ OB تماماً كما في الشارت
+            if direction == "BULLISH" and cmf_val > -0.08:
                 trade_valid = True
                 
-                # وقف الخسارة الاحترافي يوضع أسفل منطقة الـ Order Block أو تحت القاع المشفوط لضمان الحماية
+                # وقف الخسارة الاحترافي يوضع أسفل منطقة الـ Order Block المؤسسي (+OB) تماماً لحماية رأس المال
                 stop_loss = round(min(smc["ob_zone"], current_price - (2.5 * atr_val)), decimals)
+                # تأكيد حماية لمنع الوقف فوق السعر
                 if stop_loss >= current_price:
                     stop_loss = round(current_price * 0.98, decimals)
 
+                # الأهداف الاستراتيجية كما في طريقتك: TP1 عند قمة قريبة (BOS)، TP2 عند فجوات عليا (External Liquidity)
                 tp1 = round(current_price + (1.5 * atr_val), decimals)
                 tp2 = round(current_price + (3.0 * atr_val), decimals)
+                # TP3 يتم حسابه على مسافة أبعد نموذجياً ( External Liquidity Pools)
+                tp3 = round(current_price + (5.0 * atr_val), decimals)
                 
+                # تجميع الأسباب بتنسيق احترافي
                 reasons = []
-                if smc["sweep_long"]: reasons.append("تم شفط سيولة القاع بنجاح (Liquidity Sweep)")
-                if smc["bullish_fvg"]: reasons.append("رصد فجوة صاعدة (Bullish FVG)")
-                if smc["ob_zone"] > 0: reasons.append(f"احترام منطقة الـ Order Block المؤسسي")
-                reason = " + ".join(reasons) if reasons else "تأكيد هيكلي صاعد ودعم سيولة الحيتان."
+                if smc["mitigated"]: reasons.append(f"اختبار ناجح لمنطقة Order Block مؤسسي (+OB) عند {round(smc['ob_zone'], decimals)}")
+                if smc["choch"]: reasons.append("تغير شخصية الهيكل (CHoCH) صعودي")
+                if smc["bullish_fvg"]: reasons.append("رصد فجوة صاعدة (Bullish FVG) تدعم السيولة")
+                if cmf_val > 0: reasons.append("تدفق سيولة الحيتان (CMF) إيجابي")
+                
+                if reasons:
+                    reason = " + ".join(reasons)
+                else:
+                    reason = "تأكيد هيكلي مؤسسي مدعوم بالسيولة."
 
-            elif (is_bearish_trend or smc["bearish_fvg"] or smc["sweep_short"]) and cmf_val < 0.08:
-                direction = "SHORT"
+            elif direction == "BEARISH" and cmf_val < 0.08:
                 trade_valid = True
                 
-                stop_loss = round(max(smc["ob_zone"], current_price + (2.5 * atr_val)), decimals)
+                stop_loss = round(max(current_price + (2.5 * atr_val), current_price + 0.005), decimals)
                 if stop_loss <= current_price:
                     stop_loss = round(current_price * 1.02, decimals)
 
                 tp1 = round(current_price - (1.5 * atr_val), decimals)
                 tp2 = round(current_price - (3.0 * atr_val), decimals)
-                
-                reasons = []
-                if smc["sweep_short"]: reasons.append("شفط سيولة القمم (Sweep Short)")
-                if smc["bearish_fvg"]: reasons.append("رصد فجوة هابطة (Bearish FVG)")
-                reason = " + ".join(reasons) if reasons else "ضغط بيعي مؤسسي وهيكل هابط."
+                tp3 = round(current_price - (5.0 * atr_val), decimals)
+                reason = "ضغط بيعي مؤسسي مدعوم بالفجوات وهيكل هابط."
             else:
                 stop_loss = round(current_price * 0.98, decimals)
                 tp1 = current_price
                 tp2 = current_price
-                reason = "السوق في مرحلة إعادة تجميع أو عرضي - بانتظار تأكيد سيولة جديد."
+                # reason يبقى NEUTRAL أو سبب تم رصده
 
             details = {
                 "trade_valid": trade_valid,
@@ -193,12 +196,13 @@ class StrategyEngine:
                     "z_score": round(cmf_val, 4),
                     "smc_bias": smc["bias"],
                     "fvg_up": smc["bullish_fvg"],
-                    "sweep_down": smc["sweep_long"],
+                    "sweep_down": smc[" mititaged"], # التحقق من اختبار السيولة
                     "order_block": round(smc["ob_zone"], decimals)
                 },
                 "risk_management": {
                     "take_profit_1": tp1,
-                    "take_profit_2": tp2
+                    "take_profit_2": tp2,
+                    "take_profit_3": tp3
                 },
                 "reason": reason
             }
