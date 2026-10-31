@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.3_PRO_FIXED)
+# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.4_PRO_FINAL_STABLE)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -78,7 +78,7 @@ class StrategyEngine:
                     bullish_fvg = True
                     break
 
-            # التصحيح الذكي: تفعيل الاتجاه صعودياً فور تحقق شروط الـ OB أو الـ FVG والسيولة
+            # التفعيل الذكي للهيكل الصاعد بناءً على اختبار الـ OB أو الفجوة والسيولة
             bias = "NEUTRAL"
             reason = "لا يوجد تأكيد هيكلي صاعد أو هابط."
             
@@ -142,7 +142,8 @@ class StrategyEngine:
 
             decimals = 8 if current_price < 1 else (4 if current_price < 100 else 2)
 
-            if direction == "BULLISH" and cmf_val > -0.08:
+            # السماح بتفعيل الصفقة عند تأكيد اتجاه الـ BULLISH دون اشتراط CMF موجب حصراً
+            if direction == "BULLISH":
                 trade_valid = True
                 
                 # وقف الخسارة الاحترافي أسفل منطقة الـ Order Block المؤسسي (+OB) تماماً
@@ -159,11 +160,11 @@ class StrategyEngine:
                 if smc["is_mitigated"]: reasons.append(f"اختبار ناجح لمنطقة Order Block مؤسسي (+OB) عند {round(smc['ob_zone'], decimals)}")
                 if smc["is_choch"]: reasons.append("تغير شخصية الهيكل (CHoCH) صعودي")
                 if smc["bullish_fvg"]: reasons.append("رصد فجوة صاعدة (Bullish Fvg)")
-                if cmf_val > 0: reasons.append("تدفق سيولة الحيتان (CMF) إيجابي")
+                if cmf_val != 0: reasons.append(f"تدفق سيولة الحيتان (CMF): {round(cmf_val, 4)}")
                 
                 reason = " + ".join(reasons) if reasons else "تأكيد هيكلي مؤسسي مدعوم بالسيولة."
 
-            elif direction == "BEARISH" and cmf_val < 0.08:
+            elif direction == "BEARISH":
                 trade_valid = True
                 
                 stop_loss = round(max(current_price + (2.5 * atr_val), current_price + 0.005), decimals)
