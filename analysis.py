@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.0_STABLE)
+# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.6_FINAL)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -33,9 +33,18 @@ class StrategyEngine:
             tr3 = np.abs(low - close.shift())
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr = tr.rolling(window=period).mean()
+            
+            # معالجة القيم الفارغة أو الصفر لضمان عدم ظهور أصفار أبداً
+            if atr.empty or atr.iloc[-1] <= 0 or np.isnan(atr.iloc[-1]):
+                mean_tr = tr.mean()
+                if not np.isnan(mean_tr) and mean_tr > 0:
+                    atr.iloc[-1] = mean_tr
+                else:
+                    atr.iloc[-1] = float(close.iloc[-1]) * 0.01
             return atr
         except Exception:
-            return pd.Series(0.0, index=df.index)
+            fallback_atr = pd.Series(float(df['close'].iloc[-1]) * 0.01, index=df.index)
+            return fallback_atr
 
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto"):
         default_details = {
@@ -55,19 +64,18 @@ class StrategyEngine:
 
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            # حساب المؤشرات يدوياً وبأمان تام
             df_15m['RSI'] = self.calculate_rsi(df_15m['close'], length=14)
             df_15m['ATR'] = self.calculate_atr(df_15m, length=14)
 
-            if len(df_15m) < 20 or pd.isna(df_15m['RSI'].iloc[-1]) or pd.isna(df_15m['ATR'].iloc[-1]):
+            if len(df_15m) < 20 or pd.isna(df_15m['RSI'].iloc[-1]):
                 return "NEUTRAL", 0.0, default_details
 
             current_price = float(df_15m['close'].iloc[-1])
             current_atr = float(df_15m['ATR'].iloc[-1])
-            decimals = 8 if current_price < 0.1 else (4 if current_price < 10 else 2)
-
             if current_atr <= 0 or np.isnan(current_atr):
                 current_atr = current_price * 0.01
+
+            decimals = 8 if current_price < 0.1 else (4 if current_price < 10 else 2)
 
             c_low = float(df_15m['low'].iloc[-2])
             c_rsi = float(df_15m['RSI'].iloc[-2])
@@ -91,16 +99,15 @@ class StrategyEngine:
                 if rsi_5m.iloc[-1] > 70:
                     is_bullish_divergence = False
 
+            stop_loss = round(c_low - (current_atr * 1.2), decimals)
+            target_1 = round(current_price + (current_atr * 1.5), decimals)
+            target_2 = round(current_price + (current_atr * 3.0), decimals)
+            target_3 = round(current_price + (current_atr * 5.0), decimals)
+
+            if stop_loss >= current_price:
+                stop_loss = round(current_price - (current_atr * 1.5), decimals)
+
             if is_bullish_divergence:
-                stop_loss = round(c_low - (current_atr * 1.2), decimals)
-                
-                target_1 = round(current_price + (current_atr * 1.5), decimals)
-                target_2 = round(current_price + (current_atr * 3.0), decimals)
-                target_3 = round(current_price + (current_atr * 5.0), decimals)
-
-                if stop_loss >= current_price:
-                    stop_loss = round(current_price - (current_atr * 1.5), decimals)
-
                 details = {
                     "trade_valid": True,
                     "trigger_price": current_price,
@@ -123,6 +130,12 @@ class StrategyEngine:
                 details = default_details.copy()
                 details["rsi"] = round(float(df_15m['RSI'].iloc[-1]), 2)
                 details["atr"] = round(current_atr, decimals)
+                details["stop_loss"] = stop_loss
+                details["risk_management"] = {
+                    "take_profit_1": target_1,
+                    "take_profit_2": target_2,
+                    "take_profit_3": target_3
+                }
                 return "NEUTRAL", current_price, details
 
         except Exception as e:
