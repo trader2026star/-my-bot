@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v65.7_STRICT_SNIPER)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v66.0_PRO)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY INSTITUTIONAL SNIPER BOT (v65.7 Strict) Active!"
+    return "MY INSTITUTIONAL SNIPER BOT (v66.0 3-Filters) Active!"
 
 @app.route("/health")
 def health():
@@ -86,7 +86,7 @@ def bingx_safe_call(method_name, *args, **kwargs):
             if "109415" in err_str:
                 return None
             if "100410" in err_str or "Rate Limit" in err_str or "Too Many Requests" in err_str or "429" in err_str:
-                logger.warning("ضغط الطلبات (Rate Limit) مع BingX، جاري إعادة المحاولة...")
+                logger.warning("ضغط الطلبات مع BingX، جاري إعادة المحاولة...")
                 time.sleep(delay * (attempt + 1))
             else:
                 if attempt == retries - 1:
@@ -124,7 +124,7 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
 
     rm = details.get("risk_management", {})
     ent = details.get("entry_zone", {})
-    emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
+    emoji = "🟢" if direction == "LONG" else "⚪"
 
     price_str_format = "{:.8f}" if current_price < 0.1 else ("{:.4f}" if current_price < 10 else "{:.2f}")
 
@@ -135,30 +135,30 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
     tp3_formatted = price_str_format.format(rm.get('take_profit_3'))
     atr_formatted = price_str_format.format(details.get('atr'))
 
-    valid_status = "✅ تصلح للصفقة" if details.get("trade_valid") else "❌ لا تصلح حالياً"
+    valid_status = "✅ تصلح للصفقة (اجتازت الفلاتر الثلاثة)" if details.get("trade_valid") else "❌ لا تصلح حالياً"
 
     report = (
-        f"🎯 *تقرير قناص السيولة المؤسسي (SMC)* (`{resolved_symbol}`) {emoji}\n"
+        f"🎯 *توصية قناص السيولة المؤكدة* (`{resolved_symbol}`) {emoji}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📌 *التقييم الفني:* {valid_status}\n"
         f"🔹 *السعر الحالي:* `{cur_formatted}`\n"
-        f"🔹 *اتجاه الهيكل (SMC Bias):* `{ent.get('smc_bias')}`\n"
-        f"🔹 *تدفق سيولة الحيتان (CMF):* `{ent.get('z_score')}`\n"
+        f"🔹 *مؤشر القوة النسبية (RSI):* `{details.get('rsi')}`\n"
         f"🔹 *متوسط النطاق الحقيقي (ATR):* `{atr_formatted}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 *التأكيدات الفنية المكتشفة:*\n"
-        f"  • الفجوة السعرية (FVG Up): `{'نعم 🟢' if ent.get('fvg_up') else 'لا ⚪'}`\n"
-        f"  • شفط السيولة (Sweep): `{'تم بنجاح ⚡' if ent.get('sweep_down') else 'غير متوفر'}`\n"
+        f"🛡 *شروط الفلاتر المطبقة:*\n"
+        f"  • فلتر الاتجاه (EMA 200): `{'مقبول ✓' if ent.get('trend_passed') else 'غير مطابق ✕'}`\n"
+        f"  • فلتر القاع والـ RSI (<38): `{'مقبول ✓' if ent.get('rsi_passed') else 'غير مطابق ✕'}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *حجم العقد المقترح:* `{position_size}` Units\n"
         f"🎯 *سعر الدخول المناسب:* `{cur_formatted}`\n"
-        f"🛑 *وقف الخسارة الآمن:* `{sl_formatted}`\n\n"
+        f"🛑 *الستوب لوز الديناميكي الآمن:* `{sl_formatted}`\n\n"
         f"🎯 *الأهداف الاستراتيجية:*\n"
-        f"  • الهدف الأول (TP1): `{tp1_formatted}`\n"
+        f"  • الهدف الأول (TP1): `{tp1_formatted}` (قريب جداً لضمان التأمين)\n"
         f"  • الهدف الثاني (TP2): `{tp2_formatted}`\n"
         f"  • الهدف الثالث (TP3): `{tp3_formatted}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 *التحليل الفني والسبب:* {details.get('reason')}"
+        f"💡 *نصيحة أمان الصفقة:* عند تحقيق الهدف الأول (TP1)، انتقل فوراً إلى نقطة الدخول (Breakeven) لتأمين الصفقة بنسبة 100%!\n\n"
+        f"📝 *السبب الفني:* {details.get('reason')}"
     )
     return report
 
@@ -171,20 +171,9 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🎯 *جاري فحص دفاتر الطلبات ورصد فجوات الـ SMC والسيولة للرمز* (`{clean_text}`)...", parse_mode="Markdown")
+            bot.reply_to(message, f"🎯 *جاري فحص الاتجاه وفلتر الـ RSI والـ ATR للرمز* (`{clean_text}`)...", parse_mode="Markdown")
 
-            possible_symbols = []
-            asset_type = "crypto"
-            
-            if clean_text in ["GOLD", "XAU", "GOLDUSDT", "XAUUSDT"]:
-                possible_symbols = ["GOLD/USDT:USDT", "XAU/USDT:USDT", "GOLD/USDT", "XAU/USDT", "GOLDUSDT"]
-                asset_type = "stock"
-            elif clean_text in ["AAPL", "TSLA", "NVDA", "MSFT", "AMZN"]:
-                possible_symbols = [f"{clean_text}/USDT", f"{clean_text}USDT"]
-                asset_type = "stock"
-            else:
-                possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
-
+            possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
             ohlcv_15m = None
             resolved_symbol = None
 
@@ -194,30 +183,19 @@ if bot:
                     resolved_symbol = sym
                     break
 
-            if not resolved_symbol:
-                try:
-                    spot_bingx = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "spot"}})
-                    for sym in possible_symbols:
-                        spot_sym = sym.replace(":USDT", "")
-                        ohlcv_15m = spot_bingx.fetch_ohlcv(spot_sym, timeframe="15m", limit=300)
-                        if ohlcv_15m and len(ohlcv_15m) >= 50:
-                            resolved_symbol = spot_sym
-                            break
-                except Exception:
-                    pass
-
             if not resolved_symbol or not ohlcv_15m:
                 bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية للرمز `{clean_text}`.")
                 return
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=300)
+            ohlcv_4h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="4h", limit=250)
             scan_stats["scanned_pairs"] += 1
 
             direction, current_price, details = engine.analyze_market_structure(
-                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
+                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_4h=ohlcv_4h, asset_type="crypto"
             )
 
-            report = generate_analysis_report(resolved_symbol, direction, current_price, details, asset_type)
+            report = generate_analysis_report(resolved_symbol, direction, current_price, details, "crypto")
             bot.reply_to(message, report, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in message handler: {e}")
@@ -229,13 +207,11 @@ def telegram_listener():
 
 def automated_signal_scanner_loop():
     """
-    الماسح التلقائي الصارم: لا يرسل صفقات عشوائية، بل يفلتر العملات بناءً على هيكل الـ SMC والفجوات الحقيقية بدقة تامة.
+    الماسح التلقائي بالفلاتر الثلاثة الصارمة لمنع ضرب الاستوب وإرسال الصفقات الآمنة فقط.
     """
     while True:
         try:
             time.sleep(60)
-            logger.info("Running strict institutional SMC market scan...")
-            
             tickers = bingx_safe_call("fetch_tickers")
             candidate_symbols = []
             
@@ -244,47 +220,40 @@ def automated_signal_scanner_loop():
                     if "/USDT:USDT" in symbol or ("/USDT" in symbol and ":" not in symbol):
                         percentage = data.get("percentage", 0) or 0
                         volume_24h = data.get("quoteVolume", 0) or 0
-                        if percentage and percentage > 2.0 and volume_24h > 1000000:
+                        if percentage and percentage > 1.0 and volume_24h > 1000000:
                             candidate_symbols.append((symbol, percentage))
 
             candidate_symbols.sort(key=lambda x: x[1], reverse=True)
-            active_symbols = [item[0] for item in candidate_symbols[:8]]
+            active_symbols = [item[0] for item in candidate_symbols[:10]]
             
             if not active_symbols:
                 active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"]
 
-            logger.info(f"Strictly scanning top {len(active_symbols)} trending symbols...")
-
             for sym in active_symbols:
                 ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
                 ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=300)
+                ohlcv_4h = bingx_safe_call("fetch_ohlcv", sym, timeframe="4h", limit=250)
                 
                 if not ohlcv_15m or not ohlcv_5m or len(ohlcv_15m) < 50:
                     continue
                 
                 scan_stats["scanned_pairs"] += 1
                 direction, current_price, details = engine.analyze_market_structure(
-                    ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto"
+                    ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_4h=ohlcv_4h, asset_type="crypto"
                 )
                 
-                is_valid_setup = (
-                    details.get("trade_valid") and 
-                    direction == "LONG" and 
-                    (details["entry_zone"].get("fvg_up") or details["entry_zone"].get("order_block") > 0)
-                )
-
-                if is_valid_setup:
+                if details.get("trade_valid") and direction == "LONG":
                     with positions_lock:
                         if sym in active_positions:
                             continue
                     
                     report = generate_analysis_report(sym, direction, current_price, details, "crypto")
-                    send_telegram_message(f"🎯 *فرصة قناص السيولة المؤكدة (Strict SMC Sniper)*:\n\n{report}")
-                    logger.info(f"High-quality verified signal sent for {sym}!")
+                    send_telegram_message(f"🎯 *فرصة قناص السيولة المؤكدة (3-Filters Verified)*:\n\n{report}")
+                    logger.info(f"Safe verified signal sent for {sym}!")
                 
                 time.sleep(5)
         except Exception as e:
-            logger.error(f"Error in strict automated signal scanner loop: {e}")
+            logger.error(f"Error in automated signal scanner loop: {e}")
 
 def position_tracker_loop():
     while True:
@@ -314,7 +283,7 @@ def position_tracker_loop():
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة الشراء للرمز `{symbol}` عند السعر `{current_price}`.*")
+                        send_telegram_message(f"🛑 *ضرب وقف الخسارة للرمز `{symbol}` عند السعر `{current_price}`.*")
                         continue
                     
                     if current_price >= tp1 and not be_done:
@@ -322,39 +291,18 @@ def position_tracker_loop():
                             if symbol in active_positions:
                                 active_positions[symbol]["breakeven_done"] = True
                                 active_positions[symbol]["stop_loss"] = entry
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل وقف الخسارة إلى نقطة الدخول (Breakeven).*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل الستوب لوز إلى نقطة الدخول (Breakeven) فوراً لتأمين الصفقة.*")
                         
                     if tp3 and current_price >= tp3:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث الأقصى (TP3) بنجاح للرمز `{symbol}`! تم إغلاق كامل الصفقة بربح ممتاز.*")
+                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث الأقصى (TP3) بنجاح للرمز `{symbol}`! إغلاق الصفقة بربح ممتاز.*")
                     elif current_price >= tp2 and not tp3:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
                         send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) بنجاح للرمز `{symbol}`!*")
-
-                elif side == "SHORT":
-                    if current_price >= stop_loss:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🛑 *ضرب وقف الخسارة لصفقة البيع للرمز `{symbol}` عند السعر `{current_price}`.*")
-                        continue
-                    
-                    if current_price <= tp1 and not be_done:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                active_positions[symbol]["breakeven_done"] = True
-                                active_positions[symbol]["stop_loss"] = entry
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) لصفقة البيع للرمز `{symbol}`! تم تأمين الصفقة.*")
-                        
-                    if tp3 and current_price <= tp3:
-                        with positions_lock:
-                            if symbol in active_positions:
-                                del active_positions[symbol]
-                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث (TP3) بنجاح للرمز `{symbol}`!*")
 
         except Exception as e:
             logger.error(f"Error in position tracker loop: {e}")
