@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.5_PRO_TARGETS_FIX)
+# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.6_STRICT_PRO)
 # ============================================================
 import numpy as np
 import pandas as pd
