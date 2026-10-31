@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v65.6_DYNAMIC_SCAN)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v65.7_STRICT_SNIPER)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY INSTITUTIONAL SNIPER BOT (v65.6 Dynamic) Active!"
+    return "MY INSTITUTIONAL SNIPER BOT (v65.7 Strict) Active!"
 
 @app.route("/health")
 def health():
@@ -229,28 +229,31 @@ def telegram_listener():
 
 def automated_signal_scanner_loop():
     """
-    الماسح التلقائي الديناميكي: يسحب العملات الأكثر حركة وصعوداً من BingX تلقائياً في كل جولة.
+    الماسح التلقائي الصارم: لا يرسل صفقات عشوائية، بل يفلتر العملات بناءً على هيكل الـ SMC والفجوات الحقيقية بدقة تامة.
     """
     while True:
         try:
-            time.sleep(30)
-            logger.info("Fetching dynamic active pairs from BingX for automated scanning...")
+            time.sleep(60)
+            logger.info("Running strict institutional SMC market scan...")
             
             tickers = bingx_safe_call("fetch_tickers")
-            active_symbols = []
+            candidate_symbols = []
             
             if tickers:
                 for symbol, data in tickers.items():
                     if "/USDT:USDT" in symbol or ("/USDT" in symbol and ":" not in symbol):
                         percentage = data.get("percentage", 0) or 0
-                        if percentage and percentage > 1.5:
-                            active_symbols.append(symbol)
+                        volume_24h = data.get("quoteVolume", 0) or 0
+                        if percentage and percentage > 2.0 and volume_24h > 1000000:
+                            candidate_symbols.append((symbol, percentage))
 
-            active_symbols = active_symbols[:15]
+            candidate_symbols.sort(key=lambda x: x[1], reverse=True)
+            active_symbols = [item[0] for item in candidate_symbols[:8]]
+            
             if not active_symbols:
-                active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT"]
+                active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"]
 
-            logger.info(f"Scanning {len(active_symbols)} dynamic trending symbols...")
+            logger.info(f"Strictly scanning top {len(active_symbols)} trending symbols...")
 
             for sym in active_symbols:
                 ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
@@ -264,18 +267,24 @@ def automated_signal_scanner_loop():
                     ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto"
                 )
                 
-                if details.get("trade_valid") and direction in ["LONG", "SHORT"]:
+                is_valid_setup = (
+                    details.get("trade_valid") and 
+                    direction == "LONG" and 
+                    (details["entry_zone"].get("fvg_up") or details["entry_zone"].get("order_block") > 0)
+                )
+
+                if is_valid_setup:
                     with positions_lock:
                         if sym in active_positions:
                             continue
                     
                     report = generate_analysis_report(sym, direction, current_price, details, "crypto")
-                    send_telegram_message(f"🚀 *تنبيه صفقة تلقائية جديدة (Dynamic Top Gainer Sniper)*:\n\n{report}")
-                    logger.info(f"Automated signal sent successfully for dynamic symbol {sym}!")
+                    send_telegram_message(f"🎯 *فرصة قناص السيولة المؤكدة (Strict SMC Sniper)*:\n\n{report}")
+                    logger.info(f"High-quality verified signal sent for {sym}!")
                 
-                time.sleep(3)
+                time.sleep(5)
         except Exception as e:
-            logger.error(f"Error in dynamic automated signal scanner loop: {e}")
+            logger.error(f"Error in strict automated signal scanner loop: {e}")
 
 def position_tracker_loop():
     while True:
@@ -339,7 +348,7 @@ def position_tracker_loop():
                             if symbol in active_positions:
                                 active_positions[symbol]["breakeven_done"] = True
                                 active_positions[symbol]["stop_loss"] = entry
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) لصفقة البيع `{symbol}`! تم تأمين الصفقة.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) لصفقة البيع للرمز `{symbol}`! تم تأمين الصفقة.*")
                         
                     if tp3 and current_price <= tp3:
                         with positions_lock:
