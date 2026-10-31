@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.4_PRO_FINAL_STABLE)
+# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.5_PRO_TARGETS_FIX)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -43,14 +43,10 @@ class StrategyEngine:
             return 0.0
 
     def detect_smc_structure(self, df):
-        """
-        محرك الـ SMC الاحترافي: رصد الـ CHoCH/BOS، الـ Order Blocks المؤسسية، والـ FVG الحقيقية.
-        """
         try:
             if len(df) < 30:
                 return {"bias": "NEUTRAL", "bullish_fvg": False, "bearish_fvg": False, "ob_zone": 0.0, "is_mitigated": False, "is_choch": False, "reason": "بيانات غير كافية"}
 
-            # 1. رصد الـ Order Blocks (OB): نبحث عن آخر شمعة بيعية قبل الانفجار الصعودي
             ob_zone = 0.0
             is_mitigated = False
             for i in range(len(df)-2, 10, -1):
@@ -61,7 +57,6 @@ class StrategyEngine:
                         is_mitigated = True
                     break
 
-            # 2. رصد هيكل السوق: كسر الهيكل الصاعد (BOS)
             is_bullish_structure = False
             is_choch = False
             recent_high = df['high'].iloc[-15:-2].max()
@@ -71,14 +66,12 @@ class StrategyEngine:
                 is_bullish_structure = True
                 is_choch = True 
 
-            # 3. رصد الفجوات السعرية (FVG)
             bullish_fvg = False
             for i in range(3, len(df)):
                 if df['low'].iloc[i] > df['high'].iloc[i-3]:
                     bullish_fvg = True
                     break
 
-            # التفعيل الذكي للهيكل الصاعد بناءً على اختبار الـ OB أو الفجوة والسيولة
             bias = "NEUTRAL"
             reason = "لا يوجد تأكيد هيكلي صاعد أو هابط."
             
@@ -125,8 +118,6 @@ class StrategyEngine:
             current_price = float(df_5m['close'].iloc[-1])
 
             df_5m['ema20'] = df_5m['close'].ewm(span=20, adjust=False).mean()
-            df_5m['ema50'] = df_5m['close'].ewm(span=50, adjust=False).mean()
-
             vwap_baseline = float(df_5m['ema20'].iloc[-1])
             atr_val = float(self.calculate_atr(df_5m, period=14))
             cmf_val = float(self.calculate_cmf(df_5m, period=20))
@@ -134,43 +125,47 @@ class StrategyEngine:
             if atr_val <= 0 or np.isnan(atr_val):
                 atr_val = current_price * 0.01
 
-            smc = self.detect_smc_structure(df_5m)
+            smc = self.detect_smc_structure(df_15m)  # فحص الهيكل على 15 دقيقة للأهداف الهيكلية
 
             direction = smc["bias"]
             trade_valid = False
-            reason = smc["reason"]
 
-            decimals = 8 if current_price < 1 else (4 if current_price < 100 else 2)
+            decimals = 8 if current_price < 0.1 else (4 if current_price < 10 else 2)
+
+            # رصد القمم والقيعان الهيكلية لاستخراج الأهداف بدقة
+            high_15m = float(df_15m['high'].iloc[-20:].max())
+            low_15m = float(df_15m['low'].iloc[-20:].min())
 
             if direction == "LONG":
                 trade_valid = True
                 
-                stop_loss = round(min(smc["ob_zone"], current_price - (2.5 * atr_val)), decimals)
-                if stop_loss >= current_price:
+                stop_loss = round(min(smc["ob_zone"], current_price - (1.5 * atr_val)), decimals)
+                if stop_loss >= current_price or stop_loss == 0:
                     stop_loss = round(current_price * 0.98, decimals)
 
-                tp1 = round(current_price + (2.0 * atr_val), decimals)
-                tp2 = round(current_price + (4.5 * atr_val), decimals)
-                tp3 = round(current_price + (7.0 * atr_val), decimals)
+                # حساب الأهداف الهيكلية (SMC Structural Targets)
+                tp1 = round(max(current_price + (1.5 * atr_val), current_price + (high_15m - current_price) * 0.5), decimals)
+                tp2 = round(max(current_price + (3.5 * atr_val), high_15m), decimals)
+                tp3 = round(max(current_price + (6.0 * atr_val), high_15m + (2.0 * atr_val)), decimals)
                 
                 reasons = []
-                if smc["is_mitigated"]: reasons.append(f"اختبار ناجح لمنطقة Order Block مؤسسي (+OB) عند {round(smc['ob_zone'], decimals)}")
-                if smc["is_choch"]: reasons.append("تغير شخصية الهيكل (CHoCH) صعودي")
-                if smc["bullish_fvg"]: reasons.append("رصد فجوة صاعدة (Bullish Fvg)")
-                if cmf_val != 0: reasons.append(f"تدفق سيولة الحيتان (CMF): {round(cmf_val, 4)}")
+                if smc["is_mitigated"]: reasons.append(f"اختبار +OB عند {round(smc['ob_zone'], decimals)}")
+                if smc["is_choch"]: reasons.append("تغير شخصية الهيكل (CHoCH)")
+                if smc["bullish_fvg"]: reasons.append("رصد فجوة صاعدة (FVG Up)")
+                if cmf_val != 0: reasons.append(f"سيولة CMF: {round(cmf_val, 4)}")
                 
-                reason = " + ".join(reasons) if reasons else "تأكيد هيكلي مؤسسي مدعوم بالسيولة."
+                reason = " + ".join(reasons) if reasons else "تأكيد هيكلي صاعد مدعوم بالسيولة."
 
             elif direction == "SHORT":
                 trade_valid = True
                 
-                stop_loss = round(max(current_price + (2.5 * atr_val), current_price + 0.005), decimals)
+                stop_loss = round(max(current_price + (1.5 * atr_val), current_price + 0.005), decimals)
                 if stop_loss <= current_price:
                     stop_loss = round(current_price * 1.02, decimals)
 
-                tp1 = round(current_price - (2.0 * atr_val), decimals)
-                tp2 = round(current_price - (4.5 * atr_val), decimals)
-                tp3 = round(current_price - (7.0 * atr_val), decimals)
+                tp1 = round(min(current_price - (1.5 * atr_val), current_price - (current_price - low_15m) * 0.5), decimals)
+                tp2 = round(min(current_price - (3.5 * atr_val), low_15m), decimals)
+                tp3 = round(min(current_price - (6.0 * atr_val), low_15m - (2.0 * atr_val)), decimals)
                 reason = "ضغط بيعي مؤسسي مدعوم بالفجوات وهيكل هابط."
             else:
                 stop_loss = round(current_price * 0.98, decimals)
