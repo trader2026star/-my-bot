@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v63.4_SNIPER_FINAL)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v65.0_SNIPER_AUTO_PRO)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY INSTITUTIONAL SNIPER BOT (v63.4) Active!"
+    return "MY INSTITUTIONAL SNIPER BOT (v65.0 Auto) Active!"
 
 @app.route("/health")
 def health():
@@ -105,6 +105,60 @@ def calculate_position_size(current_price, stop_loss, asset_type):
     except Exception:
         return 0.0
 
+def generate_analysis_report(resolved_symbol, direction, current_price, details, asset_type="crypto"):
+    position_size = calculate_position_size(current_price, details.get("stop_loss"), asset_type)
+    
+    if details.get("trade_valid"):
+        with positions_lock:
+            active_positions[resolved_symbol] = {
+                "side": direction,
+                "entry": current_price,
+                "size": position_size,
+                "tp1": details["risk_management"]["take_profit_1"],
+                "tp2": details["risk_management"]["take_profit_2"],
+                "stop_loss": details["stop_loss"],
+                "breakeven_done": False
+            }
+        scan_stats["signals_sent"] += 1
+
+    rm = details.get("risk_management", {})
+    ent = details.get("entry_zone", {})
+    emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
+
+    price_str_format = "{:.8f}" if current_price < 1 else ("{:.4f}" if current_price < 100 else "{:.2f}")
+
+    cur_formatted = price_str_format.format(current_price)
+    sl_formatted = price_str_format.format(details.get('stop_loss'))
+    tp1_formatted = price_str_format.format(rm.get('take_profit_1'))
+    tp2_formatted = price_str_format.format(rm.get('take_profit_2'))
+    atr_formatted = price_str_format.format(details.get('atr'))
+
+    valid_status = "✅ تصلح للصفقة" if details.get("trade_valid") else "❌ لا تصلح حالياً"
+
+    report = (
+        f"🎯 *تقرير قناص السيولة المؤسسي (SMC)* (`{resolved_symbol}`) {emoji}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 *التقييم الفني:* {valid_status}\n"
+        f"🔹 *السعر الحالي:* `{cur_formatted}`\n"
+        f"🔹 *اتجاه الهيكل (SMC Bias):* `{ent.get('smc_bias')}`\n"
+        f"🔹 *تدفق سيولة الحيتان (CMF):* `{ent.get('z_score')}`\n"
+        f"🔹 *متوسط النطاق الحقيقي (ATR):* `{atr_formatted}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 *التأكيدات الفنية المكتشفة:*\n"
+        f"  • الفجوة السعرية (FVG Up): `{'نعم 🟢' if ent.get('fvg_up') else 'لا ⚪'}`\n"
+        f"  • شفط السيولة (Sweep): `{'تم بنجاح ⚡' if ent.get('sweep_down') else 'غير متوفر'}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 *حجم العقد المقترح:* `{position_size}` Units\n"
+        f"🎯 *سعر الدخول المناسب:* `{cur_formatted}`\n"
+        f"🛑 *وقف الخسارة الآمن:* `{sl_formatted}`\n\n"
+        f"🎯 *الأهداف الاستراتيجية:*\n"
+        f"  • الهدف الأول (TP1): `{tp1_formatted}`\n"
+        f"  • الهدف الثاني (TP2): `{tp2_formatted}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 *التحليل الفني والسبب:* {details.get('reason')}"
+    )
+    return report
+
 if bot:
     @bot.message_handler(func=lambda message: True)
     def handle_all_messages(message):
@@ -154,63 +208,13 @@ if bot:
                 return
 
             ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=300)
+            scan_stats["scanned_pairs"] += 1
 
             direction, current_price, details = engine.analyze_market_structure(
                 ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type=asset_type
             )
 
-            scan_stats["scanned_pairs"] += 1
-            position_size = 0.0
-
-            if details.get("trade_valid"):
-                position_size = calculate_position_size(current_price, details.get("stop_loss"), asset_type)
-                with positions_lock:
-                    active_positions[resolved_symbol] = {
-                        "side": direction,
-                        "entry": current_price,
-                        "size": position_size,
-                        "tp1": details["risk_management"]["take_profit_1"],
-                        "tp2": details["risk_management"]["take_profit_2"],
-                        "stop_loss": details["stop_loss"],
-                        "breakeven_done": False
-                    }
-                scan_stats["signals_sent"] += 1
-
-            rm = details.get("risk_management", {})
-            ent = details.get("entry_zone", {})
-            emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
-
-            # تنسيق عرض الأرقام بدقة تامة لتجنب أي تطابق في الأهداف
-            price_str_format = "{:.8f}" if current_price < 1 else ("{:.4f}" if current_price < 100 else "{:.2f}")
-
-            cur_formatted = price_str_format.format(current_price)
-            sl_formatted = price_str_format.format(details.get('stop_loss'))
-            tp1_formatted = price_str_format.format(rm.get('take_profit_1'))
-            tp2_formatted = price_str_format.format(rm.get('take_profit_2'))
-            atr_formatted = price_str_format.format(details.get('atr'))
-
-            report = (
-                f"🎯 *تقرير قناص السيولة المؤسسي (SMC)* (`{resolved_symbol}`) {emoji}\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🔹 *السعر الحالي:* `{cur_formatted}`\n"
-                f"🔹 *اتجاه الهيكل (SMC Bias):* `{ent.get('smc_bias')}`\n"
-                f"🔹 *تدفق سيولة الحيتان (CMF):* `{ent.get('z_score')}`\n"
-                f"🔹 *متوسط النطاق الحقيقي (ATR):* `{atr_formatted}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 *التأكيدات الفنية المكتشفة:*\n"
-                f"  • الفجوة السعرية (FVG Up): `{'نعم 🟢' if ent.get('fvg_up') else 'لا ⚪'}`\n"
-                f"  • شفط السيولة (Sweep): `{'تم بنجاح ⚡' if ent.get('sweep_down') else 'غير متوفر'}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 *حجم العقد المقترح:* `{position_size}` Units\n"
-                f"🎯 *سعر الدخول المناسب:* `{cur_formatted}`\n"
-                f"🛑 *وقف الخسارة الآمن:* `{sl_formatted}`\n\n"
-                f"🎯 *الأهداف الاستراتيجية:*\n"
-                f"  • الهدف الأول (TP1): `{tp1_formatted}`\n"
-                f"  • الهدف الثاني (TP2): `{tp2_formatted}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 *التحليل الفني والسبب:* {details.get('reason')}"
-            )
-
+            report = generate_analysis_report(resolved_symbol, direction, current_price, details, asset_type)
             bot.reply_to(message, report, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in message handler: {e}")
@@ -219,6 +223,40 @@ def telegram_listener():
     if bot:
         logger.info("Starting Telegram Bot listener...")
         bot.infinity_polling(none_stop=True, interval=1)
+
+def automated_signal_scanner_loop():
+    """
+    الماسح التلقائي الخلفي: يقوم بمسح قائمة من العملات ذات الزخم دورياً وإرسال الصفقات تلقائياً للقناة.
+    """
+    auto_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "ILV/USDT:USDT", "COW/USDT:USDT", "ATH/USDT:USDT"]
+    while True:
+        try:
+            time.sleep(30)
+            logger.info("Running automated market scan for high-probability setups...")
+            for sym in auto_symbols:
+                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
+                ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=300)
+                
+                if not ohlcv_15m or not ohlcv_5m or len(ohlcv_15m) < 50:
+                    continue
+                
+                scan_stats["scanned_pairs"] += 1
+                direction, current_price, details = engine.analyze_market_structure(
+                    ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto"
+                )
+                
+                if details.get("trade_valid") and direction in ["LONG", "SHORT"]:
+                    with positions_lock:
+                        if sym in active_positions:
+                            continue
+                    
+                    report = generate_analysis_report(sym, direction, current_price, details, "crypto")
+                    send_telegram_message(f"🚀 *تنبيه صفقة تلقائية جديدة (Auto Sniper)*:\n\n{report}")
+                    logger.info(f"Automated signal sent successfully for {sym}!")
+                
+                time.sleep(3)
+        except Exception as e:
+            logger.error(f"Error in automated signal scanner loop: {e}")
 
 def position_tracker_loop():
     while True:
@@ -290,6 +328,9 @@ def position_tracker_loop():
 if __name__ == "__main__":
     tracker_thread = threading.Thread(target=position_tracker_loop, daemon=True)
     tracker_thread.start()
+
+    scanner_thread = threading.Thread(target=automated_signal_scanner_loop, daemon=True)
+    scanner_thread.start()
 
     if bot:
         tg_thread = threading.Thread(target=telegram_listener, daemon=True)
