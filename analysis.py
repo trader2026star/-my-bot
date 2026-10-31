@@ -1,9 +1,8 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v68.1_CLEAN)
+# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.0_STABLE)
 # ============================================================
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 import logging
 
 logger = logging.getLogger("StrategyEngine")
@@ -12,6 +11,31 @@ class StrategyEngine:
     def __init__(self, capital=10000.0, risk_per_trade=0.01):
         self.capital = capital
         self.risk_per_trade = risk_per_trade
+
+    def calculate_rsi(self, series, period=14):
+        try:
+            delta = series.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / (loss + 1e-9)
+            rsi = 100 - (100 / (1 + rs))
+            return rsi
+        except Exception:
+            return pd.Series(50, index=series.index)
+
+    def calculate_atr(self, df, period=14):
+        try:
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            tr1 = high - low
+            tr2 = np.abs(high - close.shift())
+            tr3 = np.abs(low - close.shift())
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(window=period).mean()
+            return atr
+        except Exception:
+            return pd.Series(0.0, index=df.index)
 
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto"):
         default_details = {
@@ -31,10 +55,11 @@ class StrategyEngine:
 
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            df_15m['RSI'] = ta.rsi(df_15m['close'], length=14)
-            df_15m['ATR'] = ta.atr(df_15m['high'], df_15m['low'], df_15m['close'], length=14)
+            # حساب المؤشرات يدوياً وبأمان تام
+            df_15m['RSI'] = self.calculate_rsi(df_15m['close'], length=14)
+            df_15m['ATR'] = self.calculate_atr(df_15m, length=14)
 
-            if len(df_15m) < 20 or df_15m['RSI'].isna().iloc[-1] or df_15m['ATR'].isna().iloc[-1]:
+            if len(df_15m) < 20 or pd.isna(df_15m['RSI'].iloc[-1]) or pd.isna(df_15m['ATR'].iloc[-1]):
                 return "NEUTRAL", 0.0, default_details
 
             current_price = float(df_15m['close'].iloc[-1])
@@ -62,9 +87,8 @@ class StrategyEngine:
 
             if is_bullish_divergence and ohlcv_5m and len(ohlcv_5m) > 10:
                 df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df_5m['RSI'] = ta.rsi(df_5m['close'], length=14)
-                
-                if df_5m['RSI'].iloc[-1] > 70:
+                rsi_5m = self.calculate_rsi(df_5m['close'], length=14)
+                if rsi_5m.iloc[-1] > 70:
                     is_bullish_divergence = False
 
             if is_bullish_divergence:
@@ -97,7 +121,7 @@ class StrategyEngine:
                 return "LONG", current_price, details
             else:
                 details = default_details.copy()
-                details["rsi"] = round(df_15m['RSI'].iloc[-1], 2)
+                details["rsi"] = round(float(df_15m['RSI'].iloc[-1]), 2)
                 details["atr"] = round(current_atr, decimals)
                 return "NEUTRAL", current_price, details
 
