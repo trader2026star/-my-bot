@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v66.0_PRO)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v68.1_DIVERGENCE)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY INSTITUTIONAL SNIPER BOT (v66.0 3-Filters) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v68.1) Active!"
 
 @app.route("/health")
 def health():
@@ -123,7 +123,6 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
         scan_stats["signals_sent"] += 1
 
     rm = details.get("risk_management", {})
-    ent = details.get("entry_zone", {})
     emoji = "🟢" if direction == "LONG" else "⚪"
 
     price_str_format = "{:.8f}" if current_price < 0.1 else ("{:.4f}" if current_price < 10 else "{:.2f}")
@@ -135,29 +134,24 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
     tp3_formatted = price_str_format.format(rm.get('take_profit_3'))
     atr_formatted = price_str_format.format(details.get('atr'))
 
-    valid_status = "✅ تصلح للصفقة (اجتازت الفلاتر الثلاثة)" if details.get("trade_valid") else "❌ لا تصلح حالياً"
+    valid_status = "✅ إشارة دايفيرجنس صحيحة" if details.get("trade_valid") else "❌ لا توجد إشارة دايفيرجنس حالياً"
 
     report = (
-        f"🎯 *توصية قناص السيولة المؤكدة* (`{resolved_symbol}`) {emoji}\n"
+        f"🚨 **إشارة دخول من القاع (Divergence) لعملة `{resolved_symbol}`** 🚨 {emoji}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📌 *التقييم الفني:* {valid_status}\n"
         f"🔹 *السعر الحالي:* `{cur_formatted}`\n"
-        f"🔹 *مؤشر القوة النسبية (RSI):* `{details.get('rsi')}`\n"
-        f"🔹 *متوسط النطاق الحقيقي (ATR):* `{atr_formatted}`\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🛡 *شروط الفلاتر المطبقة:*\n"
-        f"  • فلتر الاتجاه (EMA 200): `{'مقبول ✓' if ent.get('trend_passed') else 'غير مطابق ✕'}`\n"
-        f"  • فلتر القاع والـ RSI (<38): `{'مقبول ✓' if ent.get('rsi_passed') else 'غير مطابق ✕'}`\n"
+        f"🔹 *مؤشر RSI الحالي:* `{details.get('rsi')}`\n"
+        f"🔹 *مؤشر ATR:* `{atr_formatted}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *حجم العقد المقترح:* `{position_size}` Units\n"
-        f"🎯 *سعر الدخول المناسب:* `{cur_formatted}`\n"
-        f"🛑 *الستوب لوز الديناميكي الآمن:* `{sl_formatted}`\n\n"
-        f"🎯 *الأهداف الاستراتيجية:*\n"
-        f"  • الهدف الأول (TP1): `{tp1_formatted}` (قريب جداً لضمان التأمين)\n"
-        f"  • الهدف الثاني (TP2): `{tp2_formatted}`\n"
-        f"  • الهدف الثالث (TP3): `{tp3_formatted}`\n"
+        f"🎯 *سعر الدخول المتوقع:* `{cur_formatted}`\n"
+        f"🎯 *الهدف الأول:* `{tp1_formatted}`\n"
+        f"🎯 *الهدف الثاني:* `{tp2_formatted}`\n"
+        f"🎯 *الهدف الثالث:* `{tp3_formatted}`\n"
+        f"🛑 *الستوب لوز (ATR):* `{sl_formatted}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 *نصيحة أمان الصفقة:* عند تحقيق الهدف الأول (TP1)، انتقل فوراً إلى نقطة الدخول (Breakeven) لتأمين الصفقة بنسبة 100%!\n\n"
+        f"💡 *نصيحة للبوت: عند ضرب الهدف الأول، انقل الستوب لوز فوراً إلى نقطة الدخول لتأمين الصفقة.*\n\n"
         f"📝 *السبب الفني:* {details.get('reason')}"
     )
     return report
@@ -171,15 +165,15 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🎯 *جاري فحص الاتجاه وفلتر الـ RSI والـ ATR للرمز* (`{clean_text}`)...", parse_mode="Markdown")
+            bot.reply_to(message, f"🎯 *جاري فحص الدايفيرجنس الإيجابي للرمز* (`{clean_text}`)...", parse_mode="Markdown")
 
             possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
             ohlcv_15m = None
             resolved_symbol = None
 
             for sym in possible_symbols:
-                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
-                if ohlcv_15m and len(ohlcv_15m) >= 50:
+                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=100)
+                if ohlcv_15m and len(ohlcv_15m) >= 40:
                     resolved_symbol = sym
                     break
 
@@ -187,13 +181,10 @@ if bot:
                 bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية للرمز `{clean_text}`.")
                 return
 
-            ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=300)
-            ohlcv_4h = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="4h", limit=250)
+            ohlcv_5m = bingx_safe_call("fetch_ohlcv", resolved_symbol, timeframe="5m", limit=30)
             scan_stats["scanned_pairs"] += 1
-
-            direction, current_price, details = engine.analyze_market_structure(
-                ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_4h=ohlcv_4h, asset_type="crypto"
-            )
+            
+            direction, current_price, details = engine.analyze_market_structure(ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto")
 
             report = generate_analysis_report(resolved_symbol, direction, current_price, details, "crypto")
             bot.reply_to(message, report, parse_mode="Markdown")
@@ -206,9 +197,6 @@ def telegram_listener():
         bot.infinity_polling(none_stop=True, interval=1)
 
 def automated_signal_scanner_loop():
-    """
-    الماسح التلقائي بالفلاتر الثلاثة الصارمة لمنع ضرب الاستوب وإرسال الصفقات الآمنة فقط.
-    """
     while True:
         try:
             time.sleep(60)
@@ -218,29 +206,23 @@ def automated_signal_scanner_loop():
             if tickers:
                 for symbol, data in tickers.items():
                     if "/USDT:USDT" in symbol or ("/USDT" in symbol and ":" not in symbol):
-                        percentage = data.get("percentage", 0) or 0
                         volume_24h = data.get("quoteVolume", 0) or 0
-                        if percentage and percentage > 1.0 and volume_24h > 1000000:
-                            candidate_symbols.append((symbol, percentage))
+                        if volume_24h > 1000000:
+                            candidate_symbols.append(symbol)
 
-            candidate_symbols.sort(key=lambda x: x[1], reverse=True)
-            active_symbols = [item[0] for item in candidate_symbols[:10]]
-            
+            active_symbols = candidate_symbols[:15]
             if not active_symbols:
                 active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"]
 
             for sym in active_symbols:
-                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=300)
-                ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=300)
-                ohlcv_4h = bingx_safe_call("fetch_ohlcv", sym, timeframe="4h", limit=250)
-                
-                if not ohlcv_15m or not ohlcv_5m or len(ohlcv_15m) < 50:
+                ohlcv_15m = bingx_safe_call("fetch_ohlcv", sym, timeframe="15m", limit=100)
+                if not ohlcv_15m or len(ohlcv_15m) < 40:
                     continue
                 
+                ohlcv_5m = bingx_safe_call("fetch_ohlcv", sym, timeframe="5m", limit=30)
                 scan_stats["scanned_pairs"] += 1
-                direction, current_price, details = engine.analyze_market_structure(
-                    ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, ohlcv_4h=ohlcv_4h, asset_type="crypto"
-                )
+                
+                direction, current_price, details = engine.analyze_market_structure(ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto")
                 
                 if details.get("trade_valid") and direction == "LONG":
                     with positions_lock:
@@ -248,10 +230,10 @@ def automated_signal_scanner_loop():
                             continue
                     
                     report = generate_analysis_report(sym, direction, current_price, details, "crypto")
-                    send_telegram_message(f"🎯 *فرصة قناص السيولة المؤكدة (3-Filters Verified)*:\n\n{report}")
-                    logger.info(f"Safe verified signal sent for {sym}!")
+                    send_telegram_message(f"🚨 *فرصة دايفيرجنس جديدة مؤكدة*:\n\n{report}")
+                    logger.info(f"Divergence signal sent for {sym}!")
                 
-                time.sleep(5)
+                time.sleep(3)
         except Exception as e:
             logger.error(f"Error in automated signal scanner loop: {e}")
 
@@ -291,13 +273,13 @@ def position_tracker_loop():
                             if symbol in active_positions:
                                 active_positions[symbol]["breakeven_done"] = True
                                 active_positions[symbol]["stop_loss"] = entry
-                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل الستوب لوز إلى نقطة الدخول (Breakeven) فوراً لتأمين الصفقة.*")
+                        send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل الستوب لوز إلى نقطة الدخول (Breakeven) لتأمين الصفقة.*")
                         
                     if tp3 and current_price >= tp3:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث الأقصى (TP3) بنجاح للرمز `{symbol}`! إغلاق الصفقة بربح ممتاز.*")
+                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث الأقصى (TP3) بنجاح للرمز `{symbol}`!*")
                     elif current_price >= tp2 and not tp3:
                         with positions_lock:
                             if symbol in active_positions:
