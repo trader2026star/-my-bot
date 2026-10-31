@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.4_ULTRA_STABLE)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.5_PRICE_FIX)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.4 Ultra Stable) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.5 Price Fix) Active!"
 
 @app.route("/health")
 def health():
@@ -86,6 +86,15 @@ def get_exchange_data(symbol_raw, timeframe, limit=100):
             continue
     return None, None
 
+def get_current_price(symbol):
+    try:
+        ticker = bingx.fetch_ticker(symbol)
+        if ticker and 'last' in ticker and ticker['last']:
+            return float(ticker['last'])
+    except Exception:
+        pass
+    return 0.0
+
 def calculate_position_size(current_price, stop_loss, asset_type):
     try:
         if current_price <= 0 or stop_loss <= 0:
@@ -100,6 +109,12 @@ def calculate_position_size(current_price, stop_loss, asset_type):
         return 0.0
 
 def generate_analysis_report(resolved_symbol, direction, current_price, details, asset_type="crypto"):
+    # ضمان جلب السعر الحي مباشرة إذا كان السعر المستخرج 0
+    if current_price <= 0:
+        current_price = get_current_price(resolved_symbol)
+        if current_price > 0:
+            details["trigger_price"] = current_price
+
     position_size = calculate_position_size(current_price, details.get("stop_loss", 0), asset_type)
     
     if details.get("trade_valid"):
@@ -183,7 +198,7 @@ def telegram_listener():
         bot.infinity_polling(none_stop=True, interval=1)
 
 def automated_signal_scanner_loop():
-    time.sleep(10) # انتظار استقرار الخادم تماماً قبل بدء المسح
+    time.sleep(10)
     while True:
         try:
             time.sleep(60)
@@ -221,10 +236,7 @@ def position_tracker_loop():
 
             for symbol, pos in positions_to_check:
                 try:
-                    ticker = bingx.fetch_ticker(symbol)
-                    if not ticker:
-                        continue
-                    current_price = float(ticker.get("last", 0))
+                    current_price = get_current_price(symbol)
                     if current_price <= 0:
                         continue
 
