@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.0_STABLE)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.1_VERBOSE)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.0 Stable) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.1) Active!"
 
 @app.route("/health")
 def health():
@@ -123,21 +123,21 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
         scan_stats["signals_sent"] += 1
 
     rm = details.get("risk_management", {})
-    emoji = "🟢" if direction == "LONG" else "⚪"
+    emoji = "🟢" if details.get("trade_valid") else "⚪"
 
     price_str_format = "{:.8f}" if current_price < 0.1 else ("{:.4f}" if current_price < 10 else "{:.2f}")
 
     cur_formatted = price_str_format.format(current_price)
-    sl_formatted = price_str_format.format(details.get('stop_loss'))
-    tp1_formatted = price_str_format.format(rm.get('take_profit_1'))
-    tp2_formatted = price_str_format.format(rm.get('take_profit_2'))
-    tp3_formatted = price_str_format.format(rm.get('take_profit_3'))
-    atr_formatted = price_str_format.format(details.get('atr'))
+    sl_formatted = price_str_format.format(details.get('stop_loss', current_price * 0.98))
+    tp1_formatted = price_str_format.format(rm.get('take_profit_1', current_price))
+    tp2_formatted = price_str_format.format(rm.get('take_profit_2', current_price))
+    tp3_formatted = price_str_format.format(rm.get('take_profit_3', current_price))
+    atr_formatted = price_str_format.format(details.get('atr', 0))
 
     valid_status = "✅ إشارة دايفيرجنس صحيحة ومؤكدة" if details.get("trade_valid") else "❌ لا توجد إشارة دايفيرجنس حالياً"
 
     report = (
-        f"🚨 **إشارة دخول من القاع (Divergence) لعملة `{resolved_symbol}`** 🚨 {emoji}\n"
+        f"🚨 **فحص عملة `{resolved_symbol}`** 🚨 {emoji}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📌 *التقييم الفني:* {valid_status}\n"
         f"🔹 *السعر الحالي:* `{cur_formatted}`\n"
@@ -165,7 +165,7 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🎯 *جاري فحص الدايفيرجنس الإيجابي للرمز* (`{clean_text}`)...", parse_mode="Markdown")
+            bot.reply_to(message, f"🎯 *جاري فحص الدايفيرجنس الإيجابي والـ RSI للرمز* (`{clean_text}`)...", parse_mode="Markdown")
 
             possible_symbols = [f"{clean_text}/USDT:USDT", f"{clean_text}/USDT", f"{clean_text}USDT"]
             ohlcv_15m = None
@@ -238,7 +238,7 @@ def automated_signal_scanner_loop():
             logger.error(f"Error in automated signal scanner loop: {e}")
 
 def position_tracker_loop():
-    while True:
+    while Time.sleep(5) or True:
         try:
             time.sleep(5)
             with positions_lock:
