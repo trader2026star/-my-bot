@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.1_PRO_FIXED)
+# MY EXPERT CRYPTO BOT - Institutional SMC Engine (v65.2_PRO_FINAL)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -140,13 +140,15 @@ class StrategyEngine:
             if direction == "BULLISH" and cmf_val > -0.08:
                 trade_valid = True
                 
+                # وقف الخسارة الاحترافي أسفل منطقة الـ Order Block المؤسسي (+OB) تماماً
                 stop_loss = round(min(smc["ob_zone"], current_price - (2.5 * atr_val)), decimals)
                 if stop_loss >= current_price:
                     stop_loss = round(current_price * 0.98, decimals)
 
-                tp1 = round(current_price + (1.5 * atr_val), decimals)
-                tp2 = round(current_price + (3.0 * atr_val), decimals)
-                tp3 = round(current_price + (5.0 * atr_val), decimals)
+                # الأهداف الاستراتيجية المطابقة للتحليل الهيكلي والقمم وفجوات السيولة
+                tp1 = round(current_price + (2.0 * atr_val), decimals)
+                tp2 = round(current_price + (4.5 * atr_val), decimals)
+                tp3 = round(current_price + (7.0 * atr_val), decimals)
                 
                 reasons = []
                 if smc["is_mitigated"]: reasons.append(f"اختبار ناجح لمنطقة Order Block مؤسسي (+OB) عند {round(smc['ob_zone'], decimals)}")
@@ -163,9 +165,9 @@ class StrategyEngine:
                 if stop_loss <= current_price:
                     stop_loss = round(current_price * 1.02, decimals)
 
-                tp1 = round(current_price - (1.5 * atr_val), decimals)
-                tp2 = round(current_price - (3.0 * atr_val), decimals)
-                tp3 = round(current_price - (5.0 * atr_val), decimals)
+                tp1 = round(current_price - (2.0 * atr_val), decimals)
+                tp2 = round(current_price - (4.5 * atr_val), decimals)
+                tp3 = round(current_price - (7.0 * atr_val), decimals)
                 reason = "ضغط بيعي مؤسسي مدعوم بالفجوات وهيكل هابط."
             else:
                 stop_loss = round(current_price * 0.98, decimals)
