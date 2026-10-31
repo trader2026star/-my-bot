@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.3_FINAL_FIX)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.4_ULTRA_STABLE)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.3 Final Fix) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.4 Ultra Stable) Active!"
 
 @app.route("/health")
 def health():
@@ -71,16 +71,12 @@ def send_telegram_message(message, chat_id=None):
         return False
 
 def get_exchange_data(symbol_raw, timeframe, limit=100):
-    """دالة ذكية لجلب الشموع عبر تجربة عدة تنسيقات لأسماء الرموز في BingX"""
     clean = symbol_raw.replace("/USDT", "").replace("USDT", "").replace(":USDT", "").strip().upper()
-    
     variations = [
         f"{clean}/USDT:USDT",
         f"{clean}/USDT",
-        f"{clean}USDT",
-        clean
+        f"{clean}USDT"
     ]
-    
     for sym in variations:
         try:
             bars = bingx.fetch_ohlcv(sym, timeframe=timeframe, limit=limit)
@@ -88,18 +84,6 @@ def get_exchange_data(symbol_raw, timeframe, limit=100):
                 return sym, bars
         except Exception:
             continue
-            
-    # محاولة أخيرة عبر تحميل الأسواق والبحث بالاسم
-    try:
-        bingx.load_markets()
-        for market_symbol in bingx.symbols:
-            if clean in market_symbol and "USDT" in market_symbol:
-                bars = bingx.fetch_ohlcv(market_symbol, timeframe=timeframe, limit=limit)
-                if bars and len(bars) > 10:
-                    return market_symbol, bars
-    except Exception:
-        pass
-        
     return None, None
 
 def calculate_position_size(current_price, stop_loss, asset_type):
@@ -180,7 +164,7 @@ if bot:
             resolved_symbol, ohlcv_15m = get_exchange_data(clean_text, timeframe="15m", limit=100)
 
             if not resolved_symbol or not ohlcv_15m or len(ohlcv_15m) < 20:
-                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية أو تداول للرمز `{clean_text}` على المنصة.")
+                bot.reply_to(message, f"❌ عذراً، لم يتم العثور على بيانات كافية للرمز `{clean_text}` على المنصة.")
                 return
 
             _, ohlcv_5m = get_exchange_data(resolved_symbol, timeframe="5m", limit=30)
@@ -192,7 +176,6 @@ if bot:
             bot.reply_to(message, report, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in message handler: {e}")
-            bot.reply_to(message, f"❌ حدث خطأ أثناء معالجة الطلب: {str(e)}")
 
 def telegram_listener():
     if bot:
@@ -200,15 +183,100 @@ def telegram_listener():
         bot.infinity_polling(none_stop=True, interval=1)
 
 def automated_signal_scanner_loop():
+    time.sleep(10) # انتظار استقرار الخادم تماماً قبل بدء المسح
     while True:
         try:
             time.sleep(60)
-            tickers = bingx.fetch_tickers()
-            candidate_symbols = []
-            
-            if tickers:
-                for symbol, data in tickers.items():
-                    if "/USDT" in symbol:
-                        volume_24h = data.get("quoteVolume", 0) or 0
-                        if volume_24h > 500000:
-                            candidate_symbols.append(symbol)
+            active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "ADA/USDT:USDT", "DOGE/USDT:USDT"]
+
+            for sym in active_symbols:
+                _, ohlcv_15m = get_exchange_data(sym, timeframe="15m", limit=100)
+                if not ohlcv_15m or len(ohlcv_15m) < 30:
+                    continue
+                
+                _, ohlcv_5m = get_exchange_data(sym, timeframe="5m", limit=30)
+                scan_stats["scanned_pairs"] += 1
+                
+                direction, current_price, details = engine.analyze_market_structure(ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto")
+                
+                if details.get("trade_valid") and direction == "LONG":
+                    with positions_lock:
+                        if sym in active_positions:
+                            continue
+                    
+                    report = generate_analysis_report(sym, direction, current_price, details, "crypto")
+                    send_telegram_message(f"🚨 *فرصة دايفيرجنس جديدة مؤكدة*:\n\n{report}")
+                    logger.info(f"Divergence signal sent for {sym}!")
+                
+                time.sleep(3)
+        except Exception as e:
+            logger.error(f"Error in automated signal scanner loop: {e}")
+
+def position_tracker_loop():
+    while True:
+        try:
+            time.sleep(5)
+            with positions_lock:
+                positions_to_check = list(active_positions.items())
+
+            for symbol, pos in positions_to_check:
+                try:
+                    ticker = bingx.fetch_ticker(symbol)
+                    if not ticker:
+                        continue
+                    current_price = float(ticker.get("last", 0))
+                    if current_price <= 0:
+                        continue
+
+                    side = pos["side"]
+                    entry = pos["entry"]
+                    tp1 = pos["tp1"]
+                    tp2 = pos["tp2"]
+                    tp3 = pos.get("tp3")
+                    stop_loss = pos["stop_loss"]
+                    be_done = pos["breakeven_done"]
+
+                    if side == "LONG":
+                        if current_price <= stop_loss:
+                            with positions_lock:
+                                if symbol in active_positions:
+                                    del active_positions[symbol]
+                            send_telegram_message(f"🛑 *ضرب وقف الخسارة للرمز `{symbol}` عند السعر `{current_price}`.*")
+                            continue
+                        
+                        if current_price >= tp1 and not be_done:
+                            with positions_lock:
+                                if symbol in active_positions:
+                                    active_positions[symbol]["breakeven_done"] = True
+                                    active_positions[symbol]["stop_loss"] = entry
+                            send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل الستوب لوز إلى نقطة الدخول (Breakeven) لتأمين الصفقة.*")
+                            
+                        if tp3 and current_price >= tp3:
+                            with positions_lock:
+                                if symbol in active_positions:
+                                    del active_positions[symbol]
+                            send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث الأقصى (TP3) بنجاح للرمز `{symbol}`!*")
+                        elif current_price >= tp2 and not tp3:
+                            with positions_lock:
+                                if symbol in active_positions:
+                                    del active_positions[symbol]
+                            send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) بنجاح للرمز `{symbol}`!*")
+                except Exception:
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error in position tracker loop: {e}")
+
+if __name__ == "__main__":
+    tracker_thread = threading.Thread(target=position_tracker_loop, daemon=True)
+    tracker_thread.start()
+
+    scanner_thread = threading.Thread(target=automated_signal_scanner_loop, daemon=True)
+    scanner_thread.start()
+
+    if bot:
+        tg_thread = threading.Thread(target=telegram_listener, daemon=True)
+        tg_thread.start()
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
