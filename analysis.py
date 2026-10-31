@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v68.0_PRO)
+# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v68.1_CLEAN)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -29,10 +29,8 @@ class StrategyEngine:
             if not ohlcv_15m or len(ohlcv_15m) < 40:
                 return "NEUTRAL", 0.0, default_details
 
-            # تحويل البيانات إلى DataFrames
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            # حساب المؤشرات الفنية
             df_15m['RSI'] = ta.rsi(df_15m['close'], length=14)
             df_15m['ATR'] = ta.atr(df_15m['high'], df_15m['low'], df_15m['close'], length=14)
 
@@ -46,45 +44,36 @@ class StrategyEngine:
             if current_atr <= 0 or np.isnan(current_atr):
                 current_atr = current_price * 0.01
 
-            # --- منطق الدايفيرجنس الاحترافي المتعدد الشموع ---
-            # القاع الحالي (آخر شمعة مغلقة بالكامل)
             c_low = float(df_15m['low'].iloc[-2])
             c_rsi = float(df_15m['RSI'].iloc[-2])
 
             is_bullish_divergence = False
-            lookback = 15 # البحث في آخر 15 شمعة عن القاع السابق الحقيقي
+            lookback = 15
             
-            if c_rsi < 35: # التأكد من أن العملة في منطقة قاع حقيقية
+            if c_rsi < 35:
                 for i in range(3, lookback):
                     prev_low = float(df_15m['low'].iloc[-i])
                     prev_rsi = float(df_15m['RSI'].iloc[-i])
 
-                    # الشرط البرمجي: السعر الحالي أدنى من السعر السابق، لكن RSI الحالي أعلى من RSI السابق
                     if c_low < prev_low and c_rsi > prev_rsi:
-                        # التأكد من أن القاع السابق كان أيضاً في منطقة تشبع بيعي
                         if prev_rsi < 40:
                             is_bullish_divergence = True
                             break
 
-            # الفلترة الإضافية عبر فريم الـ 5 دقائق لضمان نقطة الدخول (حماية الصعود الـ 15%)
             if is_bullish_divergence and ohlcv_5m and len(ohlcv_5m) > 10:
                 df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df_5m['RSI'] = ta.rsi(df_5m['close'], length=14)
                 
-                # إذا كان فريم الـ 5 دقائق يعطي إشارة تشبع شرائي زائد، نلغي الإشارة مؤقتاً لتجنب القمة اللحظية
                 if df_5m['RSI'].iloc[-1] > 70:
                     is_bullish_divergence = False
 
             if is_bullish_divergence:
-                # حساب الستوب لوز بناءً على القاع الفعلي وليس سعر الدخول لمنع ضرب الستوب بسبب الذيول
                 stop_loss = round(c_low - (current_atr * 1.2), decimals)
                 
-                # تأمين الأهداف الحسابية ومعدل العائد للمخاطرة (Risk:Reward)
                 target_1 = round(current_price + (current_atr * 1.5), decimals)
                 target_2 = round(current_price + (current_atr * 3.0), decimals)
                 target_3 = round(current_price + (current_atr * 5.0), decimals)
 
-                # حماية برمجية: إذا كان الستوب لوز قريباً جداً أو غير منطقي
                 if stop_loss >= current_price:
                     stop_loss = round(current_price - (current_atr * 1.5), decimals)
 
@@ -110,7 +99,7 @@ class StrategyEngine:
                 details = default_details.copy()
                 details["rsi"] = round(df_15m['RSI'].iloc[-1], 2)
                 details["atr"] = round(current_atr, decimals)
-                return "NEUTRAL", current_price, default_details
+                return "NEUTRAL", current_price, details
 
         except Exception as e:
             logger.error(f"Error in StrategyEngine analysis: {e}")
