@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v65.0_SNIPER_AUTO_PRO)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v65.5_SNIPER_AUTO_PRO)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY INSTITUTIONAL SNIPER BOT (v65.0 Auto) Active!"
+    return "MY INSTITUTIONAL SNIPER BOT (v65.5 Auto) Active!"
 
 @app.route("/health")
 def health():
@@ -116,6 +116,7 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
                 "size": position_size,
                 "tp1": details["risk_management"]["take_profit_1"],
                 "tp2": details["risk_management"]["take_profit_2"],
+                "tp3": details["risk_management"].get("take_profit_3"),
                 "stop_loss": details["stop_loss"],
                 "breakeven_done": False
             }
@@ -125,12 +126,13 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
     ent = details.get("entry_zone", {})
     emoji = "🟢" if direction == "LONG" else ("🔴" if direction == "SHORT" else "⚪")
 
-    price_str_format = "{:.8f}" if current_price < 1 else ("{:.4f}" if current_price < 100 else "{:.2f}")
+    price_str_format = "{:.8f}" if current_price < 0.1 else ("{:.4f}" if current_price < 10 else "{:.2f}")
 
     cur_formatted = price_str_format.format(current_price)
     sl_formatted = price_str_format.format(details.get('stop_loss'))
     tp1_formatted = price_str_format.format(rm.get('take_profit_1'))
     tp2_formatted = price_str_format.format(rm.get('take_profit_2'))
+    tp3_formatted = price_str_format.format(rm.get('take_profit_3'))
     atr_formatted = price_str_format.format(details.get('atr'))
 
     valid_status = "✅ تصلح للصفقة" if details.get("trade_valid") else "❌ لا تصلح حالياً"
@@ -154,6 +156,7 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
         f"🎯 *الأهداف الاستراتيجية:*\n"
         f"  • الهدف الأول (TP1): `{tp1_formatted}`\n"
         f"  • الهدف الثاني (TP2): `{tp2_formatted}`\n"
+        f"  • الهدف الثالث (TP3): `{tp3_formatted}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"💡 *التحليل الفني والسبب:* {details.get('reason')}"
     )
@@ -225,9 +228,6 @@ def telegram_listener():
         bot.infinity_polling(none_stop=True, interval=1)
 
 def automated_signal_scanner_loop():
-    """
-    الماسح التلقائي الخلفي: يقوم بمسح قائمة من العملات ذات الزخم دورياً وإرسال الصفقات تلقائياً للقناة.
-    """
     auto_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "ILV/USDT:USDT", "COW/USDT:USDT", "ATH/USDT:USDT"]
     while True:
         try:
@@ -277,6 +277,7 @@ def position_tracker_loop():
                 entry = pos["entry"]
                 tp1 = pos["tp1"]
                 tp2 = pos["tp2"]
+                tp3 = pos.get("tp3")
                 stop_loss = pos["stop_loss"]
                 be_done = pos["breakeven_done"]
 
@@ -295,11 +296,16 @@ def position_tracker_loop():
                                 active_positions[symbol]["stop_loss"] = entry
                         send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) للرمز `{symbol}`! تم نقل وقف الخسارة إلى نقطة الدخول (Breakeven).*")
                         
-                    if current_price >= tp2:
+                    if tp3 and current_price >= tp3:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) بنجاح للرمز `{symbol}`! تم إغلاق الصفقة بربح ممتاز.*")
+                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث الأقصى (TP3) بنجاح للرمز `{symbol}`! تم إغلاق كامل الصفقة بربح ممتازة.*")
+                    elif current_price >= tp2 and not tp3:
+                        with positions_lock:
+                            if symbol in active_positions:
+                                del active_positions[symbol]
+                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) بنجاح للرمز `{symbol}`!*")
 
                 elif side == "SHORT":
                     if current_price >= stop_loss:
@@ -316,11 +322,11 @@ def position_tracker_loop():
                                 active_positions[symbol]["stop_loss"] = entry
                         send_telegram_message(f"🎯 *تم تحقيق الهدف الأول (TP1) لصفقة البيع `{symbol}`! تم تأمين الصفقة.*")
                         
-                    if current_price <= tp2:
+                    if tp3 and current_price <= tp3:
                         with positions_lock:
                             if symbol in active_positions:
                                 del active_positions[symbol]
-                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثاني (TP2) للبيع بنجاح للرمز `{symbol}`!*")
+                        send_telegram_message(f"🚀 *تم تحقيق الهدف الثالث (TP3) بنجاح للرمز `{symbol}`!*")
 
         except Exception as e:
             logger.error(f"Error in position tracker loop: {e}")
