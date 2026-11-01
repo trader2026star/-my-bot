@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.8_FINAL_ATR)
+# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.9_FINAL_ATR)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -34,11 +34,11 @@ class StrategyEngine:
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr_series = tr.rolling(window=period).mean()
             
-            # استخراج آخر قيمة للـ ATR
+            # جلب آخر قيمة صحيحة للـ ATR
             atr_val = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
             current_close = float(close.iloc[-1]) if not close.empty else 1.0
             
-            # إذا كانت القيمة صفر أو غير متوفرة، نعتمد 1.5% من السعر الحالي كقيمة ديناميكية مضمونة
+            # ضمان عدم ظهور صفر أبداً واعتماد 1.5% كقيمة ديناميكية مضمونة وآمنة للحسابات
             if pd.isna(atr_val) or atr_val <= 0:
                 atr_val = current_close * 0.015
                 
@@ -65,8 +65,8 @@ class StrategyEngine:
 
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            df_15m['RSI'] = self.calculate_rsi(df_15m['close'], length=14)
-            df_15m['ATR'] = self.calculate_atr(df_15m, length=14)
+            df_15m['RSI'] = self.calculate_rsi(df_15m['close'], period=14)
+            df_15m['ATR'] = self.calculate_atr(df_15m, period=14)
 
             if len(df_15m) < 20 or pd.isna(df_15m['RSI'].iloc[-1]):
                 return "NEUTRAL", 0.0, default_details
@@ -96,7 +96,7 @@ class StrategyEngine:
 
             if is_bullish_divergence and ohlcv_5m and len(ohlcv_5m) > 10:
                 df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                rsi_5m = self.calculate_rsi(df_5m['close'], length=14)
+                rsi_5m = self.calculate_rsi(df_5m['close'], period=14)
                 if rsi_5m.iloc[-1] > 70:
                     is_bullish_divergence = False
 
