@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.6_FINAL)
+# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.7_FINAL)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -32,19 +32,17 @@ class StrategyEngine:
             tr2 = np.abs(high - close.shift())
             tr3 = np.abs(low - close.shift())
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr = tr.rolling(window=period).mean()
+            atr_val = tr.rolling(window=period).mean().iloc[-1]
             
-            # معالجة القيم الفارغة أو الصفر لضمان عدم ظهور أصفار أبداً
-            if atr.empty or atr.iloc[-1] <= 0 or np.isnan(atr.iloc[-1]):
-                mean_tr = tr.mean()
-                if not np.isnan(mean_tr) and mean_tr > 0:
-                    atr.iloc[-1] = mean_tr
-                else:
-                    atr.iloc[-1] = float(close.iloc[-1]) * 0.01
-            return atr
+            current_close = float(close.iloc[-1])
+            # ضمان عدم ظهور صفر أبداً واعتماد 1.5% كقيمة ديناميكية آمنة
+            if pd.isna(atr_val) or atr_val <= 0:
+                atr_val = current_close * 0.015
+                
+            return pd.Series(atr_val, index=df.index)
         except Exception:
-            fallback_atr = pd.Series(float(df['close'].iloc[-1]) * 0.01, index=df.index)
-            return fallback_atr
+            current_close = float(df['close'].iloc[-1]) if not df.empty else 1.0
+            return pd.Series(current_close * 0.015, index=df.index)
 
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto"):
         default_details = {
@@ -73,7 +71,7 @@ class StrategyEngine:
             current_price = float(df_15m['close'].iloc[-1])
             current_atr = float(df_15m['ATR'].iloc[-1])
             if current_atr <= 0 or np.isnan(current_atr):
-                current_atr = current_price * 0.01
+                current_atr = current_price * 0.015
 
             decimals = 8 if current_price < 0.1 else (4 if current_price < 10 else 2)
 
