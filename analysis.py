@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.7_FINAL)
+# MY EXPERT CRYPTO BOT - Bullish Divergence Engine (v69.8_FINAL_ATR)
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -32,17 +32,20 @@ class StrategyEngine:
             tr2 = np.abs(high - close.shift())
             tr3 = np.abs(low - close.shift())
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr_val = tr.rolling(window=period).mean().iloc[-1]
+            atr_series = tr.rolling(window=period).mean()
             
-            current_close = float(close.iloc[-1])
-            # ضمان عدم ظهور صفر أبداً واعتماد 1.5% كقيمة ديناميكية آمنة
+            # استخراج آخر قيمة للـ ATR
+            atr_val = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
+            current_close = float(close.iloc[-1]) if not close.empty else 1.0
+            
+            # إذا كانت القيمة صفر أو غير متوفرة، نعتمد 1.5% من السعر الحالي كقيمة ديناميكية مضمونة
             if pd.isna(atr_val) or atr_val <= 0:
                 atr_val = current_close * 0.015
                 
             return pd.Series(atr_val, index=df.index)
-        except Exception:
-            current_close = float(df['close'].iloc[-1]) if not df.empty else 1.0
-            return pd.Series(current_close * 0.015, index=df.index)
+        except Exception as e:
+            current_close = float(df['close'].iloc[-1]) if not df.empty and 'close' in df else 1.0
+            return pd.Series(current_close * 0.015, index=df.index if not df.empty else [0])
 
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto"):
         default_details = {
@@ -105,36 +108,26 @@ class StrategyEngine:
             if stop_loss >= current_price:
                 stop_loss = round(current_price - (current_atr * 1.5), decimals)
 
-            if is_bullish_divergence:
-                details = {
-                    "trade_valid": True,
-                    "trigger_price": current_price,
-                    "stop_loss": stop_loss,
-                    "atr": round(current_atr, decimals),
-                    "rsi": round(c_rsi, 2),
-                    "entry_zone": {
-                        "divergence_detected": True,
-                        "validated_via_5m": True
-                    },
-                    "risk_management": {
-                        "take_profit_1": target_1,
-                        "take_profit_2": target_2,
-                        "take_profit_3": target_3
-                    },
-                    "reason": f"🚨 تم رصد تأكيد دايفيرجنس إيجابي حقيقي (Bullish Divergence) بين القاع الحالي والقيعان السابقة على فريم 15 دقيقة."
-                }
-                return "LONG", current_price, details
-            else:
-                details = default_details.copy()
-                details["rsi"] = round(float(df_15m['RSI'].iloc[-1]), 2)
-                details["atr"] = round(current_atr, decimals)
-                details["stop_loss"] = stop_loss
-                details["risk_management"] = {
+            details = {
+                "trade_valid": is_bullish_divergence,
+                "trigger_price": current_price,
+                "stop_loss": stop_loss,
+                "atr": round(current_atr, decimals),
+                "rsi": round(c_rsi, 2),
+                "entry_zone": {
+                    "divergence_detected": is_bullish_divergence,
+                    "validated_via_5m": True
+                },
+                "risk_management": {
                     "take_profit_1": target_1,
                     "take_profit_2": target_2,
                     "take_profit_3": target_3
-                }
-                return "NEUTRAL", current_price, details
+                },
+                "reason": f"🚨 تم رصد تأكيد دايفيرجنس إيجابي حقيقي (Bullish Divergence) بين القاع الحالي والقيعان السابقة على فريم 15 دقيقة." if is_bullish_divergence else "السوق حالياً مستقر ولا توجد إشارة دايفيرجنس حقيقية متحققة."
+            }
+            
+            direction = "LONG" if is_bullish_divergence else "NEUTRAL"
+            return direction, current_price, details
 
         except Exception as e:
             logger.error(f"Error in StrategyEngine analysis: {e}")
