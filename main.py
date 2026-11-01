@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Main Controller V72.0
-# LONG ONLY | SIGNAL ONLY | NO EXCHANGE ORDER EXECUTION
+# MY EXPERT CRYPTO BOT - Main Controller V73.0
+# LONG ONLY | SIGNAL ONLY | FULL METRICS & /SCAN COMMAND
 # ============================================================
 
 import os
@@ -57,7 +57,7 @@ except Exception as exc:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V72.0 Active - LONG signals only."
+    return "MY EXPERT CRYPTO BOT V73.0 Active - LONG signals only."
 
 
 @app.route("/health")
@@ -65,7 +65,7 @@ def health():
     with positions_lock:
         count = len(active_positions)
     return jsonify({
-        "status": "healthy", "version": "72.0",
+        "status": "healthy", "version": "73.0",
         "stats": scan_stats, "active_positions_count": count,
         "telegram_active": bot is not None
     }), 200
@@ -82,8 +82,6 @@ def send_telegram_message(message, chat_id=None):
                   "disable_web_page_preview": True},
             timeout=15
         )
-        if r.status_code != 200:
-            logger.error("Telegram HTTP %s: %s", r.status_code, r.text[:300])
         return r.status_code == 200
     except Exception as exc:
         logger.error("Telegram send error: %s", exc)
@@ -111,9 +109,8 @@ def get_exchange_data(symbol_raw, timeframe, limit=100):
             bars = bingx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             if bars and len(bars) > 10:
                 return symbol, bars
-        except Exception as exc:
-            logger.debug("OHLCV %s %s failed: %s", symbol, timeframe, exc)
-            time.sleep(0.25)
+        except Exception:
+            time.sleep(0.2)
     return None, None
 
 
@@ -122,13 +119,11 @@ def get_current_price(symbol):
         ticker = bingx.fetch_ticker(symbol)
         last = ticker.get("last") or ticker.get("close")
         return float(last) if last else 0.0
-    except Exception as exc:
-        logger.debug("Ticker failed for %s: %s", symbol, exc)
+    except Exception:
         return 0.0
 
 
-def calculate_position_size(current_price, stop_loss, asset_type="crypto"):
-    # Quantity sized to the configured cash risk; signal-only, not an order.
+def calculate_position_size(current_price, stop_loss):
     try:
         distance = abs(float(current_price) - float(stop_loss))
         if current_price <= 0 or stop_loss <= 0 or distance <= 0:
@@ -183,34 +178,34 @@ def generate_analysis_report(symbol, direction, price, details):
     size = calculate_position_size(price, details.get("stop_loss", 0))
     entry = details.get("entry_zone", {})
     valid = bool(details.get("trade_valid")) and direction == "LONG"
-    status = "🟢 LONG مؤكدة" if valid else "⚪ لا توجد صفقة"
+    status = "🟢 LONG مؤكدة (شروط مكتملة)" if valid else "⚪ لا توجد صفقة (تم الرفض)"
+    
     report = (
-        f"🏛️ *MY EXPERT CRYPTO BOT V72.0*\n"
+        f"🏛️ *MY EXPERT CRYPTO BOT V73.0*\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 العملة: `{symbol}`\n"
         f"📌 الحالة: {status}\n"
-        f"⭐ التقييم: `{details.get('score', 0)}/100`\n"
-        f"💵 السعر المرجعي: `{fmt(price)}`\n"
+        f"⭐ التقييم الحقيقي: `{details.get('score', 0)} / 100`\n"
+        f"💵 السعر الحالي: `{fmt(price)}`\n"
         f"📊 RSI 15M: `{details.get('rsi', 50)}`\n"
         f"📈 حجم التداول: `{entry.get('volume_ratio', 0)}x`\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 الدخول المرجعي: `{fmt(price)}`\n"
+        f"🎯 سعر الدخول: `{fmt(price)}`\n"
         f"🥇 TP1: `{fmt(rm.get('take_profit_1'))}`\n"
         f"🥈 TP2: `{fmt(rm.get('take_profit_2'))}`\n"
         f"🥉 TP3: `{fmt(rm.get('take_profit_3'))}`\n"
         f"🛑 وقف الخسارة: `{fmt(details.get('stop_loss'))}`\n"
-        f"📦 حجم وحدات تقديري: `{size}`\n"
+        f"📦 حجم الوحدات التقديري: `{size}`\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔎 دايفيرجنس: `{entry.get('regular_bullish', False)}`\n"
+        f"🔎 دايفيرجنس إيجابي: `{entry.get('regular_bullish', False)}`\n"
         f"💧 Liquidity Sweep: `{entry.get('liquidity_sweep', False)}`\n"
-        f"📐 BOS: `{entry.get('bullish_structure', False)}`\n"
-        f"📊 Volume: `{entry.get('volume_confirmed', False)}`\n"
+        f"📐 BOS (هيكل صاعد): `{entry.get('bullish_structure', False)}`\n"
+        f"📊 حجم السيولة: `{entry.get('volume_confirmed', False)}`\n"
         f"⏱️ تأكيد 5M: `{entry.get('confirmed_5m', False)}`\n"
-        f"📈 توافق الاتجاه: `{entry.get('trend_confirmed', False)}`\n"
+        f"📈 توافق الاتجاه (EMA): `{entry.get('trend_confirmed', False)}`\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📝 {details.get('reason', '')}\n\n"
-        f"⚠️ إشارة تحليلية فقط؛ لا ينفذ البوت أوامر تداول. "
-        f"حجم الوحدات تقديري وقد يختلف حسب مواصفات العقد والرافعة."
+        f"📝 *سبب الرفض أو التفاصيل:* \n{details.get('reason', '')}\n\n"
+        f"⚠️ إشارة تحليلية ذكية فقط؛ لا ينفذ البوت صفقات حية."
     )
     return report
 
@@ -218,10 +213,9 @@ def generate_analysis_report(symbol, direction, price, details):
 def analyze_symbol(symbol, chat_id=None, send_no_signal=True):
     resolved, candles15 = get_exchange_data(symbol, "15m", 110)
     if not resolved or not candles15 or len(candles15) < 65:
-        message = f"❌ لا تتوفر بيانات 15M كافية للرمز `{symbol}`."
         if send_no_signal:
-            send_telegram_message(message, chat_id)
-        return
+            send_telegram_message(f"❌ لا تتوفر بيانات كافية للرمز `{symbol}`.", chat_id)
+        return False, None
     _, candles5 = get_exchange_data(resolved, "5m", 40)
     scan_stats["scanned_pairs"] += 1
     direction, price, details = engine.analyze_market_structure(
@@ -231,22 +225,18 @@ def analyze_symbol(symbol, chat_id=None, send_no_signal=True):
     report = generate_analysis_report(resolved, direction, price, details)
     if valid:
         if can_send_signal(resolved):
-            # Register only after a successful Telegram send.
             sent = send_telegram_message(report, chat_id)
             if sent:
                 register_signal(resolved, direction, price, details)
                 scan_stats["signals_sent"] += 1
-                logger.info("V72 LONG signal sent: %s", resolved)
-            else:
-                logger.warning("Signal not registered because Telegram send failed: %s", resolved)
         elif send_no_signal:
-            send_telegram_message("⏳ توجد إشارة سابقة أو فترة تهدئة للرمز؛ لم يتم تكرارها.", chat_id)
+            send_telegram_message(report, chat_id)
     elif send_no_signal:
         send_telegram_message(report, chat_id)
+    return valid, details
 
 
 def get_scan_universe():
-    # Dynamic USDT perpetual universe, ranked by quote volume when tickers are available.
     try:
         markets = bingx.load_markets()
         candidates = [
@@ -255,35 +245,9 @@ def get_scan_universe():
             and m.get("quote") == "USDT" and m.get("settle") == "USDT"
             and m.get("base") and m["base"] not in ("USDC", "BUSD", "TUSD", "FDUSD")
         ]
-        try:
-            tickers = bingx.fetch_tickers(candidates)
-            ranked = []
-            for sym in candidates:
-                t = tickers.get(sym, {})
-                qv = t.get("quoteVolume")
-                if qv is None:
-                    info = t.get("info") or {}
-                    qv = info.get("quoteVolume") or info.get("turnover") or 0
-                try:
-                    qv = float(qv or 0)
-                except Exception:
-                    qv = 0
-                ranked.append((qv, sym))
-            ranked.sort(reverse=True)
-            liquid = [s for q, s in ranked if q > 0]
-            if liquid:
-                return liquid[:MAX_SCAN_SYMBOLS]
-        except Exception as exc:
-            logger.warning("Ticker ranking unavailable: %s", exc)
-        priority = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
-                    "XRP/USDT:USDT", "BNB/USDT:USDT", "DOGE/USDT:USDT"]
-        ordered = [s for s in priority if s in candidates]
-        ordered += [s for s in candidates if s not in ordered]
-        return ordered[:MAX_SCAN_SYMBOLS]
-    except Exception as exc:
-        logger.error("Cannot load scan universe: %s", exc)
-        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
-                "XRP/USDT:USDT", "BNB/USDT:USDT"]
+        return candidates[:MAX_SCAN_SYMBOLS]
+    except Exception:
+        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "BNB/USDT:USDT"]
 
 
 def automated_signal_scanner_loop():
@@ -292,7 +256,7 @@ def automated_signal_scanner_loop():
         started = time.time()
         try:
             symbols = get_scan_universe()
-            logger.info("V72 scanning %s USDT perpetual markets.", len(symbols))
+            logger.info("V73 scanning %s USDT markets.", len(symbols))
             for symbol in symbols:
                 try:
                     if can_send_signal(symbol):
@@ -325,27 +289,23 @@ def position_tracker_loop():
                 if price <= sl:
                     with positions_lock:
                         active_positions.pop(symbol, None)
-                    send_telegram_message(f"🛑 `{symbol}` وصل إلى وقف الخسارة المرجعي عند `{price}`.")
+                    send_telegram_message(f"🛑 `{symbol}` ضرب وقف الخسارة عند `{price}`.")
                     continue
                 if tp1 and price >= float(tp1) and not pos.get("tp1_done"):
                     with positions_lock:
                         if symbol in active_positions:
                             active_positions[symbol]["tp1_done"] = True
                             active_positions[symbol]["stop_loss"] = entry
-                    send_telegram_message(
-                        f"🎯 `{symbol}` وصل TP1 عند `{price}`. "
-                        f"تم تحديث وقف المتابعة المرجعي إلى نقطة الدخول؛ لا يتم تعديل أي أمر في المنصة."
-                    )
-                    sl = entry
+                    send_telegram_message(f"🎯 `{symbol}` حقق TP1 عند `{price}`. تم نقل الستوب لنقطة الدخول.")
                 if tp2 and price >= float(tp2) and not pos.get("tp2_done"):
                     with positions_lock:
                         if symbol in active_positions:
                             active_positions[symbol]["tp2_done"] = True
-                    send_telegram_message(f"🥈 `{symbol}` وصل TP2 عند `{price}`.")
+                    send_telegram_message(f"🥈 `{symbol}` حقق TP2 عند `{price}`.")
                 if tp3 and price >= float(tp3):
                     with positions_lock:
                         active_positions.pop(symbol, None)
-                    send_telegram_message(f"🚀 `{symbol}` وصل TP3 عند `{price}`. انتهت المتابعة.")
+                    send_telegram_message(f"🚀 `{symbol}` حقق الهدف الثالث TP3 بنجاح.")
             except Exception as exc:
                 logger.debug("Position tracking failed %s: %s", symbol, exc)
 
@@ -355,10 +315,29 @@ if bot:
     def handle_start(message):
         bot.reply_to(
             message,
-            "مرحباً بك في MY EXPERT CRYPTO BOT V72.0.\n"
-            "أرسل رمز العملة مثل BTC أو ETH أو SOL أو BTC/USDT لتحليلها.\n"
-            "المحرك LONG فقط وإشارات تحليلية دون تنفيذ أوامر."
+            "مرحباً بك في MY EXPERT CRYPTO BOT V73.0.\n"
+            "أرسل رمز العملة مثل `BTC` أو `SOL` لتحليلها بالتقييم الكامل.\n"
+            "أو استخدم الأمر `/scan` لفحص السوق وابحث عن الفرص القوية."
         )
+
+    @bot.message_handler(commands=["scan"])
+    def handle_scan_command(message):
+        bot.reply_to(message, "🔍 جاري فحص السوق والبحث عن أقوى الفرص المتاحة حالياً...")
+        universe = get_scan_universe()[:15] # فحص عينة سريعة للأمر
+        found = 0
+        for sym in universe:
+            try:
+                valid, details = analyze_symbol(sym, chat_id=message.chat.id, send_no_signal=False)
+                if valid or (details and details.get("score", 0) >= 60):
+                    report = generate_analysis_report(sym, details.get("direction", "NEUTRAL"), details.get("trigger_price", 0), details)
+                    bot.send_message(message.chat.id, report, parse_mode="Markdown")
+                    found += 1
+                    if found >= 3: # أقصى عدد يعرضه الأمر لعدم الإزعاج
+                        break
+            except Exception:
+                continue
+        if found == 0:
+            bot.send_message(message.chat.id, "⚪ لم يتم العثور على فرص مطابقة للمعايير الصارمة حالياً في عينة الفحص السريع.")
 
     @bot.message_handler(func=lambda message: bool(message.text))
     def handle_symbol(message):
@@ -367,9 +346,9 @@ if bot:
             return
         symbol = normalize_symbol(raw)
         if len(symbol) > 24 or not symbol.endswith("/USDT"):
-            bot.reply_to(message, "أرسل رمز USDT صحيحاً مثل BTC أو ETH أو SOL/USDT.")
+            bot.reply_to(message, "أرسل رمز USDT صحيحاً مثل `BTC` أو `ETH` أو `SOL/USDT`.")
             return
-        bot.reply_to(message, f"🔍 جارٍ فحص `{symbol}` على BingX...")
+        bot.reply_to(message, f"🔍 جارٍ فحص عملة `{symbol}` بتقييم شامل على BingX...")
         analyze_symbol(symbol, chat_id=message.chat.id, send_no_signal=True)
 
 
@@ -379,8 +358,8 @@ def telegram_listener():
     try:
         bot.remove_webhook()
         time.sleep(1)
-    except Exception as exc:
-        logger.warning("Webhook removal warning: %s", exc)
+    except Exception:
+        pass
     while True:
         try:
             logger.info("Telegram polling active.")
