@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v70.0_FINAL)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v70.1_FINAL)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v70.0 Final) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v70.1 Final) Active!"
 
 @app.route("/health")
 def health():
@@ -194,12 +194,18 @@ if bot:
 def telegram_listener():
     if bot:
         logger.info("Starting Telegram Bot listener...")
+        try:
+            bot.remove_webhook()
+            time.sleep(2)
+        except Exception:
+            pass
+
         while True:
             try:
-                bot.infinity_polling(none_stop=True, interval=2, timeout=20)
+                bot.infinity_polling(none_stop=True, interval=3, timeout=30, allowed_updates=["message"])
             except Exception as e:
                 logger.error(f"Telegram polling error: {e}")
-                time.sleep(5)
+                time.sleep(10)
 
 def automated_signal_scanner_loop():
     time.sleep(10)
