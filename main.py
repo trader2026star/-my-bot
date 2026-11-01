@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.7_FINAL)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v70.0_FIXED)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.7 Final) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v70.0 Final) Active!"
 
 @app.route("/health")
 def health():
@@ -157,7 +157,7 @@ def generate_analysis_report(resolved_symbol, direction, current_price, details,
         f"🎯 *الهدف الأول:* `{tp1_formatted}`\n"
         f"🎯 *الهدف الثاني:* `{tp2_formatted}`\n"
         f"🎯 *الهدف الثالث:* `{tp3_formatted}`\n"
-        f"🛑 *الستوب لوز (ATR/القاع):* `{sl_formatted}`\n"
+        f"🛑 *الستوب لوز:* `{sl_formatted}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"💡 *نصيحة للبوت: عند ضرب الهدف الأول، انقل الستوب لوز فوراً إلى نقطة الدخول لتأمين الصفقة.*\n\n"
         f"📝 *السبب الفني:* {details.get('reason')}"
@@ -194,35 +194,41 @@ if bot:
 def telegram_listener():
     if bot:
         logger.info("Starting Telegram Bot listener...")
-        bot.infinity_polling(none_stop=True, interval=1)
+        while True:
+            try:
+                bot.infinity_polling(none_stop=True, interval=2, timeout=20)
+            except Exception as e:
+                logger.error(f"Telegram polling error: {e}")
+                time.sleep(5)
 
 def automated_signal_scanner_loop():
     time.sleep(10)
     while True:
         try:
-            time.sleep(60)
-            active_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "ADA/USDT:USDT", "DOGE/USDT:USDT"]
+            time.sleep(45)
+            # قائمة عملات رئيسية وصاعدة للفحص المستمر
+            active_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT", "DOGE/USDT", "BNB/USDT"]
 
             for sym in active_symbols:
-                _, ohlcv_15m = get_exchange_data(sym, timeframe="15m", limit=100)
-                if not ohlcv_15m or len(ohlcv_15m) < 30:
+                resolved_sym, ohlcv_15m = get_exchange_data(sym, timeframe="15m", limit=100)
+                if not resolved_sym or not ohlcv_15m or len(ohlcv_15m) < 30:
                     continue
                 
-                _, ohlcv_5m = get_exchange_data(sym, timeframe="5m", limit=30)
+                _, ohlcv_5m = get_exchange_data(resolved_sym, timeframe="5m", limit=30)
                 scan_stats["scanned_pairs"] += 1
                 
                 direction, current_price, details = engine.analyze_market_structure(ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto")
                 
                 if details.get("trade_valid") and direction == "LONG":
                     with positions_lock:
-                        if sym in active_positions:
+                        if resolved_sym in active_positions:
                             continue
                     
-                    report = generate_analysis_report(sym, direction, current_price, details, "crypto")
+                    report = generate_analysis_report(resolved_sym, direction, current_price, details, "crypto")
                     send_telegram_message(f"🚨 *فرصة دايفيرجنس جديدة مؤكدة*:\n\n{report}")
-                    logger.info(f"Divergence signal sent for {sym}!")
+                    logger.info(f"Divergence signal sent for {resolved_sym}!")
                 
-                time.sleep(3)
+                time.sleep(2)
         except Exception as e:
             logger.error(f"Error in automated signal scanner loop: {e}")
 
@@ -276,7 +282,7 @@ def position_tracker_loop():
                     continue
 
         except Exception as e:
-            logger.error(f"Error in position tracker loop: {e}")
+            logger.error(f5Error in position tracker loop: {e}")
 
 if __name__ == "__main__":
     tracker_thread = threading.Thread(target=position_tracker_loop, daemon=True)
