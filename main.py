@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v70.0_FIXED)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v70.0_FINAL)
 # ============================================================
 import os
 import time
@@ -206,7 +206,6 @@ def automated_signal_scanner_loop():
     while True:
         try:
             time.sleep(45)
-            # قائمة عملات رئيسية وصاعدة للفحص المستمر
             active_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT", "DOGE/USDT", "BNB/USDT"]
 
             for sym in active_symbols:
@@ -282,7 +281,7 @@ def position_tracker_loop():
                     continue
 
         except Exception as e:
-            logger.error(f5Error in position tracker loop: {e}")
+            logger.error(f"Error in position tracker loop: {e}")
 
 if __name__ == "__main__":
     tracker_thread = threading.Thread(target=position_tracker_loop, daemon=True)
