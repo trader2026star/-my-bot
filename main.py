@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v70.1_FINAL)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v70.2_FINAL)
 # ============================================================
 import os
 import time
@@ -19,8 +19,8 @@ logger = logging.getLogger("MainBot")
 
 app = Flask(__name__)
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "10000")))
 RISK_PER_TRADE = min(0.05, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
 
@@ -42,18 +42,25 @@ bot = None
 try:
     import telebot
     if TELEGRAM_BOT_TOKEN:
-        bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+        bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="Markdown")
         logger.info("Telegram Bot initialized successfully.")
+    else:
+        logger.warning("TELEGRAM_BOT_TOKEN is missing or empty!")
 except Exception as e:
     logger.warning(f"Telegram initialization warning: {e}")
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v70.1 Final) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v70.2 Final) Active!"
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "healthy", "stats": scan_stats, "active_positions_count": len(active_positions)}), 200
+    return jsonify({
+        "status": "healthy", 
+        "stats": scan_stats, 
+        "active_positions_count": len(active_positions),
+        "telegram_active": bot is not None
+    }), 200
 
 def send_telegram_message(message, chat_id=None):
     target_chat = chat_id or TELEGRAM_CHAT_ID
@@ -173,7 +180,7 @@ if bot:
             if not clean_text or len(clean_text) > 12:
                 return
 
-            bot.reply_to(message, f"🎯 *جاري فحص الدايفيرجنس الإيجابي والـ RSI للرمز* (`{clean_text}`)...", parse_mode="Markdown")
+            bot.reply_to(message, f"🎯 *جاري فحص الدايفيرجنس الإيجابي والـ RSI للرمز* (`{clean_text}`)...")
 
             resolved_symbol, ohlcv_15m = get_exchange_data(clean_text, timeframe="15m", limit=100)
 
@@ -187,28 +194,29 @@ if bot:
             direction, current_price, details = engine.analyze_market_structure(ohlcv_5m=ohlcv_5m, ohlcv_15m=ohlcv_15m, asset_type="crypto")
 
             report = generate_analysis_report(resolved_symbol, direction, current_price, details, "crypto")
-            bot.reply_to(message, report, parse_mode="Markdown")
+            bot.reply_to(message, report)
         except Exception as e:
             logger.error(f"Error in message handler: {e}")
 
 def telegram_listener():
     if bot:
-        logger.info("Starting Telegram Bot listener...")
+        logger.info("Starting Telegram Bot listener thread...")
         try:
             bot.remove_webhook()
-            time.sleep(2)
+            time.sleep(1)
         except Exception:
             pass
 
         while True:
             try:
-                bot.infinity_polling(none_stop=True, interval=3, timeout=30, allowed_updates=["message"])
+                logger.info("Bot polling loop active...")
+                bot.infinity_polling(none_stop=True, interval=2, timeout=20)
             except Exception as e:
                 logger.error(f"Telegram polling error: {e}")
-                time.sleep(10)
+                time.sleep(5)
 
 def automated_signal_scanner_loop():
-    time.sleep(10)
+    time.sleep(15)
     while True:
         try:
             time.sleep(45)
@@ -299,6 +307,7 @@ if __name__ == "__main__":
     if bot:
         tg_thread = threading.Thread(target=telegram_listener, daemon=True)
         tg_thread.start()
+        logger.info("Telegram listener thread spawned successfully.")
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
