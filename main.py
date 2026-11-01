@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - Main Controller V73.0
-# LONG ONLY | SIGNAL ONLY | FULL METRICS & /SCAN COMMAND
+# MY EXPERT CRYPTO BOT - Main Controller V74.0
+# LONG ONLY | CONDITIONAL TARGET PLANNER & /SCAN COMMAND
 # ============================================================
 
 import os
@@ -57,7 +57,7 @@ except Exception as exc:
 
 @app.route("/")
 def home():
-    return "MY EXPERT CRYPTO BOT V73.0 Active - LONG signals only."
+    return "MY EXPERT CRYPTO BOT V74.0 Active - Conditional Planner."
 
 
 @app.route("/health")
@@ -65,7 +65,7 @@ def health():
     with positions_lock:
         count = len(active_positions)
     return jsonify({
-        "status": "healthy", "version": "73.0",
+        "status": "healthy", "version": "74.0",
         "stats": scan_stats, "active_positions_count": count,
         "telegram_active": bot is not None
     }), 200
@@ -175,37 +175,27 @@ def generate_analysis_report(symbol, direction, price, details):
         except Exception:
             return "غير متاح"
 
-    size = calculate_position_size(price, details.get("stop_loss", 0))
-    entry = details.get("entry_zone", {})
     valid = bool(details.get("trade_valid")) and direction == "LONG"
-    status = "🟢 LONG مؤكدة (شروط مكتملة)" if valid else "⚪ لا توجد صفقة (تم الرفض)"
+    status = "🟢 LONG مؤكدة (جاهزة للدخول الآن)" if valid else "🟡 تحت المراقبة (مستوى مشروط مطلوب)"
     
+    cond_target = details.get("conditional_target", 0.0)
+
     report = (
-        f"🏛️ *MY EXPERT CRYPTO BOT V73.0*\n"
+        f"🏛️ *MY EXPERT CRYPTO BOT V74.0*\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 العملة: `{symbol}`\n"
         f"📌 الحالة: {status}\n"
         f"⭐ التقييم الحقيقي: `{details.get('score', 0)} / 100`\n"
         f"💵 السعر الحالي: `{fmt(price)}`\n"
+        f"🎯 *السعر الشرطي المستهدف (للدخول):* `{fmt(cond_target)}`\n"
         f"📊 RSI 15M: `{details.get('rsi', 50)}`\n"
-        f"📈 حجم التداول: `{entry.get('volume_ratio', 0)}x`\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 سعر الدخول: `{fmt(price)}`\n"
-        f"🥇 TP1: `{fmt(rm.get('take_profit_1'))}`\n"
-        f"🥈 TP2: `{fmt(rm.get('take_profit_2'))}`\n"
-        f"🥉 TP3: `{fmt(rm.get('take_profit_3'))}`\n"
-        f"🛑 وقف الخسارة: `{fmt(details.get('stop_loss'))}`\n"
-        f"📦 حجم الوحدات التقديري: `{size}`\n"
+        f"🥇 TP1 المقترح: `{fmt(rm.get('take_profit_1', cond_target * 1.03))}`\n"
+        f"🥈 TP2 المقترح: `{fmt(rm.get('take_profit_2', cond_target * 1.05))}`\n"
+        f"🛑 الستوب المقترح: `{fmt(details.get('stop_loss', cond_target * 0.98))}`\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔎 دايفيرجنس إيجابي: `{entry.get('regular_bullish', False)}`\n"
-        f"💧 Liquidity Sweep: `{entry.get('liquidity_sweep', False)}`\n"
-        f"📐 BOS (هيكل صاعد): `{entry.get('bullish_structure', False)}`\n"
-        f"📊 حجم السيولة: `{entry.get('volume_confirmed', False)}`\n"
-        f"⏱️ تأكيد 5M: `{entry.get('confirmed_5m', False)}`\n"
-        f"📈 توافق الاتجاه (EMA): `{entry.get('trend_confirmed', False)}`\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📝 *سبب الرفض أو التفاصيل:* \n{details.get('reason', '')}\n\n"
-        f"⚠️ إشارة تحليلية ذكية فقط؛ لا ينفذ البوت صفقات حية."
+        f"📝 *خطة المراقبة والسبب:* \n{details.get('reason', '')}\n\n"
+        f"💡 *ملاحظة:* عندما يصل السعر إلى الـ (السعر الشرطي المستهدف) ويبدأ بالارتداد، ستصبح الصفقة جاهزة بنسبة 100%."
     )
     return report
 
@@ -256,7 +246,7 @@ def automated_signal_scanner_loop():
         started = time.time()
         try:
             symbols = get_scan_universe()
-            logger.info("V73 scanning %s USDT markets.", len(symbols))
+            logger.info("V74 scanning %s USDT markets.", len(symbols))
             for symbol in symbols:
                 try:
                     if can_send_signal(symbol):
@@ -315,29 +305,30 @@ if bot:
     def handle_start(message):
         bot.reply_to(
             message,
-            "مرحباً بك في MY EXPERT CRYPTO BOT V73.0.\n"
-            "أرسل رمز العملة مثل `BTC` أو `SOL` لتحليلها بالتقييم الكامل.\n"
-            "أو استخدم الأمر `/scan` لفحص السوق وابحث عن الفرص القوية."
+            "مرحباً بك في MY EXPERT CRYPTO BOT V74.0 (مخطط الأسعار الشرطية).\n"
+            "أرسل رمز العملة (مثل `BTC` أو `SOL`) للحصول على تقييمها وسعرها الشرطي المستهدف.\n"
+            "أو استخدم الأمر `/scan` لجلب أفضل العملات التي تحت المراقبة."
         )
 
     @bot.message_handler(commands=["scan"])
     def handle_scan_command(message):
-        bot.reply_to(message, "🔍 جاري فحص السوق والبحث عن أقوى الفرص المتاحة حالياً...")
-        universe = get_scan_universe()[:15] # فحص عينة سريعة للأمر
+        bot.reply_to(message, "🔍 جاري فحص السوق وتحديد مستويات الأسعار الشرطية للفرص المتاحة...")
+        universe = get_scan_universe()[:20]
         found = 0
         for sym in universe:
             try:
                 valid, details = analyze_symbol(sym, chat_id=message.chat.id, send_no_signal=False)
-                if valid or (details and details.get("score", 0) >= 60):
+                # عرض العملات ذات التقييم المقبول أو المرتفع تحت المراقبة
+                if details and details.get("score", 0) >= 45:
                     report = generate_analysis_report(sym, details.get("direction", "NEUTRAL"), details.get("trigger_price", 0), details)
                     bot.send_message(message.chat.id, report, parse_mode="Markdown")
                     found += 1
-                    if found >= 3: # أقصى عدد يعرضه الأمر لعدم الإزعاج
+                    if found >= 4:  # عرض أفضل 4 فرص قريبة تحت المراقبة
                         break
             except Exception:
                 continue
         if found == 0:
-            bot.send_message(message.chat.id, "⚪ لم يتم العثور على فرص مطابقة للمعايير الصارمة حالياً في عينة الفحص السريع.")
+            bot.send_message(message.chat.id, "⚪ لم يتم العثور على فرص قريبة في عينة الفحص الحالية.")
 
     @bot.message_handler(func=lambda message: bool(message.text))
     def handle_symbol(message):
@@ -348,7 +339,7 @@ if bot:
         if len(symbol) > 24 or not symbol.endswith("/USDT"):
             bot.reply_to(message, "أرسل رمز USDT صحيحاً مثل `BTC` أو `ETH` أو `SOL/USDT`.")
             return
-        bot.reply_to(message, f"🔍 جارٍ فحص عملة `{symbol}` بتقييم شامل على BingX...")
+        bot.reply_to(message, f"🔍 جارٍ تحديد السعر الشرطي وخطط المراقبة لعملة `{symbol}`...")
         analyze_symbol(symbol, chat_id=message.chat.id, send_no_signal=True)
 
 
