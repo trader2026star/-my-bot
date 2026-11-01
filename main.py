@@ -1,5 +1,5 @@
 # ============================================================
-# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.5_PRICE_FIX)
+# MY EXPERT CRYPTO & TradFi CFD BOT - Main Controller (v69.7_FINAL)
 # ============================================================
 import os
 import time
@@ -49,7 +49,7 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.5 Price Fix) Active!"
+    return "MY BULLISH DIVERGENCE SNIPER BOT (v69.7 Final) Active!"
 
 @app.route("/health")
 def health():
@@ -109,7 +109,6 @@ def calculate_position_size(current_price, stop_loss, asset_type):
         return 0.0
 
 def generate_analysis_report(resolved_symbol, direction, current_price, details, asset_type="crypto"):
-    # ضمان جلب السعر الحي مباشرة إذا كان السعر المستخرج 0
     if current_price <= 0:
         current_price = get_current_price(resolved_symbol)
         if current_price > 0:
