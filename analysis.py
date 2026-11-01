@@ -1,6 +1,6 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V73.0 Institutional Advanced Engine
-# LONG ONLY | FULL INDICATOR SCORING & DETAILED REJECTION
+# MY EXPERT CRYPTO BOT - V74.0 Advanced Price Planner Engine
+# LONG ONLY | CONDITIONAL TARGETS & SMART PRICING
 # ============================================================
 
 import logging
@@ -52,15 +52,6 @@ class StrategyEngine:
         for i in range(order, len(vals) - order):
             w = vals[i-order:i+order+1]
             if vals[i] == np.min(w) and np.sum(w == vals[i]) == 1:
-                out.append(i)
-        return out
-
-    def find_swing_highs(self, high_series, order=3):
-        vals = np.asarray(high_series, dtype=float)
-        out = []
-        for i in range(order, len(vals) - order):
-            w = vals[i-order:i+order+1]
-            if vals[i] == np.max(w) and np.sum(w == vals[i]) == 1:
                 out.append(i)
         return out
 
@@ -156,18 +147,17 @@ class StrategyEngine:
             "trade_valid": False, "trigger_price": 0.0, "stop_loss": 0.0,
             "atr": 0.0, "rsi": 50.0, "score": 15, "direction": "NEUTRAL",
             "entry_zone": {}, "risk_management": {},
+            "conditional_target": 0.0,
             "reason": "لم يتم استيفاء شروط الدخول الأساسية."
         }
         try:
             if ohlcv_15m is None or len(ohlcv_15m) < 65:
-                default["reason"] = "بيانات 15M غير كافية على المنصة."
                 return "NEUTRAL", 0.0, default
             
             df = self.prepare_dataframe(ohlcv_15m)
             if len(df) > 1:
                 df = df.iloc[:-1].reset_index(drop=True)
             if len(df) < 60:
-                default["reason"] = "بيانات الشموع المتاحة غير كافية بعد التصفية."
                 return "NEUTRAL", 0.0, default
 
             df["RSI"] = self.calculate_rsi(df["close"])
@@ -177,7 +167,6 @@ class StrategyEngine:
             rsi = float(df["RSI"].iloc[-1])
 
             if price <= 0 or atr <= 0 or not np.isfinite([price, atr, rsi]).all():
-                default["reason"] = "قيم الأسعار أو المؤشرات غير صالحة (NaN/Inf)."
                 return "NEUTRAL", 0.0, default
 
             div = self.detect_divergence(df)
@@ -196,16 +185,19 @@ class StrategyEngine:
                 volume_ok, candle_ok, trend_ok
             )
 
-            # تحديد سبب الرفض بدقة تامة
+            # حساب السعر المشروط المقترح لتفعيل الصفقة مستقبلاً (الدعم القريب أو اختبار القاع السابق)
+            recent_low = float(df["low"].iloc[-10:].min())
+            conditional_target = round(recent_low * 0.998, 8) if recent_low < price else round(price * 0.98, 8)
+
             reasons = []
             if not regular:
-                reasons.append("لا يوجد دايفيرجنس إيجابي واضح")
+                reasons.append("انتظار تكوين دايفيرجنس إيجابي واضح")
             if not candle_ok:
-                reasons.append("شمعة التأكيد على فريم 5 دقائق غير مكتملة")
+                reasons.append("انتظار إغلاق شمعة تأكيد 5 دقائق")
             if not (sweep or structure):
-                reasons.append("لم يحدث سحب سيولة (Sweep) أو كسر هيكلي صاعد (BOS)")
+                reasons.append("انتظار سحب سيولة (Sweep) أو كسر هيكلي صاعد")
             if score < self.min_score:
-                reasons.append(f"التقييم الفني الحالي ({score}/100) أقل من الحد الأدنى المقبول ({self.min_score})")
+                reasons.append(f"التقييم الحالي ({score}/100) تحت المراقبة")
 
             valid = bool(regular and candle_ok and (sweep or structure) and score >= self.min_score)
 
@@ -214,7 +206,6 @@ class StrategyEngine:
                 risk = self.calculate_risk_management(price, atr, div["price_recent"])
                 if not risk.get("valid"):
                     valid = False
-                    reasons.append(risk.get("reason", "خطأ في حسابات إدارة المخاطر"))
 
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
             rm = {}
@@ -224,33 +215,28 @@ class StrategyEngine:
                     for k, v in risk.items()
                 }
 
-            reason_text = "تم استيفاء كافة الشروط بنجاح ودخلت الصفقة في النطاق المثالي." if valid else " | ".join(reasons)
+            reason_text = "تم استيفاء كافة الشروط بنجاح." if valid else " | ".join(reasons)
 
             details = {
                 "trade_valid": valid,
                 "direction": "LONG" if valid else "NEUTRAL",
                 "trigger_price": round(price, decimals),
-                "stop_loss": rm.get("stop_loss", 0.0),
+                "stop_loss": rm.get("stop_loss", round(conditional_target * 0.98, decimals)),
                 "atr": round(atr, decimals),
                 "rsi": round(rsi, 2),
                 "score": score,
+                "conditional_target": round(conditional_target, decimals),
                 "entry_zone": {
-                    "divergence_detected": regular or hidden,
                     "regular_bullish": regular,
-                    "hidden_bullish": hidden,
                     "liquidity_sweep": sweep,
                     "bullish_structure": structure,
                     "volume_confirmed": volume_ok,
-                    "volume_ratio": volume_ratio,
                     "confirmed_5m": candle_ok,
-                    "rsi_5m": round(rsi_5m, 2),
-                    "trend_confirmed": trend_ok,
-                    "swing_low": round(div["price_recent"], decimals) if div["price_recent"] > 0 else 0.0
                 },
                 "risk_management": rm,
                 "reason": reason_text
             }
             return ("LONG" if valid else "NEUTRAL"), price, details
         except Exception as exc:
-            logger.exception("V73 analysis error: %s", exc)
+            logger.exception("V74 analysis error: %s", exc)
             return "NEUTRAL", 0.0, default
