@@ -1,21 +1,18 @@
 # ============================================================
-# main.py — Main Controller V75.0 (Final)
+# main.py — Main Controller V75.0 (Final, complete)
 # Signal-only bot | SQLite persistence | Long only
 # ============================================================
 import os
 import time
-import json
-import sqlite3
 import threading
 import logging
-import uuid
 import requests
 from datetime import datetime, timezone
 
 import ccxt
 from flask import Flask, jsonify
 
-from analysis import StrategyEngine, validate_signal, is_signal_expired
+from analysis import StrategyEngine, is_signal_expired
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,58 +64,55 @@ scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "errors": 0}
 # Database layer
 # ============================================================
 def db_init():
-    with db_lock:
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS positions (
-                    symbol TEXT PRIMARY KEY,
-                    signal_id TEXT,
-                    direction TEXT,
-                    entry REAL,
-                    stop_loss REAL,
-                    tp1 REAL,
-                    tp2 REAL,
-                    tp3 REAL,
-                    tp1_done INTEGER DEFAULT 0,
-                    tp2_done INTEGER DEFAULT 0,
-                    tp3_done INTEGER DEFAULT 0,
-                    breakeven_done INTEGER DEFAULT 0,
-                    created_at REAL,
-                    expires_at REAL
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS signal_history (
-                    signal_id TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    direction TEXT,
-                    entry REAL,
-                    stop_loss REAL,
-                    score INTEGER,
-                    created_at REAL,
-                    sent INTEGER DEFAULT 0
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS daily_counter (
-                    day TEXT PRIMARY KEY,
-                    count INTEGER DEFAULT 0
-                )
-            """)
-            conn.commit()
-        finally:
-            conn.close()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS positions (
+                symbol TEXT PRIMARY KEY,
+                signal_id TEXT,
+                direction TEXT,
+                entry REAL,
+                stop_loss REAL,
+                tp1 REAL, tp2 REAL, tp3 REAL,
+                tp1_done INTEGER DEFAULT 0,
+                tp2_done INTEGER DEFAULT 0,
+                tp3_done INTEGER DEFAULT 0,
+                breakeven_done INTEGER DEFAULT 0,
+                created_at REAL,
+                expires_at REAL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS signal_history (
+                signal_id TEXT PRIMARY KEY,
+                symbol TEXT,
+                direction TEXT,
+                entry REAL,
+                stop_loss REAL,
+                score INTEGER,
+                created_at REAL,
+                sent INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS daily_counter (
+                day TEXT PRIMARY KEY,
+                count INTEGER DEFAULT 0
+            )
+        """)
+        conn.commit()
+    finally:
+        conn.close()
 
 
-def db_get_conn():
+def _db():
     return sqlite3.connect(DB_PATH, timeout=10)
 
 
 def db_load_positions():
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
             cur.execute("SELECT * FROM positions")
@@ -131,7 +125,7 @@ def db_load_positions():
 
 def db_save_position(symbol, pos):
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
             cur.execute("""
@@ -155,7 +149,7 @@ def db_save_position(symbol, pos):
 
 def db_delete_position(symbol):
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
             cur.execute("DELETE FROM positions WHERE symbol = ?", (symbol,))
@@ -166,13 +160,10 @@ def db_delete_position(symbol):
 
 def db_signal_exists(signal_id):
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT 1 FROM signal_history WHERE signal_id = ?",
-                (signal_id,),
-            )
+            cur.execute("SELECT 1 FROM signal_history WHERE signal_id = ?", (signal_id,))
             return cur.fetchone() is not None
         finally:
             conn.close()
@@ -180,7 +171,7 @@ def db_signal_exists(signal_id):
 
 def db_record_signal(signal, symbol, sent):
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
             cur.execute("""
@@ -200,7 +191,7 @@ def db_record_signal(signal, symbol, sent):
 def db_daily_count_today():
     today = datetime.now(timezone.utc).date().isoformat()
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
             cur.execute("SELECT count FROM daily_counter WHERE day = ?", (today,))
@@ -213,7 +204,7 @@ def db_daily_count_today():
 def db_daily_increment():
     today = datetime.now(timezone.utc).date().isoformat()
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
             cur.execute("""
@@ -227,7 +218,7 @@ def db_daily_increment():
 
 def db_last_signal_time(symbol):
     with db_lock:
-        conn = db_get_conn()
+        conn = _db()
         try:
             cur = conn.cursor()
             cur.execute("""
@@ -265,7 +256,7 @@ def tg_send(message, chat_id=None):
                     retry = r.json().get("parameters", {}).get("retry_after", 5)
                 except Exception:
                     pass
-                time.sleep(min(retry, 30))
+                time.sleep(min(int(retry), 30))
                 continue
             logger.warning("Telegram non-200: %s %s", r.status_code, r.text[:200])
             return False
@@ -364,11 +355,10 @@ def get_scan_universe():
 def can_send_signal(symbol):
     now = time.time()
     with signal_lock:
-        last = db_last_signal_time(symbol)
-        if now - last < SIGNAL_COOLDOWN_SECONDS:
+        if now - db_last_signal_time(symbol) < SIGNAL_COOLDOWN_SECONDS:
             return False
         with db_lock:
-            conn = db_get_conn()
+            conn = _db()
             try:
                 cur = conn.cursor()
                 cur.execute("SELECT 1 FROM positions WHERE symbol = ?", (symbol,))
@@ -385,19 +375,14 @@ def can_send_signal(symbol):
 
 
 def register_signal(symbol, signal):
-    tps = signal["take_profits"] + [0, 0, 0]
+    tps = list(signal.get("take_profits", [])) + [0, 0, 0]
     pos = {
         "signal_id": signal["signal_id"],
         "direction": signal["direction"],
         "entry": signal["entry"],
         "stop_loss": signal["stop_loss"],
-        "tp1": tps[0],
-        "tp2": tps[1],
-        "tp3": tps[2],
-        "tp1_done": 0,
-        "tp2_done": 0,
-        "tp3_done": 0,
-        "breakeven_done": 0,
+        "tp1": tps[0], "tp2": tps[1], "tp3": tps[2],
+        "tp1_done": 0, "tp2_done": 0, "tp3_done": 0, "breakeven_done": 0,
         "created_at": time.time(),
         "expires_at": time.time() + SIGNAL_EXPIRY_SECONDS,
     }
@@ -406,28 +391,25 @@ def register_signal(symbol, signal):
     db_daily_increment()
 
 
-def format_number(value, decimals):
+def format_num(value, decimals):
     try:
-        value = float(value)
-        if value <= 0:
+        v = float(value)
+        if v <= 0:
             return "N/A"
-        return "{:.{}f}".format(value, decimals)
+        return "{:.{}f}".format(v, decimals)
     except Exception:
         return "N/A"
 
 
-def build_report(symbol, direction, price, signal):
-    price = float(price or signal.get("entry") or 0)
-    decimals = 8 if price < 0.1 else (
-        6 if price < 1 else (4 if price < 100 else 2)
-    )
-    details = signal.get("details", {})
+def build_report(symbol, signal, current_price):
+    price = float(current_price or signal.get("entry") or 0)
+    decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
     tps = signal.get("take_profits", [])
     tp1 = tps[0] if len(tps) > 0 else 0
     tp2 = tps[1] if len(tps) > 1 else 0
     tp3 = tps[2] if len(tps) > 2 else 0
 
-    valid = signal.get("direction") == "LONG"
+    valid = signal.get("direction") == "LONG" and signal.get("score", 0) >= 80
     status = "🟢 LONG (جاهزة للدخول)" if valid else "🟡 تحت المراقبة"
 
     lines = [
@@ -436,22 +418,266 @@ def build_report(symbol, direction, price, signal):
         "🪙 العملة: <code>{}</code>".format(tg_escape(symbol)),
         "📌 الحالة: {}".format(status),
         "⭐ التقييم: <code>{}/100</code>".format(signal.get("score", 0)),
-        "💵 السعر الحالي: <code>{}</code>".format(
-            format_number(price, decimals)),
+        "💵 السعر الحالي: <code>{}</code>".format(format_num(price, decimals)),
     ]
-
     if valid:
         lines.extend([
-            "🎯 سعر الدخول: <code>{}</code>".format(
-                format_number(signal.get("entry", 0), decimals)),
-            "🥇 TP1: <code>{}</code>".format(format_number(tp1, decimals)),
-            "🥈 TP2: <code>{}</code>".format(format_number(tp2, decimals)),
-            "🥉 TP3: <code>{}</code>".format(format_number(tp3, decimals)),
-            "🛑 الستوب: <code>{}</code>".format(
-                format_number(signal.get("stop_loss", 0), decimals)),
+            "🎯 سعر الدخول: <code>{}</code>".format(format_num(signal.get("entry", 0), decimals)),
+            "🥇 TP1: <code>{}</code>".format(format_num(tp1, decimals)),
+            "🥈 TP2: <code>{}</code>".format(format_num(tp2, decimals)),
+            "🥉 TP3: <code>{}</code>".format(format_num(tp3, decimals)),
+            "🛑 الستوب: <code>{}</code>".format(format_num(signal.get("stop_loss", 0), decimals)),
         ])
-
     lines.extend([
         "📊 RSI: <code>{}</code>".format(signal.get("rsi", 50)),
         "━━━━━━━━━━━━━━━━━━",
-        "📝 السبب: {}".format(t
+        "📝 السبب: {}".format(tg_escape(signal.get("reason", ""))),
+    ])
+    return "\n".join(lines)
+
+
+# ============================================================
+# Analyze a symbol
+# ============================================================
+def analyze_symbol(symbol_raw, chat_id=None, send_no_signal=False):
+    resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 110)
+    if not resolved or not candles15 or len(candles15) < 65:
+        if send_no_signal:
+            tg_send("❌ لا تتوفر بيانات كافية لـ <code>{}</code>".format(tg_escape(symbol_raw)), chat_id)
+        return False, None
+
+    _, candles5 = fetch_ohlcv(resolved, "5m", 40)
+    scan_stats["scanned_pairs"] += 1
+
+    direction, price, signal = engine.analyze_market_structure(
+        ohlcv_5m=candles5, ohlcv_15m=candles15, asset_type="crypto"
+    )
+
+    valid = bool(signal.get("direction") == "LONG" and signal.get("score", 0) >= 80)
+
+    if valid and not is_signal_expired(signal):
+        if can_send_signal(resolved):
+            report = build_report(resolved, signal, price)
+            if tg_send(report, chat_id):
+                register_signal(resolved, signal)
+                scan_stats["signals_sent"] += 1
+            return True, signal
+        if send_no_signal:
+            report = build_report(resolved, signal, price)
+            tg_send(report, chat_id)
+        return valid, signal
+
+    if send_no_signal:
+        report = build_report(resolved, signal, price)
+        tg_send(report, chat_id)
+    return False, signal
+
+
+# ============================================================
+# Loops
+# ============================================================
+def scanner_loop():
+    time.sleep(10)
+    while True:
+        started = time.time()
+        try:
+            symbols = get_scan_universe()
+            logger.info("Scanning %s symbols", len(symbols))
+            for symbol in symbols:
+                try:
+                    if can_send_signal(symbol):
+                        analyze_symbol(symbol, send_no_signal=False)
+                    time.sleep(1.0)
+                except Exception as exc:
+                    scan_stats["errors"] += 1
+                    logger.warning("Scan failed %s: %s", symbol, exc)
+                    time.sleep(2)
+        except Exception as exc:
+            scan_stats["errors"] += 1
+            logger.exception("Scanner loop error: %s", exc)
+        elapsed = time.time() - started
+        time.sleep(max(15, SCAN_INTERVAL_SECONDS - elapsed))
+
+
+def tracker_loop():
+    while True:
+        time.sleep(30)
+        try:
+            positions = db_load_positions()
+        except Exception as exc:
+            logger.error("tracker load positions failed: %s", exc)
+            continue
+
+        for symbol, pos in positions.items():
+            try:
+                now = time.time()
+                price = fetch_price(symbol)
+                if price <= 0:
+                    continue
+                entry = float(pos["entry"] or 0)
+                sl = float(pos["stop_loss"] or 0)
+                tp1 = float(pos["tp1"] or 0)
+                tp2 = float(pos["tp2"] or 0)
+                tp3 = float(pos["tp3"] or 0)
+
+                if now > float(pos["expires_at"] or 0) and int(pos["tp1_done"] or 0) == 0:
+                    db_delete_position(symbol)
+                    tg_send("⌛ <code>{}</code> انتهت صلاحية الإشارة قبل التفعيل.".format(tg_escape(symbol)))
+                    continue
+
+                if price <= sl and int(pos["tp1_done"] or 0) == 0:
+                    db_delete_position(symbol)
+                    tg_send("🛑 <code>{}</code> ضرب الستوب عند <code>{}</code>.".format(
+                        tg_escape(symbol), format_num(price, 8 if price < 1 else 4)))
+                    continue
+
+                if price <= entry and int(pos["breakeven_done"] or 0) == 1:
+                    db_delete_position(symbol)
+                    tg_send("⚖️ <code>{}</code> خرج عند نقطة الدخول (breakeven).".format(tg_escape(symbol)))
+                    continue
+
+                if tp1 > 0 and price >= tp1 and int(pos["tp1_done"] or 0) == 0:
+                    pos["tp1_done"] = 1
+                    pos["stop_loss"] = entry
+                    pos["breakeven_done"] = 1
+                    db_save_position(symbol, pos)
+                    tg_send("🎯 <code>{}</code> حقق TP1 عند <code>{}</code>. تم نقل الستوب للدخول.".format(
+                        tg_escape(symbol), format_num(price, 8 if price < 1 else 4)))
+
+                if tp2 > 0 and price >= tp2 and int(pos["tp2_done"] or 0) == 0:
+                    pos["tp2_done"] = 1
+                    db_save_position(symbol, pos)
+                    tg_send("🥈 <code>{}</code> حقق TP2 عند <code>{}</code>.".format(
+                        tg_escape(symbol), format_num(price, 8 if price < 1 else 4)))
+
+                if tp3 > 0 and price >= tp3 and int(pos["tp3_done"] or 0) == 0:
+                    pos["tp3_done"] = 1
+                    db_save_position(symbol, pos)
+                    db_delete_position(symbol)
+                    tg_send("🚀 <code>{}</code> حقق TP3. الصفقة مكتملة.".format(tg_escape(symbol)))
+
+            except Exception as exc:
+                logger.debug("tracker failed %s: %s", symbol, exc)
+
+
+# ============================================================
+# Flask
+# ============================================================
+@app.route("/")
+def home():
+    return "MY EXPERT CRYPTO BOT V75.0 Active."
+
+
+@app.route("/health")
+def health():
+    try:
+        positions = db_load_positions()
+        count = len(positions)
+    except Exception:
+        count = -1
+    return jsonify({
+        "status": "healthy",
+        "version": "75.0",
+        "stats": scan_stats,
+        "active_positions": count,
+        "daily_signals": db_daily_count_today(),
+    }), 200
+
+
+# ============================================================
+# Optional Telegram bot (commands)
+# ============================================================
+bot = None
+if TELEGRAM_BOT_TOKEN:
+    try:
+        import telebot
+        bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+        logger.info("Telegram bot initialized.")
+    except Exception as exc:
+        logger.warning("Telegram init failed: %s", exc)
+
+
+if bot:
+    @bot.message_handler(commands=["start", "help"])
+    def _start(message):
+        bot.reply_to(message,
+            "مرحباً بك في MY EXPERT CRYPTO BOT V75.0\n"
+            "أرسل رمز عملة (مثل BTC أو SOL) لتقييمها.\n"
+            "أو استخدم /scan لفحص أفضل الفرص.\n"
+            "استخدم /positions لعرض الصفقات النشطة.")
+
+    @bot.message_handler(commands=["positions"])
+    def _positions(message):
+        try:
+            positions = db_load_positions()
+            if not positions:
+                bot.reply_to(message, "لا توجد صفقات نشطة حالياً.")
+                return
+            lines = ["📊 <b>الصفقات النشطة ({})</b>".format(len(positions))]
+            for sym, p in positions.items():
+                lines.append("• <code>{}</code> — entry: <code>{}</code> | SL: <code>{}</code>".format(
+                    tg_escape(sym),
+                    format_num(p.get("entry", 0), 6),
+                    format_num(p.get("stop_loss", 0), 6),
+                ))
+            bot.reply_to(message, "\n".join(lines))
+        except Exception as exc:
+            bot.reply_to(message, "خطأ: {}".format(exc))
+
+    @bot.message_handler(commands=["scan"])
+    def _scan(message):
+        bot.reply_to(message, "🔍 جاري فحص السوق...")
+        universe = get_scan_universe()[:20]
+        found = 0
+        for sym in universe:
+            try:
+                valid, signal = analyze_symbol(sym, chat_id=message.chat.id, send_no_signal=False)
+                if signal and signal.get("score", 0) >= 45:
+                    report = build_report(sym, signal, signal.get("entry", 0))
+                    bot.send_message(message.chat.id, report, parse_mode="HTML")
+                    found += 1
+                    if found >= 4:
+                        break
+                time.sleep(1)
+            except Exception:
+                continue
+        if found == 0:
+            bot.send_message(message.chat.id, "⚪ لم يتم العثور على فرص قريبة حالياً.")
+
+    @bot.message_handler(func=lambda m: bool(m.text))
+    def _symbol(message):
+        raw = (message.text or "").strip()
+        if raw.startswith("/"):
+            return
+        sym = normalize_symbol(raw)
+        if len(sym) > 24 or not sym.endswith("/USDT"):
+            bot.reply_to(message, "أرسل رمز USDT صحيح مثل BTC أو SOL.")
+            return
+        bot.reply_to(message, "🔍 جاري التحليل...")
+        analyze_symbol(sym, chat_id=message.chat.id, send_no_signal=True)
+
+    def _tg_poll():
+        try:
+            bot.remove_webhook()
+            time.sleep(1)
+        except Exception:
+            pass
+        while True:
+            try:
+                bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20)
+            except Exception as exc:
+                logger.error("Telegram polling error: %s", exc)
+                time.sleep(5)
+
+
+# ============================================================
+# Bootstrap
+# ============================================================
+if __name__ == "__main__":
+    db_init()
+    threading.Thread(target=scanner_loop, daemon=True).start()
+    threading.Thread(target=tracker_loop, daemon=True).start()
+    if bot:
+        threading.Thread(target=_tg_poll, daemon=True).start()
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, threaded=True)
