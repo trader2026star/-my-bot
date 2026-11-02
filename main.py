@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Main Controller V75.2 (Interactive & Flexible Scan)
+# main.py — Main Controller V75.3 (Interactive Scan with Live Reports)
 # Signal-only bot | SQLite persistence | Long only | Interactive commands
 # ============================================================
 import os
@@ -322,7 +322,6 @@ def register_signal(symbol, signal):
         "expires_at": time.time() + SIGNAL_EXPIRY_SECONDS,
     }
     db_save_position(symbol, pos)
-    db_record_signal = lambda s, sym, sent: None  # inline bypass
     db_daily_increment()
 
 
@@ -348,7 +347,7 @@ def build_report(symbol, signal, current_price):
     status = "🟢 LONG (جاهزة للدخول)" if valid else "🟡 تحت المراقبة"
 
     lines = [
-        "🏛️ <b>MY EXPERT CRYPTO BOT V75.2</b>",
+        "🏛️ <b>MY EXPERT CRYPTO BOT V75.3</b>",
         "━━━━━━━━━━━━━━━━━━",
         "🪙 العملة: <code>{}</code>".format(tg_escape(symbol)),
         "📌 الحالة: {}".format(status),
@@ -431,7 +430,7 @@ def background_scanner():
 def index():
     return jsonify({
         "status": "running",
-        "bot_version": "V75.2",
+        "bot_version": "V75.3",
         "stats": scan_stats,
     })
 
@@ -459,25 +458,25 @@ def telegram_webhook():
 
         if text_upper.startswith("/START") or text_upper.startswith("/HELP"):
             tg_send(
-                "🤖 <b>مرحباً بك في بوت التداول الفني (V75.2)</b>\n\n"
+                "🤖 <b>مرحباً بك في بوت التداول الفني (V75.3)</b>\n\n"
                 "الأوامر المتاحة:\n"
-                "• <code>/scan</code> - لفحص السوق وإرسال الفرص المتاحة (Score >= 70).\n"
-                "• اكتب اسم العملة مباشرة (مثل <code>BTC</code> أو <code>THETA</code>) لتحليلها فوراً.",
+                "• <code>/scan</code> - لفحص السوق وعرض تقييمات العملات الفورية.\n"
+                "• اكتب اسم العملة مباشرة (مثل <code>BTC</code> أو <code>THETA</code>) لتحليلها وفحصها فوراً.",
                 chat_id
             )
         elif text_upper.startswith("/SCAN"):
-            tg_send("🔍 جاري فحص السوق والبحث عن صفقات قوية...", chat_id)
-            symbols = get_scan_universe()[:20]  # فحص 20 عملة لزيادة الفرص
+            tg_send("🔍 جاري فحص السوق وعرض تقييمات العملات...", chat_id)
+            symbols = get_scan_universe()[:10]  # فحص 10 عملات مع إرسال تقرير لكل منها لترى التقييمات
             found = 0
             for sym in symbols:
                 try:
-                    is_valid, _ = analyze_symbol(sym, chat_id=chat_id, send_no_signal=False)
+                    is_valid, _ = analyze_symbol(sym, chat_id=chat_id, send_no_signal=True)
                     if is_valid:
                         found += 1
-                    time.sleep(0.5)
+                    time.sleep(1)
                 except Exception:
                     pass
-            tg_send(f"✅ انتهى الفحص. تم العثور على {found} صفقة مطابقة للشروط.", chat_id)
+            tg_send(f"✅ انتهى الفحص. تم العثور على {found} صفقة مطابقة لشرط الدخول (Score >= 70).", chat_id)
         else:
             clean_symbol = text.split()[0]
             tg_send(f"🔍 جاري تحليل العملة <code>{tg_escape(clean_symbol)}</code>...", chat_id)
