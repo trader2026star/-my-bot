@@ -459,4 +459,58 @@ def analyze_symbol(symbol_raw, chat_id=None, send_no_signal=False):
     if valid and not is_signal_expired(signal):
         if can_send_signal(resolved):
             report = build_report(resolved, signal, price)
-            if tg_send(report, chat
+            if tg_send(report, chat_id):
+                register_signal(resolved, signal)
+                scan_stats["signals_sent"] += 1
+                return True, signal
+    elif send_no_signal:
+        report = build_report(resolved, signal, price)
+        tg_send(report, chat_id)
+        return False, signal
+
+    return False, signal
+
+
+# ============================================================
+# Background Scanner & Flask Server
+# ============================================================
+def background_scanner():
+    db_init()
+    logger.info("Background scanner started.")
+    while True:
+        try:
+            symbols = get_scan_universe()
+            logger.info("Scanning %d symbols...", len(symbols))
+            for sym in symbols:
+                try:
+                    analyze_symbol(sym)
+                    time.sleep(1.5)
+                except Exception as exc:
+                    scan_stats["errors"] += 1
+                    logger.debug("Error scanning %s: %s", sym, exc)
+            time.sleep(SCAN_INTERVAL_SECONDS)
+        except Exception as exc:
+            logger.error("Scanner loop error: %s", exc)
+            time.sleep(30)
+
+
+@app.route("/")
+def index():
+    return jsonify({
+        "status": "running",
+        "bot_version": "V75.0",
+        "stats": scan_stats,
+    })
+
+
+@app.route("/health")
+def health():
+    return "OK", 200
+
+
+if __name__ == "__main__":
+    db_init()
+    t = threading.Thread(target=background_scanner, daemon=True)
+    t.start()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
