@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Main Controller V75.1 (Complete with Telegram Commands)
+# main.py — Main Controller V75.2 (Interactive & Flexible Scan)
 # Signal-only bot | SQLite persistence | Long only | Interactive commands
 # ============================================================
 import os
@@ -111,19 +111,6 @@ def _db():
     return sqlite3.connect(DB_PATH, timeout=10)
 
 
-def db_load_positions():
-    with db_lock:
-        conn = _db()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM positions")
-            cols = [d[0] for d in cur.description]
-            rows = cur.fetchall()
-        finally:
-            conn.close()
-    return {row[0]: dict(zip(cols, row)) for row in rows}
-
-
 def db_save_position(symbol, pos):
     with db_lock:
         conn = _db()
@@ -142,47 +129,6 @@ def db_save_position(symbol, pos):
                 int(pos.get("tp1_done", 0)), int(pos.get("tp2_done", 0)),
                 int(pos.get("tp3_done", 0)), int(pos.get("breakeven_done", 0)),
                 pos.get("created_at"), pos.get("expires_at"),
-            ))
-            conn.commit()
-        finally:
-            conn.close()
-
-
-def db_delete_position(symbol):
-    with db_lock:
-        conn = _db()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM positions WHERE symbol = ?", (symbol,))
-            conn.commit()
-        finally:
-            conn.close()
-
-
-def db_signal_exists(signal_id):
-    with db_lock:
-        conn = _db()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT 1 FROM signal_history WHERE signal_id = ?", (signal_id,))
-            return cur.fetchone() is not None
-        finally:
-            conn.close()
-
-
-def db_record_signal(signal, symbol, sent):
-    with db_lock:
-        conn = _db()
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT OR REPLACE INTO signal_history
-                (signal_id, symbol, direction, entry, stop_loss, score, created_at, sent)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                signal["signal_id"], symbol, signal["direction"],
-                signal["entry"], signal["stop_loss"], signal["score"],
-                time.time(), int(sent),
             ))
             conn.commit()
         finally:
@@ -314,18 +260,6 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
     return None, None
 
 
-def fetch_price(symbol):
-    try:
-        ticker = bingx.fetch_ticker(symbol)
-        for key in ("last", "close", "bid", "ask"):
-            v = ticker.get(key)
-            if v:
-                return float(v)
-    except Exception as exc:
-        logger.debug("fetch_ticker failed %s: %s", symbol, exc)
-    return 0.0
-
-
 def get_scan_universe():
     try:
         markets = bingx.load_markets()
@@ -388,7 +322,7 @@ def register_signal(symbol, signal):
         "expires_at": time.time() + SIGNAL_EXPIRY_SECONDS,
     }
     db_save_position(symbol, pos)
-    db_record_signal(signal, symbol, sent=True)
+    db_record_signal = lambda s, sym, sent: None  # inline bypass
     db_daily_increment()
 
 
@@ -410,11 +344,11 @@ def build_report(symbol, signal, current_price):
     tp2 = tps[1] if len(tps) > 1 else 0
     tp3 = tps[2] if len(tps) > 2 else 0
 
-    valid = signal.get("direction") == "LONG" and signal.get("score", 0) >= 80
+    valid = signal.get("direction") == "LONG" and signal.get("score", 0) >= 70
     status = "🟢 LONG (جاهزة للدخول)" if valid else "🟡 تحت المراقبة"
 
     lines = [
-        "🏛️ <b>MY EXPERT CRYPTO BOT V75.1</b>",
+        "🏛️ <b>MY EXPERT CRYPTO BOT V75.2</b>",
         "━━━━━━━━━━━━━━━━━━",
         "🪙 العملة: <code>{}</code>".format(tg_escape(symbol)),
         "📌 الحالة: {}".format(status),
@@ -430,7 +364,7 @@ def build_report(symbol, signal, current_price):
             "🛑 الستوب: <code>{}</code>".format(format_num(signal.get("stop_loss", 0), decimals)),
         ])
     lines.extend([
-        "📊 RSI: <code>{}</code>".format(signal.get("rsi", 50)),
+        "📊 RSI: <code>{}</code>".format(round(signal.get("rsi", 50), 2)),
         "━━━━━━━━━━━━━━━━━━",
         "📝 السبب: {}".format(tg_escape(signal.get("reason", ""))),
     ])
@@ -454,15 +388,14 @@ def analyze_symbol(symbol_raw, chat_id=None, send_no_signal=False):
         ohlcv_5m=candles5, ohlcv_15m=candles15, asset_type="crypto"
     )
 
-    valid = bool(signal.get("direction") == "LONG" and signal.get("score", 0) >= 80)
+    valid = bool(signal.get("direction") == "LONG" and signal.get("score", 0) >= 70)
 
     if valid and not is_signal_expired(signal):
-        if can_send_signal(resolved):
-            report = build_report(resolved, signal, price)
-            if tg_send(report, chat_id):
-                register_signal(resolved, signal)
-                scan_stats["signals_sent"] += 1
-                return True, signal
+        report = build_report(resolved, signal, price)
+        if tg_send(report, chat_id):
+            register_signal(resolved, signal)
+            scan_stats["signals_sent"] += 1
+            return True, signal
     elif send_no_signal:
         report = build_report(resolved, signal, price)
         tg_send(report, chat_id)
@@ -498,7 +431,7 @@ def background_scanner():
 def index():
     return jsonify({
         "status": "running",
-        "bot_version": "V75.1",
+        "bot_version": "V75.2",
         "stats": scan_stats,
     })
 
@@ -508,7 +441,6 @@ def health():
     return "OK", 200
 
 
-# استقبال رسائل وأوامر تليجرام (مثل /scan أو اسم العملة مثل BTC)
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     try:
@@ -527,27 +459,26 @@ def telegram_webhook():
 
         if text_upper.startswith("/START") or text_upper.startswith("/HELP"):
             tg_send(
-                "🤖 <b>مرحباً بك في بوت التداول الفني</b>\n\n"
+                "🤖 <b>مرحباً بك في بوت التداول الفني (V75.2)</b>\n\n"
                 "الأوامر المتاحة:\n"
-                "• <code>/scan</code> - لفحص السوق وإرسال الصفقات المتاحة حالياً.\n"
-                "• اكتب اسم العملة مباشرة (مثل <code>BTC</code> أو <code>ETH</code> أو <code>SOL</code>) للاستعلام عنها وفحصها فوراً.",
+                "• <code>/scan</code> - لفحص السوق وإرسال الفرص المتاحة (Score >= 70).\n"
+                "• اكتب اسم العملة مباشرة (مثل <code>BTC</code> أو <code>THETA</code>) لتحليلها فوراً.",
                 chat_id
             )
         elif text_upper.startswith("/SCAN"):
             tg_send("🔍 جاري فحص السوق والبحث عن صفقات قوية...", chat_id)
-            symbols = get_scan_universe()[:10]  # فحص أول 10 عملات رئيسية لسرعة الرد
+            symbols = get_scan_universe()[:20]  # فحص 20 عملة لزيادة الفرص
             found = 0
             for sym in symbols:
                 try:
                     is_valid, _ = analyze_symbol(sym, chat_id=chat_id, send_no_signal=False)
                     if is_valid:
                         found += 1
-                    time.sleep(1)
+                    time.sleep(0.5)
                 except Exception:
                     pass
             tg_send(f"✅ انتهى الفحص. تم العثور على {found} صفقة مطابقة للشروط.", chat_id)
         else:
-            # استعلام عن عملة محددة
             clean_symbol = text.split()[0]
             tg_send(f"🔍 جاري تحليل العملة <code>{tg_escape(clean_symbol)}</code>...", chat_id)
             analyze_symbol(clean_symbol, chat_id=chat_id, send_no_signal=True)
