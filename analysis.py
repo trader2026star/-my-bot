@@ -303,7 +303,6 @@ class StrategyEngine:
             if score < self.min_score:
                 reasons.append("score {}/100 below threshold".format(score))
 
-            # جعل الشرط أكثر مرونة لالتقاط الصفقات بناءً على التقييم
             valid = bool(score >= self.min_score)
 
             risk = {}
