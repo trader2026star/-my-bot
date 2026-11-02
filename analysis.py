@@ -1,7 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V75.1 (Updated Min Score: 70)
+# analysis.py — StrategyEngine V75.2 (Flexible Min Score: 70)
 # LONG ONLY | Fixed divergence, sweep, TP, capital sync
-# Self-contained: no external signal_schema dependency
 # ============================================================
 import logging
 import uuid
@@ -12,9 +11,8 @@ import pandas as pd
 
 logger = logging.getLogger("StrategyEngine")
 
-# ---------- Signal contract (inline) ----------
 SIGNAL_EXPIRY_SECONDS = 900  # 15 minutes
-MIN_SCORE_DEFAULT = 70  # تم تخفيض الحد الأدنى للسماح بالتقاط صفقات أكثر
+MIN_SCORE_DEFAULT = 70  # الحد الأدنى للتقييم
 
 
 def _now_iso():
@@ -74,7 +72,6 @@ def validate_signal(signal):
     return True, "ok"
 
 
-# ---------- Strategy Engine ----------
 class StrategyEngine:
     def __init__(self, capital=10000.0, risk_per_trade=0.01, min_score=MIN_SCORE_DEFAULT):
         self.capital = max(1.0, float(capital))
@@ -85,7 +82,6 @@ class StrategyEngine:
     def update_capital(self, new_capital):
         self.capital = max(1.0, float(new_capital))
 
-    # ---------- Indicators ----------
     def calculate_rsi(self, series, period=14):
         s = pd.to_numeric(series, errors="coerce")
         delta = s.diff()
@@ -109,7 +105,6 @@ class StrategyEngine:
         return tr.ewm(alpha=1.0 / period, min_periods=period,
                       adjust=False).mean().fillna(fallback)
 
-    # ---------- Data prep ----------
     def prepare_dataframe(self, candles):
         df = pd.DataFrame(candles, columns=[
             "timestamp", "open", "high", "low", "close", "volume"
@@ -123,7 +118,6 @@ class StrategyEngine:
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
-    # ---------- Swing lows ----------
     def find_swing_lows(self, low_series, order=3):
         vals = np.asarray(low_series, dtype=float)
         out = []
@@ -133,7 +127,6 @@ class StrategyEngine:
                 out.append(i)
         return out
 
-    # ---------- Divergence ----------
     def detect_divergence(self, df):
         lows = self.find_swing_lows(df["low"], self.swing_order)
         result = {
@@ -156,7 +149,6 @@ class StrategyEngine:
         })
         return result
 
-    # ---------- Sweep ----------
     def detect_sweep(self, df):
         if len(df) < 15:
             return False
@@ -180,7 +172,6 @@ class StrategyEngine:
         ratio = current / avg if avg > 0 else 0.0
         return bool(ratio >= 1.2), round(ratio, 2)
 
-    # ---------- 5m confirmation ----------
     def confirm_5m(self, candles, drop_last_candle=True):
         if candles is None or len(candles) < 25:
             return False, 50.0
@@ -198,7 +189,6 @@ class StrategyEngine:
         )
         return ok, float(rsi.iloc[-1])
 
-    # ---------- Score ----------
     def calculate_score(self, regular, hidden, sweep, structure, rsi,
                         volume_ok, candle_ok, trend_ok):
         score = 25 if regular else (15 if hidden else 5)
@@ -210,7 +200,6 @@ class StrategyEngine:
         score += 5 if trend_ok else 0
         return min(100, max(10, score))
 
-    # ---------- Risk management ----------
     def calculate_risk_management(self, entry, atr, swing_low=None,
                                   exchange_min_notional=10.0):
         entry, atr = float(entry), float(atr)
@@ -257,7 +246,6 @@ class StrategyEngine:
             ],
         }
 
-    # ---------- Main entry point ----------
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m,
                                  asset_type="crypto", drop_last_candle=True):
         neutral = build_signal(
@@ -312,18 +300,11 @@ class StrategyEngine:
             )
 
             reasons = []
-            if not regular:
-                reasons.append("waiting for clear bullish divergence")
-            if not candle_ok:
-                reasons.append("waiting for 5m confirmation candle")
-            if not (sweep or structure):
-                reasons.append("waiting for sweep or bullish structure")
             if score < self.min_score:
                 reasons.append("score {}/100 below threshold".format(score))
 
-            valid = bool(
-                score >= self.min_score and (regular or sweep or structure)
-            )
+            # جعل الشرط أكثر مرونة لالتقاط الصفقات بناءً على التقييم
+            valid = bool(score >= self.min_score)
 
             risk = {}
             if valid:
