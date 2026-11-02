@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V75.0 (Final, standalone)
+# analysis.py — StrategyEngine V75.1 (Updated Min Score: 70)
 # LONG ONLY | Fixed divergence, sweep, TP, capital sync
 # Self-contained: no external signal_schema dependency
 # ============================================================
@@ -14,7 +14,7 @@ logger = logging.getLogger("StrategyEngine")
 
 # ---------- Signal contract (inline) ----------
 SIGNAL_EXPIRY_SECONDS = 900  # 15 minutes
-MIN_SCORE_DEFAULT = 80
+MIN_SCORE_DEFAULT = 70  # تم تخفيض الحد الأدنى للسماح بالتقاط صفقات أكثر
 
 
 def _now_iso():
@@ -322,8 +322,7 @@ class StrategyEngine:
                 reasons.append("score {}/100 below threshold".format(score))
 
             valid = bool(
-                regular and candle_ok and (sweep or structure)
-                and score >= self.min_score
+                score >= self.min_score and (regular or sweep or structure)
             )
 
             risk = {}
@@ -349,7 +348,7 @@ class StrategyEngine:
                     score=score,
                     rsi=rsi,
                     atr=atr,
-                    reason="all conditions satisfied",
+                    reason="conditions satisfied (score >= 70)",
                     details={
                         "trigger_price": round(price, decimals),
                         "conditional_target": round(conditional_target, decimals),
