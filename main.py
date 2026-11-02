@@ -1,6 +1,6 @@
 # ============================================================
-# main.py — Main Controller V75.0 (Final, complete)
-# Signal-only bot | SQLite persistence | Long only
+# main.py — Main Controller V75.1 (Complete with Telegram Commands)
+# Signal-only bot | SQLite persistence | Long only | Interactive commands
 # ============================================================
 import os
 import time
@@ -11,7 +11,7 @@ import requests
 from datetime import datetime, timezone
 
 import ccxt
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 from analysis import StrategyEngine, is_signal_expired
 
@@ -414,7 +414,7 @@ def build_report(symbol, signal, current_price):
     status = "🟢 LONG (جاهزة للدخول)" if valid else "🟡 تحت المراقبة"
 
     lines = [
-        "🏛️ <b>MY EXPERT CRYPTO BOT V75.0</b>",
+        "🏛️ <b>MY EXPERT CRYPTO BOT V75.1</b>",
         "━━━━━━━━━━━━━━━━━━",
         "🪙 العملة: <code>{}</code>".format(tg_escape(symbol)),
         "📌 الحالة: {}".format(status),
@@ -472,7 +472,7 @@ def analyze_symbol(symbol_raw, chat_id=None, send_no_signal=False):
 
 
 # ============================================================
-# Background Scanner & Flask Server
+# Background Scanner & Flask / Webhook Server
 # ============================================================
 def background_scanner():
     db_init()
@@ -498,13 +498,62 @@ def background_scanner():
 def index():
     return jsonify({
         "status": "running",
-        "bot_version": "V75.0",
+        "bot_version": "V75.1",
         "stats": scan_stats,
     })
 
 
 @app.route("/health")
 def health():
+    return "OK", 200
+
+
+# استقبال رسائل وأوامر تليجرام (مثل /scan أو اسم العملة مثل BTC)
+@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    try:
+        data = request.get_json(force=True)
+        message = data.get("message") or data.get("edited_message")
+        if not message:
+            return "OK", 200
+
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "").strip()
+
+        if not chat_id or not text:
+            return "OK", 200
+
+        text_upper = text.upper()
+
+        if text_upper.startswith("/START") or text_upper.startswith("/HELP"):
+            tg_send(
+                "🤖 <b>مرحباً بك في بوت التداول الفني</b>\n\n"
+                "الأوامر المتاحة:\n"
+                "• <code>/scan</code> - لفحص السوق وإرسال الصفقات المتاحة حالياً.\n"
+                "• اكتب اسم العملة مباشرة (مثل <code>BTC</code> أو <code>ETH</code> أو <code>SOL</code>) للاستعلام عنها وفحصها فوراً.",
+                chat_id
+            )
+        elif text_upper.startswith("/SCAN"):
+            tg_send("🔍 جاري فحص السوق والبحث عن صفقات قوية...", chat_id)
+            symbols = get_scan_universe()[:10]  # فحص أول 10 عملات رئيسية لسرعة الرد
+            found = 0
+            for sym in symbols:
+                try:
+                    is_valid, _ = analyze_symbol(sym, chat_id=chat_id, send_no_signal=False)
+                    if is_valid:
+                        found += 1
+                    time.sleep(1)
+                except Exception:
+                    pass
+            tg_send(f"✅ انتهى الفحص. تم العثور على {found} صفقة مطابقة للشروط.", chat_id)
+        else:
+            # استعلام عن عملة محددة
+            clean_symbol = text.split()[0]
+            tg_send(f"🔍 جاري تحليل العملة <code>{tg_escape(clean_symbol)}</code>...", chat_id)
+            analyze_symbol(clean_symbol, chat_id=chat_id, send_no_signal=True)
+
+    except Exception as exc:
+        logger.error("Webhook error: %s", exc)
     return "OK", 200
 
 
