@@ -1,6 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V75.2 (Flexible Min Score: 70)
+# analysis.py — StrategyEngine V75.5 (Final Fixed)
 # LONG ONLY | Fixed divergence, sweep, TP, capital sync
+# Restored: Regular Divergence as mandatory condition
 # ============================================================
 import logging
 import uuid
@@ -12,7 +13,7 @@ import pandas as pd
 logger = logging.getLogger("StrategyEngine")
 
 SIGNAL_EXPIRY_SECONDS = 900  # 15 minutes
-MIN_SCORE_DEFAULT = 70  # الحد الأدنى للتقييم
+MIN_SCORE_DEFAULT = 70
 
 
 def _now_iso():
@@ -302,8 +303,11 @@ class StrategyEngine:
             reasons = []
             if score < self.min_score:
                 reasons.append("score {}/100 below threshold".format(score))
+            if not regular:
+                reasons.append("no regular bullish divergence")
 
-            valid = bool(score >= self.min_score)
+            # التعديل الحاسم: Regular Divergence إجباري مع الـ Score
+            valid = bool(score >= self.min_score and regular)
 
             risk = {}
             if valid:
@@ -328,7 +332,7 @@ class StrategyEngine:
                     score=score,
                     rsi=rsi,
                     atr=atr,
-                    reason="conditions satisfied (score >= 70)",
+                    reason="conditions satisfied (Score >= 70 & Regular Divergence)",
                     details={
                         "trigger_price": round(price, decimals),
                         "conditional_target": round(conditional_target, decimals),
