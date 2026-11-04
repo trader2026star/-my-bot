@@ -1,6 +1,6 @@
 # ============================================================
-# main.py — Main Controller V75.4 (Silent Scanner & Verified Signals Only)
-# Signal-only bot | SQLite persistence | Long only | Sends ONLY valid trades
+# main.py — Main Controller V75.5 (Final Fixed)
+# Signal-only bot | SQLite persistence | Webhook auto-register
 # ============================================================
 import os
 import time
@@ -35,6 +35,9 @@ SIGNAL_EXPIRY_SECONDS = 900
 MAX_ACTIVE_POSITIONS = max(1, int(os.environ.get("MAX_ACTIVE_POSITIONS", "10")))
 MAX_DAILY_SIGNALS = max(1, int(os.environ.get("MAX_DAILY_SIGNALS", "30")))
 DB_PATH = os.environ.get("DB_PATH", "bot_state.db")
+
+# الرابط الخاص بـ Render (لازم تضيفه في Environment Variables)
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 
 PRIORITY_SYMBOLS = [
     "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
@@ -221,6 +224,22 @@ def tg_escape(text):
             .replace(">", "&gt;"))
 
 
+def register_telegram_webhook():
+    if not TELEGRAM_BOT_TOKEN:
+        logger.warning("TELEGRAM_BOT_TOKEN missing. Webhook not registered.")
+        return
+    if not RENDER_EXTERNAL_URL:
+        logger.warning("RENDER_EXTERNAL_URL missing. Webhook not registered.")
+        return
+    webhook_url = "{}/{}".format(RENDER_EXTERNAL_URL, TELEGRAM_BOT_TOKEN)
+    api_url = "https://api.telegram.org/bot{}/setWebhook".format(TELEGRAM_BOT_TOKEN)
+    try:
+        r = requests.post(api_url, json={"url": webhook_url, "drop_pending_updates": True}, timeout=15)
+        logger.info("Telegram webhook registration: %s", r.json())
+    except Exception as exc:
+        logger.error("Failed to register webhook: %s", exc)
+
+
 # ============================================================
 # Exchange helpers
 # ============================================================
@@ -346,7 +365,7 @@ def build_report(symbol, signal, current_price):
 
     lines = [
         "🚨 <b>صفقة لونغ جديدة مؤكدة! (فرصة قوية)</b>",
-        "🏛️ <b>MY EXPERT CRYPTO BOT V75.4</b>",
+        "🏛️ <b>MY EXPERT CRYPTO BOT V75.5</b>",
         "━━━━━━━━━━━━━━━━━━",
         "🪙 العملة: <code>{}</code>".format(tg_escape(symbol)),
         "⭐ التقييم: <code>{}/100</code>".format(signal.get("score", 0)),
@@ -364,7 +383,7 @@ def build_report(symbol, signal, current_price):
 
 
 # ============================================================
-# Analyze a symbol (Silent unless valid)
+# Analyze a symbol
 # ============================================================
 def analyze_symbol(symbol_raw, chat_id=None, force_report=False):
     resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 110)
@@ -391,21 +410,20 @@ def analyze_symbol(symbol_raw, chat_id=None, force_report=False):
                 scan_stats["signals_sent"] += 1
                 return True, signal
     elif force_report:
-        # إذا تم طلب العملة يدوياً يرسل تقريرها حتى لو لم تكن صفقة
-        report = [
-            f"🏛️ <b>تحليل عملة {tg_escape(resolved)}</b>",
-            f"⭐ التقييم: {signal.get('score', 0)}/100 (تحت المراقبة)",
-            f"💵 السعر: {format_num(price, 4)}",
-            f"📝 السبب: {tg_escape(signal.get('reason', ''))}"
+        report_lines = [
+            "🏛️ <b>تحليل عملة {}</b>".format(tg_escape(resolved)),
+            "⭐ التقييم: {}/100 (تحت المراقبة)".format(signal.get("score", 0)),
+            "💵 السعر: {}".format(format_num(price, 4)),
+            "📝 السبب: {}".format(tg_escape(signal.get("reason", "")))
         ]
-        tg_send("\n".join(report), chat_id)
+        tg_send("\n".join(report_lines), chat_id)
         return False, signal
 
     return False, signal
 
 
 # ============================================================
-# Background Scanner & Flask / Webhook Server
+# Background Scanner
 # ============================================================
 def background_scanner():
     db_init()
@@ -427,70 +445,16 @@ def background_scanner():
             time.sleep(30)
 
 
+# ============================================================
+# Flask Routes
+# ============================================================
 @app.route("/")
 def index():
     return jsonify({
         "status": "running",
-        "bot_version": "V75.4-Silent",
+        "bot_version": "V75.5-Final",
         "stats": scan_stats,
     })
 
 
-@app.route("/health")
-def health():
-    return "OK", 200
-
-
-@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def telegram_webhook():
-    try:
-        data = request.get_json(force=True)
-        message = data.get("message") or data.get("edited_message")
-        if not message:
-            return "OK", 200
-
-        chat_id = message.get("chat", {}).get("id")
-        text = message.get("text", "").strip()
-
-        if not chat_id or not text:
-            return "OK", 200
-
-        text_upper = text.upper()
-
-        if text_upper.startswith("/START") or text_upper.startswith("/HELP"):
-            tg_send(
-                "🤖 <b>مرحباً بك في بوت التداول الفني (V75.4)</b>\n\n"
-                "• البوت يعمل الآن في وضع الفحص الصامت 🔇\n"
-                "• <b>لن يتم إرسال أي رسالة تلقائية إلا عند وجود صفقة حقيقية مؤكدة (Score >= 70).</b>\n"
-                "• يمكنك استخدام أمر <code>/scan</code> للبحث الفوري، أو إرسال اسم العملة (مثل <code>BTC</code>) لفحصها في أي وقت.",
-                chat_id
-            )
-        elif text_upper.startswith("/SCAN"):
-            # فحص صامت لا يرد إلا إذا وجد صفقة، أو يعلمك بانتهاء الفحص إذا لم يجد شيئاً لتكون الصورة واضحة
-            symbols = get_scan_universe()
-            found = 0
-            for sym in symbols:
-                try:
-                    is_valid, _ = analyze_symbol(sym, chat_id=chat_id, force_report=False)
-                    if is_valid:
-                        found += 1
-                    time.sleep(0.3)
-                except Exception:
-                    pass
-            if found == 0:
-                tg_send("🔍 تم فحص السوق بالكامل، ولا توجد صفقات مطابقة للشروط حالياً. البوت يراقب في الصمت وسيخبرك فور ظهور أي فرصة قوية! 🟢", chat_id)
-        else:
-            clean_symbol = text.split()[0]
-            analyze_symbol(clean_symbol, chat_id=chat_id, force_report=True)
-
-    except Exception as exc:
-        logger.error("Webhook error: %s", exc)
-    return "OK", 200
-
-
-if __name__ == "__main__":
-    db_init()
-    t = threading.Thread(target=background_scanner, daemon=True)
-    t.start()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+@app.route
