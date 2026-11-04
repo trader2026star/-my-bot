@@ -4,6 +4,7 @@ import threading
 import logging
 import sqlite3
 import requests
+import random
 from datetime import datetime, timezone
 
 import ccxt
@@ -36,6 +37,8 @@ engine = StrategyEngine(capital=BOT_CAPITAL_USD, risk_per_trade=RISK_PER_TRADE)
 db_lock = threading.Lock()
 signal_lock = threading.Lock()
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "errors": 0}
+_all_markets_cache = []
+_markets_cache_time = 0
 
 # ================= Database =================
 def db_init():
@@ -45,6 +48,7 @@ def db_init():
         cur.execute("CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, signal_id TEXT, direction TEXT, entry REAL, stop_loss REAL, tp1 REAL, tp2 REAL, tp3 REAL, tp1_done INTEGER DEFAULT 0, tp2_done INTEGER DEFAULT 0, tp3_done INTEGER DEFAULT 0, breakeven_done INTEGER DEFAULT 0, created_at REAL, expires_at REAL)")
         cur.execute("CREATE TABLE IF NOT EXISTS signal_history (signal_id TEXT PRIMARY KEY, symbol TEXT, direction TEXT, entry REAL, stop_loss REAL, score INTEGER, created_at REAL, sent INTEGER DEFAULT 0)")
         cur.execute("CREATE TABLE IF NOT EXISTS daily_counter (day TEXT PRIMARY KEY, count INTEGER DEFAULT 0)")
+        cur.execute("CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)")
         conn.commit()
     finally: conn.close()
 
@@ -128,16 +132,64 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
         except: time.sleep(0.5)
     return None, None
 
+# ================= Scan Universe (12 Fixed + 38 Rotating) =================
 def get_scan_universe():
+    global _all_markets_cache, _markets_cache_time
     try:
-        markets = bingx.load_markets()
-        by_priority = [s for s in PRIORITY_SYMBOLS if s in markets]
-        candidates = [s for s, m in markets.items() if m.get("swap") and m.get("active", True) and m.get("quote") == "USDT" and m.get("settle") == "USDT" and m.get("base") not in ("USDC", "BUSD", "TUSD", "FDUSD", "DAI")]
-        ordered, seen = [], set()
-        for s in by_priority + candidates:
-            if s not in seen: seen.add(s); ordered.append(s)
-        return ordered[:MAX_SCAN_SYMBOLS]
-    except: return PRIORITY_SYMBOLS[:5]
+        if not _all_markets_cache or time.time() - _markets_cache_time > 3600:
+            markets = bingx.load_markets()
+            valid_symbols = [
+                s for s, m in markets.items()
+                if m.get("swap") and m.get("active", True)
+                and m.get("quote") == "USDT" and m.get("settle") == "USDT"
+                and m.get("base") and m["base"] not in ("USDC", "BUSD", "TUSD", "FDUSD", "DAI")
+            ]
+            _all_markets_cache = valid_symbols
+            _markets_cache_time = time.time()
+            logger.info(f"Loaded {len(_all_markets_cache)} total markets.")
+
+        total = len(_all_markets_cache)
+        if total == 0: return PRIORITY_SYMBOLS[:5]
+
+        fixed_priority = [s for s in PRIORITY_SYMBOLS if s in _all_markets_cache]
+        remaining = [s for s in _all_markets_cache if s not in fixed_priority]
+        
+        with db_lock:
+            conn = _db()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT value FROM bot_state WHERE key = 'scan_index'")
+                row = cur.fetchone()
+                current_index = int(row[0]) if row else 0
+            finally: conn.close()
+
+        if current_index >= len(remaining):
+            current_index = 0
+
+        needed_dynamic = MAX_SCAN_SYMBOLS - len(fixed_priority)
+        end_index = min(current_index + needed_dynamic, len(remaining))
+        dynamic_batch = remaining[current_index:end_index]
+
+        if len(dynamic_batch) < needed_dynamic:
+            needed_more = needed_dynamic - len(dynamic_batch)
+            dynamic_batch += remaining[:needed_more]
+            new_index = needed_more
+        else:
+            new_index = end_index
+
+        with db_lock:
+            conn = _db()
+            try:
+                conn.execute("INSERT OR REPLACE INTO bot_state (key, value) VALUES ('scan_index', ?)", (str(new_index),))
+                conn.commit()
+            finally: conn.close()
+
+        final_list = fixed_priority + dynamic_batch
+        return final_list[:MAX_SCAN_SYMBOLS]
+
+    except Exception as exc:
+        logger.warning(f"get_scan_universe failed: {exc}")
+        return PRIORITY_SYMBOLS[:5]
 
 # ================= Logic =================
 def can_send_signal(symbol):
