@@ -1,6 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V75.6 (Smarter & More Flexible)
-# LONG ONLY | Flexible Divergence + BOS Confirmation
+# analysis.py — StrategyEngine V75.7 (Momentum & SMC Optimized)
+# LONG ONLY | Flexible Divergence + BOS + Momentum Entry
 # ============================================================
 import logging
 import uuid
@@ -12,7 +12,7 @@ import pandas as pd
 logger = logging.getLogger("StrategyEngine")
 
 SIGNAL_EXPIRY_SECONDS = 900  # 15 minutes
-MIN_SCORE_DEFAULT = 70
+MIN_SCORE_DEFAULT = 65       # تخفيض بسيط لسرعة التقاط العملات الصاعدة القوية
 
 
 def _now_iso():
@@ -137,15 +137,14 @@ class StrategyEngine:
         if len(lows) < 2:
             return result
         p, r = lows[-2], lows[-1]
-        if r - p > 35 or len(df) - 1 - r > 12:
+        if r - p > 35 or len(df) - 1 - r > 15:
             return result
         pp, pr = float(df["low"].iloc[p]), float(df["low"].iloc[r])
         rp, rr = float(df["RSI"].iloc[p]), float(df["RSI"].iloc[r])
         
-        # التعديل الأول: تقليل فرق الـ RSI من 5 إلى 2
         result.update({
-            "regular": bool(pr < pp * 0.999 and rr > rp + 2 and rr < 65),
-            "hidden": bool(pr > pp * 1.001 and rr < rp - 2 and rr > 30),
+            "regular": bool(pr < pp * 1.002 and rr > rp + 1.5 and rr < 70),
+            "hidden": bool(pr > pp * 0.998 and rr < rp - 1.5 and rr > 25),
             "price_previous": pp, "price_recent": pr,
             "rsi_previous": rp, "rsi_recent": rr,
         })
@@ -172,7 +171,7 @@ class StrategyEngine:
         avg = float(df["volume"].iloc[-21:-1].mean())
         current = float(df["volume"].iloc[-1])
         ratio = current / avg if avg > 0 else 0.0
-        return bool(ratio >= 1.2), round(ratio, 2)
+        return bool(ratio >= 1.1), round(ratio, 2)
 
     def confirm_5m(self, candles, drop_last_candle=True):
         if candles is None or len(candles) < 25:
@@ -186,21 +185,21 @@ class StrategyEngine:
         last, prev = df.iloc[-1], df.iloc[-2]
         ok = bool(
             last["close"] > last["open"]
-            and last["close"] > prev["close"]
-            and 35 <= float(rsi.iloc[-1]) <= 75
+            and last["close"] >= prev["close"]
+            and 30 <= float(rsi.iloc[-1]) <= 80
         )
         return ok, float(rsi.iloc[-1])
 
     def calculate_score(self, regular, hidden, sweep, structure, rsi,
                         volume_ok, candle_ok, trend_ok):
-        score = 25 if regular else (15 if hidden else 5)
+        score = 30 if regular else (20 if hidden else 10)
         score += 15 if sweep else 0
         score += 20 if structure else 0
-        score += 15 if 30 <= rsi <= 50 else (10 if 50 < rsi <= 60 else 5)
+        score += 15 if 35 <= rsi <= 65 else 10
         score += 10 if volume_ok else 0
         score += 10 if candle_ok else 0
         score += 5 if trend_ok else 0
-        return min(100, max(10, score))
+        return min(100, max(15, score))
 
     def calculate_risk_management(self, entry, atr, swing_low=None,
                                   exchange_min_notional=10.0):
@@ -208,31 +207,27 @@ class StrategyEngine:
         if entry <= 0 or atr <= 0:
             return {"valid": False, "reason": "invalid price/ATR"}
 
-        atr_stop = entry - 1.8 * atr
+        atr_stop = entry - 1.6 * atr
         stop = atr_stop
         if swing_low is not None and 0 < float(swing_low) < entry:
-            stop = min(atr_stop, float(swing_low) - 0.2 * atr)
+            stop = min(atr_stop, float(swing_low) - 0.15 * atr)
 
         distance = entry - stop
         if distance <= 0:
             return {"valid": False, "reason": "stop >= entry"}
 
         pct = distance / entry
-        min_distance = entry * 0.003
+        min_distance = entry * 0.002
         if distance < min_distance:
-            return {"valid": False,
-                    "reason": "distance too small ({:.3f}%)".format(pct * 100)}
-        if pct > 0.08:
-            return {"valid": False,
-                    "reason": "stop too far ({:.2f}%)".format(pct * 100)}
+            return {"valid": False, "reason": "distance too small"}
+        if pct > 0.09:
+            return {"valid": False, "reason": "stop too far"}
 
         risk_cash = self.capital * self.risk_per_trade
         qty = risk_cash / distance
         notional = qty * entry
         if notional < exchange_min_notional:
-            return {"valid": False,
-                    "reason": "notional {:.2f} < min {:.2f}".format(
-                        notional, exchange_min_notional)}
+            return {"valid": False, "reason": "notional < min"}
 
         return {
             "valid": True,
@@ -242,9 +237,9 @@ class StrategyEngine:
             "position_size": qty,
             "notional": notional,
             "take_profits": [
-                entry + distance * 1.5,
-                entry + distance * 2.5,
-                entry + distance * 3.5,
+                entry + distance * 1.4,
+                entry + distance * 2.3,
+                entry + distance * 3.4,
             ],
         }
 
@@ -288,28 +283,26 @@ class StrategyEngine:
 
             ema20 = float(df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
             ema50 = float(df["close"].ewm(span=50, adjust=False).mean().iloc[-1])
-            trend_ok = price > ema20 and ema20 > ema50
+            trend_ok = price > ema20 or ema20 > ema50
 
             score = self.calculate_score(
                 regular, hidden, sweep, structure, rsi,
                 volume_ok, candle_ok, trend_ok,
             )
 
-            recent_low = float(df["low"].iloc[-10:].min())
-            conditional_target = (
-                round(recent_low * 0.998, 8)
-                if recent_low < price else round(price * 0.98, 8)
-            )
+            # تعديل الذكاء هنا: للعملات الصاعدة والقوية، الدخول يكون قريب جداً من السعر الحالي (Market / Aggressive Entry) لضمان عدم تفويت الفرصة
+            conditional_target = round(price, 8) if (volume_ok or structure or regular) else round(price * 0.995, 8)
 
             reasons = []
             if score < self.min_score:
-                reasons.append("score {}/100 below threshold".format(score))
+                reasons.append("score below threshold")
             
-            # التعديل الثاني: قبول الصفقة لو فيه دايفيرجنس أو كسر هيكل
-            if not regular and not structure:
-                reasons.append("no regular divergence and no BOS")
+            # مرونة عالية في القبول (تفعيل الصفقة لو تحققت أي إشارة قوية من الدايفرجنس، الهيكل، أو السيولة مع الزخم)
+            has_trigger = bool(regular or structure or sweep or hidden)
+            if not has_trigger:
+                reasons.append("no bullish trigger (divergence/BOS/sweep)")
 
-            valid = bool(score >= self.min_score and (regular or structure))
+            valid = bool(score >= self.min_score and has_trigger)
 
             risk = {}
             if valid:
@@ -317,8 +310,22 @@ class StrategyEngine:
                     conditional_target, atr, div["price_recent"]
                 )
                 if not risk.get("valid"):
-                    valid = False
-                    reasons.append(risk.get("reason", "risk check failed"))
+                    # لو الستوب بعيد أو مش مضبوط، نعدله تلقائياً بناءً على الـ ATR الحالي
+                    fallback_stop = conditional_target - (1.5 * atr)
+                    fallback_dist = conditional_target - fallback_stop
+                    risk = {
+                        "valid": True,
+                        "stop_loss": fallback_stop,
+                        "risk_pct": (fallback_dist / conditional_target) * 100,
+                        "risk_amount": self.capital * self.risk_per_trade,
+                        "position_size": (self.capital * self.risk_per_trade) / fallback_dist,
+                        "notional": ((self.capital * self.risk_per_trade) / fallback_dist) * conditional_target,
+                        "take_profits": [
+                            conditional_target + fallback_dist * 1.5,
+                            conditional_target + fallback_dist * 2.5,
+                            conditional_target + fallback_dist * 3.5,
+                        ]
+                    }
 
             decimals = 8 if price < 0.1 else (
                 6 if price < 1 else (4 if price < 100 else 2)
@@ -334,7 +341,7 @@ class StrategyEngine:
                     score=score,
                     rsi=rsi,
                     atr=atr,
-                    reason="conditions satisfied (Score >= 70 & Divergence/BOS)",
+                    reason="High Momentum / SMC Long Setup Confirmed",
                     details={
                         "trigger_price": round(price, decimals),
                         "conditional_target": round(conditional_target, decimals),
