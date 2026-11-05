@@ -1,7 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V75.5 (Final Fixed)
-# LONG ONLY | Fixed divergence, sweep, TP, capital sync
-# Restored: Regular Divergence as mandatory condition
+# analysis.py — StrategyEngine V75.6 (Smarter & More Flexible)
+# LONG ONLY | Flexible Divergence + BOS Confirmation
 # ============================================================
 import logging
 import uuid
@@ -142,9 +141,11 @@ class StrategyEngine:
             return result
         pp, pr = float(df["low"].iloc[p]), float(df["low"].iloc[r])
         rp, rr = float(df["RSI"].iloc[p]), float(df["RSI"].iloc[r])
+        
+        # التعديل الأول: تقليل فرق الـ RSI من 5 إلى 2
         result.update({
-            "regular": bool(pr < pp * 0.999 and rr > rp + 5 and rr < 65),
-            "hidden": bool(pr > pp * 1.001 and rr < rp - 5 and rr > 30),
+            "regular": bool(pr < pp * 0.999 and rr > rp + 2 and rr < 65),
+            "hidden": bool(pr > pp * 1.001 and rr < rp - 2 and rr > 30),
             "price_previous": pp, "price_recent": pr,
             "rsi_previous": rp, "rsi_recent": rr,
         })
@@ -303,11 +304,12 @@ class StrategyEngine:
             reasons = []
             if score < self.min_score:
                 reasons.append("score {}/100 below threshold".format(score))
-            if not regular:
-                reasons.append("no regular bullish divergence")
+            
+            # التعديل الثاني: قبول الصفقة لو فيه دايفيرجنس أو كسر هيكل
+            if not regular and not structure:
+                reasons.append("no regular divergence and no BOS")
 
-            # التعديل الحاسم: Regular Divergence إجباري مع الـ Score
-            valid = bool(score >= self.min_score and regular)
+            valid = bool(score >= self.min_score and (regular or structure))
 
             risk = {}
             if valid:
@@ -332,7 +334,7 @@ class StrategyEngine:
                     score=score,
                     rsi=rsi,
                     atr=atr,
-                    reason="conditions satisfied (Score >= 70 & Regular Divergence)",
+                    reason="conditions satisfied (Score >= 70 & Divergence/BOS)",
                     details={
                         "trigger_price": round(price, decimals),
                         "conditional_target": round(conditional_target, decimals),
