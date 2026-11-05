@@ -1,10 +1,12 @@
+# ============================================================
+# main.py — Bot V7.7 (Optimized Scanner & Telegram Notifier)
+# ============================================================
 import os
 import time
 import threading
 import logging
 import sqlite3
 import requests
-import random
 from datetime import datetime, timezone
 
 import ccxt
@@ -20,12 +22,12 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 BOT_CAPITAL_USD = max(1.0, float(os.environ.get("BOT_CAPITAL_USD", "10000")))
 RISK_PER_TRADE = min(0.02, max(0.001, float(os.environ.get("RISK_PER_TRADE", "0.01"))))
-MAX_SCAN_SYMBOLS = max(5, min(150, int(os.environ.get("MAX_SCAN_SYMBOLS", "50"))))
-SCAN_INTERVAL_SECONDS = max(120, int(os.environ.get("SCAN_INTERVAL_SECONDS", "300")))
-SIGNAL_COOLDOWN_SECONDS = max(300, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "3600")))
+MAX_SCAN_SYMBOLS = max(5, min(150, int(os.environ.get("MAX_SCAN_SYMBOLS", "60"))))
+SCAN_INTERVAL_SECONDS = max(60, int(os.environ.get("SCAN_INTERVAL_SECONDS", "180")))
+SIGNAL_COOLDOWN_SECONDS = max(180, int(os.environ.get("SIGNAL_COOLDOWN_SECONDS", "1800")))
 SIGNAL_EXPIRY_SECONDS = 900
-MAX_ACTIVE_POSITIONS = max(1, int(os.environ.get("MAX_ACTIVE_POSITIONS", "10")))
-MAX_DAILY_SIGNALS = max(1, int(os.environ.get("MAX_DAILY_SIGNALS", "30")))
+MAX_ACTIVE_POSITIONS = max(1, int(os.environ.get("MAX_ACTIVE_POSITIONS", "12")))
+MAX_DAILY_SIGNALS = max(1, int(os.environ.get("MAX_DAILY_SIGNALS", "40")))
 DB_PATH = os.environ.get("DB_PATH", "bot_state.db")
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 
@@ -129,14 +131,14 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
         try:
             bars = bingx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             if bars and len(bars) > 10: return symbol, bars
-        except: time.sleep(0.5)
+        except: time.sleep(0.3)
     return None, None
 
-# ================= Scan Universe (12 Fixed + 38 Rotating) =================
+# ================= Scan Universe (Top Gainers & Rotation) =================
 def get_scan_universe():
     global _all_markets_cache, _markets_cache_time
     try:
-        if not _all_markets_cache or time.time() - _markets_cache_time > 3600:
+        if not _all_markets_cache or time.time() - _markets_cache_time > 1800:
             markets = bingx.load_markets()
             valid_symbols = [
                 s for s, m in markets.items()
@@ -220,18 +222,33 @@ def build_report(symbol, signal, current_price):
     price = float(current_price or signal.get("entry") or 0)
     d = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
     tps = signal.get("take_profits", [0, 0, 0])
-    lines = [f"🚨 <b>صفقة لونغ جديدة مؤكدة!</b>", "🏛️ <b>MY EXPERT CRYPTO BOT V75.5</b>", "━━━━━━━━━━━━━━━━━━", f"🪙 العملة: <code>{tg_escape(symbol)}</code>", f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>", f"💵 السعر الحالي: <code>{format_num(price, d)}</code>", f"🎯 سعر الدخول: <code>{format_num(signal.get('entry', 0), d)}</code>", f"🥇 TP1: <code>{format_num(tps[0] if len(tps)>0 else 0, d)}</code>", f"🥈 TP2: <code>{format_num(tps[1] if len(tps)>1 else 0, d)}</code>", f"🥉 TP3: <code>{format_num(tps[2] if len(tps)>2 else 0, d)}</code>", f"🛑 الستوب: <code>{format_num(signal.get('stop_loss', 0), d)}</code>", f"📊 RSI: <code>{round(signal.get('rsi', 50), 2)}</code>", "━━━━━━━━━━━━━━━━━━", f"📝 السبب: {tg_escape(signal.get('reason', ''))}"]
+    lines = [
+        f"🚨 <b>صفقة لونغ (LONG) مؤكدة للعملات الصاعدة!</b>",
+        f"🏛️ <b>EXPERT BOT V7.7 (MOMENTUM & SMC)</b>",
+        f"━━━━━━━━━━━━━━━━━━",
+        f"🪙 العملة: <code>{tg_escape(symbol)}</code>",
+        f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>",
+        f"💵 السعر الحالي: <code>{format_num(price, d)}</code>",
+        f"🎯 سعر الدخول: <code>{format_num(signal.get('entry', 0), d)}</code>",
+        f"🥇 TP1: <code>{format_num(tps[0] if len(tps)>0 else 0, d)}</code>",
+        f"🥈 TP2: <code>{format_num(tps[1] if len(tps)>1 else 0, d)}</code>",
+        f"🥉 TP3: <code>{format_num(tps[2] if len(tps)>2 else 0, d)}</code>",
+        f"🛑 وقف الخسارة: <code>{format_num(signal.get('stop_loss', 0), d)}</code>",
+        f"📊 RSI: <code>{round(signal.get('rsi', 50), 2)}</code>",
+        f"━━━━━━━━━━━━━━━━━━",
+        f"📝 السبب: {tg_escape(signal.get('reason', ''))}"
+    ]
     return "\n".join(lines)
 
 def analyze_symbol(symbol_raw, chat_id=None, force_report=False):
     resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 110)
     if not resolved or len(candles15) < 65:
-        if force_report: tg_send(f"❌ لا تتوفر بيانات لـ <code>{tg_escape(symbol_raw)}</code>", chat_id)
+        if force_report: tg_send(f"❌ لا تتوفر بيانات كافية لـ <code>{tg_escape(symbol_raw)}</code>", chat_id)
         return False, None
     _, candles5 = fetch_ohlcv(resolved, "5m", 40)
     scan_stats["scanned_pairs"] += 1
     direction, price, signal = engine.analyze_market_structure(candles5, candles15)
-    valid = bool(signal.get("direction") == "LONG" and signal.get("score", 0) >= 70)
+    valid = bool(signal.get("direction") == "LONG" and signal.get("score", 0) >= 65)
     
     if valid and not is_signal_expired(signal) and (can_send_signal(resolved) or force_report):
         if tg_send(build_report(resolved, signal, price), chat_id or TELEGRAM_CHAT_ID):
@@ -239,21 +256,26 @@ def analyze_symbol(symbol_raw, chat_id=None, force_report=False):
             scan_stats["signals_sent"] += 1
             return True, signal
     elif force_report:
-        lines = [f"🏛️ <b>تحليل عملة {tg_escape(resolved)}</b>", f"⭐ التقييم: {signal.get('score', 0)}/100 (تحت المراقبة)", f"💵 السعر: {format_num(price, 4)}", f"📝 السبب: {tg_escape(signal.get('reason', ''))}"]
+        lines = [
+            f"🏛️ <b>تحليل عملة {tg_escape(resolved)}</b>",
+            f"⭐ التقييم: {signal.get('score', 0)}/100 (تحت المراقبة)",
+            f"💵 السعر: {format_num(price, 4)}",
+            f"📝 السبب: {tg_escape(signal.get('reason', ''))}"
+        ]
         tg_send("\n".join(lines), chat_id)
     return False, signal
 
 # ================= Background Scanner =================
 def background_scanner():
-    logger.info("Background scanner started (Silent Mode).")
+    logger.info("Background scanner started with Momentum Focus.")
     while True:
         try:
             symbols = get_scan_universe()
-            logger.info(f"Scanning {len(symbols)} symbols silently...")
+            logger.info(f"Scanning {len(symbols)} symbols...")
             for sym in symbols:
                 try:
                     analyze_symbol(sym)
-                    time.sleep(1.5)
+                    time.sleep(1.0)
                 except Exception as e:
                     scan_stats["errors"] += 1
                     logger.debug(f"Error scanning {sym}: {e}")
@@ -264,7 +286,7 @@ def background_scanner():
 
 # ================= Flask Routes & Webhook =================
 @app.route("/")
-def index(): return jsonify({"status": "running", "version": "V75.5", "stats": scan_stats})
+def index(): return jsonify({"status": "running", "version": "V7.7", "stats": scan_stats})
 
 @app.route("/health")
 def health(): return "OK", 200
@@ -281,16 +303,16 @@ def telegram_webhook():
 
         text_upper = text.upper()
         if text_upper.startswith("/START") or text_upper.startswith("/HELP"):
-            tg_send("🤖 <b>مرحباً بك في البوت (V75.5)</b>\n\n• البوت يعمل في وضع الفحص الصامت 🔇.\n• لن يتم إرسال أي رسالة إلا عند وجود صفقة مؤكدة (Score >= 70).\n• استخدم <code>/scan</code> للبحث الفوري، أو أرسل اسم العملة (مثل <code>BTC</code>) لفحصها.", chat_id)
+            tg_send("🤖 <b>مرحباً بك في البوت النسخة الاحترافية (V7.7)</b>\n\n• مخصص لاصطياد العملات الصاعدة والزخم القوي.\n• يرسل التنبيهات تلقائياً عند توافر شروط الدخول الناجحة.\n• استخدم <code>/scan</code> للبحث الفوري، أو أرسل رمز العملة (مثل <code>SOL</code>) لتحليلها فوراً.", chat_id)
         elif text_upper.startswith("/SCAN"):
             found = 0
             for sym in get_scan_universe():
                 try:
                     is_valid, _ = analyze_symbol(sym, chat_id=chat_id, force_report=False)
                     if is_valid: found += 1
-                    time.sleep(0.3)
+                    time.sleep(0.2)
                 except: pass
-            if found == 0: tg_send("🔍 تم فحص السوق بالكامل، ولا توجد صفقات مطابقة للشروط حالياً. البوت يراقب وسيخبرك فور ظهور أي فرصة!", chat_id)
+            if found == 0: tg_send("🔍 تم فحص السوق ولم يتم رصد صفقات جديدة مطابقة للشروط حالياً. البوت مستمر في المراقبة!", chat_id)
         else:
             analyze_symbol(text.split()[0], chat_id=chat_id, force_report=True)
     except Exception as e:
