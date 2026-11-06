@@ -1,6 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V75.7 (Momentum & SMC Optimized)
-# LONG ONLY | Flexible Divergence + BOS + Momentum Entry
+# analysis.py — StrategyEngine V76.0 (Momentum & SMC, Hardened)
+# LONG ONLY | Divergence + Sweep + BOS (2 triggers required)
 # ============================================================
 import logging
 import uuid
@@ -11,8 +11,9 @@ import pandas as pd
 
 logger = logging.getLogger("StrategyEngine")
 
-SIGNAL_EXPIRY_SECONDS = 900  # 15 minutes
-MIN_SCORE_DEFAULT = 65       # تخفيض بسيط لسرعة التقاط العملات الصاعدة القوية
+SIGNAL_EXPIRY_SECONDS = 900   # 15 minutes
+MIN_SCORE_DEFAULT = 70        # single source of truth (main.py uses engine.min_score)
+MAX_CHASE_R = 0.35            # max price move above entry (in R) before signal is "late"
 
 
 def _now_iso():
@@ -63,25 +64,29 @@ def validate_signal(signal):
             return False, "entry <= 0"
         if signal["stop_loss"] <= 0 or signal["stop_loss"] >= signal["entry"]:
             return False, "stop_loss must be < entry for LONG"
-        if not signal["take_profits"] or any(
-            tp <= signal["entry"] for tp in signal["take_profits"]
-        ):
-            return False, "all TPs must be > entry for LONG"
+        tps = signal["take_profits"]
+        if len(tps) != 3 or any(tp <= signal["entry"] for tp in tps):
+            return False, "need 3 TPs, all > entry for LONG"
+        if not (tps[0] < tps[1] < tps[2]):
+            return False, "TPs must be ascending"
     if is_signal_expired(signal):
         return False, "signal expired"
     return True, "ok"
 
 
 class StrategyEngine:
-    def __init__(self, capital=10000.0, risk_per_trade=0.01, min_score=MIN_SCORE_DEFAULT):
+    def __init__(self, capital=10000.0, risk_per_trade=0.01,
+                 min_score=MIN_SCORE_DEFAULT, max_leverage=5.0):
         self.capital = max(1.0, float(capital))
         self.risk_per_trade = min(0.02, max(0.001, float(risk_per_trade)))
         self.min_score = int(min_score)
+        self.max_leverage = max(1.0, float(max_leverage))
         self.swing_order = 3
 
     def update_capital(self, new_capital):
         self.capital = max(1.0, float(new_capital))
 
+    # ---------------- Indicators ----------------
     def calculate_rsi(self, series, period=14):
         s = pd.to_numeric(series, errors="coerce")
         delta = s.diff()
@@ -93,31 +98,29 @@ class StrategyEngine:
         out = 100 - 100 / (1 + rs)
         out = out.mask((al == 0) & (ag > 0), 100)
         out = out.mask((ag == 0) & (al > 0), 0)
-        return out.fillna(50)
+        return out  # early rows stay NaN on purpose (no fake 50 values)
 
     def calculate_atr(self, df, period=14):
         h, l, c = df["high"], df["low"], df["close"]
         tr = pd.concat(
-            [h - l, (h - c.shift()).abs(), (l - c.shift()).abs()],
-            axis=1
+            [h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1
         ).max(axis=1)
-        fallback = max(float(c.iloc[-1]) * 0.015, 1e-12)
-        return tr.ewm(alpha=1.0 / period, min_periods=period,
-                      adjust=False).mean().fillna(fallback)
+        return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
     def prepare_dataframe(self, candles):
         df = pd.DataFrame(candles, columns=[
             "timestamp", "open", "high", "low", "close", "volume"
         ])
-        for col in ["open", "high", "low", "close", "volume"]:
+        cols = ["timestamp", "open", "high", "low", "close", "volume"]
+        for col in cols:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
-        df = df.replace([np.inf, -np.inf], np.nan).dropna()
-        df = df[(df["high"] >= df["low"]) & (df["close"] > 0)]
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=cols)
+        df = df[(df["high"] >= df["low"]) & (df["close"] > 0) & (df["volume"] >= 0)]
         df = df.drop_duplicates(subset=["timestamp"], keep="last")
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
+    # ---------------- Patterns ----------------
     def find_swing_lows(self, low_series, order=3):
         vals = np.asarray(low_series, dtype=float)
         out = []
@@ -141,9 +144,12 @@ class StrategyEngine:
             return result
         pp, pr = float(df["low"].iloc[p]), float(df["low"].iloc[r])
         rp, rr = float(df["RSI"].iloc[p]), float(df["RSI"].iloc[r])
-        
+        if not np.isfinite([rp, rr]).all():
+            return result
         result.update({
-            "regular": bool(pr < pp * 1.002 and rr > rp + 1.5 and rr < 70),
+            # price makes equal/lower low, RSI makes higher low, first low in weak zone
+            "regular": bool(pr < pp * 1.002 and rr > rp + 1.5 and rp < 50),
+            # price makes higher low, RSI makes lower low (needs uptrend, checked by caller)
             "hidden": bool(pr > pp * 0.998 and rr < rp - 1.5 and rr > 25),
             "price_previous": pp, "price_recent": pr,
             "rsi_previous": rp, "rsi_recent": rr,
@@ -151,19 +157,24 @@ class StrategyEngine:
         return result
 
     def detect_sweep(self, df):
+        """Liquidity sweep: one of the last 3 candles wicked below the
+        reference low AND closed back above it (rejection candle)."""
         if len(df) < 15:
             return False
         reference_low = float(df["low"].iloc[-12:-4].min())
-        recent = df.iloc[-4:]
-        swept = bool((recent["low"] < reference_low).any())
-        closed_above = bool(float(df["close"].iloc[-1]) > reference_low)
-        return swept and closed_above
+        for k in (-1, -2, -3):
+            row = df.iloc[k]
+            if float(row["low"]) < reference_low and float(row["close"]) > reference_low:
+                return bool(float(df["close"].iloc[-1]) > reference_low)
+        return False
 
     def detect_bullish_structure(self, df):
-        if len(df) < 12:
+        """BOS: bullish candle closing above the highest high of previous 12 candles."""
+        if len(df) < 15:
             return False
-        prior_high = float(df["high"].iloc[-8:-1].max())
-        return bool(float(df["close"].iloc[-1]) > prior_high)
+        prior_high = float(df["high"].iloc[-13:-1].max())
+        last = df.iloc[-1]
+        return bool(float(last["close"]) > prior_high and float(last["close"]) > float(last["open"]))
 
     def detect_volume(self, df):
         if len(df) < 22:
@@ -171,7 +182,7 @@ class StrategyEngine:
         avg = float(df["volume"].iloc[-21:-1].mean())
         current = float(df["volume"].iloc[-1])
         ratio = current / avg if avg > 0 else 0.0
-        return bool(ratio >= 1.1), round(ratio, 2)
+        return bool(ratio >= 1.3), round(ratio, 2)
 
     def confirm_5m(self, candles, drop_last_candle=True):
         if candles is None or len(candles) < 25:
@@ -182,23 +193,44 @@ class StrategyEngine:
         if len(df) < 20:
             return False, 50.0
         rsi = self.calculate_rsi(df["close"])
+        rsi_last = float(rsi.iloc[-1])
+        if not np.isfinite(rsi_last):
+            return False, 50.0
         last, prev = df.iloc[-1], df.iloc[-2]
         ok = bool(
             last["close"] > last["open"]
             and last["close"] >= prev["close"]
-            and 30 <= float(rsi.iloc[-1]) <= 80
+            and 30 <= rsi_last <= 80
         )
-        return ok, float(rsi.iloc[-1])
+        return ok, rsi_last
 
+    def htf_trend_ok(self, ohlcv_1h):
+        """Higher-timeframe filter: last closed 1h candle must be above EMA50.
+        Fail-closed: missing/short data => False."""
+        try:
+            if ohlcv_1h is None or len(ohlcv_1h) < 55:
+                return False
+            df = self.prepare_dataframe(ohlcv_1h)
+            if len(df) > 1:
+                df = df.iloc[:-1].reset_index(drop=True)
+            if len(df) < 50:
+                return False
+            close = df["close"]
+            ema50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
+            return bool(float(close.iloc[-1]) > ema50)
+        except Exception:
+            return False
+
+    # ---------------- Scoring & Risk ----------------
     def calculate_score(self, regular, hidden, sweep, structure, rsi,
                         volume_ok, candle_ok, trend_ok):
         score = 30 if regular else (20 if hidden else 10)
         score += 15 if sweep else 0
         score += 20 if structure else 0
-        score += 15 if 35 <= rsi <= 65 else 10
+        score += 10 if 35 <= rsi <= 65 else 5
         score += 10 if volume_ok else 0
         score += 10 if candle_ok else 0
-        score += 5 if trend_ok else 0
+        score += 10 if trend_ok else 0
         return min(100, max(15, score))
 
     def calculate_risk_management(self, entry, atr, swing_low=None,
@@ -217,17 +249,21 @@ class StrategyEngine:
             return {"valid": False, "reason": "stop >= entry"}
 
         pct = distance / entry
-        min_distance = entry * 0.002
-        if distance < min_distance:
-            return {"valid": False, "reason": "distance too small"}
+        if distance < entry * 0.002:
+            return {"valid": False, "reason": "stop distance too small"}
         if pct > 0.09:
             return {"valid": False, "reason": "stop too far"}
 
         risk_cash = self.capital * self.risk_per_trade
         qty = risk_cash / distance
         notional = qty * entry
+        max_notional = self.capital * self.max_leverage
+        if notional > max_notional:           # cap leverage instead of over-sizing
+            notional = max_notional
+            qty = notional / entry
+            risk_cash = qty * distance
         if notional < exchange_min_notional:
-            return {"valid": False, "reason": "notional < min"}
+            return {"valid": False, "reason": "notional below exchange minimum"}
 
         return {
             "valid": True,
@@ -243,6 +279,7 @@ class StrategyEngine:
             ],
         }
 
+    # ---------------- Main analysis ----------------
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m,
                                  asset_type="crypto", drop_last_candle=True):
         neutral = build_signal(
@@ -273,7 +310,7 @@ class StrategyEngine:
                 return "NEUTRAL", 0.0, neutral
 
             div = self.detect_divergence(df)
-            regular, hidden = div["regular"], div["hidden"]
+            regular = div["regular"]
             sweep = self.detect_sweep(df)
             structure = self.detect_bullish_structure(df)
             volume_ok, volume_ratio = self.detect_volume(df)
@@ -283,72 +320,61 @@ class StrategyEngine:
 
             ema20 = float(df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
             ema50 = float(df["close"].ewm(span=50, adjust=False).mean().iloc[-1])
-            trend_ok = price > ema20 or ema20 > ema50
+            trend_ok = bool(price > ema20 > ema50)
+            hidden = bool(div["hidden"] and ema20 > ema50)  # hidden div only in uptrend
 
             score = self.calculate_score(
                 regular, hidden, sweep, structure, rsi,
                 volume_ok, candle_ok, trend_ok,
             )
 
-            # تعديل الذكاء هنا: للعملات الصاعدة والقوية، الدخول يكون قريب جداً من السعر الحالي (Market / Aggressive Entry) لضمان عدم تفويت الفرصة
-            conditional_target = round(price, 8) if (volume_ok or structure or regular) else round(price * 0.995, 8)
+            triggers = [n for n, f in (
+                ("regular_div", regular), ("hidden_div", hidden),
+                ("sweep", sweep), ("bos", structure)) if f]
+            has_trigger = bool(len(triggers) >= 2 or (structure and volume_ok))
 
             reasons = []
             if score < self.min_score:
                 reasons.append("score below threshold")
-            
-            # مرونة عالية في القبول (تفعيل الصفقة لو تحققت أي إشارة قوية من الدايفرجنس، الهيكل، أو السيولة مع الزخم)
-            has_trigger = bool(regular or structure or sweep or hidden)
             if not has_trigger:
-                reasons.append("no bullish trigger (divergence/BOS/sweep)")
+                reasons.append("need 2 triggers or BOS+volume (got: %s)"
+                               % (",".join(triggers) or "none"))
 
-            valid = bool(score >= self.min_score and has_trigger)
+            entry = price  # entry = last closed price; main.py checks live-price drift
+            decimals = 8 if price < 0.1 else (
+                6 if price < 1 else (4 if price < 100 else 2))
 
             risk = {}
-            if valid:
-                risk = self.calculate_risk_management(
-                    conditional_target, atr, div["price_recent"]
-                )
+            if score >= self.min_score and has_trigger:
+                swing = (div["price_recent"] if (regular or hidden)
+                         and div["price_recent"] > 0
+                         else float(df["low"].iloc[-10:].min()))
+                risk = self.calculate_risk_management(entry, atr, swing)
                 if not risk.get("valid"):
-                    # لو الستوب بعيد أو مش مضبوط، نعدله تلقائياً بناءً على الـ ATR الحالي
-                    fallback_stop = conditional_target - (1.5 * atr)
-                    fallback_dist = conditional_target - fallback_stop
-                    risk = {
-                        "valid": True,
-                        "stop_loss": fallback_stop,
-                        "risk_pct": (fallback_dist / conditional_target) * 100,
-                        "risk_amount": self.capital * self.risk_per_trade,
-                        "position_size": (self.capital * self.risk_per_trade) / fallback_dist,
-                        "notional": ((self.capital * self.risk_per_trade) / fallback_dist) * conditional_target,
-                        "take_profits": [
-                            conditional_target + fallback_dist * 1.5,
-                            conditional_target + fallback_dist * 2.5,
-                            conditional_target + fallback_dist * 3.5,
-                        ]
-                    }
+                    reasons.append("risk rejected: " + risk.get("reason", "unknown"))
 
-            decimals = 8 if price < 0.1 else (
-                6 if price < 1 else (4 if price < 100 else 2)
-            )
+            valid = bool(not reasons and risk.get("valid"))
 
             if valid:
-                tp_list = [round(tp, decimals) for tp in risk["take_profits"]]
+                stop = risk["stop_loss"]
+                max_entry = entry + MAX_CHASE_R * (entry - stop)
                 signal = build_signal(
                     direction="LONG",
-                    entry=round(conditional_target, decimals),
-                    stop_loss=round(risk["stop_loss"], decimals),
-                    take_profits=tp_list,
+                    entry=round(entry, decimals),
+                    stop_loss=round(stop, decimals),
+                    take_profits=[round(tp, decimals) for tp in risk["take_profits"]],
                     score=score,
                     rsi=rsi,
                     atr=atr,
-                    reason="High Momentum / SMC Long Setup Confirmed",
+                    reason="Momentum/SMC Long: " + " + ".join(triggers),
                     details={
                         "trigger_price": round(price, decimals),
-                        "conditional_target": round(conditional_target, decimals),
+                        "max_entry": round(max_entry, decimals),
                         "volume_ratio": volume_ratio,
                         "rsi_5m": round(rsi_5m, 2),
                         "risk_pct": round(risk["risk_pct"], 3),
                         "notional": round(risk["notional"], 2),
+                        "triggers": triggers,
                         "entry_zone": {
                             "regular_bullish": regular,
                             "hidden_bullish": hidden,
@@ -356,10 +382,11 @@ class StrategyEngine:
                             "bullish_structure": structure,
                             "volume_confirmed": volume_ok,
                             "confirmed_5m": candle_ok,
+                            "trend_ok": trend_ok,
                         },
                     },
                 )
-                return "LONG", conditional_target, signal
+                return "LONG", entry, signal
 
             neutral["score"] = score
             neutral["rsi"] = rsi
@@ -367,8 +394,8 @@ class StrategyEngine:
             neutral["reason"] = " | ".join(reasons) if reasons else "conditions not met"
             neutral["details"] = {
                 "trigger_price": round(price, decimals),
-                "conditional_target": round(conditional_target, decimals),
                 "volume_ratio": volume_ratio,
+                "triggers": triggers,
             }
             return "NEUTRAL", price, neutral
 
