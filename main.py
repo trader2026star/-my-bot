@@ -416,7 +416,7 @@ def build_report(symbol, signal, live_price, manual=False):
     title = "📊 تحليل فقط (غير مسجّل كصفقة)" if manual else "🚨 <b>صفقة لونغ (LONG) مؤكدة</b>"
     lines = [
         title,
-        "🏛️ <b>EXPERT BOT V7.8 (MOMENTUM & SMC)</b>",
+        "🏛️ <b>EXPERT BOT V7.8 (SUPPORT → RESISTANCE)</b>",
         "━━━━━━━━━━━━━━━━━━",
         f"🪙 العملة: <code>{tg_escape(symbol)}</code>",
         f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>",
@@ -437,7 +437,7 @@ def build_report(symbol, signal, live_price, manual=False):
 
 # ================= Analysis flow =================
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
-    resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 110)
+    resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 400)
     if not resolved or not candles15 or len(candles15) < 65:
         if manual:
             tg_send(f"❌ لا تتوفر بيانات كافية لـ <code>{tg_escape(symbol_raw)}</code>", chat_id)
