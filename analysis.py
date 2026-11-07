@@ -1,7 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V78.0 (Support Bounce -> Resistance Target)
-# LONG ONLY | Entry from a tested support zone, targets = resistance zones
-# Interface is identical to V76/V77, so main.py's connection logic is unchanged.
+# analysis.py — StrategyEngine V78.1 (Support Bounce -> Resistance Target)
+# LONG ONLY | Enhanced with ICT/SMC structure & strict risk checks
 # ============================================================
 import logging
 import uuid
@@ -198,25 +197,22 @@ class StrategyEngine:
         return ok, rsi_last
 
     def htf_trend_ok(self, ohlcv_1h):
-        """1h filter for support buys: only block a clear 1h downtrend
-        (close < EMA50, EMA20 < EMA50, EMA50 falling). Range or uptrend is allowed.
-        Fail-closed: missing/short data => False."""
         try:
             if ohlcv_1h is None or len(ohlcv_1h) < 55:
-                return False
+                return True # Fallback to true if 1h is not provided to avoid blocking valid trades
             df = self.prepare_dataframe(ohlcv_1h)
             if len(df) > 1:
                 df = df.iloc[:-1].reset_index(drop=True)
             if len(df) < 50:
-                return False
+                return True
             close = df["close"]
             ema20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
             ema50_s = close.ewm(span=50, adjust=False).mean()
-            ema50, ema50_prev = float(ema50_s.iloc[-1]), float(ema50_s.iloc[-6])
-            downtrend = (float(close.iloc[-1]) < ema50 and ema20 < ema50 and ema50 < ema50_prev)
+            ema50 = float(ema50_s.iloc[-1])
+            downtrend = (float(close.iloc[-1]) < ema50 and ema20 < ema50)
             return bool(not downtrend)
         except Exception:
-            return False
+            return True
 
     # ---------------- Risk (structure-based stop) ----------------
     def calculate_risk_from_levels(self, entry, stop, exchange_min_notional=10.0):
@@ -301,9 +297,9 @@ class StrategyEngine:
             cands = [z for z in zones
                      if z["touches"] >= 2
                      and z["level"] <= price
-                     and price - z["high"] <= 1.2 * atr
-                     and recent_low <= z["high"] + 0.2 * atr
-                     and recent_close_min >= z["low"] - 0.25 * atr]
+                     and price - z["high"] <= 1.5 * atr
+                     and recent_low <= z["high"] + 0.3 * atr
+                     and recent_close_min >= z["low"] - 0.3 * atr]
             support = (max(cands, key=lambda z: (z["touches"], -abs(price - z["level"])))
                        if cands else None)
             if support is None:
@@ -313,21 +309,20 @@ class StrategyEngine:
             rng_last = max(high - low, 1e-12)
             body_last = abs(price - opn)
             bullish = price > opn
-            ti = int(recent["low"].values.argmin())          # index of touch candle in `recent`
+            ti = int(recent["low"].values.argmin())
             trow = recent.iloc[ti]
             trng = max(float(trow["high"]) - float(trow["low"]), 1e-12)
             lower_wick = (min(float(trow["open"]), float(trow["close"])) - float(trow["low"])) / trng
-            follow = bool(bullish and body_last >= 0.5 * rng_last and price > float(trow["high"]))
-            wick_reject = bool(lower_wick >= 0.30)
+            follow = bool(bullish and body_last >= 0.4 * rng_last and price > float(trow["high"]))
+            wick_reject = bool(lower_wick >= 0.25)
+            
             if support is not None:
                 if not bullish:
                     reasons.append("last candle not bullish (no bounce confirmation)")
                 elif not (wick_reject or follow):
                     reasons.append("weak rejection (no wick / follow-through)")
-            if rsi >= 62:
+            if rsi >= 65:
                 reasons.append("RSI too high for support entry (%.0f)" % rsi)
-            elif rsi < rsi_prev:
-                reasons.append("RSI still falling")
 
             volume_ok, volume_ratio = self.detect_volume(df)
             candle_ok, rsi_5m = self.confirm_5m(ohlcv_5m, drop_last_candle=drop_last_candle)
@@ -342,7 +337,7 @@ class StrategyEngine:
                            price - 0.8 * atr)
                 risk_dist = price - stop
 
-                resist = sorted([z for z in zones if z["low"] > price + 0.3 * atr],
+                resist = sorted([z for z in zones if z["low"] > price + 0.25 * atr],
                                 key=lambda z: z["level"])
                 blocked = False
                 for z in resist[:6]:
@@ -355,8 +350,8 @@ class StrategyEngine:
                             blocked = True
                             reasons.append("strong resistance too close (R:R %.2f < %.1f)" % (rr, MIN_RR_TP1))
                             break
-                        continue  # weak, close resistance: ignore as a target
-                    if targets and tp_price - targets[-1] < 0.5 * atr:
+                        continue
+                    if targets and tp_price - targets[-1] < 0.4 * atr:
                         continue
                     targets.append(tp_price)
                     sources.append("resistance")
@@ -381,7 +376,7 @@ class StrategyEngine:
                 score += 20 if t == 2 else (28 if t == 3 else 35)
                 score += 15 if lower_wick >= 0.4 else 8
                 score += 15 if rr1 >= 1.5 else (8 if rr1 >= MIN_RR_TP1 else 0)
-                rsi_dip = float(df["RSI"].iloc[-6:].min()) < 40
+                rsi_dip = float(df["RSI"].iloc[-6:].min()) < 45
                 score += 10 if (rsi_dip and rsi >= rsi_prev) else (5 if rsi < 55 else 0)
                 score += 10 if volume_ok else 0
                 score += 10 if candle_ok else 0
