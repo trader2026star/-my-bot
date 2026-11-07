@@ -1,5 +1,6 @@
 # ============================================================
-# main.py — Bot V7.8 (Hardened Scanner, Tracker & Keep-Alive)
+# main.py — Bot V7.8.1 (Hardened Scanner, Tracker & Keep-Alive)
+# Optimized & Fully Synchronized with StrategyEngine V78.1
 # ============================================================
 import os
 import re
@@ -124,7 +125,7 @@ def db_init():
     db_query("CREATE TABLE IF NOT EXISTS daily_counter (day TEXT PRIMARY KEY, count INTEGER DEFAULT 0)")
     db_query("CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)")
     db_query("CREATE TABLE IF NOT EXISTS trade_results (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, signal_id TEXT, entry REAL, exit_price REAL, r_multiple REAL, outcome TEXT, score INTEGER, opened_at REAL, closed_at REAL)")
-    # migration for databases created by older versions
+    
     existing = {r["name"] for r in db_query("PRAGMA table_info(positions)")}
     for col, ddl in (("initial_stop", "REAL"), ("realized_r", "REAL DEFAULT 0"),
                      ("last_checked", "REAL"), ("score", "INTEGER DEFAULT 0")):
@@ -159,7 +160,7 @@ def db_last_signal_time(symbol):
     return float(row["created_at"]) if row else 0.0
 
 
-# ================= Exchange helpers (thread-safe, with retry) =================
+# ================= Exchange helpers =================
 def ex_call(fn, *args, retries=3, **kwargs):
     delay = 1.0
     last_exc = None
@@ -168,8 +169,8 @@ def ex_call(fn, *args, retries=3, **kwargs):
             with exchange_lock:
                 return fn(*args, **kwargs)
         except (ccxt.BadSymbol, ccxt.BadRequest, ccxt.AuthenticationError):
-            raise  # not retryable
-        except ccxt.NetworkError as e:  # includes rate limit, timeout, exchange unavailable
+            raise
+        except ccxt.NetworkError as e:
             last_exc = e
             logger.warning(f"Exchange network issue ({type(e).__name__}), retry in {delay:.0f}s")
             time.sleep(delay)
@@ -217,7 +218,6 @@ def fetch_last_price(symbol):
 
 
 def market_regime_ok():
-    """BTC filter: block longs if BTC dumped >1.5% in the last hour or is in a 15m downtrend."""
     if not BTC_FILTER:
         return True
     if time.time() - _regime["ts"] < 300:
@@ -260,7 +260,7 @@ def _tg_post(url, target, text, parse_mode):
                 time.sleep(min(wait, 30))
                 continue
             if r.status_code == 400 and payload.get("parse_mode"):
-                payload.pop("parse_mode", None)  # retry as plain text
+                payload.pop("parse_mode", None)
                 continue
             if r.status_code >= 500:
                 time.sleep(2 * (attempt + 1))
@@ -313,7 +313,7 @@ def webhook_is_healthy():
         return info.get("url") == WEBHOOK_URL
     except Exception as e:
         logger.warning(f"getWebhookInfo failed: {e}")
-        return True  # don't re-register on a transient network error
+        return True
 
 
 # ================= Scan Universe =================
@@ -367,7 +367,6 @@ def can_send_signal(symbol):
 
 
 def reserve_signal(symbol, signal, entry_eff):
-    """Atomically check limits and register position + history (rolled back if Telegram send fails)."""
     with signal_lock:
         if not can_send_signal(symbol):
             return False
@@ -413,10 +412,10 @@ def build_report(symbol, signal, live_price, manual=False):
     d = decimals_for(price)
     tps = (list(signal.get("take_profits", [])) + [0, 0, 0])[:3]
     max_entry = signal.get("details", {}).get("max_entry", 0)
-    title = "📊 تحليل فقط (غير مسجّل كصفقة)" if manual else "🚨 <b>صفقة لونغ (LONG) مؤكدة</b>"
+    title = "📊 تحليل فني متقدم (غير مسجّل كصفقة)" if manual else "🚨 <b>صفقة لونغ (LONG) مؤكدة - دعم ومقاومة</b>"
     lines = [
         title,
-        "🏛️ <b>EXPERT BOT V7.8 (SUPPORT → RESISTANCE)</b>",
+        "🏛️ <b>EXPERT BOT V7.8.1 (SUPPORT → RESISTANCE)</b>",
         "━━━━━━━━━━━━━━━━━━",
         f"🪙 العملة: <code>{tg_escape(symbol)}</code>",
         f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>",
@@ -430,7 +429,7 @@ def build_report(symbol, signal, live_price, manual=False):
         f"📊 RSI: <code>{round(signal.get('rsi', 50), 2)}</code>",
         "━━━━━━━━━━━━━━━━━━",
         f"📝 السبب: {tg_escape(signal.get('reason', ''))}",
-        "⚠️ لا تدخل لو السعر تجاوز أقصى سعر للدخول. الإشارات احتمالات وليست ضمانات.",
+        "⚠️ يرجى الالتزام بمناطق الدخول المحددة وعدم الدخول في حال ابتعد السعر كثيراً.",
     ]
     return "\n".join(lines)
 
@@ -443,7 +442,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             tg_send(f"❌ لا تتوفر بيانات كافية لـ <code>{tg_escape(symbol_raw)}</code>", chat_id)
         return False, None
     if not manual and not can_send_signal(resolved):
-        return False, None  # saves API calls for coins in cooldown / limits reached
+        return False, None
 
     _, candles5 = fetch_ohlcv(resolved, "5m", 40)
     scan_stats["scanned_pairs"] += 1
@@ -458,17 +457,17 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         if not reject:
             _, candles1h = fetch_ohlcv(resolved, "1h", 80)
             if not engine.htf_trend_ok(candles1h):
-                reject = "اتجاه فريم الساعة غير صاعد"
+                reject = "اتجاه فريم الساعة غير مناسب للشراء"
         if not reject and not market_regime_ok():
-            reject = "البيتكوين هابط (فلتر السوق)"
+            reject = "حالة سوق البيتكوين سلبية (فلتر السوق)"
         if not reject:
             live = fetch_last_price(resolved)
             if live is None:
                 reject = "تعذر جلب السعر اللحظي"
             elif live > float(signal.get("details", {}).get("max_entry", signal["entry"])):
-                reject = "السعر ابتعد عن منطقة الدخول (إشارة متأخرة)"
+                reject = "السعر ابتعد عن منطقة الدخول المثالية (إشارة متأخرة)"
             elif live <= signal["stop_loss"]:
-                reject = "السعر كسر وقف الخسارة"
+                reject = "السعر كسر وقف الخسارة بالفعل"
 
     if direction == "LONG" and not reject:
         if manual:
@@ -486,7 +485,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         shown_price = price if price else (live or 0)
         lines = [
             f"🏛️ <b>تحليل عملة {tg_escape(resolved)}</b>",
-            f"⭐ التقييم: {signal.get('score', 0)}/100 (لا توجد صفقة)",
+            f"⭐ التقييم: {signal.get('score', 0)}/100 (لا توجد فرصة لونغ حالياً)",
             f"💵 آخر إغلاق 15m: {format_num(shown_price, decimals_for(shown_price or 1))}",
             f"📝 السبب: {tg_escape(reject or signal.get('reason', ''))}",
         ]
@@ -531,7 +530,7 @@ def track_position(pos):
     expires = float(pos["expires_at"] or created + POSITION_MAX_HOURS * 3600)
 
     fetched_at = time.time()
-    tf, limit, tf_ms = ("1m", 60, 60000) if fetched_at - last < 3000 else ("5m", 200, 300000)
+    tf, limit, tf_ms = ("1m", 60, 60000) if fetched_at - last < 300 else ("5m", 200, 300000)
     bars = ex_call(bingx.fetch_ohlcv, symbol, timeframe=tf, limit=limit)
 
     closed = None
@@ -539,7 +538,7 @@ def track_position(pos):
         ts, h, l = b[0], float(b[2]), float(b[3])
         if ts + tf_ms <= last * 1000:
             continue
-        if l <= stop:  # conservative: if SL and TP hit in same candle, SL wins
+        if l <= stop:
             remaining = 1 - sum(done) / 3
             realized += remaining * (stop - entry) / risk
             closed = ("وقف الخسارة" if not be else "وقف عند التعادل", stop)
@@ -550,7 +549,7 @@ def track_position(pos):
                 realized += (tps[i] - entry) / risk / 3
                 if i == 0 and not be:
                     be = 1
-                    stop = max(stop, entry)  # move stop to breakeven after TP1
+                    stop = max(stop, entry)
         if all(done):
             closed = ("تحقق TP3", tps[2])
             break
@@ -590,18 +589,18 @@ def build_stats():
     open_n = int(db_query("SELECT COUNT(*) AS n FROM positions", one=True)["n"])
     return (f"📈 <b>إحصائيات الأداء</b>\nعدد الصفقات المغلقة: {n}\n"
             f"رابحة: {int(r['w'])} | خاسرة: {int(r['l'])} | WinRate: {wr:.1f}%\n"
-            f"إجمالي: {float(r['tr']):+.2f}R | متوسط: {float(r['ar']):+.2f}R\n"
-            f"صفقات مفتوحة: {open_n}")
+            f"إجمالي العائد: {float(r['tr']):+.2f}R | المتوسط: {float(r['ar']):+.2f}R\n"
+            f"الصفقات المفتوحة حالياً: {open_n}")
 
 
 def build_positions():
     rows = db_query("SELECT * FROM positions ORDER BY created_at DESC")
     if not rows:
-        return "📭 لا توجد صفقات مفتوحة."
+        return "📭 لا توجد صفقات مفتوحة حالياً."
     lines = ["📌 <b>الصفقات المفتوحة</b>"]
     for p in rows:
         d = decimals_for(float(p["entry"] or 1))
-        lines.append(f"• <code>{tg_escape(p['symbol'])}</code> دخول {format_num(p['entry'], d)} | ستوب {format_num(p['stop_loss'], d)} | TP1:{'✅' if p['tp1_done'] else '⏳'} TP2:{'✅' if p['tp2_done'] else '⏳'}")
+        lines.append(f"• <code>{tg_escape(p['symbol'])}</code> دخول: {format_num(p['entry'], d)} | ستوب: {format_num(p['stop_loss'], d)} | TP1:{'✅' if p['tp1_done'] else '⏳'} TP2:{'✅' if p['tp2_done'] else '⏳'}")
     return "\n".join(lines)
 
 
@@ -715,12 +714,12 @@ def keepalive_loop():
 
 
 # ================= Telegram updates =================
-HELP_TEXT = ("🤖 <b>مرحباً بك في البوت V7.8</b>\n\n"
-             "• يرسل إشارات لونغ تلقائياً عند اكتمال الشروط.\n"
+HELP_TEXT = ("🤖 <b>مرحباً بك في البوت V7.8.1</b>\n\n"
+             "• يرسل إشارات لونغ تلقائياً عند ارتداد السعر من الدعم واستهداف المقاومات.\n"
              "• <code>/scan</code> فحص فوري للسوق\n"
              "• <code>/stats</code> إحصائيات الأداء\n"
              "• <code>/positions</code> الصفقات المفتوحة\n"
-             "• أرسل رمز عملة مثل <code>SOL</code> لتحليلها (تحليل فقط).")
+             "• أرسل رمز عملة مثل <code>SOL</code> لتحليلها يدوياً.")
 
 
 def handle_update(data):
@@ -746,9 +745,9 @@ def handle_update(data):
             if found is None:
                 tg_send("⏳ فحص آخر يعمل حالياً، حاول بعد قليل.", chat_id)
             elif found == 0:
-                tg_send("🔍 تم فحص السوق ولم يتم رصد صفقات جديدة مطابقة للشروط. البوت مستمر في المراقبة!", chat_id)
+                tg_send("🔍 تم فحص السوق ولم يتم رصد صفقات جديدة مطابقة للشروط حالياً. البوت مستمر في المراقبة!", chat_id)
             else:
-                tg_send(f"✅ انتهى الفحص: {found} إشارة جديدة.", chat_id)
+                tg_send(f"✅ انتهى الفحص: تم رصد وإرسال {found} إشارة جديدة.", chat_id)
         elif cmd == "/stats":
             tg_send(build_stats(), chat_id)
         elif cmd == "/positions":
@@ -757,7 +756,7 @@ def handle_update(data):
             tg_send(HELP_TEXT, chat_id)
         else:
             if not base_of(parts[0]):
-                tg_send("❌ رمز غير صالح. مثال: <code>SOL</code>", chat_id)
+                tg_send("❌ رمز عملة غير صالح. مثال: <code>SOL</code>", chat_id)
             else:
                 analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception as e:
@@ -769,7 +768,7 @@ def handle_update(data):
 def index():
     now = time.time()
     return jsonify({
-        "status": "running", "version": "V7.8", "stats": scan_stats,
+        "status": "running", "version": "V7.8.1", "stats": scan_stats,
         "heartbeat_age_sec": {k: int(now - v) for k, v in heartbeat.items()},
         "threads_alive": {k: bool(t and t.is_alive()) for k, t in threads.items()},
     })
@@ -788,9 +787,9 @@ def telegram_webhook():
     uid = data.get("update_id")
     with _seen_lock:
         if uid is not None and uid in _seen_updates:
-            return "OK", 200  # Telegram retry, already handled
+            return "OK", 200
         _seen_updates.append(uid)
-    executor.submit(handle_update, data)  # answer Telegram immediately, work in background
+    executor.submit(handle_update, data)
     return "OK", 200
 
 
@@ -807,10 +806,10 @@ def bootstrap():
     start_worker("tracker", tracker_loop)
     threading.Thread(target=watchdog_loop, daemon=True, name="watchdog").start()
     threading.Thread(target=keepalive_loop, daemon=True, name="keepalive").start()
-    logger.info("Bot V7.8 bootstrapped.")
+    logger.info("Bot V7.8.1 bootstrapped successfully.")
 
 
-bootstrap()  # runs once for both `python main.py` and gunicorn (use --workers 1)
+bootstrap()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)
