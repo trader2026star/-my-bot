@@ -1,6 +1,6 @@
 # ============================================================
-# main.py — Bot V7.8.1 (Hardened Scanner, Tracker & Keep-Alive)
-# Optimized & Fully Synchronized with StrategyEngine V78.1
+# main.py — Bot V79.0 (SMC / ICT Scanner, Tracker & Keep-Alive)
+# Optimized & Fully Synchronized with StrategyEngine V79.0 (SMC/ICT)
 # ============================================================
 import os
 import re
@@ -412,13 +412,13 @@ def build_report(symbol, signal, live_price, manual=False):
     d = decimals_for(price)
     tps = (list(signal.get("take_profits", [])) + [0, 0, 0])[:3]
     max_entry = signal.get("details", {}).get("max_entry", 0)
-    title = "📊 تحليل فني متقدم (غير مسجّل كصفقة)" if manual else "🚨 <b>صفقة لونغ (LONG) مؤكدة - دعم ومقاومة</b>"
+    title = "📊 تحليل هيكل مؤسسي (غير مسجّل كصفقة)" if manual else "🚨 <b>صفقة لونغ (LONG) مؤسسية - SMC / ICT</b>"
     lines = [
         title,
-        "🏛️ <b>EXPERT BOT V7.8.1 (SUPPORT → RESISTANCE)</b>",
+        "🏛️ <b>EXPERT BOT V79.0 (SMC & ICT ENGINE)</b>",
         "━━━━━━━━━━━━━━━━━━",
         f"🪙 العملة: <code>{tg_escape(symbol)}</code>",
-        f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>",
+        f"⭐ التقييم المؤسسي: <code>{signal.get('score', 0)}/100</code>",
         f"💵 السعر اللحظي: <code>{format_num(price, d)}</code>",
         f"🎯 سعر الدخول: <code>{format_num(signal.get('entry', 0), d)}</code>",
         f"⛔ أقصى سعر للدخول: <code>{format_num(max_entry, d)}</code>",
@@ -429,7 +429,7 @@ def build_report(symbol, signal, live_price, manual=False):
         f"📊 RSI: <code>{round(signal.get('rsi', 50), 2)}</code>",
         "━━━━━━━━━━━━━━━━━━",
         f"📝 السبب: {tg_escape(signal.get('reason', ''))}",
-        "⚠️ يرجى الالتزام بمناطق الدخول المحددة وعدم الدخول في حال ابتعد السعر كثيراً.",
+        "⚠️ يرجى الالتزام بمناطق الدخول وعدم المطاردة السعرية.",
     ]
     return "\n".join(lines)
 
@@ -457,7 +457,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         if not reject:
             _, candles1h = fetch_ohlcv(resolved, "1h", 80)
             if not engine.htf_trend_ok(candles1h):
-                reject = "اتجاه فريم الساعة غير مناسب للشراء"
+                reject = "اتجاه فريم الساعة لا يدعم الصعود المؤسسي"
         if not reject and not market_regime_ok():
             reject = "حالة سوق البيتكوين سلبية (فلتر السوق)"
         if not reject:
@@ -465,9 +465,9 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             if live is None:
                 reject = "تعذر جلب السعر اللحظي"
             elif live > float(signal.get("details", {}).get("max_entry", signal["entry"])):
-                reject = "السعر ابتعد عن منطقة الدخول المثالية (إشارة متأخرة)"
+                reject = "السعر ابتعد عن منطقة الدخول المثالية"
             elif live <= signal["stop_loss"]:
-                reject = "السعر كسر وقف الخسارة بالفعل"
+                reject = "السعر كسر وقف الخسارة المؤسسي"
 
     if direction == "LONG" and not reject:
         if manual:
@@ -485,7 +485,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         shown_price = price if price else (live or 0)
         lines = [
             f"🏛️ <b>تحليل عملة {tg_escape(resolved)}</b>",
-            f"⭐ التقييم: {signal.get('score', 0)}/100 (لا توجد فرصة لونغ حالياً)",
+            f"⭐ التقييم: {signal.get('score', 0)}/100 (لا توجد فرصة مؤسسية)",
             f"💵 آخر إغلاق 15m: {format_num(shown_price, decimals_for(shown_price or 1))}",
             f"📝 السبب: {tg_escape(reject or signal.get('reason', ''))}",
         ]
@@ -587,7 +587,7 @@ def build_stats():
         return "📈 لا توجد صفقات مغلقة بعد."
     wr = (int(r["w"]) / n) * 100
     open_n = int(db_query("SELECT COUNT(*) AS n FROM positions", one=True)["n"])
-    return (f"📈 <b>إحصائيات الأداء</b>\nعدد الصفقات المغلقة: {n}\n"
+    return (f"📈 <b>إحصائيات الأداء (SMC)</b>\nعدد الصفقات المغلقة: {n}\n"
             f"رابحة: {int(r['w'])} | خاسرة: {int(r['l'])} | WinRate: {wr:.1f}%\n"
             f"إجمالي العائد: {float(r['tr']):+.2f}R | المتوسط: {float(r['ar']):+.2f}R\n"
             f"الصفقات المفتوحة حالياً: {open_n}")
@@ -714,12 +714,12 @@ def keepalive_loop():
 
 
 # ================= Telegram updates =================
-HELP_TEXT = ("🤖 <b>مرحباً بك في البوت V7.8.1</b>\n\n"
-             "• يرسل إشارات لونغ تلقائياً عند ارتداد السعر من الدعم واستهداف المقاومات.\n"
+HELP_TEXT = ("🤖 <b>مرحباً بك في البوت V79.0 (SMC / ICT)</b>\n\n"
+             "• يرسل إشارات لونغ مؤسسية عند تأكيد الهيكل (CHoCH) واختبار الأوردر بلاك والفراغ السعري (FVG).\n"
              "• <code>/scan</code> فحص فوري للسوق\n"
              "• <code>/stats</code> إحصائيات الأداء\n"
              "• <code>/positions</code> الصفقات المفتوحة\n"
-             "• أرسل رمز عملة مثل <code>SOL</code> لتحليلها يدوياً.")
+             "• أرسل رمز عملة مثل <code>SOL</code> لتحليلها يدوياً وفق مفهوم الأموال الذكية.")
 
 
 def handle_update(data):
@@ -740,14 +740,14 @@ def handle_update(data):
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
         elif cmd == "/scan":
-            tg_send("🔍 بدأ الفحص...", chat_id)
+            tg_send("🔍 بدأ الفحص المؤسسي للسوق...", chat_id)
             found = scan_once(blocking=False)
             if found is None:
                 tg_send("⏳ فحص آخر يعمل حالياً، حاول بعد قليل.", chat_id)
             elif found == 0:
-                tg_send("🔍 تم فحص السوق ولم يتم رصد صفقات جديدة مطابقة للشروط حالياً. البوت مستمر في المراقبة!", chat_id)
+                tg_send("🔍 تم فحص السوق ولم يتم رصد فرص مطابقة لهيكل SMC حالياً. الصبر مفتاح النجاح!", chat_id)
             else:
-                tg_send(f"✅ انتهى الفحص: تم رصد وإرسال {found} إشارة جديدة.", chat_id)
+                tg_send(f"✅ انتهى الفحص: تم رصد وإرسال {found} صفقة مؤسسية جديدة.", chat_id)
         elif cmd == "/stats":
             tg_send(build_stats(), chat_id)
         elif cmd == "/positions":
@@ -768,7 +768,7 @@ def handle_update(data):
 def index():
     now = time.time()
     return jsonify({
-        "status": "running", "version": "V7.8.1", "stats": scan_stats,
+        "status": "running", "version": "V79.0-SMC", "stats": scan_stats,
         "heartbeat_age_sec": {k: int(now - v) for k, v in heartbeat.items()},
         "threads_alive": {k: bool(t and t.is_alive()) for k, t in threads.items()},
     })
@@ -806,7 +806,7 @@ def bootstrap():
     start_worker("tracker", tracker_loop)
     threading.Thread(target=watchdog_loop, daemon=True, name="watchdog").start()
     threading.Thread(target=keepalive_loop, daemon=True, name="keepalive").start()
-    logger.info("Bot V7.8.1 bootstrapped successfully.")
+    logger.info("Bot V79.0 (SMC/ICT) bootstrapped successfully.")
 
 
 bootstrap()
