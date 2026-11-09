@@ -1,6 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V81.0 (Pivot Points + True Bottom / CHoCH)
-# LONG ONLY | Combined Pivot Support Zones, True Bottom & CHoCH
+# analysis.py — StrategyEngine V80.0 (True Bottom / CHoCH Strategy)
+# LONG ONLY | Based on Strong Lows (breaking previous high) & FVG/OB
 # ============================================================
 import logging
 import uuid
@@ -12,7 +12,7 @@ import pandas as pd
 logger = logging.getLogger("StrategyEngine")
 
 SIGNAL_EXPIRY_SECONDS = 900   # 15 minutes
-MIN_SCORE_DEFAULT = 78        # High threshold for combined precision
+MIN_SCORE_DEFAULT = 75        
 MAX_CHASE_R = 0.35            
 MIN_RR_TP1 = 1.5              
 
@@ -117,43 +117,38 @@ class StrategyEngine:
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
-    def calculate_pivot_points(self, df):
-        """Calculates standard Pivot Points (PP, S1, S2, R1, R2) based on recent price action."""
-        if len(df) < 2:
-            return None
-        prev_high = float(df["high"].iloc[-2])
-        prev_low = float(df["low"].iloc[-2])
-        prev_close = float(df["close"].iloc[-2])
-
-        pp = (prev_high + prev_low + prev_close) / 3.0
-        s1 = (2.0 * pp) - prev_high
-        s2 = pp - (prev_high - prev_low)
-        r1 = (2.0 * pp) - prev_low
-        r2 = pp + (prev_high - prev_low)
-
-        return {"pp": pp, "s1": s1, "s2": s2, "r1": r1, "r2": r2}
-
     def detect_true_bottom_and_choch(self, df):
-        """Detects a 'True Bottom' (القاع الحقيقي) + CHoCH (breaking previous high)."""
+        """
+        Detects a 'True Bottom' (القاع الحقيقي) as illustrated in the user guide:
+        1. Price sweeps or makes a low.
+        2. Subsequent impulsive move breaks and closes above a previous recent high (CHoCH / قمة أعلى).
+        3. Returns the valid structural low to use as stop loss.
+        """
         if len(df) < 25:
-            return False, 0.0
+            return False, 0.0, "insufficient data"
 
         highs = df["high"].values
         lows = df["low"].values
         closes = df["close"].values
 
+        # Find recent local swing high before the current leg
         recent_high = highs[-20:-5].max()
         last_close = closes[-1]
         
+        # Check if we broke a previous high (CHoCH - تغيير الاتجاه نحو الصعود)
         broken_high = last_close > recent_high
+
+        # Find the true bottom (the lowest point of the impulse that broke the high)
         min_idx = np.argmin(lows[-15:])
         true_bottom = float(lows[-15:][min_idx])
+
+        # Confirmation: Price must be pulling back to retest or hold above the true bottom structure
         holding_above = last_close > true_bottom
 
         if broken_high and holding_above:
-            return True, true_bottom
+            return True, true_bottom, "True Bottom confirmed (CHoCH: broke previous high)"
         
-        return False, 0.0
+        return False, 0.0, "No true bottom / CHoCH not formed"
 
     def htf_trend_ok(self, ohlcv_1h):
         try:
@@ -195,7 +190,7 @@ class StrategyEngine:
         neutral = build_signal(
             direction="NEUTRAL", entry=0.0, stop_loss=0.0,
             take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="insufficient data or pivot/true bottom conditions not met",
+            reason="insufficient data or true bottom not met",
         )
         try:
             if ohlcv_15m is None or len(ohlcv_15m) < 65:
@@ -219,23 +214,10 @@ class StrategyEngine:
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
             reasons = []
 
-            # ---- 1. Check Pivot Points Alignment ----
-            pivots = self.calculate_pivot_points(df)
-            pivot_confluence = False
-            if pivots:
-                # Check if price is near support levels (S1, S2 or PP)
-                if abs(price - pivots["s1"]) <= 1.5 * atr or abs(price - pivots["s2"]) <= 1.5 * atr or abs(price - pivots["pp"]) <= 1.5 * atr:
-                    pivot_confluence = True
-
-            # ---- 2. Check True Bottom & CHoCH Strategy ----
-            true_bottom_ok, swing_low = self.detect_true_bottom_and_choch(df)
+            # ---- Apply True Bottom / CHoCH Strategy from Image ----
+            true_bottom_ok, swing_low, struct_reason = self.detect_true_bottom_and_choch(df)
             if not true_bottom_ok:
-                reasons.append("no true bottom / CHoCH structure broken")
-                neutral["reason"] = " | ".join(reasons)
-                return "NEUTRAL", price, neutral
-
-            if not pivot_confluence:
-                reasons.append("price not near key pivot support zones (S1/S2/PP)")
+                reasons.append("no true bottom (failed to break previous high / weak low)")
                 neutral["reason"] = " | ".join(reasons)
                 return "NEUTRAL", price, neutral
 
@@ -246,9 +228,9 @@ class StrategyEngine:
 
             risk_dist = price - stop
             
-            # Use Pivot Resistance (R1, R2) or R-multiples for targets
-            tp1 = pivots["r1"] if pivots and pivots["r1"] > price else price + (1.5 * risk_dist)
-            tp2 = pivots["r2"] if pivots and pivots["r2"] > tp1 else tp1 + (1.2 * risk_dist)
+            swing_high = float(df["high"].iloc[-20:].max())
+            tp1 = max(swing_high, price + (1.5 * risk_dist))
+            tp2 = tp1 + (1.2 * risk_dist)
             tp3 = tp2 + (1.5 * risk_dist)
             targets = [tp1, tp2, tp3]
 
@@ -259,13 +241,13 @@ class StrategyEngine:
                 return "NEUTRAL", price, neutral
 
             # ---- Score Calculation ----
-            score = 85  # High score for combined Pivot + True Bottom confluence
+            score = 80  # High confidence for True Bottom CHoCH setup
             score = int(min(100, max(0, score)))
 
             if score < self.min_score:
                 reasons.append("score below threshold")
                 neutral["score"] = score
-                neutral["reason"] = " | ".join(reions if 'reions' in locals() else reasons)
+                neutral["reason"] = " | ".join(reasons)
                 return "NEUTRAL", price, neutral
 
             # ---- Risk Sizing ----
@@ -283,14 +265,13 @@ class StrategyEngine:
                 score=score,
                 rsi=rsi,
                 atr=atr,
-                reason="Pivot + True Bottom Confluence (CHoCH + S1/S2 Support, R:R=%.1f)" % rr1,
+                reason="True Bottom Setup (CHoCH Confirmed - Breaks Previous High, R:R=%.1f)" % rr1,
                 details={
                     "trigger_price": round(price, decimals),
                     "max_entry": round(max_entry, decimals),
                     "risk_pct": round(risk["risk_pct"], 3),
                     "notional": round(risk["notional"], 2),
-                    "triggers": ["pivot_true_bottom_choch"],
-                    "pivots": {k: round(v, decimals) for k, v in pivots.items()} if pivots else {}
+                    "triggers": ["true_bottom_choch"],
                 },
             )
             return "LONG", price, signal
