@@ -1,6 +1,6 @@
 # ============================================================
-# main.py — Bot V81.0 (Pivot Points + True Bottom Scanner & Tracker)
-# Optimized & Fully Synchronized with StrategyEngine V81.0
+# main.py — Bot V80.0 (True Bottom & CHoCH Scanner, Tracker)
+# Optimized & Fully Synchronized with StrategyEngine V80.0
 # ============================================================
 import os
 import re
@@ -412,10 +412,10 @@ def build_report(symbol, signal, live_price, manual=False):
     d = decimals_for(price)
     tps = (list(signal.get("take_profits", [])) + [0, 0, 0])[:3]
     max_entry = signal.get("details", {}).get("max_entry", 0)
-    title = "📊 تحليل البيفوت والقاع الحقيقي (غير مسجّل كصفقة)" if manual else "🚨 <b>صفقة لونغ (LONG) - بيفوت + قاع حقيقي مؤكد</b>"
+    title = "📊 تحليل القاع الحقيقي (غير مسجّل كصفقة)" if manual else "🚨 <b>صفقة لونغ (LONG) - قاع حقيقي (CHoCH) المؤكد</b>"
     lines = [
         title,
-        "🏛️ <b>EXPERT BOT V81.0 (PIVOT + TRUE BOTTOM)</b>",
+        "🏛️ <b>EXPERT BOT V80.0 (TRUE BOTTOM ENGINE)</b>",
         "━━━━━━━━━━━━━━━━━━",
         f"🪙 العملة: <code>{tg_escape(symbol)}</code>",
         f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>",
@@ -485,7 +485,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         shown_price = price if price else (live or 0)
         lines = [
             f"🏛️ <b>تحليل عملة {tg_escape(resolved)}</b>",
-            f"⭐ التقييم: {signal.get('score', 0)}/100 (لا توجد فرصة مطابقة للبيفوت والقاع الحقيقي)",
+            f"⭐ التقييم: {signal.get('score', 0)}/100 (لا توجد فرصة قاع حقيقي)",
             f"💵 آخر إغلاق 15m: {format_num(shown_price, decimals_for(shown_price or 1))}",
             f"📝 السبب: {tg_escape(reject or signal.get('reason', ''))}",
         ]
@@ -587,7 +587,7 @@ def build_stats():
         return "📈 لا توجد صفقات مغلقة بعد."
     wr = (int(r["w"]) / n) * 100
     open_n = int(db_query("SELECT COUNT(*) AS n FROM positions", one=True)["n"])
-    return (f"📈 <b>إحصائيات الأداء (Pivot + True Bottom)</b>\nعدد الصفقات المغلقة: {n}\n"
+    return (f"📈 <b>إحصائيات الأداء (True Bottom)</b>\nعدد الصفقات المغلقة: {n}\n"
             f"رابحة: {int(r['w'])} | خاسرة: {int(r['l'])} | WinRate: {wr:.1f}%\n"
             f"إجمالي العائد: {float(r['tr']):+.2f}R | المتوسط: {float(r['ar']):+.2f}R\n"
             f"الصفقات المفتوحة حالياً: {open_n}")
@@ -714,12 +714,12 @@ def keepalive_loop():
 
 
 # ================= Telegram updates =================
-HELP_TEXT = ("🤖 <b>مرحباً بك في البوت V81.0 (Pivot + True Bottom)</b>\n\n"
-             "• يرسل إشارات لونغ عند توافق دعم نقاط البيفوت (S1/S2/PP) مع تكوين القاع الحقيقي واختراق القمة (CHoCH).\n"
+HELP_TEXT = ("🤖 <b>مرحباً بك في البوت V80.0 (True Bottom & CHoCH)</b>\n\n"
+             "• يرسل إشارات لونغ تلقائياً فقط عند تشكيل 'القاع الحقيقي' وكسر القمة السابقة (CHoCH).\n"
              "• <code>/scan</code> فحص فوري للسوق\n"
              "• <code>/stats</code> إحصائيات الأداء\n"
              "• <code>/positions</code> الصفقات المفتوحة\n"
-             "• أرسل رمز عملة مثل <code>SOL</code> لتحليلها يدوياً.")
+             "• أرسل رمز عملة مثل <code>SOL</code> لتحليلها يدوياً وفق استراتيجية القاع الحقيقي.")
 
 
 def handle_update(data):
@@ -740,14 +740,14 @@ def handle_update(data):
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
         elif cmd == "/scan":
-            tg_send("🔍 بدأ الفحص (بيفوت + قاع حقيقي)...", chat_id)
+            tg_send("🔍 بدأ الفحص وفق استراتيجية القاع الحقيقي...", chat_id)
             found = scan_once(blocking=False)
             if found is None:
                 tg_send("⏳ فحص آخر يعمل حالياً، حاول بعد قليل.", chat_id)
             elif found == 0:
-                tg_send("🔍 لم يتم رصد توافق دقيق بين نقاط البيفوت والقاع الحقيقي حالياً. ننتظر الفرصة الأقوى!", chat_id)
+                tg_send("🔍 لم يتم رصد قيعان حقيقية مؤكدة حالياً. الصبر أفضل من الدخول العشوائي!", chat_id)
             else:
-                tg_send(f"✅ انتهى الفحص: تم رصد وإرسال {found} صفقة مطابقة للإستراتيجية.", chat_id)
+                tg_send(f"✅ انتهى الفحص: تم رصد وإرسال {found} صفقة مطابقة للشروط.", chat_id)
         elif cmd == "/stats":
             tg_send(build_stats(), chat_id)
         elif cmd == "/positions":
@@ -768,7 +768,7 @@ def handle_update(data):
 def index():
     now = time.time()
     return jsonify({
-        "status": "running", "version": "V81.0-PivotTrueBottom", "stats": scan_stats,
+        "status": "running", "version": "V80.0-TrueBottom", "stats": scan_stats,
         "heartbeat_age_sec": {k: int(now - v) for k, v in heartbeat.items()},
         "threads_alive": {k: bool(t and t.is_alive()) for k, t in threads.items()},
     })
@@ -806,7 +806,7 @@ def bootstrap():
     start_worker("tracker", tracker_loop)
     threading.Thread(target=watchdog_loop, daemon=True, name="watchdog").start()
     threading.Thread(target=keepalive_loop, daemon=True, name="keepalive").start()
-    logger.info("Bot V81.0 (Pivot + True Bottom) bootstrapped successfully.")
+    logger.info("Bot V80.0 (True Bottom) bootstrapped successfully.")
 
 
 bootstrap()
