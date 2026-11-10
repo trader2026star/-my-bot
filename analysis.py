@@ -1,6 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V80.0 (True Bottom & CHoCH / SMC)
-# LONG ONLY | Market Structure, CHoCH, True Bottom & Liquidity Sweeps
+# analysis.py — StrategyEngine V82.0 (High Volume Breakout PRO)
+# LONG ONLY | High Volume Spike + Resistance Breakout + 4 TPs
 # ============================================================
 import logging
 import uuid
@@ -66,9 +66,9 @@ def validate_signal(signal):
         if signal["stop_loss"] <= 0 or signal["stop_loss"] >= signal["entry"]:
             return False, "stop_loss must be < entry for LONG"
         tps = signal["take_profits"]
-        if len(tps) != 3 or any(tp <= signal["entry"] for tp in tps):
-            return False, "need 3 TPs, all > entry for LONG"
-        if not (tps[0] < tps[1] < tps[2]):
+        if len(tps) < 4 or any(tp <= signal["entry"] for tp in tps):
+            return False, "need at least 4 TPs, all > entry for LONG"
+        if not (tps[0] < tps[1] < tps[2] < tps[3]):
             return False, "TPs must be ascending"
     if is_signal_expired(signal):
         return False, "signal expired"
@@ -117,32 +117,39 @@ class StrategyEngine:
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
-    def detect_true_bottom_and_choch(self, df):
+    def detect_high_volume_breakout(self, df):
         """
-        Detects True Bottom (القاع الحقيقي) + CHoCH (Change of Character):
-        1. Identifies a sweep or lowest low (True Bottom).
-        2. Confirms a change in character by breaking above recent structure/high.
+        Detects Azhail High Volume Breakout PRO:
+        1. Volume spike (Current volume >= 2.0x average of last 20 candles).
+        $. Price breaks above recent consolidation resistance (highest high of last 15 candles).
+        3. Bullish candle confirmation.
         """
         if len(df) < 25:
-            return False, 0.0, "insufficient data"
+            return False, 0.0, 0.0, "insufficient data"
 
+        volumes = df["volume"].values
+        closes = df["close"].values
         highs = df["high"].values
         lows = df["low"].values
-        closes = df["close"].values
+        opens = df["open"].values
 
-        recent_high = highs[-20:-5].max()
-        last_close = closes[-1]
+        last_vol = volumes[-1]
+        avg_vol = np.mean(volumes[-21:-1]) if len(volumes) >= 21 else np.mean(volumes[:-1])
         
-        # Check CHoCH (breaking above recent high after a dip)
-        broken_high = last_close > recent_high
-        min_idx = np.argmin(lows[-15:])
-        true_bottom = float(lows[-15:][min_idx])
-        holding_above = last_close > true_bottom
+        # Volume ratio check (at least 1.8x to 2x average volume)
+        volume_spike = last_vol >= (avg_vol * 1.8)
 
-        if broken_high and holding_above:
-            return True, true_bottom, "True Bottom & CHoCH Confirmed"
+        # Resistance breakout check (breaking highest high of past 15 candles excluding current)
+        recent_resistance = highs[-16:-1].max()
+        last_close = closes[-1]
+        last_open = opens[-1]
+        breakout = last_close > recent_resistance and last_close > last_open
 
-        return False, 0.0, "No structural CHoCH / True Bottom setup"
+        if volume_spike and breakout:
+            breakout_low = float(lows[-1])
+            return True, recent_resistance, breakout_low, "High Volume Breakout Confirmed (Vol Ratio: %.1fX)" % (last_vol / avg_vol if avg_vol > 0 else 1.0)
+
+        return False, 0.0, 0.0, "No volume breakout setup"
 
     def htf_trend_ok(self, ohlcv_1h):
         try:
@@ -184,7 +191,7 @@ class StrategyEngine:
         neutral = build_signal(
             direction="NEUTRAL", entry=0.0, stop_loss=0.0,
             take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="insufficient data or structure conditions not met",
+            reason="insufficient data or volume breakout conditions not met",
         )
         try:
             if ohlcv_15m is None or len(ohlcv_15m) < 65:
@@ -208,25 +215,26 @@ class StrategyEngine:
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
             reasons = []
 
-            # ---- Run True Bottom & CHoCH Strategy Detection ----
-            structure_ok, swing_low, setup_reason = self.detect_true_bottom_and_choch(df)
-            if not structure_ok:
-                reasons.append("no true bottom / CHoCH structure broken")
+            # ---- Run High Volume Breakout PRO Detection ----
+            breakout_ok, resistance_lvl, breakout_candle_low, setup_reason = self.detect_high_volume_breakout(df)
+            if not breakout_ok:
+                reasons.append("no high volume breakout detected")
                 neutral["reason"] = " | ".join(reasons)
                 return "NEUTRAL", price, neutral
 
-            # Stop loss below the true bottom swing low with buffer
-            stop = swing_low - (0.2 * atr)
+            # Stop loss below the breakout candle low or structured buffer
+            stop = breakout_candle_low - (0.2 * atr)
             if stop >= price:
                 stop = price - (0.8 * atr)
 
             risk_dist = price - stop
 
-            # 3 Take Profits based on R-multiples
-            tp1 = price + (1.5 * risk_dist)
-            tp2 = price + (2.5 * risk_dist)
-            tp3 = price + (4.0 * risk_dist)
-            targets = [tp1, tp2, tp3]
+            # 4 Take Profits matching Azhail style (TP1, TP2, TP3, TP4)
+            tp1 = price + (1.0 * risk_dist)
+            tp2 = price + (2.0 * risk_dist)
+            tp3 = price + (2.8 * risk_dist)
+            tp4 = price + (4.0 * risk_dist)
+            targets = [tp1, tp2, tp3, tp4]
 
             rr1 = (tp1 - price) / risk_dist
             if rr1 < MIN_RR_TP1:
@@ -247,6 +255,8 @@ class StrategyEngine:
                 return "NEUTRAL", price, neutral
 
             max_entry = price + MAX_CHASE_R * (price - stop)
+            entry_zone_min = float(df["low"].iloc[-1])
+            entry_zone_max = price
 
             signal = build_signal(
                 direction="LONG",
@@ -260,9 +270,10 @@ class StrategyEngine:
                 details={
                     "trigger_price": round(price, decimals),
                     "max_entry": round(max_entry, decimals),
+                    "entry_zone": f"{round(entry_zone_min, decimals)} - {round(entry_zone_max, decimals)}",
                     "risk_pct": round(risk["risk_pct"], 3),
                     "notional": round(risk["notional"], 2),
-                    "triggers": ["true_bottom_choch_smc"],
+                    "triggers": ["high_volume_breakout_pro"],
                 },
             )
             return "LONG", price, signal
