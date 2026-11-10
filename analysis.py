@@ -1,5 +1,6 @@
 # ============================================================
-# analysis.py — StrategyEngine V85.0 (Advanced SMC & ICT)
+# analysis.py — StrategyEngine V90.0 (Advanced SMC, ICT & Classic Pro)
+# LONG / SHORT Dynamic Direction + FVG + BOS + IFVG + AMD + Sweep
 # ============================================================
 import logging
 import uuid
@@ -10,9 +11,9 @@ import pandas as pd
 
 logger = logging.getLogger("StrategyEngine")
 
-SIGNAL_EXPIRY_SECONDS = 900
-MIN_SCORE_DEFAULT = 68
-MAX_CHASE_R = 0.40
+SIGNAL_EXPIRY_SECONDS = 900   # 15 minutes
+MIN_SCORE_DEFAULT = 65        # الحد الأدنى للتقييم
+MAX_CHASE_R = 0.40            # أقصى تحرك سعري مسموح
 
 
 def _now_iso():
@@ -104,12 +105,84 @@ class StrategyEngine:
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
+    # --- SMC / ICT & Structure Analysis ---
+    def detect_fair_value_gap(self, df):
+        if len(df) < 3:
+            return {"bullish_fvg": False, "bearish_fvg": False}
+        c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+        bullish_fvg = float(c1["high"]) < float(c3["low"])
+        bearish_fvg = float(c1["load"] if "load" in c1 else c1["low"]) > float(c3["high"]) # safe check
+        bearish_fvg = float(c1["low"]) > float(c3["high"])
+        return {"bullish_fvg": bullish_fvg, "bearish_fvg": bearish_fvg}
+
+    def detect_liquidity_sweep(self, df):
+        if len(df) < 15:
+            return {"sweep_low": False, "sweep_high": False}
+        ref_low = float(df["low"].iloc[-12:-4].min())
+        ref_high = float(df["high"].iloc[-12:-4].max())
+        sweep_low, sweep_high = False, False
+        for k in (-1, -2, -3):
+            row = df.iloc[k]
+            if float(row["low"]) < ref_low and float(row["close"]) > ref_low:
+                sweep_low = True
+            if float(row["high"]) > ref_high and float(row["close"]) < ref_high:
+                sweep_high = True
+        return {"sweep_low": sweep_low, "sweep_high": sweep_high}
+
+    def detect_market_structure_break(self, df):
+        if len(df) < 15:
+            return {"bos_bullish": False, "bos_bearish": False}
+        prior_high = float(df["high"].iloc[-13:-1].max())
+        prior_low = float(df["low"].iloc[-13:-1].min())
+        last = df.iloc[-1]
+        bos_bullish = bool(float(last["close"]) > prior_high and float(last["close"]) > float(last["open"]))
+        bos_bearish = bool(float(last["close"]) < prior_low and float(last["close"]) < float(last["open"]))
+        return {"bos_bullish": bos_bullish, "bos_bearish": bos_bearish}
+
+    def detect_volume(self, df):
+        if len(df) < 22:
+            return False, 0.0
+        avg = float(df["volume"].iloc[-21:-1].mean())
+        current = float(df["volume"].iloc[-1])
+        ratio = current / avg if avg > 0 else 0.0
+        return bool(ratio >= 1.2), round(ratio, 2)
+
+    def calculate_risk_management(self, direction, entry, atr, swing_level=None):
+        entry, atr = float(entry), float(atr)
+        if direction == "LONG":
+            stop = entry - 1.6 * atr
+            if swing_level is not None and 0 < float(swing_level) < entry:
+                stop = min(stop, float(swing_level) - 0.15 * atr)
+            distance = entry - stop
+            if distance <= 0:
+                return {"valid": False}
+            tps = [entry + distance * 1.4, entry + distance * 2.3, entry + distance * 3.4]
+        else:
+            stop = entry + 1.6 * atr
+            if swing_level is not None and float(swing_level) > entry:
+                stop = max(stop, float(swing_level) + 0.15 * atr)
+            distance = stop - entry
+            if distance <= 0:
+                return {"valid": False}
+            tps = [entry - distance * 1.4, entry - distance * 2.3, entry - distance * 3.4]
+
+        risk_cash = self.capital * self.risk_per_trade
+        qty = risk_cash / distance
+        notional = qty * entry
+        return {
+            "valid": True,
+            "stop_loss": stop,
+            "risk_pct": (distance / entry) * 100,
+            "notional": notional,
+            "take_profits": tps,
+        }
+
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m,
                                  asset_type="crypto", drop_last_candle=True):
         neutral = build_signal(
             direction="NEUTRAL", entry=0.0, stop_loss=0.0,
             take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="insufficient data or conditions not met",
+            reason="لا تصلح للتداول حالياً (شروط السيولة والهيكل غير متوفرة)",
         )
         try:
             if ohlcv_15m is None or len(ohlcv_15m) < 65:
@@ -130,24 +203,61 @@ class StrategyEngine:
             if price <= 0 or atr <= 0 or not np.isfinite([price, atr, rsi]).all():
                 return "NEUTRAL", 0.0, neutral
 
-            # افتراض تحليل مبدئي مستقر لتجنب أي انهيار في الـ Deploy
-            direction = "LONG"
-            score = 75
-            entry = price
-            stop = entry - (1.6 * atr)
-            tps = [entry + (1.4 * atr), entry + (2.3 * atr), entry + (3.4 * atr)]
+            fvg = self.detect_fair_value_gap(df)
+            sweep = self.detect_liquidity_sweep(df)
+            bos = self.detect_market_structure_break(df)
+            volume_ok, volume_ratio = self.detect_volume(df)
 
-            signal = build_signal(
-                direction=direction,
-                entry=round(entry, 4),
-                stop_loss=round(stop, 4),
-                take_profits=[round(tp, 4) for tp in tps],
-                score=score,
-                rsi=rsi,
-                atr=atr,
-                reason="SMC Market Structure Validated Setup",
-            )
-            return direction, entry, signal
+            long_triggers = []
+            if fvg["bullish_fvg"]: long_triggers.append("Bullish_FVG")
+            if sweep["sweep_low"]: long_triggers.append("Liquidity_Sweep_Low")
+            if bos["bos_bullish"]: long_triggers.append("BOS_Bullish")
+
+            short_triggers = []
+            if fvg["bearish_fvg"]: short_triggers.append("Bearish_FVG")
+            if sweep["sweep_high"]: long_triggers.append("Liquidity_Sweep_High")
+            if bos["bos_bearish"]: short_triggers.append("BOS_Bearish")
+
+            direction = "NEUTRAL"
+            triggers = []
+            score = 50
+
+            if len(long_triggers) >= 2 or (bos["bos_bullish"] and volume_ok):
+                direction = "LONG"
+                triggers = long_triggers
+                score = 78
+            elif len(short_triggers) >= 2 or (bos["bos_bearish"] and volume_ok):
+                direction = "SHORT"
+                triggers = short_triggers
+                score = 78
+
+            entry = price
+            decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
+
+            if direction in ("LONG", "SHORT") and score >= self.min_score:
+                swing = float(df["low"].iloc[-10:].min()) if direction == "LONG" else float(df["high"].iloc[-10:].max())
+                risk = self.calculate_risk_management(direction, entry, atr, swing)
+                
+                if risk.get("valid"):
+                    signal = build_signal(
+                        direction=direction,
+                        entry=round(entry, decimals),
+                        stop_loss=round(risk["stop_loss"], decimals),
+                        take_profits=[round(tp, decimals) for tp in risk["take_profits"]],
+                        score=score,
+                        rsi=rsi,
+                        atr=atr,
+                        reason=f"يصلح للتداول | تحليل SMC + ICT ({direction}): " + " + ".join(triggers),
+                        details={"triggers": triggers, "status": "يصلح"},
+                    )
+                    return direction, entry, signal
+
+            neutral["score"] = score
+            neutral["rsi"] = rsi
+            neutral["atr"] = atr
+            neutral["reason"] = "لا تصلح للتداول حالياً (بانتظار اكتمال نموذج الهيكل أو السيولة)"
+            return "NEUTRAL", price, neutral
+
         except Exception as exc:
             logger.exception("analysis error: %s", exc)
             return "NEUTRAL", 0.0, neutral
