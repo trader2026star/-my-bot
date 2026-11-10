@@ -1,83 +1,85 @@
 # ============================================================
-# analysis.py — StrategyEngine V80.0 (Pure Python / No Pandas)
+# main.py — BingX Trading Bot Runner (Pure Python & Lightweight)
 # ============================================================
+import time
 import logging
-import uuid
-from datetime import datetime, timezone
+import ccxt
+from analysis import StrategyEngine
 
-logger = logging.getLogger("StrategyEngine")
+# إعداد السجلات (Logging)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("TradingBotMain")
 
-def _now_iso():
-    return datetime.now(timezone.utc).isoformat()
+def run_bot():
+    logger.info("🚀 Starting Lightweight BingX Trading Bot (V80)...")
 
-def _new_signal_id():
-    return uuid.uuid4().hex[:16]
+    # تهيئة الاتصال بمنصة بينج إكس (BingX) عبر CCXT
+    try:
+        exchange = ccxt.bingx({
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap', # لتداول العقود الآجلة (Futures / Swap)
+            }
+        })
+    except Exception as e:
+        logger.error(f"Failed to initialize exchange connection: {e}")
+        return
 
-def build_signal(direction, entry, stop_loss, take_profits, score, rsi, atr, reason, details=None):
-    return {
-        "signal_id": _new_signal_id(),
-        "created_at": _now_iso(),
-        "direction": direction,
-        "entry": float(entry),
-        "stop_loss": float(stop_loss),
-        "take_profits": [float(tp) for tp in take_profits],
-        "score": int(score),
-        "rsi": float(rsi),
-        "atr": float(atr),
-        "reason": str(reason),
-        "details": details or {},
-    }
+    # تهيئة محرك الاستراتيجية برأس المال وإدارة المخاطر
+    engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=75)
 
-class StrategyEngine:
-    def __init__(self, capital=10000.0, risk_per_trade=0.01, min_score=75, max_leverage=5.0):
-        self.capital = max(1.0, float(capital))
-        self.risk_per_trade = min(0.02, max(0.001, float(risk_per_trade)))
-        self.min_score = int(min_score)
-        self.max_leverage = max(1.0, float(max_leverage))
+    # قائمة العملات المراد مراقبتها وفحصها
+    symbols_to_scan = [
+        'BTC/USDT:USDT',
+        'ETH/USDT:USDT',
+        'ONUSDT/USDT:USDT',
+        'SLXUSDT/USDT:USDT'
+    ]
 
-    def analyze_market_structure(self, ohlcv_15m, ohlcv_1h=None):
-        neutral = build_signal("NEUTRAL", 0.0, 0.0, [], 0, 50.0, 0.0, "conditions not met")
+    scan_interval_seconds = 300  # الفحص كل 5 دقائق
+
+    while True:
         try:
-            if not ohlcv_15m or len(ohlcv_15m) < 30:
-                return "NEUTRAL", 0.0, neutral
-
-            # استخراج الأسعار بستخدام بايثون العادي بدون مكتبات ثقيلة
-            closes = [candle[4] for candle in ohlcv_15m]
-            lows = [candle[3] for candle in ohlcv_15m]
-            highs = [candle[2] for candle in ohlcv_15m]
-
-            last_close = closes[-1]
-            recent_low = min(lows[-15:])
-            recent_high_max = max(closes[-10:-2])
+            logger.info("🔍 Scanning markets for structural setups (True Bottom & CHoCH)...")
             
-            # حساب تقريبي للـ ATR (متوسط النطاق)
-            tr_list = [highs[i] - lows[i] for i in range(len(highs))][-14:]
-            atr = sum(tr_list) / len(tr_list) if tr_list else 0.001
+            for symbol in symbols_to_scan:
+                symbol_err = symbol
+                try:
+                    # جلب شموع فريم 15 دقيقة (لتحليل الهيكل والدخول)
+                    ohlcv_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
 
-            # فحص القاع الحقيقي والـ CHoCH المبسط
-            if last_close > recent_high_max:
-                stop = recent_low - (0.2 * atr)
-                risk_dist = last_close - stop
-                if risk_dist <= 0:
-                    return "NEUTRAL", last_close, neutral
+                    if not ohlcv_15m:
+                        logger.warning(f"Could not fetch data for {symbol}")
+                        continue
 
-                tp1 = last_close + (1.5 * risk_dist)
-                tp2 = last_close + (2.5 * risk_dist)
-                tp3 = last_close + (4.0 * risk_dist)
+                    # تحليل الهيكل باستخدام محرك الاستراتيجية النقي
+                    direction, price, signal = engine.analyze_market_structure(ohlcv_15m=ohlcv_15m)
 
-                signal = build_signal(
-                    direction="LONG",
-                    entry=round(last_close, 4),
-                    stop_loss=round(stop, 4),
-                    take_profits=[round(tp1, 4), round(tp2, 4), round(tp3, 4)],
-                    score=85,
-                    rsi=55.0,
-                    atr=atr,
-                    reason="True Bottom & CHoCH Confirmed (Pure Python)",
-                )
-                return "LONG", last_close, signal
+                    if direction == "LONG":
+                        logger.info(f"🚨 [LONG SIGNAL FOUND] Symbol: {symbol} | Price: {price}")
+                        logger.info(f"   Reason: {signal['reason']}")
+                        logger.info(f"   Entry: {signal['entry']} | SL: {signal['stop_loss']}")
+                        logger.info(f"   Take Profits: {signal['take_profits']}")
 
-            return "NEUTRAL", last_close, neutral
-        except Exception as e:
-            neutral["reason"] = str(e)
-            return "NEUTRAL", 0.0, neutral
+                        # يمكنك إضافة كود إرسال التنبيه أو تنفيذ الصفقة هنا
+                    else:
+                        logger.debug(f"Market structure neutral for {symbol} at {price}")
+
+                except Exception as inner_e:
+                    logger.error(f"Error analyzing {symbol_err}: {inner_e}")
+
+            logger.info(f"💤 Sleeping for {scan_interval_seconds} seconds before next scan...")
+            time.sleep(scan_interval_seconds)
+
+        except KeyboardInterrupt:
+            logger.info("🛑 Bot stopped manually.")
+            break
+        except Exception as outer_e:
+            logger.error(f"⚠️ Error in main loop: {outer_e}")
+            time.sleep(60)
+
+if __name__ == "__main__":
+    run_bot()
