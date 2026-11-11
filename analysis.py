@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V98.0 (Sniper Smart Flow Engine)
+# analysis.py — StrategyEngine V99.0 (Full Market Sniper Flow)
 # ============================================================
 import logging
 import uuid
@@ -90,9 +90,7 @@ class StrategyEngine:
             if price <= 0 or atr <= 0:
                 return "NEUTRAL", 0.0, neutral
 
-            # محاكاة تحليل الزخم والدلتا المؤسسية
             ema20 = float(df["close"].ewm(span=20).mean().iloc[-1])
-            ema50 = float(df["close"].ewm(span=50).mean().iloc[-1])
             vol_mean = df["volume"].rolling(20).mean().iloc[-1]
             last_vol = df["volume"].iloc[-1]
             volume_ok = last_vol > (vol_mean * 1.15)
@@ -116,7 +114,6 @@ class StrategyEngine:
                     tp1 = price - (1.5 * atr)
                     tp2 = price - (3.0 * atr)
 
-                # حساب العائد التقديري للرافعة (ROE %)
                 roe1 = round(abs((tp1 - price) / price) * 100 * leverage, 1)
                 roe2 = round(abs((tp2 - price) / price) * 100 * leverage, 1)
                 roe_sl = round(abs((stop - price) / price) * 100 * leverage, 1)
