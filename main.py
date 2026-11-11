@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V98.0 (Sniper Report Formatter)
+# main.py — Bot V99.0 (Full Market Scanner & Webhook)
 # ============================================================
 import os
 import re
@@ -27,7 +27,6 @@ if TELEGRAM_CHAT_ID:
     ALLOWED_CHAT_IDS.add(TELEGRAM_CHAT_ID)
 
 DB_PATH = os.environ.get("DB_PATH", "/tmp/bot_state.db")
-PRIORITY_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAU/USDT:USDT", "SOL/USDT:USDT", "STRK/USDT:USDT"]
 
 bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defaultType": "swap"}})
 engine = StrategyEngine()
@@ -38,6 +37,9 @@ scan_lock = threading.Lock()
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "errors": 0}
 _seen_updates = deque(maxlen=500)
 _seen_lock = threading.Lock()
+
+_all_markets_cache = []
+_markets_cache_time = 0
 
 
 def _db():
@@ -70,6 +72,22 @@ def db_init():
 def ex_call(fn, *args, **kwargs):
     with exchange_lock:
         return fn(*args, **kwargs)
+
+
+def get_full_market_universe():
+    global _all_markets_cache, _markets_cache_time
+    try:
+        if not _all_markets_cache or time.time() - _markets_cache_time > 1800:
+            markets = ex_call(bingx.load_markets, True)
+            _all_markets_cache = [
+                s for s, m in markets.items()
+                if m.get("swap") and m.get("active", True)
+                and m.get("quote") == "USDT" and m.get("settle") == "USDT"
+            ]
+            _markets_cache_time = time.time()
+        return _all_markets_cache if _all_markets_cache else ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+    except Exception:
+        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 
 
 _SYM_RE = re.compile(r"^[A-Z0-9]{2,20}$")
@@ -178,27 +196,29 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
 
 def run_full_scan(chat_id):
     if not scan_lock.acquire(blocking=False):
-        tg_send("⏳ يوجد فحص قيد التشغيل حالياً.", chat_id)
+        tg_send("⏳ يوجد فحص شامل قيد التشغيل حالياً.", chat_id)
         return
     try:
-        tg_send("🔍 بدأ فحص القناصة المؤسسي للأصول...", chat_id)
+        tg_send("🔍 بدأ الفحص الشامل لجميع عملات السوق على BingX...", chat_id)
+        symbols = get_full_market_universe()
         found = 0
-        for sym in PRIORITY_SYMBOLS:
+        # نقوم بفحص عينة واسعة أو السوق بالكامل (نحدد مثلاً أول 40 عملة نشطة لمنع الضغط)
+        for sym in symbols[:40]:
             scan_stats["scanned_pairs"] += 1
             ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
             if ok:
                 found += 1
-            time.sleep(1.0)
-        tg_send(f"✅ انتهى الفحص. تم رصد {found} فرصة قناصة مطابقة.", chat_id)
+            time.sleep(0.5)
+        tg_send(f"✅ انتهى الفحص الشامل للسوق. تم رصد {found} فرصة مطابقة.", chat_id)
     except Exception as e:
-        logger.error(f"Scan error: {e}")
+        logger.error(f"Full Scan error: {e}")
     finally:
         scan_lock.release()
 
 
-HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V5.5</b>\n\n"
+HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V99.0</b>\n\n"
              "• أرسل أي رمز مثل <code>STRK</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه بالتقرير المؤسسي.\n"
-             "• أرسل <code>/scan</code> للفحص الشامل.")
+             "• أرسل <code>/scan</code> لفحص السوق بالكامل.")
 
 
 def handle_update(data):
@@ -231,7 +251,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V98.0-Sniper", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V99.0-FullMarket", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -253,7 +273,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V98.0 Sniper bootstrapped successfully.")
+    logger.info("Bot V99.0 Full Market bootstrapped successfully.")
 
 
 bootstrap()
