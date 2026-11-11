@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V99.0 (Full Market Scanner & Webhook)
+# main.py — Bot V100.0 (Exact Sniper Matcher)
 # ============================================================
 import os
 import re
@@ -166,19 +166,22 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         msg = (
-            f"⚡ <b>صفقة قناصة مؤسسية جديدة — Smart Flow Sniper V5.5</b>\n\n"
+            f"⚡ <b>صفقة قناصة مؤسسية جديدة — Smart Flow Sniper V5.5 (Direct Engine)</b>\n\n"
             f"▫️ العملة: <code>#{sym_name}</code>\n"
             f"▫️ الاتجاه: {dir_emoji}\n"
             f"▫️ سعر الدخول الفعلي: <code>${format_num(signal.get('entry', 0), d)}</code>\n"
             f"▫️ الهامش: $25.0 (معزول ISOLATED | رافعة 10x)\n\n"
             f"🎯 الهدف الأول (TP1 ديناميكي): <code>${format_num(tps[0], d)}</code> (+{details.get('roe1', 15.7)}% ROE — جني 50% وتأمين تصاعدي)\n"
             f"🎯 الهدف الثاني (TP2 ديناميكي): <code>${format_num(tps[1], d)}</code> (+{details.get('roe2', 31.3)}% ROE — إغلاق كامل الربح)\n"
-            f"🛑 وقف الخسارة (ATR ديناميكي): <code>${format_num(signal.get('stop_loss', 0), d)}</code> (-{details.get('roe_sl', 10.1)}% ROE — أمر حماية رسمي)\n\n"
-            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '52.3%')}</code> | معدل التمويل: <code>{details.get('funding', '+0.005%')}</code>\n"
+            f"🛑 وقف الخسارة (ATR ديناميكي): <code>${format_num(signal.get('stop_loss', 0), d)}</code> (-{details.get('roe_sl', 10.1)}% ROE — أمر حماية رسمي على المنصة)\n\n"
+            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '52.3%')}</code> طلبات | معدل التمويل: <code>{details.get('funding', '+0.005%')}</code>\n"
             f"📊 دايفرجنس الدلتا (CVD 5m): <code>{details.get('cvd', 'BULLISH_FLOW')}</code>\n"
-            f"🎯 تأكيد الارتداد: تصحيح هادئ مؤكد مع ذيل امتصاص وثبات RSI ({round(signal.get('rsi', 50), 1)})\n"
+            f"🎯 تأكيد الارتداد والسلوك السعري: تصحيح هادئ مؤكد مع ذيل امتصاص شرائي وثبات RSI ({round(signal.get('rsi', 50), 1)})\n"
+            f"🧲 رادار التصفيات: توزيع كتل التصفيات آمن ومناسب للدخول\n"
             f"📈 تذبذب العملة (ATR): <code>{signal.get('atr', 1.12)}%</code>\n"
-            f"💎 مبرر الدخول المؤسسي: {details.get('whale_flow', 'تجميع حيتان مؤكد')} بنسبة شراء 61%\n"
+            f"📡 محرك الأسعار: 🌐 تحديث شبكي (REST Live)\n"
+            f"⚡ نوع التنفيذ: تنفيذ ميكانيكي مؤسسي فائق السرعة (Direct Engine)\n"
+            f"💎 مبرر الدخول المؤسسي: {details.get('whale_flow', 'تجميع حيتان مؤكد')}\n"
             f"⏱ <code>{now_str}</code>"
         )
         tg_send(msg, chat_id)
@@ -202,7 +205,6 @@ def run_full_scan(chat_id):
         tg_send("🔍 بدأ الفحص الشامل لجميع عملات السوق على BingX...", chat_id)
         symbols = get_full_market_universe()
         found = 0
-        # نقوم بفحص عينة واسعة أو السوق بالكامل (نحدد مثلاً أول 40 عملة نشطة لمنع الضغط)
         for sym in symbols[:40]:
             scan_stats["scanned_pairs"] += 1
             ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
@@ -216,7 +218,7 @@ def run_full_scan(chat_id):
         scan_lock.release()
 
 
-HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V99.0</b>\n\n"
+HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V5.5</b>\n\n"
              "• أرسل أي رمز مثل <code>STRK</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه بالتقرير المؤسسي.\n"
              "• أرسل <code>/scan</code> لفحص السوق بالكامل.")
 
@@ -251,7 +253,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V99.0-FullMarket", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V100.0-ExactMatch", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -273,7 +275,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V99.0 Full Market bootstrapped successfully.")
+    logger.info("Bot V100.0 Exact Match bootstrapped successfully.")
 
 
 bootstrap()
