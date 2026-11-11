@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V90.0 (MultiMarket Scanner & Webhook)
+# main.py — Bot V91.0 (MultiMarket Scanner & Webhook Fixed)
 # Crypto + Gold + Forex (BingX Swaps) - LONG & SHORT Support
 # ============================================================
 import os
@@ -30,13 +30,14 @@ if TELEGRAM_CHAT_ID:
     ALLOWED_CHAT_IDS.add(TELEGRAM_CHAT_ID)
 
 DB_PATH = os.environ.get("DB_PATH", "/tmp/bot_state.db")
-PRIORITY_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAU/USDT:USDT", "SOL/USDT:USDT"]
+PRIORITY_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAU/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT", "XRP/USDT:USDT"]
 
 bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defaultType": "swap"}})
 engine = StrategyEngine()
 
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
+scan_lock = threading.Lock()
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "errors": 0}
 _seen_updates = deque(maxlen=500)
 _seen_lock = threading.Lock()
@@ -101,15 +102,6 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
         except Exception:
             pass
     return None, None
-
-
-def fetch_last_price(symbol):
-    try:
-        t = ex_call(bingx.fetch_ticker, symbol)
-        p = float(t.get("last") or t.get("close") or 0)
-        return p if p > 0 else None
-    except Exception:
-        return None
 
 
 def tg_send(message, chat_id=None):
@@ -181,8 +173,29 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     return False, signal
 
 
-HELP_TEXT = ("🤖 <b>مرحباً بك في بوت التحليل المتقدم V90.0</b>\n\n"
-             "• أرسل أي رمز (مثل <code>XAU</code> أو <code>SOL</code> أو <code>BTC</code>) لمعرفة إن كان <b>يصلح أم لا</b> واتجاه الصفقة بدقة.")
+def run_full_scan(chat_id):
+    if not scan_lock.acquire(blocking=False):
+        tg_send("⏳ يوجد فحص قيد التشغيل حالياً، انتظر قليلاً.", chat_id)
+        return
+    try:
+        tg_send("🔍 بدأ الفحص الشامل للأصول الأساسية...", chat_id)
+        found = 0
+        for sym in PRIORITY_SYMBOLS:
+            scan_stats["scanned_pairs"] += 1
+            ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
+            if ok:
+                found += 1
+            time.sleep(1.0)
+        tg_send(f"✅ انتهى الفحص الشامل. تم رصد {found} فرصة صالحة للتداول.", chat_id)
+    except Exception as e:
+        logger.error(f"Scan error: {e}")
+    finally:
+        scan_lock.release()
+
+
+HELP_TEXT = ("🤖 <b>مرحباً بك في بوت التحليل المتقدم V91.0</b>\n\n"
+             "• أرسل أي رمز (مثل <code>XAU</code> أو <code>SOL</code> أو <code>BTC</code>) لمعرفة إن كان <b>يصلح أم لا</b> واتجاه الصفقة.\n"
+             "• أرسل الأمر <code>/scan</code> لبدء الفحص الشامل.")
 
 
 def handle_update(data):
@@ -199,8 +212,11 @@ def handle_update(data):
 
         parts = text.split()
         cmd = parts[0].split("@")[0].lower()
+        
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
+        elif cmd == "/scan":
+            threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
             if not base_of(parts[0]):
                 tg_send("❌ رمز غير صالح. مثال: <code>XAU</code> أو <code>SOL</code>", chat_id)
@@ -212,7 +228,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V90.0-Pro", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V91.0-Pro", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -234,7 +250,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V90.0 bootstrapped successfully.")
+    logger.info("Bot V91.0 bootstrapped successfully.")
 
 
 bootstrap()
