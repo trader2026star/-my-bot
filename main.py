@@ -1,16 +1,13 @@
 # ============================================================
-# main.py — Bot V91.0 (MultiMarket Scanner & Webhook Fixed)
-# Crypto + Gold + Forex (BingX Swaps) - LONG & SHORT Support
+# main.py — Bot V95.0 (Telegram Webhook & Scanner)
 # ============================================================
 import os
 import re
 import time
-import hashlib
 import threading
 import logging
 import sqlite3
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import ccxt
@@ -30,7 +27,7 @@ if TELEGRAM_CHAT_ID:
     ALLOWED_CHAT_IDS.add(TELEGRAM_CHAT_ID)
 
 DB_PATH = os.environ.get("DB_PATH", "/tmp/bot_state.db")
-PRIORITY_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAU/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT", "XRP/USDT:USDT"]
+PRIORITY_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAU/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT"]
 
 bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defaultType": "swap"}})
 engine = StrategyEngine()
@@ -132,9 +129,9 @@ def format_num(v, d):
 
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 110)
-    if not resolved or not candles15 or len(candles15) < 65:
+    if not resolved or not candles15 or len(candles15) < 50:
         if manual:
-            tg_send(f"❌ العملة أو الأصل <code>{symbol_raw}</code> <b>لا تصلح للتداول</b> لعدم كفاية البيانات.", chat_id)
+            tg_send(f"❌ الأصل <code>{symbol_raw}</code> <b>لا يملك بيانات كافية</b> أو لا يصلح للتداول.", chat_id)
         return False, None
 
     _, candles5 = fetch_ohlcv(resolved, "5m", 40)
@@ -144,19 +141,23 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     if direction in ("LONG", "SHORT"):
         d = decimals_for(price)
         tps = signal.get("take_profits", [0, 0, 0])
-        dir_text = "🟢 <b>يصلح (صفقة لونغ LONG)</b>" if direction == "LONG" else "🔴 <b>يصلح (صفقة شورت SHORT)</b>"
+        details = signal.get("details", {})
+        
+        dir_text = "🟢 <b>صفقة قناصة (LONG - شراء مؤسسي)</b>" if direction == "LONG" else "🔴 <b>صفقة قناصة (SHORT - بيع مؤسسي)</b>"
         
         msg = (
-            f"🚨 <b>تقرير التحليل الفني المؤكد</b>\n"
+            f"⚡ <b>Smart Flow Sniper V5.5</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"🪙 الأصل: <code>{resolved}</code>\n"
-            f"📌 الحالة: {dir_text}\n"
+            f"🪙 العملة: <code>{resolved}</code>\n"
+            f"📌 الاتجاه: {dir_text}\n"
             f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>\n"
-            f"🎯 الدخول: <code>{format_num(signal.get('entry', 0), d)}</code>\n"
-            f"🛑 الستوب: <code>{format_num(signal.get('stop_loss', 0), d)}</code>\n"
+            f"💵 سعر الدخول: <code>{format_num(signal.get('entry', 0), d)}</code>\n"
             f"🥇 TP1: <code>{format_num(tps[0], d)}</code>\n"
             f"🥈 TP2: <code>{format_num(tps[1], d)}</code>\n"
             f"🥉 TP3: <code>{format_num(tps[2], d)}</code>\n"
+            f"🛑 وقف الخسارة: <code>{format_num(signal.get('stop_loss', 0), d)}</code>\n"
+            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '52%')}</code>\n"
+            f"📊 تدفق الدلتا CVD: <code>{details.get('cvd', 'BULLISH_FLOW')}</code>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"📝 السبب: {signal.get('reason', '')}"
         )
@@ -167,7 +168,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
             f"❌ <b>لا تصلح للتداول حالياً (Neutral)</b>\n"
-            f"📝 السبب: {signal.get('reason', 'الشروط الفنية والسيولة لم تكتمل بعد.')}"
+            f"📝 السبب: {signal.get('reason', 'الشروط المؤسسية لم تكتمل بعد.')}"
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -175,10 +176,10 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
 
 def run_full_scan(chat_id):
     if not scan_lock.acquire(blocking=False):
-        tg_send("⏳ يوجد فحص قيد التشغيل حالياً، انتظر قليلاً.", chat_id)
+        tg_send("⏳ يوجد فحص قيد التشغيل حالياً.", chat_id)
         return
     try:
-        tg_send("🔍 بدأ الفحص الشامل للأصول الأساسية...", chat_id)
+        tg_send("🔍 بدأ فحص القناصة المؤسسي للأصول...", chat_id)
         found = 0
         for sym in PRIORITY_SYMBOLS:
             scan_stats["scanned_pairs"] += 1
@@ -186,16 +187,16 @@ def run_full_scan(chat_id):
             if ok:
                 found += 1
             time.sleep(1.0)
-        tg_send(f"✅ انتهى الفحص الشامل. تم رصد {found} فرصة صالحة للتداول.", chat_id)
+        tg_send(f"✅ انتهى الفحص. تم رصد {found} فرصة قناصة مطابقة.", chat_id)
     except Exception as e:
         logger.error(f"Scan error: {e}")
     finally:
         scan_lock.release()
 
 
-HELP_TEXT = ("🤖 <b>مرحباً بك في بوت التحليل المتقدم V91.0</b>\n\n"
-             "• أرسل أي رمز (مثل <code>XAU</code> أو <code>SOL</code> أو <code>BTC</code>) لمعرفة إن كان <b>يصلح أم لا</b> واتجاه الصفقة.\n"
-             "• أرسل الأمر <code>/scan</code> لبدء الفحص الشامل.")
+HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V95.0</b>\n\n"
+             "• أرسل أي رمز مثل <code>XAU</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه ومعرفة إن كان <b>يصلح للتداول المؤسسي أم لا</b>.\n"
+             "• أرسل <code>/scan</code> للفحص الشامل.")
 
 
 def handle_update(data):
@@ -228,7 +229,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V91.0-Pro", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V95.0-SmartFlow", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -250,7 +251,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V91.0 bootstrapped successfully.")
+    logger.info("Bot V95.0 Smart Flow bootstrapped successfully.")
 
 
 bootstrap()
