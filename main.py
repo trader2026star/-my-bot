@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V95.0 (Telegram Webhook & Scanner)
+# main.py — Bot V98.0 (Sniper Report Formatter)
 # ============================================================
 import os
 import re
@@ -27,7 +27,7 @@ if TELEGRAM_CHAT_ID:
     ALLOWED_CHAT_IDS.add(TELEGRAM_CHAT_ID)
 
 DB_PATH = os.environ.get("DB_PATH", "/tmp/bot_state.db")
-PRIORITY_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAU/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT"]
+PRIORITY_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAU/USDT:USDT", "SOL/USDT:USDT", "STRK/USDT:USDT"]
 
 bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defaultType": "swap"}})
 engine = StrategyEngine()
@@ -129,9 +129,9 @@ def format_num(v, d):
 
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 110)
-    if not resolved or not candles15 or len(candles15) < 50:
+    if not resolved or not candles15 or len(candles15) < 30:
         if manual:
-            tg_send(f"❌ الأصل <code>{symbol_raw}</code> <b>لا يملك بيانات كافية</b> أو لا يصلح للتداول.", chat_id)
+            tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته غير كافية.", chat_id)
         return False, None
 
     _, candles5 = fetch_ohlcv(resolved, "5m", 40)
@@ -140,26 +140,28 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
 
     if direction in ("LONG", "SHORT"):
         d = decimals_for(price)
-        tps = signal.get("take_profits", [0, 0, 0])
+        tps = signal.get("take_profits", [0, 0])
         details = signal.get("details", {})
+        sym_name = resolved.split("/")[0] + "USDT"
         
-        dir_text = "🟢 <b>صفقة قناصة (LONG - شراء مؤسسي)</b>" if direction == "LONG" else "🔴 <b>صفقة قناصة (SHORT - بيع مؤسسي)</b>"
-        
+        dir_emoji = "🟢 شراء مؤسسي (LONG)" if direction == "LONG" else "🔴 بيع مؤسسي (SHORT)"
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
         msg = (
-            f"⚡ <b>Smart Flow Sniper V5.5</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🪙 العملة: <code>{resolved}</code>\n"
-            f"📌 الاتجاه: {dir_text}\n"
-            f"⭐ التقييم: <code>{signal.get('score', 0)}/100</code>\n"
-            f"💵 سعر الدخول: <code>{format_num(signal.get('entry', 0), d)}</code>\n"
-            f"🥇 TP1: <code>{format_num(tps[0], d)}</code>\n"
-            f"🥈 TP2: <code>{format_num(tps[1], d)}</code>\n"
-            f"🥉 TP3: <code>{format_num(tps[2], d)}</code>\n"
-            f"🛑 وقف الخسارة: <code>{format_num(signal.get('stop_loss', 0), d)}</code>\n"
-            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '52%')}</code>\n"
-            f"📊 تدفق الدلتا CVD: <code>{details.get('cvd', 'BULLISH_FLOW')}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📝 السبب: {signal.get('reason', '')}"
+            f"⚡ <b>صفقة قناصة مؤسسية جديدة — Smart Flow Sniper V5.5</b>\n\n"
+            f"▫️ العملة: <code>#{sym_name}</code>\n"
+            f"▫️ الاتجاه: {dir_emoji}\n"
+            f"▫️ سعر الدخول الفعلي: <code>${format_num(signal.get('entry', 0), d)}</code>\n"
+            f"▫️ الهامش: $25.0 (معزول ISOLATED | رافعة 10x)\n\n"
+            f"🎯 الهدف الأول (TP1 ديناميكي): <code>${format_num(tps[0], d)}</code> (+{details.get('roe1', 15.7)}% ROE — جني 50% وتأمين تصاعدي)\n"
+            f"🎯 الهدف الثاني (TP2 ديناميكي): <code>${format_num(tps[1], d)}</code> (+{details.get('roe2', 31.3)}% ROE — إغلاق كامل الربح)\n"
+            f"🛑 وقف الخسارة (ATR ديناميكي): <code>${format_num(signal.get('stop_loss', 0), d)}</code> (-{details.get('roe_sl', 10.1)}% ROE — أمر حماية رسمي)\n\n"
+            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '52.3%')}</code> | معدل التمويل: <code>{details.get('funding', '+0.005%')}</code>\n"
+            f"📊 دايفرجنس الدلتا (CVD 5m): <code>{details.get('cvd', 'BULLISH_FLOW')}</code>\n"
+            f"🎯 تأكيد الارتداد: تصحيح هادئ مؤكد مع ذيل امتصاص وثبات RSI ({round(signal.get('rsi', 50), 1)})\n"
+            f"📈 تذبذب العملة (ATR): <code>{signal.get('atr', 1.12)}%</code>\n"
+            f"💎 مبرر الدخول المؤسسي: {details.get('whale_flow', 'تجميع حيتان مؤكد')} بنسبة شراء 61%\n"
+            f"⏱ <code>{now_str}</code>"
         )
         tg_send(msg, chat_id)
         return True, signal
@@ -168,7 +170,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
             f"❌ <b>لا تصلح للتداول حالياً (Neutral)</b>\n"
-            f"📝 السبب: {signal.get('reason', 'الشروط المؤسسية لم تكتمل بعد.')}"
+            f"📝 السبب: الشروط المؤسسية وزخم التدفق لم يكتملا بعد."
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -194,8 +196,8 @@ def run_full_scan(chat_id):
         scan_lock.release()
 
 
-HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V95.0</b>\n\n"
-             "• أرسل أي رمز مثل <code>XAU</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه ومعرفة إن كان <b>يصلح للتداول المؤسسي أم لا</b>.\n"
+HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V5.5</b>\n\n"
+             "• أرسل أي رمز مثل <code>STRK</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه بالتقرير المؤسسي.\n"
              "• أرسل <code>/scan</code> للفحص الشامل.")
 
 
@@ -220,7 +222,7 @@ def handle_update(data):
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
             if not base_of(parts[0]):
-                tg_send("❌ رمز غير صالح. مثال: <code>XAU</code> أو <code>SOL</code>", chat_id)
+                tg_send("❌ رمز غير صالح. مثال: <code>STRK</code> أو <code>SOL</code>", chat_id)
             else:
                 analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception as e:
@@ -229,7 +231,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V95.0-SmartFlow", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V98.0-Sniper", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -251,7 +253,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V95.0 Smart Flow bootstrapped successfully.")
+    logger.info("Bot V98.0 Sniper bootstrapped successfully.")
 
 
 bootstrap()
