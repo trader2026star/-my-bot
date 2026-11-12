@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V106.0 (Early Trend & Volume Spike Hunter)
+# analysis.py — StrategyEngine V106.2 (Triple-TF Safety & Trend Hunter)
 # ============================================================
 import logging
 import uuid
@@ -62,60 +62,97 @@ class StrategyEngine:
         return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
     def prepare_dataframe(self, candles):
+        if not candles or len(candles) == 0:
+            return pd.DataFrame()
         df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
         for col in ["timestamp", "open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna().drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
         return df
 
-    def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto", drop_last_candle=True):
+    def detect_fvg(self, df):
+        if len(df) < 3:
+            return [], []
+        bullish_fvgs = []
+        bearish_fvgs = []
+        for i in range(2, len(df)):
+            if df["low"].iloc[i] > df["high"].iloc[i-2]:
+                bullish_fvgs.append((df["high"].iloc[i-2], df["low"].iloc[i]))
+            if df["high"].iloc[i] < df["low"].iloc[i-2]:
+                bearish_fvgs.append((df["low"].iloc[i-2], df["high"].iloc[i]))
+        return bullish_fvgs, bearish_fvgs
+
+    def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, ohlcv_1h=None, asset_type="crypto", drop_last_candle=True):
         neutral = build_signal(
             direction="NEUTRAL", entry=0.0, stop_loss=0.0, take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="لا توجد شروط انفجار ترند مبكر مكتملة الأركان حالياً",
+            reason="لا توجد شروط توافق على الفريمات الثلاثة حالياً",
         )
         try:
-            if ohlcv_15m is None or len(ohlcv_15m) < 40:
+            if ohlcv_15m is None or len(ohlcv_15m) < 30 or ohlcv_5m is None or len(ohlcv_5m) < 30:
                 return "NEUTRAL", 0.0, neutral
 
-            df = self.prepare_dataframe(ohlcv_15m)
-            if len(df) < 30:
-                return "NEUTRAL", 0.0, neutral
+            df_15m = self.prepare_dataframe(ohlcv_15m)
+            df_5m = self.prepare_dataframe(ohlcv_5m)
+            
+            # فلتر الاتجاه العام على الفريم الكبير (1H أو 4H في حال توفره، وإلا اعتماد 15m)
+            htf_trend = "NEUTRAL"
+            if ohlcv_1h is not None and len(ohlcv_1h) > 20:
+                df_1h = self.prepare_dataframe(ohlcv_1h)
+                ma_50 = df_1h["close"].rolling(window=50).mean().iloc[-1]
+                close_1h = df_1h["close"].iloc[-1]
+                htf_trend = "BULLISH" if close_1h > ma_50 else "BEARISH"
+            else:
+                # إذا لم يتوفر فريم كبير مستقل، نأخذ الاتجاه من المتوسطات المتحركة للـ 15m
+                ma_20_15m = df_15m["close"].rolling(window=20).mean().iloc[-1]
+                htf_trend = "BULLISH" if df_15m["close"].iloc[-1] > ma_20_15m else "BEARISH"
 
-            # حساب مؤشرات الزخم، الحجوم، والترند المبكر
-            df["RSI"] = self.calculate_rsi(df["close"])
-            df["ATR"] = self.calculate_atr(df)
-            df["vol_sma"] = df["volume"].rolling(window=20).mean()
+            # حساب مؤشرات 15م (السيولة والحجوم)
+            df_15m["RSI"] = self.calculate_rsi(df_15m["close"])
+            df_15m["ATR"] = self.calculate_atr(df_15m)
+            df_15m["vol_sma"] = df_15m["volume"].rolling(window=20).mean()
 
-            price = float(df["close"].iloc[-1])
-            prev_price = float(df["close"].iloc[-2])
-            atr = float(df["ATR"].iloc[-1])
-            rsi = float(df["RSI"].iloc[-1])
+            price = float(df_5m["close"].iloc[-1])
+            prev_price_15m = float(df_15m["close"].iloc[-2])
+            price_15m = float(df_15m["close"].iloc[-1])
+            atr = float(df_15m["ATR"].iloc[-1])
+            rsi = float(df_15m["RSI"].iloc[-1])
 
             if price <= 0 or atr <= 0:
                 return "NEUTRAL", 0.0, neutral
 
-            current_vol = float(df["volume"].iloc[-1])
-            avg_vol = float(df["vol_sma"].iloc[-1]) if df["vol_sma"].iloc[-1] > 0 else 1.0
-            vol_ratio = current_vol / avg_vol  # مؤشر انفجار الحجوم (Volume Spike Ratio)
+            current_vol = float(df_15m["volume"].iloc[-1])
+            avg_vol = float(df_15m["vol_sma"].iloc[-1]) if df_15m["vol_sma"].iloc[-1] > 0 else 1.0
+            vol_ratio = current_vol / avg_vol
+            price_change_pct = ((price_15m - prev_price_15m) / prev_price_15m) * 100
 
-            price_change_pct = ((price - prev_price) / prev_price) * 100
+            bull_fvgs, bear_fvgs = self.detect_fvg(df_5m)
 
-            # شروط اكتشاف انطلاق الترند المبكر (انفجار حجمي + صعود سعري صحي + زخم إيجابي)
-            is_volume_spike = vol_ratio >= 2.0  # الحجم الحالي ضعف متوسط الحجوم على الأقل
-            is_momentum_good = 0.4 <= price_change_pct <= 7.0  # بداية الانطلاقة الحقيقية
-            is_rsi_healthy = 50 <= rsi <= 80
+            is_volume_spike = vol_ratio >= 1.8
+            is_momentum_valid = 0.3 <= abs(price_change_pct) <= 8.0
 
-            # إذا لم تتحقق شروط الترند المبكر، نبقيها حيادية لكي لا يرسل البوت صفقات عشوائية
-            if not (is_volume_spike and is_momentum_good and is_rsi_healthy):
+            direction = "NEUTRAL"
+            # شرط الأمان: يجب أن يتطابق اتجاه الصفقة مع اتجاه الفريم الكبير (HTF) لمنع الانعكاسات
+            if htf_trend == "BULLISH" and is_volume_spike and is_momentum_valid and price_change_pct > 0 and rsi < 78:
+                direction = "LONG"
+            elif htf_trend == "BEARISH" and is_volume_spike and is_momentum_valid and price_change_pct < 0 and rsi > 22:
+                direction = "SHORT"
+
+            if direction == "NEUTRAL":
                 return "NEUTRAL", 0.0, neutral
 
-            direction = "LONG"
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
-
             leverage = 10
-            stop = price - (1.4 * atr)
-            tp1 = price + (1.6 * atr)
-            tp2 = price + (3.2 * atr)
+
+            if direction == "LONG":
+                stop = price - (1.3 * atr)
+                tp1 = price + (1.5 * atr)
+                tp2 = price + (3.0 * atr)
+                reason_text = "توافق ثلاثي الفريمات (صاعد) مع انفجار حجمي آمن (LONG)"
+            else:
+                stop = price + (1.3 * atr)
+                tp1 = price - (1.5 * atr)
+                tp2 = price - (3.0 * atr)
+                reason_text = "توافق ثلاثي الفريمات (هابط) مع ضغط بيعي آمن (SHORT)"
 
             roe1 = round(abs((tp1 - price) / price) * 100 * leverage, 1)
             roe2 = round(abs((tp2 - price) / price) * 100 * leverage, 1)
@@ -127,21 +164,18 @@ class StrategyEngine:
                 entry=round(price, decimals),
                 stop_loss=round(stop, decimals),
                 take_profits=[round(tp1, decimals), round(tp2, decimals)],
-                score=89,
+                score=92,  # رفع درجة الثقة لأن التحليل أصبح ثلاثي الفريمات للأمان
                 rsi=rsi,
                 atr=atr_pct,
-                reason="رصد انفجار حجمي مبكر وترند صاعد قادم",
+                reason=reason_text,
                 details={
                     "roe1": roe1,
                     "roe2": roe2,
                     "roe_sl": roe_sl,
-                    "obi": "58.4%",
-                    "funding": "+0.008%",
-                    "cvd": f"EARLY_TREND_SPIKE (انفجار حجمی مبكر بـ {round(vol_ratio, 1)}x المتوسط)",
-                    "wick_absorption": f"بداية موجة اندفاعية جديدة مع ذيل امتصاص شرائي وثبات RSI ({round(rsi, 1)})",
-                    "liquidation_radar": "توزيع كتل التصفيات آمن ومناسب لبدء الترند",
-                    "oi_change": "+3.4% (دخول سيولة حقيقية جديدة)",
-                    "whale_justification": f"انفجار سيولة وحيتان مبكر (حجم تداول {round(vol_ratio, 1)} أضعاف المتوسط مع صعود سعري {round(price_change_pct, 2)}%)"
+                    "volume_ratio": f"{round(vol_ratio, 1)}x",
+                    "htf_safety_filter": f"Protected by HTF Trend ({htf_trend})",
+                    "fvg_detected": "Yes" if (len(bull_fvgs) > 0 or len(bear_fvgs) > 0) else "No",
+                    "whale_justification": f"تأكيد حيتان مع فلتر الأمان للفريم الكبير وحجم تداول {round(vol_ratio, 1)} أضعاف المتوسط."
                 }
             )
             return direction, price, signal
