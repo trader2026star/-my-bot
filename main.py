@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V107.0 (Structure Break & Flag Sniper)
+# main.py — Bot V108.0 (Multi-Target Pro Sniper & Auto-Scanner)
 # ============================================================
 import os
 import re
@@ -147,16 +147,16 @@ def format_num(v, d):
 
 
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
-    resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 100)
-    if not resolved or not candles15 or len(candles15) < 40:
+    resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 110)
+    if not resolved or not candles15 or len(candles15) < 30:
         if manual:
             tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته غير كافية.", chat_id)
         return False, None
 
-    _, candles5 = fetch_ohlcv(resolved, "5m", 80)
+    _, candles5 = fetch_ohlcv(resolved, "5m", 50)
     _, candles1h = fetch_ohlcv(resolved, "1h", 60)
 
-    if not candles5 or len(candles5) < 40:
+    if not candles5 or len(candles5) < 30:
         return False, None
 
     scan_stats["scanned_pairs"] += 1
@@ -172,25 +172,21 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             _sent_signals_cache[sym_name] = time.time()
 
         d = decimals_for(price)
-        tps = signal.get("take_profits", [0, 0])
-        details = signal.get("details", {})
+        tps = signal.get("take_profits", [0, 0, 0, 0])
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-        dir_icon = "🟢 اختراق علم صاعد (LONG)" if direction == "LONG" else "🔴 كسر علم هابط (SHORT)"
+        dir_label = "شراء (LONG)" if direction == "LONG" else "بيع (SELL)"
 
         msg = (
-            f"🚩 <b>قناص الهيكل ونمط العلم — V107.0</b>\n\n"
-            f"▫️ العملة: <code>#{sym_name}</code> | الفريم: <code>{details.get('pattern_tf', '5m')}</code>\n"
-            f"▫️ الإشارة: <b>{dir_icon}</b>\n"
-            f"▫️ سعر الدخول (الاختراق): <code>${format_num(signal.get('entry', 0), d)}</code>\n"
-            f"▫️ الهامش: $25.0 (معزول ISOLATED | رافعة 10x)\n\n"
-            f"🎯 الهدف الأول (TP1): <code>${format_num(tps[0], d)}</code> (+{details.get('roe1', 15.0)}% ROE)\n"
-            f"🎯 الهدف الثاني (TP2): <code>${format_num(tps[1], d)}</code> (+{details.get('roe2', 30.0)}% ROE)\n"
-            f"🛑 وقف الخسارة (الهيكلي): <code>${format_num(signal.get('stop_loss', 0), d)}</code> (-{details.get('roe_sl', 8.5)}% ROE)\n\n"
-            f"💥 كسر الهيكل (CHoCH): <code>${format_num(details.get('broken_level', 0), d)}</code>\n"
-            f"📊 حجم السارية: <code>{details.get('volume_ratio', '2.0x')}</code> | الفجوة: <code>{details.get('fvg_detected', 'N/A')}</code>\n"
-            f"🛡️ فلتر فريم الساعة: <code>{details.get('htf_safety_filter', 'Protected')}</code>\n"
-            f"💎 التحليل: {details.get('whale_justification', '')}\n"
+            f"📊 <b>إشارة تداول جديدة — فريم 15m</b>\n\n"
+            f"▫️ العملة: <code>#{sym_name}</code>\n"
+            f"▫️ الاتجاه: <b>{dir_label}</b>\n"
+            f"▫️ منطقة الدخول: <code>{format_num(signal.get('entry_low', 0), d)} – {format_num(signal.get('entry_high', 0), d)}</code>\n"
+            f"▫️ وقف الخسارة: <code>{format_num(signal.get('stop_loss', 0), d)}</code>\n\n"
+            f"🎯 الهدف 1: <code>{format_num(tps[0], d)}</code>\n"
+            f"🎯 الهدف 2: <code>{format_num(tps[1], d)}</code>\n"
+            f"🎯 الهدف 3: <code>{format_num(tps[2], d)}</code>\n"
+            f"🎯 الهدف 4: <code>{format_num(tps[3], d)}</code>\n\n"
             f"⏱ <code>{now_str}</code>"
         )
         scan_stats["signals_sent"] += 1
@@ -200,8 +196,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     if manual:
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
-            f"⏳ <b>لا يوجد نموذج كسر هيكل + اختراق علم مكتمل حالياً</b>\n"
-            f"📝 ننتظر شمعة اندفاعية تكسر الهيكل يليها تجميع علم ثم اختراق مؤكد."
+            f"⏳ <b>لا توجد إشارة مكتملة الأركان حالياً</b>\n"
+            f"📝 ننتظر الشروط الفنية المتوافقة مع أهداف فريم 15د."
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -214,7 +210,7 @@ def run_full_scan(chat_id=None):
         return
     try:
         if chat_id:
-            tg_send("🔍 جاري مسح السوق لاصطياد كسر الهيكل (CHoCH) واختراق نمط العلم...", chat_id)
+            tg_send("🔍 جاري مسح السوق لاصطياد الصفقات الاحترافية (فريم 15m)...", chat_id)
         symbols = get_full_market_universe()
         found = 0
         for sym in symbols[:60]:
@@ -223,7 +219,7 @@ def run_full_scan(chat_id=None):
                 found += 1
             time.sleep(0.3)
         if chat_id:
-            tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة اختراق علم مكتملة الشروط.", chat_id)
+            tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة تداول مطابقة للأهداف المتسلسلة.", chat_id)
     except Exception as e:
         logger.error(f"Full Scan error: {e}")
     finally:
@@ -235,7 +231,7 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("Running background Structure & Flag scan...")
+                logger.info("Running background Multi-Target scan...")
                 run_full_scan(chat_id=None)
         except Exception as e:
             logger.error(f"Background scheduler error: {e}")
@@ -243,10 +239,10 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>قناص الهيكل ونمط العلم V107.0</b>\n\n"
-    "• أرسل أي رمز مثل <code>BTC</code> أو <code>SOL</code> لفحصه فوراً.\n"
+    "🤖 <b>بوتين التداول الاحترافي V108.0</b>\n\n"
+    "• أرسل أي رمز مثل <code>BTC</code> أو <code>SOL</code> لفحصه يدويًا.\n"
     "• أرسل <code>/scan</code> لفحص السوق بالكامل.\n"
-    "• 🚩 <b>الاستراتيجية:</b> رصد كسر الهيكل (CHoCH) بشمعة انفجارية -> تجميع علم -> اختراق مؤكد مع حماية فريم 1H."
+    "• 📊 <b>النظام:</b> إرسال توصيات بنظام منطقة دخول و4 أهداف متسلسلة على فريم 15m."
 )
 
 
@@ -280,7 +276,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V107.0-StructureFlag", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V108.0-MultiTarget", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -302,7 +298,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V107.0 Structure & Flag Sniper bootstrapped successfully.")
+    logger.info("Bot V108.0 Multi-Target bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
 
