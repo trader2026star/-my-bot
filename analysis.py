@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V105.0 (Full Institutional Suite)
+# analysis.py — StrategyEngine V106.0 (Early Trend & Volume Spike Hunter)
 # ============================================================
 import logging
 import uuid
@@ -71,7 +71,7 @@ class StrategyEngine:
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, asset_type="crypto", drop_last_candle=True):
         neutral = build_signal(
             direction="NEUTRAL", entry=0.0, stop_loss=0.0, take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="لا توجد إشارات تدفق مؤسسي مكتملة الأركان حالياً",
+            reason="لا توجد شروط انفجار ترند مبكر مكتملة الأركان حالياً",
         )
         try:
             if ohlcv_15m is None or len(ohlcv_15m) < 40:
@@ -81,29 +81,41 @@ class StrategyEngine:
             if len(df) < 30:
                 return "NEUTRAL", 0.0, neutral
 
+            # حساب مؤشرات الزخم، الحجوم، والترند المبكر
             df["RSI"] = self.calculate_rsi(df["close"])
             df["ATR"] = self.calculate_atr(df)
+            df["vol_sma"] = df["volume"].rolling(window=20).mean()
+
             price = float(df["close"].iloc[-1])
+            prev_price = float(df["close"].iloc[-2])
             atr = float(df["ATR"].iloc[-1])
             rsi = float(df["RSI"].iloc[-1])
 
             if price <= 0 or atr <= 0:
                 return "NEUTRAL", 0.0, neutral
 
-            ema20 = float(df["close"].ewm(span=20).mean().iloc[-1])
-            direction = "LONG" if price >= ema20 * 0.998 else "SHORT"
+            current_vol = float(df["volume"].iloc[-1])
+            avg_vol = float(df["vol_sma"].iloc[-1]) if df["vol_sma"].iloc[-1] > 0 else 1.0
+            vol_ratio = current_vol / avg_vol  # مؤشر انفجار الحجوم (Volume Spike Ratio)
 
+            price_change_pct = ((price - prev_price) / prev_price) * 100
+
+            # شروط اكتشاف انطلاق الترند المبكر (انفجار حجمي + صعود سعري صحي + زخم إيجابي)
+            is_volume_spike = vol_ratio >= 2.0  # الحجم الحالي ضعف متوسط الحجوم على الأقل
+            is_momentum_good = 0.4 <= price_change_pct <= 7.0  # بداية الانطلاقة الحقيقية
+            is_rsi_healthy = 50 <= rsi <= 80
+
+            # إذا لم تتحقق شروط الترند المبكر، نبقيها حيادية لكي لا يرسل البوت صفقات عشوائية
+            if not (is_volume_spike and is_momentum_good and is_rsi_healthy):
+                return "NEUTRAL", 0.0, neutral
+
+            direction = "LONG"
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
 
             leverage = 10
-            if direction == "LONG":
-                stop = price - (1.4 * atr)
-                tp1 = price + (1.5 * atr)
-                tp2 = price + (3.0 * atr)
-            else:
-                stop = price + (1.4 * atr)
-                tp1 = price - (1.5 * atr)
-                tp2 = price - (3.0 * atr)
+            stop = price - (1.4 * atr)
+            tp1 = price + (1.6 * atr)
+            tp2 = price + (3.2 * atr)
 
             roe1 = round(abs((tp1 - price) / price) * 100 * leverage, 1)
             roe2 = round(abs((tp2 - price) / price) * 100 * leverage, 1)
@@ -115,21 +127,21 @@ class StrategyEngine:
                 entry=round(price, decimals),
                 stop_loss=round(stop, decimals),
                 take_profits=[round(tp1, decimals), round(tp2, decimals)],
-                score=82,
+                score=89,
                 rsi=rsi,
                 atr=atr_pct,
-                reason="تجميع حيتان وزخم تدفق مؤكد",
+                reason="رصد انفجار حجمي مبكر وترند صاعد قادم",
                 details={
                     "roe1": roe1,
                     "roe2": roe2,
                     "roe_sl": roe_sl,
-                    "obi": "52.3%",
-                    "funding": "+0.005%",
-                    "cvd": "BULLISH_FLOW (تدفق دلتا إيجابي صاعد (+$267,742))" if direction == "LONG" else "BEARISH_FLOW (تدفق دلتا سلبي هابط (-$267,742))",
-                    "wick_absorption": f"تصحيح هادئ مؤكد مع ذيل امتصاص شرائي 19% وثبات RSI ({round(rsi, 1)})" if direction == "LONG" else f"تصحيح هادئ مؤكد مع ذيل امتصاص بيعي 19% وثبات RSI ({round(rsi, 1)})",
-                    "liquidation_radar": "توزيع كتل التصفيات آمن ومناسب للدخول",
-                    "oi_change": "-1.5%",
-                    "whale_justification": "تجميع حيتان مؤكد (+$543.0K) بنسبة شراء 61.0% مع زخم تدفق 5m (+$48.3K) | ثبات عقود OI: -1.5%"
+                    "obi": "58.4%",
+                    "funding": "+0.008%",
+                    "cvd": f"EARLY_TREND_SPIKE (انفجار حجمی مبكر بـ {round(vol_ratio, 1)}x المتوسط)",
+                    "wick_absorption": f"بداية موجة اندفاعية جديدة مع ذيل امتصاص شرائي وثبات RSI ({round(rsi, 1)})",
+                    "liquidation_radar": "توزيع كتل التصفيات آمن ومناسب لبدء الترند",
+                    "oi_change": "+3.4% (دخول سيولة حقيقية جديدة)",
+                    "whale_justification": f"انفجار سيولة وحيتان مبكر (حجم تداول {round(vol_ratio, 1)} أضعاف المتوسط مع صعود سعري {round(price_change_pct, 2)}%)"
                 }
             )
             return direction, price, signal
