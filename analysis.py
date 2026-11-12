@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V108.0 (Multi-Target Pro Sniper)
+# analysis.py — StrategyEngine V109.0 (Az_Hail Exact Style)
 # ============================================================
 import logging
 import uuid
@@ -74,16 +74,13 @@ class StrategyEngine:
     def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, ohlcv_1h=None, asset_type="crypto", drop_last_candle=True):
         neutral = build_signal(
             direction="NEUTRAL", entry_low=0.0, entry_high=0.0, stop_loss=0.0, take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="لا توجد شروط متطابقة مع استراتيجية الأهداف المتعددة حالياً",
+            reason="لا توجد شروط متطابقة مع استراتيجية 15m حالياً",
         )
         try:
-            if ohlcv_15m is None or len(ohlcv_15m) < 40 or ohlcv_5m is None or len(ohlcv_5m) < 40:
+            if ohlcv_15m is None or len(ohlcv_15m) < 40:
                 return "NEUTRAL", 0.0, neutral
 
             df_15m = self.prepare_dataframe(ohlcv_15m)
-            df_5m = self.prepare_dataframe(ohlcv_5m)
-
-            # مؤشرات فريم 15د لتحديد الزخم العام
             df_15m["RSI"] = self.calculate_rsi(df_15m["close"])
             df_15m["ATR"] = self.calculate_atr(df_15m)
             df_15m["vol_sma"] = df_15m["volume"].rolling(window=20).mean()
@@ -101,21 +98,21 @@ class StrategyEngine:
             vol_ratio = current_vol / avg_vol
             price_change_pct = ((price - prev_price) / prev_price) * 100
 
-            # فلتر فريم الساعة للأمان
+            # فلتر اتجاه فريم الساعة لضمان الأمان وعدم عكس التيار
             htf_trend = "BULLISH"
-            if ohlcv_1h is not None and len(ohlcv_1h) >= 25:
+            if ohlcv_1h is not None and len(ohlcv_1h) >= 20:
                 df_1h = self.prepare_dataframe(ohlcv_1h)
-                ma_50 = df_1h["close"].rolling(window=30).mean().iloc[-1]
+                ma_50 = df_1h["close"].rolling(window=25).mean().iloc[-1]
                 htf_trend = "BULLISH" if float(df_1h["close"].iloc[-1]) > ma_50 else "BEARISH"
 
-            # شروط الاكتشاف (انفجار حجمي + تحرك سعري يتوافق مع الصور)
-            is_spike = vol_ratio >= 1.7
-            is_valid_move = abs(price_change_pct) >= 0.4
+            # شروط رصد الزخم واختراق الحجوم على فريم 15m (مثل شارتات عز حائل)
+            is_volume_active = vol_ratio >= 1.5
+            is_movement_good = abs(price_change_pct) >= 0.3
 
             direction = "NEUTRAL"
-            if htf_trend == "BULLISH" and is_spike and is_valid_move and price_change_pct > 0 and 40 <= rsi <= 78:
+            if htf_trend == "BULLISH" and is_volume_active and is_movement_good and price_change_pct > 0 and 35 <= rsi <= 75:
                 direction = "LONG"
-            elif htf_trend == "BEARISH" and is_spike and is_valid_move and price_change_pct < 0 and 22 <= rsi <= 60:
+            elif htf_trend == "BEARISH" and is_volume_active and is_movement_good and price_change_pct < 0 and 25 <= rsi <= 65:
                 direction = "SHORT"
 
             if direction == "NEUTRAL":
@@ -123,25 +120,25 @@ class StrategyEngine:
 
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
 
-            # بناء منطقة الدخول المزدوجة والأهداف الـ 4 تماماً مثل صور "عز حائل"
+            # حساب منطقة الدخول (Entry Range)، وقف الخسارة، والأهداف الأربعة تماماً مثل تنسيق الشارتات
             if direction == "LONG":
-                entry_low = price * 0.998
-                entry_high = price * 1.002
-                stop_loss = price - (1.6 * atr)
-                tp1 = price + (1.2 * atr)
-                tp2 = price + (2.4 * atr)
-                tp3 = price + (4.0 * atr)
-                tp4 = price + (6.0 * atr)
-                reason_text = "رصد إشارة شراء (شراء 15m) مع أهداف متسلسلة واختراق سيولة"
+                entry_low = price * 0.997
+                entry_high = price * 1.001
+                stop_loss = price - (1.8 * atr)
+                tp1 = price + (1.3 * atr)
+                tp2 = price + (2.5 * atr)
+                tp3 = price + (4.2 * atr)
+                tp4 = price + (6.5 * atr)
+                reason_text = "إشارة شراء (شراء 15m) وفق نمط الزخم والسيولة"
             else:
-                entry_low = price * 0.998
-                entry_high = price * 1.002
-                stop_loss = price + (1.6 * atr)
-                tp1 = price - (1.2 * atr)
-                tp2 = price - (2.4 * atr)
-                tp3 = price - (4.0 * atr)
-                tp4 = price - (6.0 * atr)
-                reason_text = "رصد إشارة بيع (بيع 15m) مع أهداف هابطة متسلسلة"
+                entry_low = price * 0.999
+                entry_high = price * 1.003
+                stop_loss = price + (1.8 * atr)
+                tp1 = price - (1.3 * atr)
+                tp2 = price - (2.5 * atr)
+                tp3 = price - (4.2 * atr)
+                tp4 = price - (6.5 * atr)
+                reason_text = "إشارة بيع (بيع 15m) وفق نمط الزخم والهبوط"
 
             tps = [round(tp1, decimals), round(tp2, decimals), round(tp3, decimals), round(tp4, decimals)]
             atr_pct = round((atr / price) * 100, 2)
@@ -152,14 +149,13 @@ class StrategyEngine:
                 entry_high=round(entry_high, decimals),
                 stop_loss=round(stop_loss, decimals),
                 take_profits=tps,
-                score=91,
+                score=90,
                 rsi=rsi,
                 atr=atr_pct,
                 reason=reason_text,
                 details={
-                    "volume_ratio": f"{round(vol_ratio, 1)}x",
-                    "strategy_style": "عز حائل برو (15m Multi-Target)",
-                    "market_structure": "اختراق هيكلي مع تأكيد الحجوم"
+                    "tf": "15m",
+                    "vol_ratio": f"{round(vol_ratio, 1)}x"
                 }
             )
             return direction, price, signal
