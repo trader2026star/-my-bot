@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V106.0 (Early Trend Hunter & Auto-Scanner)
+# main.py — Bot V106.2 (Triple-TF Safety, Long/Short & Auto-Scanner)
 # ============================================================
 import os
 import re
@@ -40,7 +40,7 @@ _seen_lock = threading.Lock()
 
 _all_markets_cache = []
 _markets_cache_time = 0
-# منع إرسال نفس التقرير لنفس العملة بتكرار خلال 4 ساعات لاصطياد الترندات المتجددة
+# منع إرسال نفس التقرير لنفس العملة بتكرار خلال 4 ساعات
 _sent_signals_cache = {}
 
 
@@ -107,7 +107,7 @@ def base_of(raw):
     return s
 
 
-def fetch_ohlcv(symbol_raw, timeframe, limit=100):
+def fetch_ohlcv(symbol_raw, timeframe, limit=110):
     base = base_of(symbol_raw)
     if not base:
         return None, None
@@ -154,9 +154,15 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته غير كافية.", chat_id)
         return False, None
 
-    _, candles5 = fetch_ohlcv(resolved, "5m", 40)
+    _, candles5 = fetch_ohlcv(resolved, "5m", 50)
+    _, candles1h = fetch_ohlcv(resolved, "1h", 60) # جلب فريم الساعة للأمان وفلتر الاتجاه الكبير
+
+    if not candles5 or len(candles5) < 30:
+        return False, None
+
     scan_stats["scanned_pairs"] += 1
-    direction, price, signal = engine.analyze_market_structure(candles5, candles15)
+    # تمرير الفريمات الثلاثة (5m, 15m, 1h) لدالة التحليل
+    direction, price, signal = engine.analyze_market_structure(candles5, candles15, candles1h)
 
     if direction in ("LONG", "SHORT"):
         sym_name = resolved.split("/")[0] + "USDT"
@@ -174,20 +180,20 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+        dir_icon = "🟢 صاعد آمن (LONG)" if direction == "LONG" else "🔴 هابط آمن (SHORT)"
+        
         msg = (
-            f"🚀 <b>صياد الترند المبكر — Early Trend Hunter V106.0</b>\n\n"
+            f"🛡️ <b>صياد الترند الآمن — Triple-TF V106.2</b>\n\n"
             f"▫️ العملة: <code>#{sym_name}</code>\n"
-            f"▫️ الاتجاه: 🟢 <b>انفجار ترند صاعد مبكر (LONG)</b>\n"
-            f"▫️ سعر الاكتشاف الفعلي: <code>${format_num(signal.get('entry', 0), d)}</code>\n"
+            f"▫️ الاتجاه: <b>{dir_icon}</b>\n"
+            f"▫️ سعر الاكتشاف: <code>${format_num(signal.get('entry', 0), d)}</code>\n"
             f"▫️ الهامش: $25.0 (معزول ISOLATED | رافعة 10x)\n\n"
-            f"🎯 الهدف الأول (TP1 ديناميكي): <code>${format_num(tps[0], d)}</code> (+{details.get('roe1', 15.0)}% ROE)\n"
-            f"🎯 الهدف الثاني (TP2 ديناميكي): <code>${format_num(tps[1], d)}</code> (+{details.get('roe2', 30.0)}% ROE)\n"
+            f"🎯 الهدف الأول (TP1): <code>${format_num(tps[0], d)}</code> (+{details.get('roe1', 15.0)}% ROE)\n"
+            f"🎯 الهدف الثاني (TP2): <code>${format_num(tps[1], d)}</code> (+{details.get('roe2', 30.0)}% ROE)\n"
             f"🛑 وقف الخسارة (ATR): <code>${format_num(signal.get('stop_loss', 0), d)}</code> (-{details.get('roe_sl', 8.5)}% ROE)\n\n"
-            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '58.4%')}</code> | التمويل: <code>{details.get('funding', '+0.008%')}</code>\n"
-            f"📊 مؤشر الحجوم: <code>{details.get('cvd', 'EARLY_TREND_SPIKE')}</code>\n"
-            f"🎯 تأكيد الزخم: {details.get('wick_absorption', 'بداية موجة اندفاعية جديدة')}\n"
-            f"📈 تذبذب العملة (ATR): <code>{signal.get('atr', 1.2)}%</code> | العقود المفتوحة: {details.get('oi_change', '+3.4%')}\n"
-            f"💎 مبرر الصيد المبكر: {details.get('whale_justification', 'انفجار سيولة وحيتان مبكر')}\n"
+            f"📊 قوة الحجوم: <code>{details.get('volume_ratio', '2.0x')}</code> | الفجوة: <code>{details.get('fvg_detected', 'No')}</code>\n"
+            f"🔒 حماية الفريم الكبير: {details.get('htf_safety_filter', 'Protected')}\n"
+            f"💎 المبرر الفني: {details.get('whale_justification', 'توافق سيولة وحيتان ثلاثي الفريمات')}\n"
             f"⏱ <code>{now_str}</code>"
         )
         scan_stats["signals_sent"] += 1
@@ -197,8 +203,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     if manual:
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
-            f"⏳ <b>لا يوجد انفجار ترند مبكر حالياً</b>\n"
-            f"📝 العملة تسير بنطاق عرضي أو لم تشهد انفجاراً حجمياً بعد."
+            f"⏳ <b>لا توجد إشارة مكتملة الشروط على الفريمات الثلاثة حالياً</b>\n"
+            f"📝 العملة لم تجتاز فلتر الأمان للفريم الكبير أو لم تشهد انفجاراً حجمياً مناسباً."
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -211,17 +217,17 @@ def run_full_scan(chat_id=None):
         return
     try:
         if chat_id:
-            tg_send("🔍 جاري فحص السوق بالكامل لاصطياد العملات التي تبدأ بالصعود الانفجاري...", chat_id)
+            tg_send("🔍 جاري فحص السوق بالكامل وفق استراتيجيات الأمان ثلاثي الفريمات...", chat_id)
         symbols = get_full_market_universe()
         found = 0
-        for sym in symbols[:50]:
+        for sym in symbols[:60]:
             scan_stats["scanned_pairs"] += 1
             ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
             if ok:
                 found += 1
             time.sleep(0.3)
         if chat_id:
-            tg_send(f"✅ انتهى مسح السوق لاصطياد الترند. تم رصد {found} عملة بدأت الانفجار.", chat_id)
+            tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة عالية الأمان.", chat_id)
     except Exception as e:
         logger.error(f"Full Scan error: {e}")
     finally:
@@ -229,22 +235,21 @@ def run_full_scan(chat_id=None):
 
 
 def background_auto_scheduler():
-    """حلقة تلقائية تفحص السوق كل 15 دقيقة لاصطياد الترندات المبكرة وترسلها تلقائياً"""
     time.sleep(20)
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("Running background early trend detection scan...")
+                logger.info("Running background Triple-TF safety scan...")
                 run_full_scan(chat_id=None)
         except Exception as e:
             logger.error(f"Background scheduler error: {e}")
         time.sleep(900)
 
 
-HELP_TEXT = ("🤖 <b>مرحباً بك في بوت صياد الترند المبكر V106.0</b>\n\n"
-             "• أرسل أي رمز مثل <code>STRK</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه.\n"
-             "• أرسل <code>/scan</code> لفحص السوق بالكامل يدويًا.\n"
-             "• ⚡ <b>الفحص التلقائي:</b> مفعل في الخلفية لاصطياد العملات عند انفجار حجوم تداولها.")
+HELP_TEXT = ("🤖 <b>مرحباً بك في بوت التداول الآمن V106.2</b>\n\n"
+             "• أرسل أي رمز مثل <code>BTC</code> أو <code>SOL</code> لفحصه يدويًا.\n"
+             "• أرسل <code>/scan</code> لفحص السوق بالكامل.\n"
+             "• 🛡️ <b>الفحص التلقائي:</b> مفعل بفلتر الأمان ثلاثي الفريمات (5م + 15م + 1ساعة).")
 
 
 def handle_update(data):
@@ -268,7 +273,7 @@ def handle_update(data):
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
             if not base_of(parts[0]):
-                tg_send("❌ رمز غير صالح. مثال: <code>STRK</code> أو <code>SOL</code>", chat_id)
+                tg_send("❌ رمز غير صالح. مثال: <code>BTC</code> أو <code>SOL</code>", chat_id)
             else:
                 analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception as e:
@@ -277,7 +282,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V106.0-TrendHunter", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V106.2-Triple-TF", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -299,7 +304,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V106.0 TrendHunter bootstrapped successfully.")
+    logger.info("Bot V106.2 Triple-TF bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
 
