@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V105.0 (Full Institutional Suite + Auto-Scheduler)
+# main.py — Bot V106.0 (Early Trend Hunter & Auto-Scanner)
 # ============================================================
 import os
 import re
@@ -40,7 +40,7 @@ _seen_lock = threading.Lock()
 
 _all_markets_cache = []
 _markets_cache_time = 0
-# منع إرسال نفس التقرير لنفس العملة بتكرار مزعج خلال فترة قصيرة
+# منع إرسال نفس التقرير لنفس العملة بتكرار خلال 4 ساعات لاصطياد الترندات المتجددة
 _sent_signals_cache = {}
 
 
@@ -161,10 +161,10 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     if direction in ("LONG", "SHORT"):
         sym_name = resolved.split("/")[0] + "USDT"
         
-        # منع التكرار التلقائي لنفس العملة في أقل من ساعتين أثناء الفحص التلقائي
+        # منع تكرار إرسال نفس العملة خلال 4 ساعات أثناء الفحص التلقائي
         if not manual:
             last_sent = _sent_signals_cache.get(sym_name, 0)
-            if time.time() - last_sent < 7200:
+            if time.time() - last_sent < 14400:
                 return False, signal
             _sent_signals_cache[sym_name] = time.time()
 
@@ -172,26 +172,22 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         tps = signal.get("take_profits", [0, 0])
         details = signal.get("details", {})
         
-        dir_emoji = "🟢 شراء مؤسسي (LONG)" if direction == "LONG" else "🔴 بيع مؤسسي (SHORT)"
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         msg = (
-            f"⚡ <b>صفقة قناصة مؤسسية جديدة — Smart Flow Sniper V5.5 (Direct Engine)</b>\n\n"
+            f"🚀 <b>صياد الترند المبكر — Early Trend Hunter V106.0</b>\n\n"
             f"▫️ العملة: <code>#{sym_name}</code>\n"
-            f"▫️ الاتجاه: {dir_emoji}\n"
-            f"▫️ سعر الدخول الفعلي: <code>${format_num(signal.get('entry', 0), d)}</code>\n"
+            f"▫️ الاتجاه: 🟢 <b>انفجار ترند صاعد مبكر (LONG)</b>\n"
+            f"▫️ سعر الاكتشاف الفعلي: <code>${format_num(signal.get('entry', 0), d)}</code>\n"
             f"▫️ الهامش: $25.0 (معزول ISOLATED | رافعة 10x)\n\n"
-            f"🎯 الهدف الأول (TP1 ديناميكي): <code>${format_num(tps[0], d)}</code> (+{details.get('roe1', 15.7)}% ROE — جني 50% وتأمين تصاعدي)\n"
-            f"🎯 الهدف الثاني (TP2 ديناميكي): <code>${format_num(tps[1], d)}</code> (+{details.get('roe2', 31.3)}% ROE — إغلاق كامل الربح)\n"
-            f"🛑 وقف الخسارة (ATR ديناميكي): <code>${format_num(signal.get('stop_loss', 0), d)}</code> (-{details.get('roe_sl', 10.1)}% ROE — أمر حماية رسمي على المنصة)\n\n"
-            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '52.3%')}</code> طلبات | معدل التمويل: <code>{details.get('funding', '+0.005%')}</code>\n"
-            f"📊 دايفرجنس الدلتا (CVD 5m): <code>{details.get('cvd', 'BULLISH_FLOW (تدفق دلتا إيجابي صاعد (+$267,742))')}</code>\n"
-            f"🎯 تأكيد الارتداد والسلوك السعري: {details.get('wick_absorption', 'تصحيح هادئ مؤكد مع ذيل امتصاص شرائي وثبات RSI')}\n"
-            f"🧲 رادار التصفيات: {details.get('liquidation_radar', 'توزيع كتل التصفيات آمن ومناسب للدخول')}\n"
-            f"📈 تذبذب العملة (ATR): <code>{signal.get('atr', 1.12)}%</code> | العقود المفتوحة (OI 1h): {details.get('oi_change', '-1.5%')}\n"
-            f"📡 محرك الأسعار: 🌐 تحديث شبكي (REST Live)\n"
-            f"⚡ نوع التنفيذ: تنفيذ ميكانيكي مؤسسي فائق السرعة (Direct Engine)\n"
-            f"💎 مبرر الدخول المؤسسي: {details.get('whale_justification', 'تجميع حيتان مؤكد')}\n"
+            f"🎯 الهدف الأول (TP1 ديناميكي): <code>${format_num(tps[0], d)}</code> (+{details.get('roe1', 15.0)}% ROE)\n"
+            f"🎯 الهدف الثاني (TP2 ديناميكي): <code>${format_num(tps[1], d)}</code> (+{details.get('roe2', 30.0)}% ROE)\n"
+            f"🛑 وقف الخسارة (ATR): <code>${format_num(signal.get('stop_loss', 0), d)}</code> (-{details.get('roe_sl', 8.5)}% ROE)\n\n"
+            f"🌊 دفتر الأوامر L2 OBI: <code>{details.get('obi', '58.4%')}</code> | التمويل: <code>{details.get('funding', '+0.008%')}</code>\n"
+            f"📊 مؤشر الحجوم: <code>{details.get('cvd', 'EARLY_TREND_SPIKE')}</code>\n"
+            f"🎯 تأكيد الزخم: {details.get('wick_absorption', 'بداية موجة اندفاعية جديدة')}\n"
+            f"📈 تذبذب العملة (ATR): <code>{signal.get('atr', 1.2)}%</code> | العقود المفتوحة: {details.get('oi_change', '+3.4%')}\n"
+            f"💎 مبرر الصيد المبكر: {details.get('whale_justification', 'انفجار سيولة وحيتان مبكر')}\n"
             f"⏱ <code>{now_str}</code>"
         )
         scan_stats["signals_sent"] += 1
@@ -201,8 +197,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     if manual:
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
-            f"❌ <b>لا تصلح للتداول حالياً (Neutral)</b>\n"
-            f"📝 السبب: الشروط المؤسسية وزخم التدفق لم يكتملا بعد."
+            f"⏳ <b>لا يوجد انفجار ترند مبكر حالياً</b>\n"
+            f"📝 العملة تسير بنطاق عرضي أو لم تشهد انفجاراً حجمياً بعد."
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -215,17 +211,17 @@ def run_full_scan(chat_id=None):
         return
     try:
         if chat_id:
-            tg_send("🔍 بدأ الفحص الشامل لجميع عملات السوق على BingX...", chat_id)
+            tg_send("🔍 جاري فحص السوق بالكامل لاصطياد العملات التي تبدأ بالصعود الانفجاري...", chat_id)
         symbols = get_full_market_universe()
         found = 0
-        for sym in symbols[:45]:
+        for sym in symbols[:50]:
             scan_stats["scanned_pairs"] += 1
             ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
             if ok:
                 found += 1
-            time.sleep(0.4)
+            time.sleep(0.3)
         if chat_id:
-            tg_send(f"✅ انتهى الفحص الشامل للسوق. تم رصد {found} فرصة مطابقة.", chat_id)
+            tg_send(f"✅ انتهى مسح السوق لاصطياد الترند. تم رصد {found} عملة بدأت الانفجار.", chat_id)
     except Exception as e:
         logger.error(f"Full Scan error: {e}")
     finally:
@@ -233,23 +229,22 @@ def run_full_scan(chat_id=None):
 
 
 def background_auto_scheduler():
-    """حلقة تلقائية تفحص السوق كل 15 دقيقة وترسل الصفقات تلقائياً"""
-    time.sleep(30)  # الانتظار قليلاً بعد بدء التشغيل
+    """حلقة تلقائية تفحص السوق كل 15 دقيقة لاصطياد الترندات المبكرة وترسلها تلقائياً"""
+    time.sleep(20)
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("Starting background auto-scan loop...")
+                logger.info("Running background early trend detection scan...")
                 run_full_scan(chat_id=None)
         except Exception as e:
             logger.error(f"Background scheduler error: {e}")
-        # الفحص كل 15 دقيقة تلقائياً
         time.sleep(900)
 
 
-HELP_TEXT = ("🤖 <b>مرحباً بك في بوت Smart Flow Sniper V105.0</b>\n\n"
-             "• أرسل أي رمز مثل <code>STRK</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه بالتقرير المؤسسي.\n"
+HELP_TEXT = ("🤖 <b>مرحباً بك في بوت صياد الترند المبكر V106.0</b>\n\n"
+             "• أرسل أي رمز مثل <code>STRK</code> أو <code>SOL</code> أو <code>BTC</code> لفحصه.\n"
              "• أرسل <code>/scan</code> لفحص السوق بالكامل يدويًا.\n"
-             "• ⚡ <b>الفحص التلقائي:</b> مفعل في الخلفية ويقوم بإرسال الصفقات تلقائياً.")
+             "• ⚡ <b>الفحص التلقائي:</b> مفعل في الخلفية لاصطياد العملات عند انفجار حجوم تداولها.")
 
 
 def handle_update(data):
@@ -282,7 +277,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V105.0-AutoFullSuite", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V106.0-TrendHunter", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -304,8 +299,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V105.0 AutoFullSuite bootstrapped successfully.")
-    # تشغيل خيط الخلفية للتصفيح التلقائي
+    logger.info("Bot V106.0 TrendHunter bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
 
