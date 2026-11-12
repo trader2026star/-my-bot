@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V108.0 (Multi-Target Pro Sniper & Auto-Scanner)
+# main.py — Bot V109.0 (Az_Hail Exact Style & Auto-Scanner)
 # ============================================================
 import os
 import re
@@ -173,21 +173,18 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
 
         d = decimals_for(price)
         tps = signal.get("take_profits", [0, 0, 0, 0])
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-        dir_label = "شراء (LONG)" if direction == "LONG" else "بيع (SELL)"
+        # مطابقة التنسيق الحرفي تماماً لصور عز حائل
+        action_label = "شراء 🟢" if direction == "LONG" else "بيع 🔴"
 
         msg = (
-            f"📊 <b>إشارة تداول جديدة — فريم 15m</b>\n\n"
-            f"▫️ العملة: <code>#{sym_name}</code>\n"
-            f"▫️ الاتجاه: <b>{dir_label}</b>\n"
-            f"▫️ منطقة الدخول: <code>{format_num(signal.get('entry_low', 0), d)} – {format_num(signal.get('entry_high', 0), d)}</code>\n"
-            f"▫️ وقف الخسارة: <code>{format_num(signal.get('stop_loss', 0), d)}</code>\n\n"
-            f"🎯 الهدف 1: <code>{format_num(tps[0], d)}</code>\n"
-            f"🎯 الهدف 2: <code>{format_num(tps[1], d)}</code>\n"
-            f"🎯 الهدف 3: <code>{format_num(tps[2], d)}</code>\n"
-            f"🎯 الهدف 4: <code>{format_num(tps[3], d)}</code>\n\n"
-            f"⏱ <code>{now_str}</code>"
+            f"<b>{sym_name} | {action_label} | 15m</b>\n\n"
+            f"منطقة الدخول: <code>{format_num(signal.get('entry_high', 0), d)} – {format_num(signal.get('entry_low', 0), d)}</code>\n"
+            f"وقف الخسارة: <code>{format_num(signal.get('stop_loss', 0), d)}</code>\n\n"
+            f"الهدف 1: <code>{format_num(tps[0], d)}</code>\n"
+            f"الهدف 2: <code>{format_num(tps[1], d)}</code>\n"
+            f"الهدف 3: <code>{format_num(tps[2], d)}</code>\n"
+            f"الهدف 4: <code>{format_num(tps[3], d)}</code>"
         )
         scan_stats["signals_sent"] += 1
         tg_send(msg, chat_id)
@@ -196,8 +193,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     if manual:
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
-            f"⏳ <b>لا توجد إشارة مكتملة الأركان حالياً</b>\n"
-            f"📝 ننتظر الشروط الفنية المتوافقة مع أهداف فريم 15د."
+            f"⏳ <b>لا توجد إشارة مكتملة الشروط على فريم 15m حالياً</b>"
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -210,7 +206,7 @@ def run_full_scan(chat_id=None):
         return
     try:
         if chat_id:
-            tg_send("🔍 جاري مسح السوق لاصطياد الصفقات الاحترافية (فريم 15m)...", chat_id)
+            tg_send("🔍 جاري مسح السوق وبحث الفرص على فريم 15m...", chat_id)
         symbols = get_full_market_universe()
         found = 0
         for sym in symbols[:60]:
@@ -219,7 +215,7 @@ def run_full_scan(chat_id=None):
                 found += 1
             time.sleep(0.3)
         if chat_id:
-            tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة تداول مطابقة للأهداف المتسلسلة.", chat_id)
+            tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة تداول مطابقة.", chat_id)
     except Exception as e:
         logger.error(f"Full Scan error: {e}")
     finally:
@@ -231,7 +227,7 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("Running background Multi-Target scan...")
+                logger.info("Running background Az_Hail style scan...")
                 run_full_scan(chat_id=None)
         except Exception as e:
             logger.error(f"Background scheduler error: {e}")
@@ -239,10 +235,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>بوتين التداول الاحترافي V108.0</b>\n\n"
-    "• أرسل أي رمز مثل <code>BTC</code> أو <code>SOL</code> لفحصه يدويًا.\n"
-    "• أرسل <code>/scan</code> لفحص السوق بالكامل.\n"
-    "• 📊 <b>النظام:</b> إرسال توصيات بنظام منطقة دخول و4 أهداف متسلسلة على فريم 15m."
+    "🤖 <b>بوت التداول (نظام عز حائل V109.0)</b>\n\n"
+    "• أرسل أي رمز مثل <code>LDO</code> أو <code>AR</code> لفحصه يدويًا.\n"
+    "• أرسل <code>/scan</code> لفحص السوق بالكامل على فريم 15m."
 )
 
 
@@ -267,7 +262,7 @@ def handle_update(data):
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
             if not base_of(parts[0]):
-                tg_send("❌ رمز غير صالح. مثال: <code>BTC</code> أو <code>SOL</code>", chat_id)
+                tg_send("❌ رمز غير صالح. مثال: <code>LDO</code> أو <code>AR</code>", chat_id)
             else:
                 analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception as e:
@@ -276,7 +271,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V108.0-MultiTarget", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V109.0-AzHail", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -298,7 +293,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V108.0 Multi-Target bootstrapped successfully.")
+    logger.info("Bot V109.0 Az_Hail style bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
 
