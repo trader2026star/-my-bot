@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V120.0 (Swing Accumulation Style)
+# analysis.py — StrategyEngine V120.1 (Fixed & Safe Swing Style)
 # ============================================================
 import logging
 import uuid
@@ -10,7 +10,7 @@ import pandas as pd
 
 logger = logging.getLogger("StrategyEngine")
 
-SIGNAL_EXPIRY_SECONDS = 86400  # صفقات سوينغ تمتد لفترة أطول
+SIGNAL_EXPIRY_SECONDS = 86400  # صفقات سوينغ
 MIN_SCORE_DEFAULT = 70
 
 
@@ -74,57 +74,65 @@ class StrategyEngine:
     def analyze_market_structure(self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None, asset_type="crypto"):
         neutral = build_signal(
             direction="NEUTRAL", entry_low=0.0, entry_high=0.0, stop_loss=0.0, take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="لا توجد فرصة تجميع سوينغ مكتملة حالياً",
+            reason="لا توجد فرصة تجميع سوينغ مكتملة أو الشروط الفنية غير متطابقة",
         )
         try:
-            if ohlcv_daily is None or len(ohlcv_daily) < 30:
+            if ohlcv_daily is None or len(ohlcv_daily) < 40:
                 return "NEUTRAL", 0.0, neutral
 
             df = self.prepare_dataframe(ohlcv_daily)
+            if len(df) < 35:
+                return "NEUTRAL", 0.0, neutral
+
             df["RSI"] = self.calculate_rsi(df["close"])
             df["ATR"] = self.calculate_atr(df)
 
             price = float(df["close"].iloc[-1])
-            low_price = float(df["low"].min())
             rsi = float(df["RSI"].iloc[-1])
             atr = float(df["ATR"].iloc[-1])
 
             if price <= 0 or atr <= 0:
                 return "NEUTRAL", 0.0, neutral
 
-            # استراتيجية التجميع: البحث عن العملات القريبة من قيعانها التاريخية أو التي كوّنت قاعدة دعم قوية وتستعد للانطلاق الصاعد
-            recent_drop_check = float(df["close"].iloc[-30])  # السعر قبل 30 شمعة
-            is_accumulating = price <= (recent_drop_check * 1.3) and rsi < 55
+            # تصحيح شرط التجميع: التأكد من أن السعر قرب القيعان النسبية وليس في موجة صاعدة مفرطة
+            recent_drop_check = float(df["close"].iloc[-30])
+            is_accumulating = price <= (recent_drop_check * 1.05) and rsi < 50
 
-            if not is_accumulating and rsi > 75:
+            if not is_accumulating or rsi > 70:
                 return "NEUTRAL", 0.0, neutral
 
-            direction = "LONG"  # التركيز بالكامل على فرص الشراء والتجميع كما طلبت
+            direction = "LONG"
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
 
-            # حساب منطقة الدخول، وقف الخسارة تحت القاع، والأهداف البعيدة المتسلسلة
-            entry_low = price * 0.99
-            entry_high = price * 1.01
-            stop_loss = max(price * 0.75, float(df["low"].tail(20).min()) * 0.95)  # وقف خسارة آمن تحت القاع
+            # وقف خسارة علمي يعتمد على قاع آخر 14 شمعة أو مضاعف ATR (مثلاً 2x ATR) وليس نسبة مجنونة 25% مع رافعة
+            swing_low = float(df["low"].tail(14).min())
+            stop_loss = min(swing_low * 0.99, price - (2.0 * atr))
             
-            tp1 = price * 1.25  # الهدف الأول (~25% صعود)
-            tp2 = price * 1.55  # الهدف الثاني
-            tp3 = price * 1.90  # الهدف الثالث
+            # التأكد من أن وقف الخسارة منطقي (أقل من سعر الدخول بمسافة آمنة)
+            if stop_loss >= price:
+                stop_loss = price * 0.95
+
+            risk_amount = price - stop_loss
+            
+            # أهداف تعتمد على نسبة المخاطرة للعائد (Risk-to-Reward Ratio: 1:2, 1:3, 1:4)
+            tp1 = price + (risk_amount * 1.5)
+            tp2 = price + (risk_amount * 2.5)
+            tp3 = price + (risk_amount * 4.0)
 
             tps = [round(tp1, decimals), round(tp2, decimals), round(tp3, decimals)]
             atr_pct = round((atr / price) * 100, 2)
 
             signal = build_signal(
                 direction=direction,
-                entry_low=round(entry_low, decimals),
-                entry_high=round(entry_high, decimals),
+                entry_low=round(price * 0.995, decimals),
+                entry_high=round(price * 1.005, decimals),
                 stop_loss=round(stop_loss, decimals),
                 take_profits=tps,
-                score=88,
+                score=85,
                 rsi=rsi,
                 atr=atr_pct,
-                reason="فرصة شراء وتجميع سوينغ (Accumulation / Swing Reversal)",
-                details={"tf": "Daily Swing", "leverage": "20x"}
+                reason="فرصة تجميع قوية مدعومة بقاع هيكلي وإدارة مخاطر محسوبة بناءً على الـ ATR",
+                details={"tf": "Daily Swing", "leverage": "3x - 5x (Recommended Safe Leverage)"}
             )
             return direction, price, signal
 
