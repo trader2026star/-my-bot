@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V121.0 (Swing Accumulation + Momentum Tracker)
+# main.py — Bot V121.1 (Fixed Lock & Instant Response)
 # ============================================================
 import os
 import re
@@ -219,8 +219,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             f"🥈 <code>{format_num(tps[1], d)}$</code>\n"
             f"🥉 <code>{format_num(tps[2], d)}$</code>\n\n"
             f"🔴 <b>وقف الخسارة:</b> <code>{format_num(stop_loss_val, d)}$</code>\n\n"
-            f"💡 <i>السبب: {signal.get('reason', '')}</i>\n"
-            f"🤖 <i>(البوت يراقب الزخم والأهداف لحظياً ويرسل التنبيهات تلقائياً)</i>"
+            f"💡 <i>السبب: {signal.get('reason', '')}</i>"
         )
         with scan_lock:
             scan_stats["signals_sent"] += 1
@@ -228,9 +227,12 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         return True, signal
 
     if manual:
+        d = decimals_for(price)
         msg = (
-            f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
-            f"⏳ <b>العملة لم تصل لمنطقة التجميع السوينغي المناسبة بعد.</b>"
+            f"📊 <b>تحليل الأصل: {symbol_raw.upper()}</b>\n"
+            f"💰 <b>السعر الحالي:</b> <code>{format_num(price, d)}$</code>\n"
+            f"📈 <b>RSI:</b> <code>{signal.get('rsi', 50):.1f}</code>\n"
+            f"⏳ <b>العملة لم تصل لمنطقة التجميع السوينغي المناسبة بعد. انتظر الإشارة المكتملة.</b>"
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -297,7 +299,7 @@ def monitor_active_trades():
                         alert_msg = (
                             f"🚀 <b>تنبيه زخم قوي (عند الهدف الثاني TP2) – {sym_name}$</b>\n\n"
                             f"🎯 السعر وصل للهدف الثاني: <code>{format_num(tp2, d)}$</code>\n"
-                            f"📈 <b>الزخم قوي جداً والاتجاه مستمر (RSI: {current_rsi:.1f}).</b>\n"
+    f"📈 <b>الزخم قوي جداً والاتجاه مستمر (RSI: {current_rsi:.1f}).</b>\n"
                             f"👉 <b>كمل واترك جزءاً للأهداف البعيدة (TP3).</b>"
                         )
                     tg_send(alert_msg)
@@ -316,26 +318,30 @@ def monitor_active_trades():
 
 
 def run_full_scan(chat_id=None):
+    # استخدام try/finally لضمان تحرير القفل دائماً مهما حدث وعدم تعليق البوت
     if not scan_lock.acquire(blocking=False):
         if chat_id:
-            tg_send("⏳ يوجد فحص شامل قيد التشغيل حالياً.", chat_id)
+            tg_send("⏳ يوجد فحص شامل قيد التشغيل حالياً. يمكنك طلب تحليل أي عملة مفردة مثل <code>BTC</code> في أي وقت.", chat_id)
         return
     try:
         if chat_id:
             tg_send("🔍 جاري مسح السوق وبحث فرص التجميع السوينغي...", chat_id)
         symbols = get_full_market_universe()
         found = 0
-        for sym in symbols[:40]:
-            ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
-            if ok:
-                found += 1
-            time.sleep(0.3)
+        for sym in symbols[:30]:
+            try:
+                ok, _ = analyze_symbol(sym, chat_id=None, manual=False)
+                if ok:
+                    found += 1
+            except Exception:
+                pass
+            time.sleep(0.2)
         if chat_id:
             tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة تجميع سوينغ ناشطة.", chat_id)
     except Exception as e:
         logger.error(f"Full Scan error: {e}")
     finally:
-        scan_lock.release()
+        scan_lock.release()  # تحرير القفل أماناً
 
 
 def background_auto_scheduler():
@@ -350,10 +356,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>بوت التداول والمتابعة اللحظية (نسخة V121.0)</b>\n\n"
-    "• أرسل رمز العملة مثل <code>SOL</code> أو <code>BTC</code> لفحصها.\n"
-    "• أرسل <code>/scan</code> لمسح السوق.\n"
-    "• <i>المميزات: البوت يراقب الأهداف ويرسل تنبيهات فورية عند ضعف أو قوة الزخم.</i>"
+    "🤖 <b>بوت التداول والمتابعة اللحظية (نسخة V121.1)</b>\n\n"
+    "• أرسل رمز العملة مثل <code>BTC</code> أو <code>SOL</code> لفحصها فوراً.\n"
+    "• أرسل <code>/scan</code> لمسح السوق."
 )
 
 
@@ -375,19 +380,22 @@ def handle_update(data):
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
         elif cmd == "/scan":
+            # تشغيل الفحص في خيط منفصل بحيث لا يؤثر أبداً على الطلبات الفردية
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
-            if not base_of(parts[0]):
-                tg_send("❌ رمز غير صالح. مثال: <code>SOL</code> أو <code>BTC</code>", chat_id)
+            symbol_query = parts[0]
+            if not base_of(symbol_query):
+                tg_send("❌ رمز غير صالح. مثال: <code>BTC</code> أو <code>SOL</code>", chat_id)
             else:
-                analyze_symbol(parts[0], chat_id=chat_id, manual=True)
+                # الطلبات الفردية تعمل فوراً في Thread منفصل بغض النظر عن حالة الفحص الشامل
+                threading.Thread(target=analyze_symbol, args=(symbol_query, chat_id, True), daemon=True).start()
     except Exception as e:
-        logger.exception(f"handle_update error: {e}")
+    logger.exception(f"handle_update error: {e}")
 
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V121.0-MomentumTracker", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V121.1-InstantResponse", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -414,7 +422,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V121.0 Momentum Tracker bootstrapped successfully.")
+    logger.info("Bot V121.1 Instant Response bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
     threading.Thread(target=monitor_active_trades, daemon=True).start()
 
