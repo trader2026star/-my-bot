@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V110.0 (Smart Sniper Style)
+# analysis.py — StrategyEngine V120.0 (Swing Accumulation Style)
 # ============================================================
 import logging
 import uuid
@@ -10,8 +10,8 @@ import pandas as pd
 
 logger = logging.getLogger("StrategyEngine")
 
-SIGNAL_EXPIRY_SECONDS = 900
-MIN_SCORE_DEFAULT = 65  # تخفيض طفيف ومدروس للحساسية لعدم إعطاء "صفر فرص" دائماً
+SIGNAL_EXPIRY_SECONDS = 86400  # صفقات سوينغ تمتد لفترة أطول
+MIN_SCORE_DEFAULT = 70
 
 
 def _now_iso():
@@ -42,9 +42,9 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits, scor
 
 
 class StrategyEngine:
-    def __init__(self, capital=10000.0, risk_per_trade=0.01, min_score=MIN_SCORE_DEFAULT):
+    def __init__(self, capital=10000.0, risk_per_trade=0.02, min_score=MIN_SCORE_DEFAULT):
         self.capital = max(1.0, float(capital))
-        self.risk_per_trade = min(0.02, max(0.001, float(risk_per_trade)))
+        self.risk_per_trade = min(0.03, max(0.005, float(risk_per_trade)))
         self.min_score = int(min_score)
 
     def calculate_rsi(self, series, period=14):
@@ -71,83 +71,47 @@ class StrategyEngine:
         df = df.dropna().drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
         return df
 
-    def analyze_market_structure(self, ohlcv_5m, ohlcv_15m, ohlcv_1h=None, asset_type="crypto", drop_last_candle=True):
+    def analyze_market_structure(self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None, asset_type="crypto"):
         neutral = build_signal(
             direction="NEUTRAL", entry_low=0.0, entry_high=0.0, stop_loss=0.0, take_profits=[], score=0, rsi=50.0, atr=0.0,
-            reason="لا توجد إشارة قوية مطابقة حالياً",
+            reason="لا توجد فرصة تجميع سوينغ مكتملة حالياً",
         )
         try:
-            if ohlcv_15m is None or len(ohlcv_15m) < 30:
+            if ohlcv_daily is None or len(ohlcv_daily) < 30:
                 return "NEUTRAL", 0.0, neutral
 
-            df_15m = self.prepare_dataframe(ohlcv_15m)
-            df_15m["RSI"] = self.calculate_rsi(df_15m["close"])
-            df_15m["ATR"] = self.calculate_atr(df_15m)
-            df_15m["vol_sma"] = df_15m["volume"].rolling(window=20).mean()
+            df = self.prepare_dataframe(ohlcv_daily)
+            df["RSI"] = self.calculate_rsi(df["close"])
+            df["ATR"] = self.calculate_atr(df)
 
-            price = float(df_15m["close"].iloc[-1])
-            prev_price = float(df_15m["close"].iloc[-2])
-            rsi = float(df_15m["RSI"].iloc[-1])
-            atr = float(df_15m["ATR"].iloc[-1])
+            price = float(df["close"].iloc[-1])
+            low_price = float(df["low"].min())
+            rsi = float(df["RSI"].iloc[-1])
+            atr = float(df["ATR"].iloc[-1])
 
             if price <= 0 or atr <= 0:
                 return "NEUTRAL", 0.0, neutral
 
-            current_vol = float(df_15m["volume"].iloc[-1])
-            avg_vol = float(df_15m["vol_sma"].iloc[-1]) if df_15m["vol_sma"].iloc[-1] > 0 else 1.0
-            vol_ratio = current_vol / avg_vol
-            price_change_pct = ((price - prev_price) / prev_price) * 100
+            # استراتيجية التجميع: البحث عن العملات القريبة من قيعانها التاريخية أو التي كوّنت قاعدة دعم قوية وتستعد للانطلاق الصاعد
+            recent_drop_check = float(df["close"].iloc[-30])  # السعر قبل 30 شمعة
+            is_accumulating = price <= (recent_drop_check * 1.3) and rsi < 55
 
-            # فريم 5 دقائق للتحقق من تغير الهيكل اللحظي (CHoCH / Momentum)
-            df_5m = self.prepare_dataframe(ohlcv_5m) if ohlcv_5m is not None and len(ohlcv_5m) >= 10 else df_15m
-            momentum_5m = float(df_5m["close"].iloc[-1]) - float(df_5m["open"].iloc[-1])
+            if not is_accumulating and rsi > 75:
+                return "NEUTRAL", 0.0, neutral
 
-            # فلتر اتجاه الفريم الكبير (1H / 4H مرن)
-            htf_trend = "BULLISH"
-            if ohlcv_1h is not None and len(ohlcv_1h) >= 20:
-                df_1h = self.prepare_dataframe(ohlcv_1h)
-                ma_20 = df_1h["close"].rolling(window=20).mean().iloc[-1]
-                htf_trend = "BULLISH" if float(df_1h["close"].iloc[-1]) > ma_20 else "BEARISH"
-
-            # شروط رصد الفرصة بمرونة ذكية (بدون معجزات مستحيلة)
-            direction = "NEUTRAL"
-            if htf_trend == "BULLISH" and (vol_ratio >= 1.1 or momentum_5m > 0) and price_change_pct > -1.5 and 30 <= rsi <= 78:
-                direction = "LONG"
-            elif htf_trend == "BEARISH" and (vol_ratio >= 1.1 or momentum_5m < 0) and price_change_pct < 1.5 and 22 <= rsi <= 70:
-                direction = "SHORT"
-
-            if direction == "NEUTRAL":
-                # إذا لم يتحقق الشرط بدقة، نعيد فرصة قريبة بدلاً من الصفر المطلق إذا كان الزخم واضحاً
-                if price_change_pct > 0.4:
-                    direction = "LONG"
-                elif price_change_pct < -0.4:
-                    direction = "SHORT"
-                else:
-                    return "NEUTRAL", 0.0, neutral
-
+            direction = "LONG"  # التركيز بالكامل على فرص الشراء والتجميع كما طلبت
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
 
-            # حساب منطقة الدخول، وقف الخسارة الهيكلي الصارم، والأهداف الأربعة بنظام عز حائل
-            if direction == "LONG":
-                entry_low = price * 0.997
-                entry_high = price * 1.001
-                stop_loss = price - (2.0 * atr)  # وقف خسارة هيكلي آمن خلف القاع
-                tp1 = price + (1.2 * atr)
-                tp2 = price + (2.2 * atr)
-                tp3 = price + (3.8 * atr)
-                tp4 = price + (5.5 * atr)
-                reason_text = "إشارة شراء ذكية (15m/5m CHoCH)"
-            else:
-                entry_low = price * 0.999
-                entry_high = price * 1.003
-                stop_loss = price + (2.0 * atr)  # وقف خسارة هيكلي آمن خلف القمة
-                tp1 = price - (1.2 * atr)
-                tp2 = price - (2.2 * atr)
-                tp3 = price - (3.8 * atr)
-                tp4 = price - (5.5 * atr)
-                reason_text = "إشارة بيع ذكية (15m/5m CHoCH)"
+            # حساب منطقة الدخول، وقف الخسارة تحت القاع، والأهداف البعيدة المتسلسلة
+            entry_low = price * 0.99
+            entry_high = price * 1.01
+            stop_loss = max(price * 0.75, float(df["low"].tail(20).min()) * 0.95)  # وقف خسارة آمن تحت القاع
+            
+            tp1 = price * 1.25  # الهدف الأول (~25% صعود)
+            tp2 = price * 1.55  # الهدف الثاني
+            tp3 = price * 1.90  # الهدف الثالث
 
-            tps = [round(tp1, decimals), round(tp2, decimals), round(tp3, decimals), round(tp4, decimals)]
+            tps = [round(tp1, decimals), round(tp2, decimals), round(tp3, decimals)]
             atr_pct = round((atr / price) * 100, 2)
 
             signal = build_signal(
@@ -156,11 +120,11 @@ class StrategyEngine:
                 entry_high=round(entry_high, decimals),
                 stop_loss=round(stop_loss, decimals),
                 take_profits=tps,
-                score=85,
+                score=88,
                 rsi=rsi,
                 atr=atr_pct,
-                reason=reason_text,
-                details={"tf": "15m+5m", "vol_ratio": f"{round(vol_ratio, 1)}x"}
+                reason="فرصة شراء وتجميع سوينغ (Accumulation / Swing Reversal)",
+                details={"tf": "Daily Swing", "leverage": "20x"}
             )
             return direction, price, signal
 
