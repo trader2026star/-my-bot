@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V121.1 (Fixed Lock & Instant Response)
+# main.py — Bot V121.2 (Clean Indentation & Instant Response)
 # ============================================================
 import os
 import re
@@ -299,7 +299,7 @@ def monitor_active_trades():
                         alert_msg = (
                             f"🚀 <b>تنبيه زخم قوي (عند الهدف الثاني TP2) – {sym_name}$</b>\n\n"
                             f"🎯 السعر وصل للهدف الثاني: <code>{format_num(tp2, d)}$</code>\n"
-    f"📈 <b>الزخم قوي جداً والاتجاه مستمر (RSI: {current_rsi:.1f}).</b>\n"
+                            f"📈 <b>الزخم قوي جداً والاتجاه مستمر (RSI: {current_rsi:.1f}).</b>\n"
                             f"👉 <b>كمل واترك جزءاً للأهداف البعيدة (TP3).</b>"
                         )
                     tg_send(alert_msg)
@@ -318,7 +318,6 @@ def monitor_active_trades():
 
 
 def run_full_scan(chat_id=None):
-    # استخدام try/finally لضمان تحرير القفل دائماً مهما حدث وعدم تعليق البوت
     if not scan_lock.acquire(blocking=False):
         if chat_id:
             tg_send("⏳ يوجد فحص شامل قيد التشغيل حالياً. يمكنك طلب تحليل أي عملة مفردة مثل <code>BTC</code> في أي وقت.", chat_id)
@@ -341,7 +340,7 @@ def run_full_scan(chat_id=None):
     except Exception as e:
         logger.error(f"Full Scan error: {e}")
     finally:
-        scan_lock.release()  # تحرير القفل أماناً
+        scan_lock.release()
 
 
 def background_auto_scheduler():
@@ -356,7 +355,7 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>بوت التداول والمتابعة اللحظية (نسخة V121.1)</b>\n\n"
+    "🤖 <b>بوت التداول والمتابعة اللحظية (نسخة V121.2)</b>\n\n"
     "• أرسل رمز العملة مثل <code>BTC</code> أو <code>SOL</code> لفحصها فوراً.\n"
     "• أرسل <code>/scan</code> لمسح السوق."
 )
@@ -380,22 +379,20 @@ def handle_update(data):
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
         elif cmd == "/scan":
-            # تشغيل الفحص في خيط منفصل بحيث لا يؤثر أبداً على الطلبات الفردية
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
             symbol_query = parts[0]
             if not base_of(symbol_query):
                 tg_send("❌ رمز غير صالح. مثال: <code>BTC</code> أو <code>SOL</code>", chat_id)
             else:
-                # الطلبات الفردية تعمل فوراً في Thread منفصل بغض النظر عن حالة الفحص الشامل
                 threading.Thread(target=analyze_symbol, args=(symbol_query, chat_id, True), daemon=True).start()
     except Exception as e:
-    logger.exception(f"handle_update error: {e}")
+        logger.exception(f"handle_update error: {e}")
 
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V121.1-InstantResponse", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V121.2-Fixed", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -422,7 +419,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V121.1 Instant Response bootstrapped successfully.")
+    logger.info("Bot V121.2 bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
     threading.Thread(target=monitor_active_trades, daemon=True).start()
 
