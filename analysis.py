@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V120.1 (Fixed & Safe Swing Style)
+# analysis.py — StrategyEngine V121.0 (Swing Accumulation Style)
 # ============================================================
 import logging
 import uuid
@@ -10,7 +10,7 @@ import pandas as pd
 
 logger = logging.getLogger("StrategyEngine")
 
-SIGNAL_EXPIRY_SECONDS = 86400  # صفقات سوينغ
+SIGNAL_EXPIRY_SECONDS = 86400  # صفقات سوينغ تمتد لفترة أطول
 MIN_SCORE_DEFAULT = 70
 
 
@@ -94,7 +94,7 @@ class StrategyEngine:
             if price <= 0 or atr <= 0:
                 return "NEUTRAL", 0.0, neutral
 
-            # تصحيح شرط التجميع: التأكد من أن السعر قرب القيعان النسبية وليس في موجة صاعدة مفرطة
+            # شرط التجميع: التأكد من أن السعر قرب القيعان النسبية وليس في موجة صاعدة مفرطة
             recent_drop_check = float(df["close"].iloc[-30])
             is_accumulating = price <= (recent_drop_check * 1.05) and rsi < 50
 
@@ -104,17 +104,16 @@ class StrategyEngine:
             direction = "LONG"
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
 
-            # وقف خسارة علمي يعتمد على قاع آخر 14 شمعة أو مضاعف ATR (مثلاً 2x ATR) وليس نسبة مجنونة 25% مع رافعة
+            # حساب وقف خسارة آمن بناءً على قاع آخر 14 شمعة أو مضاعف الـ ATR لمنع التصفية الفورية
             swing_low = float(df["low"].tail(14).min())
             stop_loss = min(swing_low * 0.99, price - (2.0 * atr))
             
-            # التأكد من أن وقف الخسارة منطقي (أقل من سعر الدخول بمسافة آمنة)
             if stop_loss >= price:
                 stop_loss = price * 0.95
 
             risk_amount = price - stop_loss
             
-            # أهداف تعتمد على نسبة المخاطرة للعائد (Risk-to-Reward Ratio: 1:2, 1:3, 1:4)
+            # حساب الأهداف بناءً على نسب المخاطرة للعائد (Risk-to-Reward)
             tp1 = price + (risk_amount * 1.5)
             tp2 = price + (risk_amount * 2.5)
             tp3 = price + (risk_amount * 4.0)
