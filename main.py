@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V120.0 (Swing Accumulation Format)
+# main.py — Bot V121.0 (Swing Accumulation + Momentum Tracker)
 # ============================================================
 import os
 import re
@@ -22,11 +22,12 @@ app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_SECRET_TOKEN = os.environ.get("TELEGRAM_SECRET_TOKEN", "").strip()
 ALLOWED_CHAT_IDS = {c.strip() for c in os.environ.get("ALLOWED_CHAT_IDS", "").split(",") if c.strip()}
 if TELEGRAM_CHAT_ID:
     ALLOWED_CHAT_IDS.add(TELEGRAM_CHAT_ID)
 
-DB_PATH = os.environ.get("DB_PATH", "/tmp/bot_state.db")
+DB_PATH = os.environ.get("DB_PATH", "bot_state.db")
 
 bingx = ccxt.bingx({"enableRateLimit": True, "timeout": 20000, "options": {"defaultType": "swap"}})
 engine = StrategyEngine()
@@ -34,6 +35,8 @@ engine = StrategyEngine()
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
 scan_lock = threading.Lock()
+cache_lock = threading.Lock()
+
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "errors": 0}
 _seen_updates = deque(maxlen=500)
 _seen_lock = threading.Lock()
@@ -66,8 +69,24 @@ def db_query(sql, params=(), one=False):
 def db_init():
     try:
         db_query("CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)")
-    except Exception:
-        pass
+        # جدول لتتبع الصفقات النشطة ومراقبة الأهداف والزخم
+        db_query("""
+            CREATE TABLE IF NOT EXISTS active_trades (
+                symbol TEXT PRIMARY KEY,
+                direction TEXT,
+                entry REAL,
+                tp1 REAL,
+                tp2 REAL,
+                tp3 REAL,
+                stop_loss REAL,
+                status TEXT DEFAULT 'ACTIVE',
+                tp1_alerted INTEGER DEFAULT 0,
+                tp2_alerted INTEGER DEFAULT 0,
+                created_at TEXT
+            )
+        """)
+    except Exception as e:
+        logger.error(f"DB Init error: {e}")
 
 
 def ex_call(fn, *args, **kwargs):
@@ -77,18 +96,20 @@ def ex_call(fn, *args, **kwargs):
 
 def get_full_market_universe():
     global _all_markets_cache, _markets_cache_time
-    try:
-        if not _all_markets_cache or time.time() - _markets_cache_time > 1800:
-            markets = ex_call(bingx.load_markets, True)
-            _all_markets_cache = [
-                s for s, m in markets.items()
-                if m.get("swap") and m.get("active", True)
-                and m.get("quote") == "USDT" and m.get("settle") == "USDT"
-            ]
-            _markets_cache_time = time.time()
-        return _all_markets_cache if _all_markets_cache else ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
-    except Exception:
-        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+    with cache_lock:
+        try:
+            if not _all_markets_cache or time.time() - _markets_cache_time > 1800:
+                markets = ex_call(bingx.load_markets, True)
+                _all_markets_cache = [
+                    s for s, m in markets.items()
+                    if m.get("swap") and m.get("active", True)
+                    and m.get("quote") == "USDT" and m.get("settle") == "USDT"
+                ]
+                _markets_cache_time = time.time()
+            return list(_all_markets_cache) if _all_markets_cache else ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+        except Exception as e:
+            logger.error(f"Failed to load markets: {e}")
+            return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 
 
 _SYM_RE = re.compile(r"^[A-Z0-9]{2,20}$")
@@ -131,7 +152,8 @@ def tg_send(message, chat_id=None):
             timeout=15
         )
         return True
-    except Exception:
+    except Exception as e:
+        logger.error(f"Telegram send error: {e}")
         return False
 
 
@@ -148,7 +170,7 @@ def format_num(v, d):
 
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     resolved, candles_daily = fetch_ohlcv(symbol_raw, "1d", 60)
-    if not resolved or not candles_daily or len(candles_daily) < 30:
+    if not resolved or not candles_daily or len(candles_daily) < 35:
         if manual:
             tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته غير كافية.", chat_id)
         return False, None
@@ -156,46 +178,151 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     _, candles4h = fetch_ohlcv(resolved, "4h", 50)
     _, candles1h = fetch_ohlcv(resolved, "1h", 40)
 
-    scan_stats["scanned_pairs"] += 1
+    with scan_lock:
+        scan_stats["scanned_pairs"] += 1
+
     direction, price, signal = engine.analyze_market_structure(candles_daily, candles4h, candles1h)
 
     if direction == "LONG":
         sym_name = resolved.split("/")[0]
         full_sym_name = sym_name + "$"
 
-        if not manual:
-            last_sent = _sent_signals_cache.get(sym_name, 0)
-            if time.time() - last_sent < 14400:
-                return False, signal
-            _sent_signals_cache[sym_name] = time.time()
+        with cache_lock:
+            if not manual:
+                last_sent = _sent_signals_cache.get(sym_name, 0)
+                if time.time() - last_sent < 14400:
+                    return False, signal
+                _sent_signals_cache[sym_name] = time.time()
 
         d = decimals_for(price)
         tps = signal.get("take_profits", [0, 0, 0])
+        entry_val = (signal.get('entry_low', 0) + signal.get('entry_high', 0)) / 2
+        stop_loss_val = signal.get('stop_loss', 0)
+
+        # حفظ الصفقة في قاعدة البيانات لتتبعها لاحقاً
+        try:
+            db_query(
+                """INSERT OR REPLACE INTO active_trades 
+                   (symbol, direction, entry, tp1, tp2, tp3, stop_loss, status, tp1_alerted, tp2_alerted, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 0, 0, datetime('now'))""",
+                (resolved, direction, entry_val, tps[0], tps[1], tps[2], stop_loss_val)
+            )
+        except Exception as e:
+            logger.error(f"Failed to save active trade: {e}")
 
         msg = (
-            f"🚀 <b>فرصة شراء جديدة قد تشاهد هذه الأشهر ارتفاع مذهل</b>\n\n"
+            f"🚀 <b>فرصة تجميع سوينغ جديدة (Swing Accumulation)</b>\n\n"
             f"🟢 <b>صفقة: Futures – USDT Perpetual</b>\n"
             f"💎 <b>العملة: {full_sym_name}</b>\n"
-            f"⚡ <b>الرافعة المالية: 20x</b>\n\n"
-            f"📍 <b>سعر الدخول:</b> <code>{format_num(signal.get('entry_low', 0), d)}$</code>\n\n"
+            f"⚡ <b>الرافعة الموصى بها: 3x - 5x</b>\n\n"
+            f"📍 <b>سعر الدخول:</b> <code>{format_num(signal.get('entry_low', 0), d)} - {format_num(signal.get('entry_high', 0), d)}$</code>\n\n"
             f"🎯 <b>الأهداف:</b>\n"
             f"🥇 <code>{format_num(tps[0], d)}$</code>\n"
             f"🥈 <code>{format_num(tps[1], d)}$</code>\n"
             f"🥉 <code>{format_num(tps[2], d)}$</code>\n\n"
-            f"🔴 <b>وقف الخسارة:</b> <code>{format_num(signal.get('stop_loss', 0), d)}$</code>\n\n"
-            f"⚠️ <b>التزم بإدارة رأس المال ولا تذاطر بأكثر مما تستطيع تحمله.</b>"
+            f"🔴 <b>وقف الخسارة:</b> <code>{format_num(stop_loss_val, d)}$</code>\n\n"
+            f"💡 <i>السبب: {signal.get('reason', '')}</i>\n"
+            f"🤖 <i>(سيتم متابعة الزخم والأهداف تلقائياً وإرسال تنبيهات الخروج أو الاستمرار)</i>"
         )
-        scan_stats["signals_sent"] += 1
+        with scan_lock:
+            scan_stats["signals_sent"] += 1
         tg_send(msg, chat_id)
         return True, signal
 
     if manual:
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
-            f"⏳ <b>العملة لم تصل لمنطقة التجميع المناسبة بعد، انتظر الإشارة المكتملة.</b>"
+            f"⏳ <b>العملة لم تصل لمنطقة التجميع السوينغي المناسبة بعد.</b>"
         )
         tg_send(msg, chat_id)
     return False, signal
+
+
+# نظام فحص ومراقبة الزخم والأهداف النشطة
+def monitor_active_trades():
+    while True:
+        try:
+            time.sleep(300)  # يتم الفحص كل 5 دقائق
+            trades = db_query("SELECT * FROM active_trades WHERE status = 'ACTIVE'")
+            if not trades:
+                continue
+
+            for trade in trades:
+                symbol = trade["symbol"]
+                tp1 = trade["tp1"]
+                tp2 = trade["tp2"]
+                stop_loss = trade["stop_loss"]
+                tp1_alerted = trade["tp1_alerted"]
+                tp2_alerted = trade["tp2_alerted"]
+
+                # جلب الشموع الحالية فريم الساعة (1h) لفحص الزخم اللحظي
+                _, candles1h = fetch_ohlcv(symbol, "1h", 30)
+                if not candles1h or len(candles1h) < 20:
+                    continue
+
+                df = engine.prepare_dataframe(candles1h)
+                df["RSI"] = engine.calculate_rsi(df["close"])
+                
+                current_price = float(df["close"].iloc[-1])
+                current_rsi = float(df["RSI"].iloc[-1])
+                prev_rsi = float(df["RSI"].iloc[-2])
+                sym_name = symbol.split("/")[0]
+                d = decimals_for(current_price)
+
+                # فحص الوصول للهدف الأول (TP1)
+                if current_price >= tp1 and tp1_alerted == 0:
+                    # تقييم الزخم: إذا انخفض الـ RSI مقارنة بالشمعة السابقة أو كان تحت 60 مع تشبع محتمل
+                    momentum_fading = current_rsi < prev_rsi or current_rsi > 78
+                    
+                    if momentum_fading:
+                        alert_msg = (
+                            f"⚠️ <b>تنبيه زخم (عند الهدف الأول TP1) – {sym_name}$</b>\n\n"
+                            f"🎯 السعر وصل للهدف الأول: <code>{format_num(tp1, d)}$</code>\n"
+                            f"📉 <b>الزخم بدأ يقل أو يضعف (RSI: {current_rsi:.1f})!</b>\n"
+                            f"👉 <b>عليك جني الأرباح جزئياً أو الخروج الآن لتأمين رأس المال.</b>"
+                        )
+                    else:
+                        alert_msg = (
+                            f"🚀 <b>تنبيه زخم قوي (عند الهدف الأول TP1) – {sym_name}$</b>\n\n"
+                            f"🎯 السعر وصل للهدف الأول: <code>{format_num(tp1, d)}$</code>\n"
+                            f"📈 <b>الزخم لا يزال قوياً وصاعداً (RSI: {current_rsi:.1f}).</b>\n"
+                            f"👉 <b>كمل الصفقة وارفع وقف الخسارة لنقطة الدخول (Break-even).</b>"
+                        )
+                    tg_send(alert_msg)
+                    db_query("UPDATE active_trades SET tp1_alerted = 1 WHERE symbol = ?", (symbol,))
+
+                # فحص الوصول للهدف الثاني (TP2)
+                elif current_price >= tp2 and tp2_alerted == 0:
+                    momentum_fading = current_rsi < prev_rsi or current_rsi > 75
+
+                    if momentum_fading:
+                        alert_msg = (
+                            f"⚠️ <b>تنبيه زخم (عند الهدف الثاني TP2) – {sym_name}$</b>\n\n"
+                            f"🎯 السعر وصل للهدف الثاني: <code>{format_num(tp2, d)}$</code>\n"
+                            f"📉 <b>بدأ الزخم ينحسر (RSI: {current_rsi:.1f})!</b>\n"
+                            f"👉 <b>يُفضل بشدة إغلاق الجزء الأكبر من الصفقة وجني الأرباح.</b>"
+                        )
+                    else:
+                        alert_msg = (
+                            f"🚀 <b>تنبيه زخم قوي (عند الهدف الثاني TP2) – {sym_name}$</b>\n\n"
+                            f"🎯 السعر وصل للهدف الثاني: <code>{format_num(tp2, d)}$</code>\n"
+                            f"📈 <b>الزخم قوي جداً والاتجاه مستمر (RSI: {current_rsi:.1f}).</b>\n"
+                            f"👉 <b>كمل واترك جزءاً للأهداف البعيدة (TP3).</b>"
+                        )
+                    tg_send(alert_msg)
+                    db_query("UPDATE active_trades SET tp2_alerted = 1 WHERE symbol = ?", (symbol,))
+
+                # فحص ضرب وقف الخسارة
+                elif current_price <= stop_loss:
+                    exit_msg = (
+                        f"❌ <b>تم ضرب وقف الخسارة – {sym_name}$</b>\n"
+                        f"🔴 السعر كسر وقف الخسارة عند <code>{format_num(stop_loss, d)}$</code>. تم إغلاق التتبع."
+                    )
+                    tg_send(exit_msg)
+                    db_query("UPDATE active_trades SET status = 'CLOSED' WHERE symbol = ?", (symbol,))
+
+        except Exception as e:
+                    logger.error(f"Monitor active trades error: {e}")
 
 
 def run_full_scan(chat_id=None):
@@ -205,14 +332,14 @@ def run_full_scan(chat_id=None):
         return
     try:
         if chat_id:
-            tg_send("🔍 جاري مسح السوق وبحث فرص التجميع والسوينغ...", chat_id)
+            tg_send("🔍 جاري مسح السوق وبحث فرص التجميع السوينغي...", chat_id)
         symbols = get_full_market_universe()
         found = 0
-        for sym in symbols[:50]:
+        for sym in symbols[:40]:
             ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
             if ok:
                 found += 1
-            time.sleep(0.2)
+            time.sleep(0.3)
         if chat_id:
             tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة تجميع سوينغ ناشطة.", chat_id)
     except Exception as e:
@@ -233,9 +360,10 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>بوت تداول السوينغ والتجميع (نسخة V120.0)</b>\n\n"
-    "• أرسل رمز العملة مثل <code>BARD</code> أو <code>BTC</code> لفحصها.\n"
-    "• أرسل <code>/scan</code> لمسح السوق وبحث فرص الصعود."
+    "🤖 <b>بوت التداول والمتابعة اللحظية (نسخة V121.0)</b>\n\n"
+    "• أرسل رمز العملة مثل <code>SOL</code> أو <code>BTC</code> لفحصها.\n"
+    "• أرسل <code>/scan</code> لمسح السوق.\n"
+    "• <i>المميزات: البوت يراقب الأهداف (TP1, TP2) ويرسل تنبيهات فورية عند ضعف أو قوة الزخم.</i>"
 )
 
 
@@ -248,7 +376,7 @@ def handle_update(data):
         text = (message.get("text") or "").strip()
         if not chat_id or not text:
             return
-        if str(chat_id) not in ALLOWED_CHAT_IDS:
+        if ALLOWED_CHAT_IDS and str(chat_id) not in ALLOWED_CHAT_IDS:
             return
 
         parts = text.split()
@@ -260,7 +388,7 @@ def handle_update(data):
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
             if not base_of(parts[0]):
-                tg_send("❌ رمز غير صالح. مثال: <code>BARD</code> أو <code>BTC</code>", chat_id)
+                tg_send("❌ رمز غير صالح. مثال: <code>SOL</code> أو <code>BTC</code>", chat_id)
             else:
                 analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception as e:
@@ -269,7 +397,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V120.0-SwingAccumulation", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V121.0-MomentumTracker", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -279,6 +407,11 @@ def health():
 
 @app.route("/tg-webhook", methods=["POST"])
 def telegram_webhook():
+    if TELEGRAM_SECRET_TOKEN:
+        incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if incoming_token != TELEGRAM_SECRET_TOKEN:
+            return "Unauthorized", 403
+
     data = request.get_json(silent=True) or {}
     uid = data.get("update_id")
     with _seen_lock:
@@ -291,8 +424,10 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V120.0 Swing Accumulation bootstrapped successfully.")
+    logger.info("Bot V121.0 Momentum Tracker bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
+    # تشغيل خيط مراقبة الزخم والأهداف في الخلفية
+    threading.Thread(target=monitor_active_trades, daemon=True).start()
 
 
 bootstrap()
