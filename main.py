@@ -69,7 +69,6 @@ def db_query(sql, params=(), one=False):
 def db_init():
     try:
         db_query("CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)")
-        # جدول لتتبع الصفقات النشطة ومراقبة الأهداف والزخم
         db_query("""
             CREATE TABLE IF NOT EXISTS active_trades (
                 symbol TEXT PRIMARY KEY,
@@ -199,7 +198,6 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         entry_val = (signal.get('entry_low', 0) + signal.get('entry_high', 0)) / 2
         stop_loss_val = signal.get('stop_loss', 0)
 
-        # حفظ الصفقة في قاعدة البيانات لتتبعها لاحقاً
         try:
             db_query(
                 """INSERT OR REPLACE INTO active_trades 
@@ -222,7 +220,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             f"🥉 <code>{format_num(tps[2], d)}$</code>\n\n"
             f"🔴 <b>وقف الخسارة:</b> <code>{format_num(stop_loss_val, d)}$</code>\n\n"
             f"💡 <i>السبب: {signal.get('reason', '')}</i>\n"
-            f"🤖 <i>(سيتم متابعة الزخم والأهداف تلقائياً وإرسال تنبيهات الخروج أو الاستمرار)</i>"
+            f"🤖 <i>(البوت يراقب الزخم والأهداف لحظياً ويرسل التنبيهات تلقائياً)</i>"
         )
         with scan_lock:
             scan_stats["signals_sent"] += 1
@@ -238,11 +236,10 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     return False, signal
 
 
-# نظام فحص ومراقبة الزخم والأهداف النشطة
 def monitor_active_trades():
     while True:
         try:
-            time.sleep(300)  # يتم الفحص كل 5 دقائق
+            time.sleep(300)
             trades = db_query("SELECT * FROM active_trades WHERE status = 'ACTIVE'")
             if not trades:
                 continue
@@ -255,7 +252,6 @@ def monitor_active_trades():
                 tp1_alerted = trade["tp1_alerted"]
                 tp2_alerted = trade["tp2_alerted"]
 
-                # جلب الشموع الحالية فريم الساعة (1h) لفحص الزخم اللحظي
                 _, candles1h = fetch_ohlcv(symbol, "1h", 30)
                 if not candles1h or len(candles1h) < 20:
                     continue
@@ -269,11 +265,8 @@ def monitor_active_trades():
                 sym_name = symbol.split("/")[0]
                 d = decimals_for(current_price)
 
-                # فحص الوصول للهدف الأول (TP1)
                 if current_price >= tp1 and tp1_alerted == 0:
-                    # تقييم الزخم: إذا انخفض الـ RSI مقارنة بالشمعة السابقة أو كان تحت 60 مع تشبع محتمل
                     momentum_fading = current_rsi < prev_rsi or current_rsi > 78
-                    
                     if momentum_fading:
                         alert_msg = (
                             f"⚠️ <b>تنبيه زخم (عند الهدف الأول TP1) – {sym_name}$</b>\n\n"
@@ -291,10 +284,8 @@ def monitor_active_trades():
                     tg_send(alert_msg)
                     db_query("UPDATE active_trades SET tp1_alerted = 1 WHERE symbol = ?", (symbol,))
 
-                # فحص الوصول للهدف الثاني (TP2)
                 elif current_price >= tp2 and tp2_alerted == 0:
                     momentum_fading = current_rsi < prev_rsi or current_rsi > 75
-
                     if momentum_fading:
                         alert_msg = (
                             f"⚠️ <b>تنبيه زخم (عند الهدف الثاني TP2) – {sym_name}$</b>\n\n"
@@ -312,7 +303,6 @@ def monitor_active_trades():
                     tg_send(alert_msg)
                     db_query("UPDATE active_trades SET tp2_alerted = 1 WHERE symbol = ?", (symbol,))
 
-                # فحص ضرب وقف الخسارة
                 elif current_price <= stop_loss:
                     exit_msg = (
                         f"❌ <b>تم ضرب وقف الخسارة – {sym_name}$</b>\n"
@@ -322,7 +312,7 @@ def monitor_active_trades():
                     db_query("UPDATE active_trades SET status = 'CLOSED' WHERE symbol = ?", (symbol,))
 
         except Exception as e:
-                    logger.error(f"Monitor active trades error: {e}")
+            logger.error(f"Monitor active trades error: {e}")
 
 
 def run_full_scan(chat_id=None):
@@ -363,7 +353,7 @@ HELP_TEXT = (
     "🤖 <b>بوت التداول والمتابعة اللحظية (نسخة V121.0)</b>\n\n"
     "• أرسل رمز العملة مثل <code>SOL</code> أو <code>BTC</code> لفحصها.\n"
     "• أرسل <code>/scan</code> لمسح السوق.\n"
-    "• <i>المميزات: البوت يراقب الأهداف (TP1, TP2) ويرسل تنبيهات فورية عند ضعف أو قوة الزخم.</i>"
+    "• <i>المميزات: البوت يراقب الأهداف ويرسل تنبيهات فورية عند ضعف أو قوة الزخم.</i>"
 )
 
 
@@ -426,7 +416,6 @@ def bootstrap():
     db_init()
     logger.info("Bot V121.0 Momentum Tracker bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
-    # تشغيل خيط مراقبة الزخم والأهداف في الخلفية
     threading.Thread(target=monitor_active_trades, daemon=True).start()
 
 
