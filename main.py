@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V110.0 (Smart Sniper & Az_Hail Format)
+# main.py — Bot V120.0 (Swing Accumulation Format)
 # ============================================================
 import os
 import re
@@ -147,40 +147,43 @@ def format_num(v, d):
 
 
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
-    resolved, candles15 = fetch_ohlcv(symbol_raw, "15m", 80)
-    if not resolved or not candles15 or len(candles15) < 20:
+    resolved, candles_daily = fetch_ohlcv(symbol_raw, "1d", 60)
+    if not resolved or not candles_daily or len(candles_daily) < 30:
         if manual:
             tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته غير كافية.", chat_id)
         return False, None
 
-    _, candles5 = fetch_ohlcv(resolved, "5m", 50)
+    _, candles4h = fetch_ohlcv(resolved, "4h", 50)
     _, candles1h = fetch_ohlcv(resolved, "1h", 40)
 
     scan_stats["scanned_pairs"] += 1
-    direction, price, signal = engine.analyze_market_structure(candles5, candles15, candles1h)
+    direction, price, signal = engine.analyze_market_structure(candles_daily, candles4h, candles1h)
 
-    if direction in ("LONG", "SHORT"):
-        sym_name = resolved.split("/")[0] + "USDT"
+    if direction == "LONG":
+        sym_name = resolved.split("/")[0]
+        full_sym_name = sym_name + "$"
 
         if not manual:
             last_sent = _sent_signals_cache.get(sym_name, 0)
-            if time.time() - last_sent < 7200:
+            if time.time() - last_sent < 14400:
                 return False, signal
             _sent_signals_cache[sym_name] = time.time()
 
         d = decimals_for(price)
-        tps = signal.get("take_profits", [0, 0, 0, 0])
-
-        action_label = "شراء 🟢" if direction == "LONG" else "بيع 🔴"
+        tps = signal.get("take_profits", [0, 0, 0])
 
         msg = (
-            f"<b>{sym_name} | {action_label} | 15m/5m</b>\n\n"
-            f"منطقة الدخول: <code>{format_num(signal.get('entry_high', 0), d)} – {format_num(signal.get('entry_low', 0), d)}</code>\n"
-            f"وقف الخسارة: <code>{format_num(signal.get('stop_loss', 0), d)}</code>\n\n"
-            f"الهدف 1: <code>{format_num(tps[0], d)}</code>\n"
-            f"الهدف 2: <code>{format_num(tps[1], d)}</code>\n"
-            f"الهدف 3: <code>{format_num(tps[2], d)}</code>\n"
-            f"الهدف 4: <code>{format_num(tps[3], d)}</code>"
+            f"🚀 <b>فرصة شراء جديدة قد تشاهد هذه الأشهر ارتفاع مذهل</b>\n\n"
+            f"🟢 <b>صفقة: Futures – USDT Perpetual</b>\n"
+            f"💎 <b>العملة: {full_sym_name}</b>\n"
+            f"⚡ <b>الرافعة المالية: 20x</b>\n\n"
+            f"📍 <b>سعر الدخول:</b> <code>{format_num(signal.get('entry_low', 0), d)}$</code>\n\n"
+            f"🎯 <b>الأهداف:</b>\n"
+            f"🥇 <code>{format_num(tps[0], d)}$</code>\n"
+            f"🥈 <code>{format_num(tps[1], d)}$</code>\n"
+            f"🥉 <code>{format_num(tps[2], d)}$</code>\n\n"
+            f"🔴 <b>وقف الخسارة:</b> <code>{format_num(signal.get('stop_loss', 0), d)}$</code>\n\n"
+            f"⚠️ <b>التزم بإدارة رأس المال ولا تذاطر بأكثر مما تستطيع تحمله.</b>"
         )
         scan_stats["signals_sent"] += 1
         tg_send(msg, chat_id)
@@ -189,7 +192,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     if manual:
         msg = (
             f"📊 <b>تحليل الأصل: {symbol_raw}</b>\n"
-            f"⏳ <b>الحركة عرضية حالياً، انتظر تكون النموذج الواضح.</b>"
+            f"⏳ <b>العملة لم تصل لمنطقة التجميع المناسبة بعد، انتظر الإشارة المكتملة.</b>"
         )
         tg_send(msg, chat_id)
     return False, signal
@@ -202,7 +205,7 @@ def run_full_scan(chat_id=None):
         return
     try:
         if chat_id:
-            tg_send("🔍 جاري مسح السوق وبحث الفرص الذكية...", chat_id)
+            tg_send("🔍 جاري مسح السوق وبحث فرص التجميع والسوينغ...", chat_id)
         symbols = get_full_market_universe()
         found = 0
         for sym in symbols[:50]:
@@ -211,7 +214,7 @@ def run_full_scan(chat_id=None):
                 found += 1
             time.sleep(0.2)
         if chat_id:
-            tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة تداول نشطة.", chat_id)
+            tg_send(f"✅ انتهى مسح السوق. تم رصد {found} فرصة تجميع سوينغ ناشطة.", chat_id)
     except Exception as e:
         logger.error(f"Full Scan error: {e}")
     finally:
@@ -226,13 +229,13 @@ def background_auto_scheduler():
                 run_full_scan(chat_id=None)
         except Exception as e:
             logger.error(f"Background scheduler error: {e}")
-        time.sleep(7200)
+        time.sleep(14400)
 
 
 HELP_TEXT = (
-    "🤖 <b>بوت التداول (نسخة القناص الذكي V110.0)</b>\n\n"
-    "• أرسل أي رمز مثل <code>BTC</code> أو <code>LDO</code> لفحصه يدويًا.\n"
-    "• أرسل <code>/scan</code> لفحص السوق بالكامل."
+    "🤖 <b>بوت تداول السوينغ والتجميع (نسخة V120.0)</b>\n\n"
+    "• أرسل رمز العملة مثل <code>BARD</code> أو <code>BTC</code> لفحصها.\n"
+    "• أرسل <code>/scan</code> لمسح السوق وبحث فرص الصعود."
 )
 
 
@@ -257,7 +260,7 @@ def handle_update(data):
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         else:
             if not base_of(parts[0]):
-                tg_send("❌ رمز غير صالح. مثال: <code>BTC</code> أو <code>SOL</code>", chat_id)
+                tg_send("❌ رمز غير صالح. مثال: <code>BARD</code> أو <code>BTC</code>", chat_id)
             else:
                 analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception as e:
@@ -266,7 +269,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V110.0-SmartSniper", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V120.0-SwingAccumulation", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -288,7 +291,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V110.0 Smart Sniper bootstrapped successfully.")
+    logger.info("Bot V120.0 Swing Accumulation bootstrapped successfully.")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
 
