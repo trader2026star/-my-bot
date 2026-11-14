@@ -1,5 +1,5 @@
 # ============================================================ #
-# main.py — Bot V123.0 (Anti-Late-Entry Edition)             #
+# main.py — Bot V123.0 (Anti-Late-Entry Edition & Robust Scan) #
 # MTF Swing Accumulation Telegram Scanner & Early Detection    #
 #                                                              #
 # Signal-only:                                                 #
@@ -421,7 +421,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         return False, None
 
 # ============================================================
-# FULL MARKET SCAN
+# FULL MARKET SCAN (Robust Version)
 # ============================================================
 def run_full_scan(chat_id=None):
     if not scan_lock.acquire(blocking=False):
@@ -438,13 +438,17 @@ def run_full_scan(chat_id=None):
         symbols = get_full_market_universe()
         found = 0
         for index, sym in enumerate(symbols):
-            ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
-            if ok:
-                found += 1
-            time.sleep(0.25)
+            try:
+                ok, _ = analyze_symbol(sym, chat_id=None, manual=False)
+                if ok:
+                    found += 1
+            except Exception as inner_exc:
+                logger.debug("Skipping symbol %s due to error: %s", sym, inner_exc)
+            time.sleep(0.3)
+
         if chat_id:
             tg_send(
-                "✅ <b>انتهى فحص السوق.</b>\n\n"
+                "✅ <b>انتهى فحص السوق بنجاح.</b>\n\n"
                 f"🔎 الأزواج المفحوصة: <code>{len(symbols)}</code>\n"
                 f"🟢 فرص التجميع المبكر المكتشفة: <code>{found}</code>\n"
                 f"📊 إجمالي الإشارات المرسلة: <code>{scan_stats['signals_sent']}</code>",
@@ -454,7 +458,7 @@ def run_full_scan(chat_id=None):
         scan_stats["errors"] += 1
         logger.exception("Full Scan error: %s", exc)
         if chat_id:
-            tg_send("❌ حدث خطأ أثناء الفحص الشامل.", chat_id)
+            tg_send("❌ حدث خطأ أثناء الفحص الشامل للسوق.", chat_id)
     finally:
         scan_lock.release()
 
