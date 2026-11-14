@@ -239,7 +239,7 @@ def setup_webhook():
     base_url = base_url.rstrip("/")
 
     webhook = (
-        f"{base_url}/telegram"
+        f"{base_url}/tg-webhook"
     )
 
     try:
@@ -1154,17 +1154,15 @@ def scan_market(chat_id):
         tg_send(
             chat_id,
             "❌ حدث خطأ أثناء فحص السوق."
-
-
         )
 
 
 # ============================================================
-# TELEGRAM WEBHOOK ENDPOINT
+# TELEGRAM WEBHOOK ENDPOINT (معدل ليتوافق مع /tg-webhook)
 # ============================================================
 
 @app.route(
-    "/telegram",
+    "/tg-webhook",
     methods=["POST"]
 )
 def telegram_webhook():
