@@ -1,16 +1,6 @@
 # ============================================================ #
-# main.py — Bot V123.0 (Anti-Late-Entry Edition & Robust Scan) #
+# main.py — Bot V123.1 (Optimized & Render-Safe Edition)       #
 # MTF Swing Accumulation Telegram Scanner & Early Detection    #
-#                                                              #
-# Signal-only:                                                 #
-# Does NOT execute exchange orders.                            #
-#                                                              #
-# Analysis:                                                    #
-# 1D -> Bias                                                   #
-# 4H -> Structure                                              #
-# 1H -> Early Accumulation / Discount Entry                    #
-#                                                              #
-# LONG ONLY                                                    #
 # ============================================================ #
 
 import os
@@ -38,28 +28,16 @@ app = Flask(__name__)
 # ============================================================
 # ENVIRONMENT
 # ============================================================
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN",
-    "",
-).strip()
-TELEGRAM_CHAT_ID = os.environ.get(
-    "TELEGRAM_CHAT_ID",
-    "",
-).strip()
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 ALLOWED_CHAT_IDS = {
     c.strip()
-    for c in os.environ.get(
-        "ALLOWED_CHAT_IDS",
-        "",
-    ).split(",")
+    for c in os.environ.get("ALLOWED_CHAT_IDS", "").split(",")
     if c.strip()
 }
 if TELEGRAM_CHAT_ID:
     ALLOWED_CHAT_IDS.add(TELEGRAM_CHAT_ID)
-DB_PATH = os.environ.get(
-    "DB_PATH",
-    "/tmp/bot_state.db",
-)
+DB_PATH = os.environ.get("DB_PATH", "/tmp/bot_state.db")
 
 # ============================================================
 # BINGX
@@ -67,7 +45,7 @@ DB_PATH = os.environ.get(
 bingx = ccxt.bingx(
     {
         "enableRateLimit": True,
-        "timeout": 20000,
+        "timeout": 15000,
         "options": {
             "defaultType": "swap",
         },
@@ -100,18 +78,13 @@ _all_markets_cache = []
 _markets_cache_time = 0
 _sent_signals_cache = {}
 
-# Minimum time before the same symbol can send another
-# automatic signal.
 SIGNAL_COOLDOWN_SECONDS = 14400
 
 # ============================================================
 # DATABASE
 # ============================================================
 def _db():
-    conn = sqlite3.connect(
-        DB_PATH,
-        timeout=15,
-    )
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -155,13 +128,8 @@ def get_full_market_universe():
     global _all_markets_cache
     global _markets_cache_time
     try:
-        if not _all_markets_cache or (
-            time.time() - _markets_cache_time > 1800
-        ):
-            markets = ex_call(
-                bingx.load_markets,
-                True,
-            )
+        if not _all_markets_cache or (time.time() - _markets_cache_time > 1800):
+            markets = ex_call(bingx.load_markets, True)
             universe = []
             for symbol, market in markets.items():
                 if not market.get("swap", False):
@@ -177,18 +145,10 @@ def get_full_market_universe():
             _markets_cache_time = time.time()
         if _all_markets_cache:
             return _all_markets_cache
-        return [
-            "BTC/USDT:USDT",
-            "ETH/USDT:USDT",
-            "SOL/USDT:USDT",
-        ]
+        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
     except Exception as exc:
         logger.error("Market universe error: %s", exc)
-        return [
-            "BTC/USDT:USDT",
-            "ETH/USDT:USDT",
-            "SOL/USDT:USDT",
-        ]
+        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 
 # ============================================================
 # SYMBOL NORMALIZATION
@@ -220,10 +180,7 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
     base = base_of(symbol_raw)
     if not base:
         return None, None
-    candidates = [
-        f"{base}/USDT:USDT",
-        f"{base}/USDT",
-    ]
+    candidates = [f"{base}/USDT:USDT", f"{base}/USDT"]
     for symbol in candidates:
         try:
             bars = ex_call(
@@ -235,13 +192,8 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
             if bars and len(bars) > 10:
                 return symbol, bars
         except Exception as exc:
-            logger.debug(
-                "fetch_ohlcv %s %s failed: %s",
-                symbol,
-                timeframe,
-                exc,
-            )
-        time.sleep(0.15)
+            logger.debug("fetch_ohlcv %s %s failed: %s", symbol, timeframe, exc)
+        time.sleep(0.1)
     return None, None
 
 # ============================================================
@@ -295,7 +247,7 @@ def format_num(value, decimals):
         value = float(value)
         if value <= 0:
             return "N/A"
-        return f"{value:.{decimals}f}"
+        return f"&#123;value:.&#123;decimals&#125;f&#125;"
     except Exception:
         return "N/A"
 
@@ -363,7 +315,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             roc_5bar = float(details.get("roc_5bar", 0))
 
             msg = (
-                "🚀 <b>MY EXPERT CRYPTO BOT V123.0</b>\n"
+                "🚀 <b>MY EXPERT CRYPTO BOT V123.1</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 "🟢 <b>LONG — Early Accumulation (دخول مبكر)</b>\n\n"
                 f"💎 <b>العملة:</b> <code>{full_sym_name}</code>\n"
@@ -414,14 +366,11 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
         scan_stats["errors"] += 1
         logger.exception("analyze_symbol error: %s", exc)
         if manual:
-            tg_send(
-                f"❌ حدث خطأ أثناء تحليل <code>{symbol_raw}</code>.",
-                chat_id,
-            )
+            tg_send(f"❌ حدث خطأ أثناء تحليل <code>{symbol_raw}</code>.", chat_id)
         return False, None
 
 # ============================================================
-# FULL MARKET SCAN (Robust Version)
+# FULL MARKET SCAN (Safe & Fast)
 # ============================================================
 def run_full_scan(chat_id=None):
     if not scan_lock.acquire(blocking=False):
@@ -437,14 +386,14 @@ def run_full_scan(chat_id=None):
             )
         symbols = get_full_market_universe()
         found = 0
-        for index, sym in enumerate(symbols):
+        for sym in symbols:
             try:
                 ok, _ = analyze_symbol(sym, chat_id=None, manual=False)
                 if ok:
                     found += 1
-            except Exception as inner_exc:
-                logger.debug("Skipping symbol %s due to error: %s", sym, inner_exc)
-            time.sleep(0.3)
+            except Exception:
+                pass
+            time.sleep(0.15)
 
         if chat_id:
             tg_send(
@@ -466,7 +415,7 @@ def run_full_scan(chat_id=None):
 # BACKGROUND SCHEDULER
 # ============================================================
 def background_auto_scheduler():
-    time.sleep(15)
+    time.sleep(20)
     while True:
         try:
             if TELEGRAM_CHAT_ID:
@@ -479,7 +428,7 @@ def background_auto_scheduler():
 # HELP
 # ============================================================
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT CRYPTO BOT V123.0</b>\n"
+    "🤖 <b>MY EXPERT CRYPTO BOT V123.1</b>\n"
     "━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>أسلوب التحليل (Anti-Late-Entry):</b>\n"
     "• 1D = الاتجاه العام\n"
@@ -521,10 +470,7 @@ def handle_update(data):
             ).start()
         else:
             if not base_of(parts[0]):
-                tg_send(
-                    "❌ رمز غير صالح.\nمثال: <code>BTC</code>",
-                    chat_id,
-                )
+                tg_send("❌ رمز غير صالح.\nمثال: <code>BTC</code>", chat_id)
             else:
                 analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception as exc:
@@ -538,7 +484,7 @@ def index():
     return jsonify(
         {
             "status": "running",
-            "version": "V123.0-Anti-Late-Entry",
+            "version": "V123.1-Optimized",
             "direction": "LONG_ONLY",
             "timeframes": ["1D", "4H", "1H"],
             "stats": scan_stats,
@@ -573,13 +519,10 @@ def telegram_webhook():
 # ============================================================
 def bootstrap():
     db_init()
-    logger.info("MY EXPERT CRYPTO BOT V123.0 bootstrapped.")
+    logger.info("MY EXPERT CRYPTO BOT V123.1 bootstrapped.")
     logger.info("Analysis: 1D -> 4H -> 1H (Anti-Late-Entry)")
     logger.info("Direction: LONG ONLY")
-    threading.Thread(
-        target=background_auto_scheduler,
-        daemon=True,
-    ).start()
+    threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
 bootstrap()
 
