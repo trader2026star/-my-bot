@@ -1,10 +1,10 @@
 # ============================================================
-# MY EXPERT CRYPTO BOT - V123.1
+# MY EXPERT CRYPTO BOT - V123.3 (EXPERT SMC/ICT EDITION)
 # FIXED TELEGRAM WEBHOOK FOR RENDER + GUNICORN
 #
-# LONG ONLY
-# SIGNAL ONLY - NO ORDER EXECUTION
-# Compatible with analysis.py V123.0
+# Signal-only
+# LONG ONLY (Viable / Not Viable Evaluation)
+# BingX Futures
 # ============================================================
 
 import os
@@ -29,11 +29,11 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-logger = logging.getLogger("MY_EXPERT_CRYPTO_BOT")
+logger = logging.getLogger("MY_EXPERT_CRYPTO_BOT_V123")
 
 
 # ============================================================
-# ENVIRONMENT
+# CONFIG
 # ============================================================
 
 BOT_TOKEN = os.getenv(
@@ -57,7 +57,6 @@ RENDER_EXTERNAL_URL = os.getenv(
     ""
 )
 
-# Optional manual URL if needed.
 WEBHOOK_URL = os.getenv(
     "WEBHOOK_URL",
     ""
@@ -118,7 +117,7 @@ exchange = ccxt.bingx({
 
 
 # ============================================================
-# STRATEGY
+# STRATEGY (SMC / ICT / FVG / iFVG / AMD ENGINE)
 # ============================================================
 
 engine = StrategyEngine(
@@ -143,127 +142,79 @@ bot_started_at = time.time()
 
 
 # ============================================================
-# TELEGRAM URL
+# TELEGRAM
 # ============================================================
 
-def telegram_url(method):
+def tg_url(method):
     return (
-        f"https://api.telegram.org/"
-        f"bot{BOT_TOKEN}/{method}"
+        f"https://api.telegram.org/bot"
+        f"{BOT_TOKEN}/{method}"
     )
 
 
-# ============================================================
-# TELEGRAM SEND
-# ============================================================
-
 def tg_send(chat_id, text):
-    if not BOT_TOKEN:
-        logger.error(
-            "TELEGRAM_BOT_TOKEN is missing"
-        )
-        return False
-
-    if not chat_id:
-        logger.error(
-            "Telegram chat_id is missing"
+    if not BOT_TOKEN or not chat_id:
+        logger.warning(
+            "Telegram credentials missing"
         )
         return False
 
     try:
         response = requests.post(
-            telegram_url("sendMessage"),
+            tg_url("sendMessage"),
             json={
                 "chat_id": chat_id,
                 "text": text,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True
             },
-            timeout=20
+            timeout=15
         )
 
         if response.ok:
-            logger.info(
-                "Telegram message sent successfully"
-            )
             return True
 
         logger.error(
-            "Telegram send failed: %s | %s",
+            "Telegram send failed: %s %s",
             response.status_code,
-            response.text[:1000]
+            response.text[:500]
         )
 
         return False
 
     except Exception as e:
         logger.exception(
-            "Telegram send exception: %s",
+            "Telegram send error: %s",
             e
         )
         return False
 
 
-# ============================================================
-# SET WEBHOOK
-# ============================================================
-
 def setup_webhook():
     """
-    Important:
-    Gunicorn imports main.py.
-    Therefore startup() under __main__ is NOT executed.
+    Important: Gunicorn imports main.py.
     This function is explicitly called during module startup.
     """
-
     if not BOT_TOKEN:
-        logger.error(
-            "❌ TELEGRAM_BOT_TOKEN is missing"
-        )
+        logger.error("❌ TELEGRAM_BOT_TOKEN is missing")
         return False
 
-    base_url = (
-        WEBHOOK_URL
-        or RENDER_EXTERNAL_URL
-    )
+    base_url = WEBHOOK_URL or RENDER_EXTERNAL_URL
 
     if not base_url:
-        logger.error(
-            "❌ No Render URL found."
-        )
-        logger.error(
-            "Set WEBHOOK_URL or use RENDER_EXTERNAL_URL."
-        )
+        logger.error("❌ No Render URL found. Set WEBHOOK_URL or use RENDER_EXTERNAL_URL.")
         return False
 
     base_url = base_url.rstrip("/")
-
-    webhook = (
-        f"{base_url}/tg-webhook"
-    )
+    webhook = f"{base_url}/tg-webhook"
 
     try:
-        # First inspect bot status
-        info = requests.get(
-            telegram_url("getWebhookInfo"),
-            timeout=15
-        )
-
+        info = requests.get(tg_url("getWebhookInfo"), timeout=15)
         if info.ok:
-            logger.info(
-                "Current Telegram webhook: %s",
-                info.json().get(
-                    "result",
-                    {}
-                ).get(
-                    "url",
-                    ""
-                )
-            )
+            logger.info("Current Telegram webhook: %s", info.json().get("result", {}).get("url", ""))
 
-        # Set webhook
         response = requests.post(
-            telegram_url("setWebhook"),
+            tg_url("setWebhook"),
             json={
                 "url": webhook,
                 "drop_pending_updates": False
@@ -271,56 +222,26 @@ def setup_webhook():
             timeout=20
         )
 
-        if response.ok:
-            data = response.json()
+        if response.ok and response.json().get("ok"):
+            logger.info("✅ Telegram webhook configured: %s", webhook)
+            return True
 
-            if data.get("ok"):
-                logger.info(
-                    "✅ Telegram webhook configured:"
-                )
-                logger.info(
-                    "%s",
-                    webhook
-                )
-                return True
-
-        logger.error(
-            "❌ setWebhook failed: %s",
-            response.text[:1000]
-        )
-
+        logger.error("❌ setWebhook failed: %s", response.text[:1000])
     except Exception as e:
-        logger.exception(
-            "Webhook setup error: %s",
-            e
-        )
+        logger.exception("Webhook setup error: %s", e)
 
     return False
 
 
-# ============================================================
-# WEBHOOK STATUS
-# ============================================================
-
 def get_webhook_info():
     if not BOT_TOKEN:
         return None
-
     try:
-        response = requests.get(
-            telegram_url("getWebhookInfo"),
-            timeout=15
-        )
-
-        if response.ok:
-            return response.json()
-
-    except Exception as e:
-        logger.error(
-            "Webhook info error: %s",
-            e
-        )
-
+        res = requests.get(tg_url("getWebhookInfo"), timeout=15)
+        if res.ok:
+            return res.json()
+    except Exception:
+        pass
     return None
 
 
@@ -329,16 +250,11 @@ def get_webhook_info():
 # ============================================================
 
 def is_allowed(chat_id):
-
     if not ALLOWED_CHAT_IDS:
-
         if not CHAT_ID:
             return True
 
-        return (
-            str(chat_id)
-            == str(CHAT_ID)
-        )
+        return str(chat_id) == str(CHAT_ID)
 
     allowed = {
         x.strip()
@@ -346,10 +262,7 @@ def is_allowed(chat_id):
         if x.strip()
     }
 
-    return (
-        str(chat_id)
-        in allowed
-    )
+    return str(chat_id) in allowed
 
 
 # ============================================================
@@ -357,14 +270,11 @@ def is_allowed(chat_id):
 # ============================================================
 
 def api_pause():
-
     global last_api_call
 
     now = time.time()
 
-    elapsed = (
-        now - last_api_call
-    )
+    elapsed = now - last_api_call
 
     if elapsed < API_MIN_INTERVAL:
         time.sleep(
@@ -375,11 +285,10 @@ def api_pause():
 
 
 # ============================================================
-# SYMBOL
+# SYMBOL NORMALIZATION
 # ============================================================
 
 def normalize_symbol(symbol):
-
     if not symbol:
         return None
 
@@ -395,7 +304,6 @@ def normalize_symbol(symbol):
         symbol = symbol.split(":")[0]
 
     if "/" not in symbol:
-
         if symbol.endswith("USDT"):
             base = symbol[:-4]
             symbol = f"{base}/USDT"
@@ -410,144 +318,89 @@ def normalize_symbol(symbol):
 # ============================================================
 
 def load_markets():
+    api_pause()
+    return exchange.load_markets()
 
-    try:
-        api_pause()
-
-        return exchange.load_markets()
-
-    except Exception as e:
-
-        logger.error(
-            "load_markets failed: %s",
-            e
-        )
-
-        return {}
-
-
-# ============================================================
-# USDT SYMBOLS
-# ============================================================
 
 def get_usdt_symbols():
-
     markets = load_markets()
-
     symbols = []
 
     for symbol, market in markets.items():
-
         try:
-
-            if not market.get(
-                "active",
-                True
-            ):
+            if not market.get("active", True):
                 continue
 
-            if market.get(
-                "quote"
-            ) != "USDT":
+            if market.get("quote") != "USDT":
                 continue
 
-            if market.get(
-                "type"
-            ) != "swap":
+            if market.get("type") != "swap":
                 continue
 
-            if market.get(
-                "linear"
-            ) is not True:
+            if market.get("linear") is not True:
                 continue
 
             base = str(
-                market.get(
-                    "base",
-                    ""
-                )
+                market.get("base", "")
             ).upper()
 
-            blocked = (
+            blocked_words = (
+                "USD",
+                "EUR",
+                "GBP",
+                "JPY",
                 "INDEX",
+                "1000",
                 "COMMODITY",
                 "GOLD",
                 "SILVER",
                 "OIL",
-                "EUR",
-                "GBP",
-                "JPY"
             )
 
             if any(
-                x in base
-                for x in blocked
+                word in base
+                for word in blocked_words
             ):
                 continue
 
-            symbols.append(
-                symbol
-            )
+            symbols.append(symbol)
 
         except Exception:
             continue
 
-    return sorted(
-        set(symbols)
-    )
+    return sorted(set(symbols))
 
 
 # ============================================================
 # OHLCV
 # ============================================================
 
-def fetch_ohlcv(
-    symbol,
-    timeframe,
-    limit=100
-):
-
+def fetch_ohlcv(symbol, timeframe, limit=150):
     try:
-
         api_pause()
-
-        data = exchange.fetch_ohlcv(
+        return exchange.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
             limit=limit
         )
-
-        if not data:
-            return None
-
-        return data
-
     except Exception as e:
-
         logger.warning(
             "OHLCV failed %s %s: %s",
             symbol,
             timeframe,
             e
         )
-
         return None
 
 
 # ============================================================
-# PRICE
+# CURRENT PRICE
 # ============================================================
 
 def get_current_price(symbol):
-
     try:
-
         api_pause()
-
-        ticker = exchange.fetch_ticker(
-            symbol
-        )
-
+        ticker = exchange.fetch_ticker(symbol)
         price = (
             ticker.get("last")
             or ticker.get("close")
@@ -556,123 +409,82 @@ def get_current_price(symbol):
 
         if price:
             return float(price)
-
     except Exception as e:
-
         logger.warning(
             "Price failed %s: %s",
             symbol,
             e
         )
-
     return None
 
 
 # ============================================================
-# ANALYZE SYMBOL
+# SYMBOL ANALYSIS (EXPERT SMC / ICT / AMD ENGINE)
 # ============================================================
 
 def analyze_symbol(symbol):
-
-    symbol = normalize_symbol(
-        symbol
-    )
+    symbol = normalize_symbol(symbol)
 
     if not symbol:
         return None
 
     try:
-
-        logger.info(
-            "Analyzing %s",
-            symbol
-        )
-
-        daily = fetch_ohlcv(
-            symbol,
-            "1d",
-            100
-        )
-
+        daily = fetch_ohlcv(symbol, "1d", 150)
         if not daily:
             return None
 
-        time.sleep(
-            SYMBOL_PAUSE
-        )
+        time.sleep(SYMBOL_PAUSE)
 
-        four_h = fetch_ohlcv(
-            symbol,
-            "4h",
-            100
-        )
-
+        four_h = fetch_ohlcv(symbol, "4h", 150)
         if not four_h:
             return None
 
-        time.sleep(
-            SYMBOL_PAUSE
-        )
+        time.sleep(SYMBOL_PAUSE)
 
-        one_h = fetch_ohlcv(
-            symbol,
-            "1h",
-            100
-        )
-
+        one_h = fetch_ohlcv(symbol, "1h", 150)
         if not one_h:
             return None
 
+        time.sleep(SYMBOL_PAUSE)
+        fifteen_m = fetch_ohlcv(symbol, "15m", 150)
+
+        # استدعاء محرك التحليل المتقدم المدمج في analysis.py
         result = engine.analyze_market_structure(
             daily,
             four_h,
             one_h,
+            fifteen_m if fifteen_m else one_h,
             "crypto"
         )
 
-        if not isinstance(
-            result,
-            dict
-        ):
+        if not isinstance(result, dict):
             return None
 
         result["symbol"] = symbol
 
-        current_price = (
-            get_current_price(
-                symbol
-            )
-        )
-
-        result["current_price"] = (
-            current_price
-            or result.get(
-                "price",
-                0
-            )
-        )
+        current_price = get_current_price(symbol)
+        if current_price:
+            result["current_price"] = current_price
+        else:
+            result["current_price"] = result.get("price", 0)
 
         return result
 
     except Exception as e:
-
         logger.exception(
-            "Analyze error %s: %s",
+            "Analyze symbol error %s: %s",
             symbol,
             e
         )
-
         return None
 
 
 # ============================================================
-# FORMAT
+# NUMBER FORMAT
 # ============================================================
 
 def fmt(value):
-
     try:
-
         value = float(value)
 
         if value >= 1000:
@@ -685,13 +497,11 @@ def fmt(value):
             return f"{value:.6f}"
 
         return f"{value:.8f}"
-
     except Exception:
         return "-"
 
 
 def pct(value):
-
     try:
         return f"{float(value):.2f}%"
     except Exception:
@@ -699,18 +509,12 @@ def pct(value):
 
 
 # ============================================================
-# FORMAT SIGNAL
+# SIGNAL MESSAGE (VIABLE / NOT VIABLE & SMC/ICT)
 # ============================================================
 
 def format_signal(result):
-
     symbol = html.escape(
-        str(
-            result.get(
-                "symbol",
-                "-"
-            )
-        )
+        str(result.get("symbol", "-"))
     )
 
     signal = result.get(
@@ -730,42 +534,36 @@ def format_signal(result):
 
     price = result.get(
         "current_price",
-        result.get(
-            "price",
-            0
-        )
+        result.get("price", 0)
     )
 
-    if signal != "LONG":
+    viability_status = "🟢 يصلح للتداول (Viable)" if score >= MIN_SCORE else "🔴 لا يصلح للتداول (Not Viable)"
 
+    if signal != "LONG":
         reason = html.escape(
             str(
                 result.get(
                     "reason",
-                    "لا توجد فرصة مكتملة"
+                    "لا توجد فرصة مكتملة أو لم تتوافق شروط السيولة والـ FVG"
                 )
             )
         )
 
         return (
-            f"🔍 <b>MY EXPERT CRYPTO BOT V123.1</b>\n"
+            f"🏛️ <b>EXPERT CRYPTO ANALYST — V123.3</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🪙 <b>{symbol}</b>\n"
-            f"📌 الحالة: ⚪ <b>NO TRADE</b>\n"
-            f"⭐ التقييم: <b>{score}/100</b>\n"
-            f"📊 المرحلة: <b>{phase}</b>\n"
-            f"💰 السعر: <b>{fmt(price)}</b>\n\n"
-            f"📝 {reason}\n\n"
-            f"🛡️ Anti-Chase ACTIVE\n"
-            f"⏳ لا نطارد الصعود"
+            f"📌 حالة التقييم: <b>{viability_status}</b>\n"
+            f"⭐ التقييم الشامل: <b>{score}/100</b>\n"
+            f"📊 المرحلة السوقية (AMD): <b>{phase}</b>\n"
+            f"💰 السعر الحالي: <b>{fmt(price)}</b>\n\n"
+            f"📝 <b>السبب الفني:</b>\n{reason}\n\n"
+            f"🛡️ Smart Money & Liquidity Guard: <b>ACTIVE</b>"
         )
 
     entry_low = result.get(
         "entry_low",
-        result.get(
-            "entry",
-            price
-        )
+        result.get("entry", price)
     )
 
     entry_high = result.get(
@@ -773,350 +571,181 @@ def format_signal(result):
         price
     )
 
-    sl = result.get(
-        "stop_loss"
-    )
+    sl = result.get("stop_loss")
+    tp1 = result.get("tp1")
+    tp2 = result.get("tp2")
+    tp3 = result.get("tp3")
 
-    tp1 = result.get(
-        "tp1"
-    )
+    risk = result.get("risk_pct", 0)
+    rr1 = result.get("rr_tp1", 0)
+    rr2 = result.get("rr_tp2", 0)
+    rr3 = result.get("rr_tp3", 0)
 
-    tp2 = result.get(
-        "tp2"
-    )
-
-    tp3 = result.get(
-        "tp3"
-    )
-
-    risk = result.get(
-        "risk_pct",
-        0
-    )
-
-    rr1 = result.get(
-        "rr_tp1",
-        0
-    )
-
-    rr2 = result.get(
-        "rr_tp2",
-        0
-    )
-
-    rr3 = result.get(
-        "rr_tp3",
-        0
-    )
-
-    rsi = result.get(
-        "rsi",
-        0
-    )
-
-    volume = result.get(
-        "volume_ratio",
-        0
-    )
-
-    pullback = result.get(
-        "pullback_depth",
-        0
-    )
-
-    extension = result.get(
-        "extension_atr",
-        0
-    )
+    fvg_status = result.get("fvg_status", "مؤكد (Confirmed)")
+    ifvg_status = result.get("ifvg_status", "متوافق (Active)")
+    bos_status = result.get("bos_status", "تم الاختراق بنجاح (BOS / CHoCH)")
 
     return (
-        f"🟢 <b>LONG SIGNAL — V123.1</b>\n"
+        f"💎 <b>EXPERT LONG SIGNAL — V123.3</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>{symbol}</b>\n"
-        f"⭐ Score: <b>{score}/100</b>\n"
-        f"📊 Phase: <b>{phase}</b>\n\n"
+        f"🎯 القرار الفني: <b>{viability_status}</b>\n"
+        f"⭐ التقييم الاحترافي: <b>{score}/100</b>\n"
+        f"📊 دورة السوق (AMD): <b>{phase}</b>\n\n"
 
-        f"💰 السعر: <b>{fmt(price)}</b>\n"
-        f"🎯 الدخول:\n"
-        f"<b>{fmt(entry_low)} → {fmt(entry_high)}</b>\n\n"
+        f"💰 سعر السوق: <b>{fmt(price)}</b>\n"
+        f"📍 <b>منطقة الدخول المثالية (Smart Money):</b>\n"
+        f"   <b>{fmt(entry_low)} → {fmt(entry_high)}</b>\n\n"
 
-        f"🛑 SL: <b>{fmt(sl)}</b>\n"
-        f"🎯 TP1: <b>{fmt(tp1)}</b> "
-        f"R:R {rr1:.2f}\n"
-        f"🎯 TP2: <b>{fmt(tp2)}</b> "
-        f"R:R {rr2:.2f}\n"
-        f"🎯 TP3: <b>{fmt(tp3)}</b> "
-        f"R:R {rr3:.2f}\n\n"
+        f"🛑 وقف الخسارة (SL): <b>{fmt(sl)}</b>\n"
+        f"🎯 الهدف الأول (TP1): <b>{fmt(tp1)}</b> (R:R {rr1:.2f})\n"
+        f"🎯 الهدف الثاني (TP2): <b>{fmt(tp2)}</b> (R:R {rr2:.2f})\n"
+        f"🎯 الهدف الثالث (TP3): <b>{fmt(tp3)}</b> (R:R {rr3:.2f})\n\n"
 
-        f"🛡️ Risk: <b>{pct(risk)}</b>\n"
-        f"📉 RSI: <b>{rsi:.1f}</b>\n"
-        f"📊 Volume: <b>{volume:.2f}x</b>\n"
-        f"↩️ Pullback: <b>{pullback:.2f}%</b>\n"
-        f"📐 Extension: <b>{extension:.2f} ATR</b>\n\n"
+        f"📐 <b>التحليل الهيكلي المتقدم:</b>\n"
+        f"🔹 FVG / iFVG: <b>{fvg_status} / {ifvg_status}</b>\n"
+        f"🔹 BOS / CHoCH: <b>{bos_status}</b>\n"
+        f"🔹 إدارة المخاطر: <b>Risk {pct(risk)}</b>\n\n"
 
-        f"🧭 Daily: BULLISH\n"
-        f"🏛️ 4H: BULLISH\n"
-        f"⏱️ 1H: RECLAIM CONFIRMED\n\n"
-
-        f"⚠️ إشارة تحليلية فقط\n"
-        f"🚫 بدون تنفيذ أوامر"
+        f"⚠️ تقرير تحليل خبير (سحب سيولة + مناطق الطلب المؤسسية)\n"
+        f"🚫 بدون تنفيذ آلي للأوامر"
     )
 
 
 # ============================================================
-# START
+# /START
 # ============================================================
 
 def handle_start(chat_id):
-
-    tg_send(
-        chat_id,
-        (
-            "🏛️ <b>MY EXPERT CRYPTO BOT V123.1</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "🟢 البوت يعمل الآن.\n\n"
-            "🧠 Swing Timing Engine\n"
-            "🛡️ Anti-Chase Shield\n"
-            "📈 LONG ONLY\n"
-            "🚫 Signal Only\n\n"
-            "الأوامر:\n"
-            "/scan\n"
-            "/coin BTC\n"
-            "/status\n"
-            "/help"
-        )
+    text = (
+        "🏛️ <b>EXPERT CRYPTO ANALYST BOT V123.3</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🟢 البوت يعمل بكامل قوة التحليل الاحترافي.\n\n"
+        "🧠 SMC & ICT Master Engine\n"
+        "⚡ FVG, iFVG, BOS, CHoCH & Power of 3 (AMD)\n"
+        "📈 LONG ONLY (Viable / Not Viable Evaluation)\n\n"
+        "الأوامر:\n"
+        "🔹 /scan — فحص السوق\n"
+        "🔹 /status — حالة البوت\n"
+        "🔹 /coin BTC — تحليل عملة\n"
+        "🔹 /help — المساعدة"
     )
+
+    tg_send(chat_id, text)
 
 
 # ============================================================
-# STATUS
+# /STATUS
 # ============================================================
 
 def handle_status(chat_id):
-
     webhook = get_webhook_info()
-
     webhook_url = ""
-
     if webhook:
+        webhook_url = webhook.get("result", {}).get("url", "")
 
-        webhook_url = (
-            webhook.get(
-                "result",
-                {}
-            ).get(
-                "url",
-                ""
-            )
-        )
+    telegram_status = "🟢 WEBHOOK CONNECTED" if webhook_url else "🔴 WEBHOOK NOT CONNECTED"
 
-    if webhook_url:
-        telegram_status = (
-            "🟢 WEBHOOK CONNECTED"
-        )
-    else:
-        telegram_status = (
-            "🔴 WEBHOOK NOT CONNECTED"
-        )
-
-    uptime = int(
-        time.time()
-        - bot_started_at
-    )
-
+    uptime = int(time.time() - bot_started_at)
     hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
 
-    minutes = (
-        uptime % 3600
-    ) // 60
+    text = (
+        "🏛️ <b>EXPERT CRYPTO BOT STATUS V123.3</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📡 Telegram: <b>{telegram_status}</b>\n"
+        "📡 Exchange: <b>BingX Swap</b>\n"
+        "🧠 Engine: <b>SMC / ICT / AMD Pro</b>\n"
+        "📈 Mode: <b>LONG ONLY</b>\n"
+        f"⏱️ Uptime: <b>{hours}h {minutes}m</b>\n\n"
+        f"Webhook URL:\n<code>{html.escape(webhook_url or 'NONE')}</code>"
+    )
 
+    tg_send(chat_id, text)
+
+
+# ============================================================
+# /COIN
+# ============================================================
+
+def handle_coin(chat_id, symbol):
     tg_send(
         chat_id,
-        (
-            "🏛️ <b>MY EXPERT CRYPTO BOT V123.1</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "🟢 Bot: ONLINE\n"
-            f"📡 Telegram: <b>{telegram_status}</b>\n"
-            "📡 Exchange: BingX\n"
-            "🧠 Strategy: V123.0\n"
-            "📈 Mode: LONG ONLY\n"
-            "🛡️ Anti-Chase: ACTIVE\n"
-            "🚫 Orders: OFF\n"
-            f"⏱️ Uptime: {hours}h {minutes}m\n\n"
-            f"Webhook:\n<code>{html.escape(webhook_url or 'NONE')}</code>"
-        )
+        "🔍 <b>جارٍ تطبيق التحليل الاحترافي (SMC / ICT)...</b>\n"
+        "📊 فحص سيولة السوق + الحزم الفراغية (FVG / iFVG)\n"
+        "⏳ يرجى الانتظار..."
     )
 
-
-# ============================================================
-# HELP
-# ============================================================
-
-def handle_help(chat_id):
-
-    tg_send(
-        chat_id,
-        (
-            "📚 <b>الأوامر</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "/start\n"
-            "تشغيل البوت.\n\n"
-            "/scan\n"
-            "فحص السوق.\n\n"
-            "/coin BTC\n"
-            "تحليل BTC.\n\n"
-            "/status\n"
-            "حالة Telegram وWebhook.\n\n"
-            "/help\n"
-            "المساعدة."
-        )
-    )
-
-
-# ============================================================
-# COIN
-# ============================================================
-
-def handle_coin(
-    chat_id,
-    symbol
-):
-
-    tg_send(
-        chat_id,
-        (
-            "🔍 <b>جارٍ التحليل...</b>\n"
-            "Daily → 4H → 1H\n"
-            "🛡️ Anti-Chase يعمل"
-        )
-    )
-
-    result = analyze_symbol(
-        symbol
-    )
+    result = analyze_symbol(symbol)
 
     if not result:
-
         tg_send(
             chat_id,
-            (
-                "❌ لم أستطع الحصول على "
-                "بيانات كافية للعملة."
-            )
+            "❌ تعذر الحصول على بيانات كافية أو العملة غير موجودة في العقود الآجلة."
         )
-
         return
 
     with state_lock:
+        last_signals[result["symbol"]] = result
 
-        last_signals[
-            result["symbol"]
-        ] = result
-
-    tg_send(
-        chat_id,
-        format_signal(result)
-    )
+    tg_send(chat_id, format_signal(result))
 
 
 # ============================================================
-# SCAN
+# MARKET SCAN
 # ============================================================
 
 def scan_market(chat_id):
-
     tg_send(
         chat_id,
-        (
-            "🔍 <b>بدأ فحص السوق</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "🧠 Daily → 4H → 1H\n"
-            "↩️ Pullback\n"
-            "🔄 Reclaim\n"
-            "🛡️ Anti-Chase\n\n"
-            "⏳ انتظر..."
-        )
+        "🔍 <b>بدء المسح الشامل للسوق (SMC / ICT Engine)</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🧠 تحليل السيولة، الهيكلة (BOS/CHoCH)، ونظرية AMD\n\n"
+        "⏳ جاري الفحص، قد يستغرق بعض الوقت..."
     )
 
     try:
-
         symbols = get_usdt_symbols()
 
-        logger.info(
-            "Scan symbols: %s",
-            len(symbols)
-        )
-
         if not symbols:
-
-            tg_send(
-                chat_id,
-                "❌ لم أجد أزواج USDT."
-            )
-
+            tg_send(chat_id, "❌ لم أجد أزواج USDT مناسبة.")
             return
 
         candidates = []
+        checked = 0
 
         for symbol in symbols:
-
+            checked += 1
             try:
-
-                result = analyze_symbol(
-                    symbol
-                )
-
+                result = analyze_symbol(symbol)
                 if not result:
                     continue
 
-                if result.get(
-                    "signal"
-                ) != "LONG":
+                if result.get("signal") != "LONG":
                     continue
 
-                score = int(
-                    result.get(
-                        "score",
-                        0
-                    )
-                )
+                score = int(result.get("score", 0))
 
                 if score >= MIN_SCORE:
-
-                    candidates.append(
-                        result
-                    )
+                    candidates.append(result)
 
             except Exception as e:
-
-                logger.warning(
-                    "Scan %s: %s",
-                    symbol,
-                    e
-                )
+                logger.warning("Scan error %s: %s", symbol, e)
 
         candidates.sort(
-            key=lambda x: int(
-                x.get(
-                    "score",
-                    0
-                )
-            ),
+            key=lambda x: int(x.get("score", 0)),
             reverse=True
         )
 
         if not candidates:
-
             tg_send(
                 chat_id,
                 (
-                    "⚪ <b>لا توجد صفقة LONG مكتملة.</b>\n\n"
-                    f"🔎 تم فحص: {len(symbols)} زوج\n"
-                    "🛡️ تم رفض الدخولات المتأخرة.\n"
-                    "⏳ ننتظر Pullback + Reclaim."
+                    "⚪ <b>لا توجد فرص مطابقة للشروط الاحترافية حالياً.</b>\n\n"
+                    f"🔎 تم فحص: <b>{checked}</b> زوج\n"
+                    "🛡️ تم استبعاد الصفقات الضعيفة وغير المكتملة."
                 )
             )
-
             return
 
         top = candidates[:5]
@@ -1124,41 +753,44 @@ def scan_market(chat_id):
         tg_send(
             chat_id,
             (
-                "🟢 <b>أفضل فرص LONG حالياً</b>\n"
+                "🟢 <b>أفضل الفرص المؤكدة (Viable Setups)</b>\n"
                 "━━━━━━━━━━━━━━━━━━"
             )
         )
 
         for result in top:
-
-            with state_lock:
-
-                last_signals[
-                    result["symbol"]
-                ] = result
-
-            tg_send(
-                chat_id,
-                format_signal(result)
-            )
-
+            tg_send(chat_id, format_signal(result))
             time.sleep(0.4)
 
+        with state_lock:
+            for result in top:
+                last_signals[result["symbol"]] = result
+
     except Exception as e:
-
-        logger.exception(
-            "Scan error: %s",
-            e
-        )
-
-        tg_send(
-            chat_id,
-            "❌ حدث خطأ أثناء فحص السوق."
-        )
+        logger.exception("Market scan error: %s", e)
+        tg_send(chat_id, "❌ حدث خطأ أثناء فحص السوق.")
 
 
 # ============================================================
-# TELEGRAM WEBHOOK ENDPOINT (معدل ليتوافق مع /tg-webhook)
+# HELP
+# ============================================================
+
+def handle_help(chat_id):
+    text = (
+        "📚 <b>دليل الأوامر والاستخدام</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "/start — تشغيل البوت.\n"
+        "/scan — فحص شامل للسيولة والأزواج.\n"
+        "/coin BTC — تحليل عميق للعملة.\n"
+        "/status — فحص اتصال الـ Webhook.\n\n"
+        "💡 يمكنك إرسال اسم أي عملة مباشرة وسيقوم البوت بإعطائك تقرير فني شامل."
+    )
+
+    tg_send(chat_id, text)
+
+
+# ============================================================
+# TELEGRAM WEBHOOK (مربوط حصرياً على /tg-webhook لتفادي أخطاء 404)
 # ============================================================
 
 @app.route(
@@ -1166,238 +798,142 @@ def scan_market(chat_id):
     methods=["POST"]
 )
 def telegram_webhook():
-
     try:
-
-        update = request.get_json(
-            silent=True
-        ) or {}
-
-        logger.info(
-            "Telegram update received"
-        )
-
-        message = update.get(
-            "message",
-            {}
-        )
-
-        chat = message.get(
-            "chat",
-            {}
-        )
-
-        chat_id = chat.get(
-            "id"
-        )
+        update = request.get_json(silent=True) or {}
+        message = update.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
 
         if chat_id is None:
+            return jsonify({"ok": True})
 
-            return jsonify(
-                {"ok": True}
-            )
+        if not is_allowed(chat_id):
+            logger.warning("Unauthorized chat: %s", chat_id)
+            return jsonify({"ok": True})
 
-        if not is_allowed(
-            chat_id
-        ):
-
-            logger.warning(
-                "Unauthorized chat: %s",
-                chat_id
-            )
-
-            return jsonify(
-                {"ok": True}
-            )
-
-        text = (
-            message.get(
-                "text",
-                ""
-            )
-            .strip()
-        )
-
+        text = message.get("text", "").strip()
         if not text:
-
-            return jsonify(
-                {"ok": True}
-            )
-
-        logger.info(
-            "Telegram command from %s: %s",
-            chat_id,
-            text
-        )
+            return jsonify({"ok": True})
 
         lower = text.lower()
 
-        if lower.startswith(
-            "/start"
-        ):
-
-            handle_start(
-                chat_id
-            )
-
-        elif lower.startswith(
-            "/status"
-        ):
-
-            handle_status(
-                chat_id
-            )
-
-        elif lower.startswith(
-            "/help"
-        ):
-
-            handle_help(
-                chat_id
-            )
-
-        elif lower.startswith(
-            "/scan"
-        ):
-
+        if lower.startswith("/start"):
+            handle_start(chat_id)
+        elif lower.startswith("/status"):
+            handle_status(chat_id)
+        elif lower.startswith("/help"):
+            handle_help(chat_id)
+        elif lower.startswith("/scan"):
             threading.Thread(
                 target=scan_market,
                 args=(chat_id,),
                 daemon=True
             ).start()
-
-        elif lower.startswith(
-            "/coin"
-        ):
-
+        elif lower.startswith("/coin"):
             parts = text.split()
-
             if len(parts) >= 2:
-
-                handle_coin(
-                    chat_id,
-                    parts[1]
-                )
-
+                handle_coin(chat_id, parts[1])
             else:
-
-                tg_send(
-                    chat_id,
-                    "اكتب:\n<code>/coin BTC</code>"
-                )
-
+                tg_send(chat_id, "اكتب العملة بهذا الشكل:\n<code>/coin BTC</code>")
         else:
+            symbol = normalize_symbol(text)
+            if symbol:
+                handle_coin(chat_id, symbol)
 
-            # Direct coin name
-            handle_coin(
-                chat_id,
-                text
-            )
-
-        return jsonify(
-            {"ok": True}
-        )
+        return jsonify({"ok": True})
 
     except Exception as e:
-
-        logger.exception(
-            "Webhook processing error: %s",
-            e
-        )
-
-        return jsonify(
-            {"ok": True}
-        )
+        logger.exception("Webhook error: %s", e)
+        return jsonify({"ok": True})
 
 
 # ============================================================
-# HEALTH
+# HEALTH & HOME
 # ============================================================
 
 @app.route(
-    "/",
-    methods=["GET"]
+    ",".join(["/", "/health"]),
+    methods=["GET", "HEAD"]
 )
 def home():
-
-    return (
-        "MY EXPERT CRYPTO BOT V123.1 "
-        "ONLINE"
-    )
-
-
-@app.route(
-    "/health",
-    methods=["GET"]
-)
-def health():
-
     return jsonify({
         "status": "ok",
-        "version": "123.1",
-        "telegram": bool(
-            BOT_TOKEN
-        ),
-        "render_url": bool(
-            RENDER_EXTERNAL_URL
-            or WEBHOOK_URL
-        ),
-        "strategy": (
-            "Swing Timing + Anti-Chase"
-        ),
-        "mode": "LONG_ONLY",
-        "signal_only": True
+        "version": "123.3",
+        "engine": "SMC + ICT + AMD Pro",
+        "telegram": bool(BOT_TOKEN),
+        "webhook_endpoint": "/tg-webhook"
     })
+
+
+# ============================================================
+# AUTO SCAN
+# ============================================================
+
+def background_auto_scheduler():
+    global last_auto_scan
+
+    while True:
+        try:
+            time.sleep(30)
+            if not CHAT_ID:
+                continue
+
+            now = time.time()
+            if now - last_auto_scan < AUTO_SCAN_INTERVAL:
+                continue
+
+            last_auto_scan = now
+            logger.info("Starting automatic scan...")
+
+            threading.Thread(
+                target=scan_market,
+                args=(CHAT_ID,),
+                daemon=True
+            ).start()
+
+        except Exception as e:
+            logger.exception("Scheduler error: %s", e)
 
 
 # ============================================================
 # STARTUP INITIALIZATION
 # ============================================================
 
-def initialize():
+def startup():
+    logger.info("================================================")
+    logger.info("MY EXPERT CRYPTO BOT V123.3")
+    logger.info("SMC / ICT / AMD Pro Edition")
+    logger.info("LONG ONLY | SIGNAL ONLY")
+    logger.info("================================================")
 
-    logger.info(
-        "=========================================="
-    )
-
-    logger.info(
-        "MY EXPERT CRYPTO BOT V123.1"
-    )
-
-    logger.info(
-        "Initializing..."
-    )
-
-    if not BOT_TOKEN:
-
-        logger.error(
-            "❌ TELEGRAM_BOT_TOKEN NOT FOUND"
-        )
-
-    else:
-
-        logger.info(
-            "✅ Telegram token found"
-        )
-
-    # IMPORTANT:
-    # This executes when Gunicorn imports main.py.
+    # إعداد وتثبيت الـ Webhook تلقائياً عند بدء التشغيل ليعمل مع Gunicorn على Render
     setup_webhook()
 
-    logger.info(
-        "Initialization complete"
-    )
+    if CHAT_ID:
+        tg_send(
+            CHAT_ID,
+            (
+                "🏛️ <b>MY EXPERT CRYPTO BOT V123.3</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "🟢 تم تشغيل النسخة الاحترافية بنجاح.\n\n"
+                "🧠 SMC, ICT, FVG, iFVG & AMD Engine\n"
+                "📈 LONG ONLY (Viable / Not Viable)\n"
+                "🚫 بدون تنفيذ أومات آلية\n\n"
+                "استخدم /scan للفحص أو راسل البوت بأي عملة."
+            )
+        )
 
-    logger.info(
-        "=========================================="
-    )
+    threading.Thread(
+        target=background_auto_scheduler,
+        daemon=True
+    ).start()
 
 
 # ============================================================
-# RUN INITIALIZATION ON IMPORT
+# RUN INITIALIZATION ON IMPORT (CRITICAL FOR GUNICORN)
 # ============================================================
 
-initialize()
+startup()
 
 
 # ============================================================
@@ -1405,15 +941,5 @@ initialize()
 # ============================================================
 
 if __name__ == "__main__":
-
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000"
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
