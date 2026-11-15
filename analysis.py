@@ -207,6 +207,7 @@ class StrategyEngine:
 
     # ========================================================
     # 1H EARLY ACCUMULATION & ENTRY (Anti-Late-Entry)
+    # Strategy: Fibo 50%-0.618 + Volume Profile PoC + Bullish Engulfing
     # ========================================================
     def _one_hour_entry(self, df):
         if len(df) < 30:
@@ -229,26 +230,7 @@ class StrategyEngine:
         score = 0
         reasons = []
 
-        # 1. RSI (Looking for reset/cool zones, avoiding overbought)
-        if 40 <= rsi <= 56:
-            score += 12
-            reasons.append("RSI في منطقة إعادة تجميع مثالية")
-        elif 32 <= rsi < 40:
-            score += 10
-            reasons.append("RSI في منطقة خصم (Discount)")
-        elif rsi > 68:
-            score -= 20
-            reasons.append("RSI مرتفع (تجنب الزخم المنتهي)")
-
-        # 2. EMA structure
-        if close > e20:
-            score += 6
-            reasons.append("السعر فوق EMA20")
-        if e20 > e50:
-            score += 6
-            reasons.append("EMA20 فوق EMA50")
-
-        # 3. Early Range Positioning (STRICT DISCOUNT ZONE ONLY)
+        # 1. نطاق الأسعار الفتروي لحساب الفيبوناتشي ومستويات الخصم
         recent = df.tail(24)
         range_high = float(recent["high"].max())
         range_low = float(recent["low"].min())
@@ -257,62 +239,78 @@ class StrategyEngine:
         if range_size <= 0:
             return {"valid": False, "score": 0, "reason": "Invalid 1H range"}
 
+        # حساب مستويات الفيبوناتشي الداخلية للنطاق (0.5 و 0.618)
+        fibo_50 = range_high - (0.50 * range_size)
+        fibo_618 = range_high - (0.618 * range_size)
+
         position_in_range = (close - range_low) / range_size
 
-        # منع مطاردة القمم: نقبل فقط الثلث السفلي أو الأوسط المبكر من النطاق
-        if 0.15 <= position_in_range <= 0.42:
-            score += 16
-            reasons.append("السعر في منطقة الخصم والتجميع المبكر (Discount Zone)")
-        elif position_in_range < 0.15:
-            score += 12
-            reasons.append("السعر قرب قاع التجميع (Liquidity Support)")
-        elif position_in_range > 0.58:
-            score -= 22
-            reasons.append("تحذير: السعر متقدم في النطاق (تجنب الدخول المتأخر)")
+        # 2. تقاطع السعر مع مستويات الفيبوناتشي الذهبية (50% - 618%) أو مناطق الخصم
+        if fibo_618 <= close <= fibo_50:
+            score += 18
+            reasons.append("ارتداد دقيق من مستويات الذهب لفيبو (50% - 61.8%)")
+        elif position_in_range <= 0.45:
+            score += 14
+            reasons.append("السعر في منطقة الخصم (Discount Zone)")
+        elif position_in_range > 0.65:
+            score -= 25
+            reasons.append("رفض: السعر تجاوز منتصف النطاق (تجنب الدخول المتأخر)")
 
-        # 4. Anti-Overextension Filter (Rate of Change 5 bars)
+        # 3. RSI تجميعي (تجنب التشبع الشرائي المنتهي)
+        if 40 <= rsi <= 58:
+            score += 12
+            reasons.append("RSI في نطاق تجميعي مثالي")
+        elif rsi > 68:
+            score -= 25
+            reasons.append("رفض: RSI مرتفع وزخم منتهي")
+
+        # 4. دمج بروفايل الحجم ونقطة التحكم (Volume Profile PoC Approximation)
+        volume = pd.to_numeric(df["volume"], errors="coerce")
+        # حساب السعر الأكثر تداولاً (منطقة التحكم PoC تقريبياً بناءً على تركز الفوليوم مع الأسعار)
+        df_recent = recent.copy()
+        df_recent["price_zone"] = pd.qcut(df_recent["close"], q=5, labels=False, duplicates="drop")
+        volume_by_zone = df_recent.groupby("price_zone")["volume"].sum()
+        poc_zone = volume_by_zone.idxmax() if not volume_by_zone.empty else 2
+        
+        current_zone = pd.qcut(pd.Series([close]), q=5, labels=False, duplicates="drop", retbins=False)
+        # إذا كان السعر الحالي قرب نقطة التحكم في الحجم أو تحتها بقليل مع دعم
+        if current_zone.iloc[0] <= poc_zone:
+            score += 15
+            reasons.append("السعر يتفاعل مع نقطة التحكم في الحجم (PoC)")
+
+        # 5. نموذج شمعة الابتلاع الشرائي (Bullish Engulfing Confirmation)
+        prev_open = float(df["open"].iloc[-2])
+        prev_close = float(df["close"].iloc[-2])
+        last_open = float(df["open"].iloc[-1])
+        
+        is_prev_bearish = prev_close < prev_open
+        is_last_bullish = close > last_open
+        is_engulfing = is_last_bullish and (close >= prev_open) and (last_open <= prev_close)
+
+        if is_engulfing and is_prev_bearish:
+            score += 16
+            reasons.append("تكون نموذج شمعة الابتلاع الشرائي (Bullish Engulfing)")
+        elif close > last_open:
+            score += 6
+            reasons.append("شمعة انعكاسية صاعدة")
+
+        # 6. فلتر معدل التغير (Rate of Change 5 bars) لمنع مطاردة الصفقات المتأخرة
         price_5bar_ago = float(df["close"].iloc[-6]) if len(df) >= 6 else close
         roc_5bar = (close - price_5bar_ago) / price_5bar_ago * 100
 
-        if roc_5bar > 4.5:
-            score -= 25
-            reasons.append("صعود سريع سابق (تم رفض الصفقة لمنع الدخول المتأخر)")
-        elif -2.5 <= roc_5bar <= 2.2:
+        if roc_5bar > 4.2:
+            score -= 30
+            reasons.append("رفض: صعود سريع سابق (تم تفويت البداية - تجنب الدخول المتأخر)")
+        elif -2.0 <= roc_5bar <= 2.5:
             score += 10
-            reasons.append("حركة هادئة تمهيداً للانفجار (تجميع مبكر)")
+            reasons.append("حركة هادئة في بداية الزخم")
 
-        # 5. Liquidity Sweep / Lower Wick Rejection
-        last_open = float(df["open"].iloc[-1])
-        last_high = float(df["high"].iloc[-1])
-        last_low = float(df["low"].iloc[-1])
-        candle_range = last_high - last_low
-
-        if candle_range > 0:
-            lower_wick = min(last_open, close) - last_low
-            if (lower_wick / candle_range) >= 0.38 and close >= last_open:
-                score += 12
-                reasons.append("رفض سيولة تحت القاع (Liquidity Sweep)")
-
-        # 6. Volume Control (Quiet accumulation vs Climax)
-        volume = pd.to_numeric(df["volume"], errors="coerce")
-        current_volume = float(volume.iloc[-1])
-        avg_volume = float(volume.tail(20).mean())
-        volume_ratio = (current_volume / avg_volume) if avg_volume > 0 else 1.0
-
-        if 0.75 <= volume_ratio <= 1.35:
-            score += 8
-            reasons.append("حجم تداول هادئ يعبر عن تجميع مؤسسي")
-        elif volume_ratio > 2.3:
-            score -= 15
-            reasons.append("حجم مبالغ فيه (ذروة صعود متأخرة)")
-
-        # شروط الصلاحية الصارمة ضد التأخير
+        # شروط الصلاحية الصارمة للتنفيذ
         valid = (
-            score >= 38
-            and position_in_range <= 0.50
-            and roc_5bar < 4.0
-            and close > e50 * 0.985
-            and rsi < 64
+            score >= 42
+            and position_in_range <= 0.55
+            and roc_5bar < 3.8
+            and rsi < 65
         )
 
         return {
@@ -325,7 +323,6 @@ class StrategyEngine:
             "range_high": range_high,
             "range_low": range_low,
             "position_in_range": position_in_range,
-            "volume_ratio": volume_ratio,
             "roc_5bar": roc_5bar,
             "reason": "، ".join(reasons),
         }
@@ -338,24 +335,36 @@ class StrategyEngine:
             return None
         recent_low = float(df1h["low"].tail(14).min())
         structure_stop = recent_low * 0.985
-        atr_stop = entry_price - (1.7 * atr)
+        atr_stop = entry_price - (1.6 * atr)
         stop_loss = min(structure_stop, atr_stop)
 
         risk_pct = (entry_price - stop_loss) / entry_price * 100
-        if risk_pct < 1.0:
-            stop_loss = entry_price - (1.4 * atr)
-        if risk_pct > 7.5:
-            stop_loss = entry_price * 0.925
+        if risk_pct < 0.8:
+            stop_loss = entry_price - (1.3 * atr)
+        if risk_pct > 7.0:
+            stop_loss = entry_price * 0.93
 
         risk = entry_price - stop_loss
         if risk <= 0:
             return None
 
-        # منطقة دخول قريبة من الدعم / الخصم
-        entry_low = entry_price - (0.3 * atr)
+        # نطاق الدخول حول الدعم ومستويات الخصم
+        entry_low = entry_price - (0.25 * atr)
         entry_high = entry_price + (0.1 * atr)
 
         tp1 = entry_price + (1.6 * risk)
+        tp2 = entry_price + (2.6 * risk)
+        tp3 = entry_price + (4.2 * risk)
+
+        return {
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "stop_loss": stop_loss,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+        }
+
     # ========================================================
     # MAIN ANALYSIS
     # ========================================================
@@ -443,7 +452,7 @@ class StrategyEngine:
                 + float(h1_info["score"])
             )
             score = int(
-                round(min(100, max(0, (raw_score / 115.0) * 100.0)))
+                round(min(100, max(0, (raw_score / 120.0) * 100.0)))
             )
 
             if score < self.min_score:
@@ -467,7 +476,7 @@ class StrategyEngine:
                 return "NEUTRAL", 0.0, neutral
 
             if score >= 88:
-                quality = "A+ | تجميع مبكر قوي جدًا"
+                quality = "A+ | تجميع مبكر قوي جدًا (Fibo + PoC + Engulfing)"
             elif score >= 82:
                 quality = "A | فرصة تجميع ممتازة"
             elif score >= 76:
@@ -478,10 +487,10 @@ class StrategyEngine:
             reason_parts = [
                 "Daily Bias صاعد",
                 "4H Structure صاعد",
-                "1H Early Accumulation confirmed",
+                "1H Fibo & Volume Profile Accumulation Confirmed",
             ]
             if h1_info["roc_5bar"] <= 2.0:
-                reason_parts.append("دخول مبكر قبل الانفجار")
+                reason_parts.append("دخول مبكر بدقة قبل الانفجار")
 
             reason = " | ".join(reason_parts)
             decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
@@ -521,7 +530,7 @@ class StrategyEngine:
             if entry_price <= 0 or atr <= 0:
                 return {}
             if direction.upper() == "LONG":
-                stop = entry_price - (1.7 * atr)
+                stop = entry_price - (1.6 * atr)
                 risk = entry_price - stop
                 return {
                     "direction": "LONG",
