@@ -1,5 +1,5 @@
 # ============================================================ #
-# analysis.py — StrategyEngine V123.0 (Anti-Late-Entry Edition) #
+# analysis.py — StrategyEngine V123.2 (Anti-Late-Entry Edition) #
 # MTF Swing Accumulation & Early Detection Engine            #
 #                                                              #
 # LONG ONLY                                                    #
@@ -101,12 +101,12 @@ class StrategyEngine:
         ).max(axis=1)
         return tr.ewm(
             alpha=1.0 / period, min_periods=period, adjust=False
-        ).mean()
+        ).mean().replace([np.inf, -np.inf], np.nan).fillna(0)
 
     def calculate_ema(self, series, period):
         return pd.to_numeric(series, errors="coerce").ewm(
             span=period, adjust=False, min_periods=period
-        ).mean()
+        ).mean().replace([np.inf, -np.inf], np.nan)
 
     # ========================================================
     # DATA PREPARATION
@@ -139,8 +139,8 @@ class StrategyEngine:
         ema50 = self.calculate_ema(df["close"], 50)
         rsi_series = self.calculate_rsi(df["close"])
         rsi = float(rsi_series.iloc[-1])
-        e20 = float(ema20.iloc[-1])
-        e50 = float(ema50.iloc[-1])
+        e20 = float(ema20.iloc[-1]) if not ema20.empty and not pd.isna(ema20.iloc[-1]) else close
+        e50 = float(ema50.iloc[-1]) if not ema50.empty and not pd.isna(ema50.iloc[-1]) else close
 
         score = 0
         reasons = []
@@ -174,12 +174,12 @@ class StrategyEngine:
         close = float(df["close"].iloc[-1])
         ema20 = self.calculate_ema(df["close"], 20)
         ema50 = self.calculate_ema(df["close"], 50)
-        e20 = float(ema20.iloc[-1])
-        e50 = float(ema50.iloc[-1])
+        e20 = float(ema20.iloc[-1]) if not ema20.empty and not pd.isna(ema20.iloc[-1]) else close
+        e50 = float(ema50.iloc[-1]) if not ema50.empty and not pd.isna(ema50.iloc[-1]) else close
 
         recent = df.tail(12)
         recent_low = float(recent["low"].min())
-        previous_low = float(df.iloc[-24:-12]["low"].min())
+        previous_low = float(df.iloc[-24:-12]["low"].min()) if len(df) >= 24 else recent_low
 
         score = 0
         reasons = []
@@ -207,22 +207,22 @@ class StrategyEngine:
 
     # ========================================================
     # 1H EARLY ACCUMULATION & ENTRY (Anti-Late-Entry)
-    # Strategy: Fibo 50%-0.618 + Volume Profile PoC + Bullish Engulfing
+    # Strategy: Fibo 50%-0.618 + Volume Profile PoC (pd.cut) + Bullish Engulfing
     # ========================================================
     def _one_hour_entry(self, df):
         if len(df) < 30:
             return {"valid": False, "score": 0, "reason": "1H data insufficient"}
 
         close = float(df["close"].iloc[-1])
-        ema20 = self.calculate_ema(df["close"], 20)
-        ema50 = self.calculate_ema(df["close"], 50)
         rsi_series = self.calculate_rsi(df["close"])
         atr_series = self.calculate_atr(df)
+        ema20 = self.calculate_ema(df["close"], 20)
+        ema50 = self.calculate_ema(df["close"], 50)
 
         rsi = float(rsi_series.iloc[-1])
         atr = float(atr_series.iloc[-1])
-        e20 = float(ema20.iloc[-1])
-        e50 = float(ema50.iloc[-1])
+        e20 = float(ema20.iloc[-1]) if not ema20.empty and not pd.isna(ema20.iloc[-1]) else close
+        e50 = float(ema50.iloc[-1]) if not ema50.empty and not pd.isna(ema50.iloc[-1]) else close
 
         if atr <= 0 or close <= 0:
             return {"valid": False, "score": 0, "reason": "Invalid ATR/price"}
@@ -231,7 +231,7 @@ class StrategyEngine:
         reasons = []
 
         # 1. نطاق الأسعار الفتروي لحساب الفيبوناتشي ومستويات الخصم
-        recent = df.tail(24)
+        recent = df.tail(24).copy()
         range_high = float(recent["high"].max())
         range_low = float(recent["low"].min())
         range_size = range_high - range_low
@@ -264,19 +264,21 @@ class StrategyEngine:
             score -= 25
             reasons.append("رفض: RSI مرتفع وزخم منتهي")
 
-        # 4. دمج بروفايل الحجم ونقطة التحكم (Volume Profile PoC Approximation)
-        volume = pd.to_numeric(df["volume"], errors="coerce")
-        # حساب السعر الأكثر تداولاً (منطقة التحكم PoC تقريبياً بناءً على تركز الفوليوم مع الأسعار)
-        df_recent = recent.copy()
-        df_recent["price_zone"] = pd.qcut(df_recent["close"], q=5, labels=False, duplicates="drop")
-        volume_by_zone = df_recent.groupby("price_zone")["volume"].sum()
-        poc_zone = volume_by_zone.idxmax() if not volume_by_zone.empty else 2
-        
-        current_zone = pd.qcut(pd.Series([close]), q=5, labels=False, duplicates="drop", retbins=False)
-        # إذا كان السعر الحالي قرب نقطة التحكم في الحجم أو تحتها بقليل مع دعم
-        if current_zone.iloc[0] <= poc_zone:
-            score += 15
-            reasons.append("السعر يتفاعل مع نقطة التحكم في الحجم (PoC)")
+        # 4. دمج بروفايل الحجم ونقطة التحكم (Volume Profile PoC باستخدام pd.cut السعري الدقيق)
+        try:
+            recent["price_bin"] = pd.cut(recent["close"], bins=5, labels=False, include_lowest=True)
+            volume_by_bin = recent.groupby("price_bin")["volume"].sum()
+            poc_bin = volume_by_bin.idxmax() if not volume_by_bin.empty else 2
+            
+            current_bin = pd.cut(pd.Series([close]), bins=pd.cut(recent["close"], bins=5, retbins=True)[1], labels=False, include_lowest=True)
+            current_bin_val = current_bin.iloc[0] if not current_bin.empty and not pd.isna(current_bin.iloc[0]) else poc_bin
+
+            if current_bin_val <= poc_bin:
+                score += 15
+                reasons.append("السعر يتفاعل مع نقطة التحكم في الحجم (PoC)")
+        except Exception:
+            # لو حصل أي استثناء في الحساب السعري نتخطاه بأمان بدون توقف
+            score += 5
 
         # 5. نموذج شمعة الابتلاع الشرائي (Bullish Engulfing Confirmation)
         prev_open = float(df["open"].iloc[-2])
@@ -296,7 +298,7 @@ class StrategyEngine:
 
         # 6. فلتر معدل التغير (Rate of Change 5 bars) لمنع مطاردة الصفقات المتأخرة
         price_5bar_ago = float(df["close"].iloc[-6]) if len(df) >= 6 else close
-        roc_5bar = (close - price_5bar_ago) / price_5bar_ago * 100
+        roc_5bar = (close - price_5bar_ago) / price_5bar_ago * 100 if price_5bar_ago > 0 else 0.0
 
         if roc_5bar > 4.2:
             score -= 30
