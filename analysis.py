@@ -1,12 +1,12 @@
 # ============================================================ #
-# analysis.py — StrategyEngine V123.2 (Anti-Late-Entry Edition) #
+# analysis.py — StrategyEngine V123.5 (Fibo & Volume Profile)  #
 # MTF Swing Accumulation & Early Detection Engine            #
 #                                                              #
 # LONG ONLY                                                    #
 # Timeframes:                                                  #
 # 1D -> Market Bias                                            #
 # 4H -> Structure                                              #
-# 1H -> Early Accumulation / Discount Entry                    #
+# 1H -> Early Accumulation / Fibo Discount Entry & Volume PoC  #
 # ============================================================ #
 
 import logging
@@ -146,13 +146,13 @@ class StrategyEngine:
         reasons = []
 
         if close > e20:
-            score += 10
+            score += 12
             reasons.append("السعر فوق EMA20")
         if e20 > e50:
-            score += 10
-            reasons.append("EMA20 فوق EMA50")
-        if 45 <= rsi <= 68:
-            score += 8
+            score += 12
+            reasons.append("EMA20 فوق EMA50 (اتجاه صاعد يومي)")
+        if 45 <= rsi <= 70:
+            score += 6
             reasons.append("RSI يومي صحي")
 
         bullish = score >= 20 and close > e20
@@ -185,14 +185,14 @@ class StrategyEngine:
         reasons = []
 
         if close > e20:
-            score += 8
+            score += 10
             reasons.append("4H فوق EMA20")
         if e20 > e50:
-            score += 7
+            score += 10
             reasons.append("4H EMA20 > EMA50")
         if recent_low >= previous_low * 0.97:
             score += 10
-            reasons.append("4H يحافظ على قاع أعلى (Higher Low)")
+            reasons.append("هيكل 4H يحافظ على قاع أعلى (Higher Low)")
 
         bullish = score >= 20 and close > e20
         return {
@@ -206,8 +206,8 @@ class StrategyEngine:
         }
 
     # ========================================================
-    # 1H EARLY ACCUMULATION & ENTRY (Anti-Late-Entry)
-    # Strategy: Fibo 50%-0.618 + Volume Profile PoC (pd.cut) + Bullish Engulfing
+    # 1H EARLY ACCUMULATION & ENTRY
+    # Strategy: Fibo 50%-0.618 + Volume Profile PoC + Bullish Engulfing
     # ========================================================
     def _one_hour_entry(self, df):
         if len(df) < 30:
@@ -216,13 +216,9 @@ class StrategyEngine:
         close = float(df["close"].iloc[-1])
         rsi_series = self.calculate_rsi(df["close"])
         atr_series = self.calculate_atr(df)
-        ema20 = self.calculate_ema(df["close"], 20)
-        ema50 = self.calculate_ema(df["close"], 50)
 
         rsi = float(rsi_series.iloc[-1])
         atr = float(atr_series.iloc[-1])
-        e20 = float(ema20.iloc[-1]) if not ema20.empty and not pd.isna(ema20.iloc[-1]) else close
-        e50 = float(ema50.iloc[-1]) if not ema50.empty and not pd.isna(ema50.iloc[-1]) else close
 
         if atr <= 0 or close <= 0:
             return {"valid": False, "score": 0, "reason": "Invalid ATR/price"}
@@ -230,7 +226,7 @@ class StrategyEngine:
         score = 0
         reasons = []
 
-        # 1. نطاق الأسعار الفتروي لحساب الفيبوناتشي ومستويات الخصم
+        # 1. نطاق الأسعار لحساب الفيبوناتشي
         recent = df.tail(24).copy()
         range_high = float(recent["high"].max())
         range_low = float(recent["low"].min())
@@ -239,32 +235,31 @@ class StrategyEngine:
         if range_size <= 0:
             return {"valid": False, "score": 0, "reason": "Invalid 1H range"}
 
-        # حساب مستويات الفيبوناتشي الداخلية للنطاق (0.5 و 0.618)
         fibo_50 = range_high - (0.50 * range_size)
         fibo_618 = range_high - (0.618 * range_size)
 
         position_in_range = (close - range_low) / range_size
 
-        # 2. تقاطع السعر مع مستويات الفيبوناتشي الذهبية (50% - 618%) أو مناطق الخصم
+        # 2. مستويات فيبوناتشي الذهبية (50% - 61.8%)
         if fibo_618 <= close <= fibo_50:
-            score += 18
-            reasons.append("ارتداد دقيق من مستويات الذهب لفيبو (50% - 61.8%)")
+            score += 25
+            reasons.append("الارتداد من مستويات فيبو الذهبية (50% - 61.8%)")
         elif position_in_range <= 0.45:
-            score += 14
+            score += 16
             reasons.append("السعر في منطقة الخصم (Discount Zone)")
         elif position_in_range > 0.65:
-            score -= 25
-            reasons.append("رفض: السعر تجاوز منتصف النطاق (تجنب الدخول المتأخر)")
+            score -= 30
+            reasons.append("رفض: تجاوز منتصف النطاق (دخول متأخر)")
 
-        # 3. RSI تجميعي (تجنب التشبع الشرائي المنتهي)
-        if 40 <= rsi <= 58:
-            score += 12
-            reasons.append("RSI في نطاق تجميعي مثالي")
+        # 3. RSI تجميعي مثالي
+        if 40 <= rsi <= 60:
+            score += 15
+            reasons.append("RSI في نطاق تجميعي هادئ")
         elif rsi > 68:
             score -= 25
-            reasons.append("رفض: RSI مرتفع وزخم منتهي")
+            reasons.append("رفض: RSI مرتفع وزخم مستهلك")
 
-        # 4. دمج بروفايل الحجم ونقطة التحكم (Volume Profile PoC باستخدام pd.cut السعري الدقيق)
+        # 4. تفعيل بروفايل الحجم (Volume Profile PoC)
         try:
             recent["price_bin"] = pd.cut(recent["close"], bins=5, labels=False, include_lowest=True)
             volume_by_bin = recent.groupby("price_bin")["volume"].sum()
@@ -275,12 +270,11 @@ class StrategyEngine:
 
             if current_bin_val <= poc_bin:
                 score += 15
-                reasons.append("السعر يتفاعل مع نقطة التحكم في الحجم (PoC)")
+                reasons.append("التفاعل مع نقطة التحكم في الحجم (Volume PoC)")
         except Exception:
-            # لو حصل أي استثناء في الحساب السعري نتخطاه بأمان بدون توقف
             score += 5
 
-        # 5. نموذج شمعة الابتلاع الشرائي (Bullish Engulfing Confirmation)
+        # 5. شمعة الابتلاع الشرائي (Bullish Engulfing)
         prev_open = float(df["open"].iloc[-2])
         prev_close = float(df["close"].iloc[-2])
         last_open = float(df["open"].iloc[-1])
@@ -290,28 +284,27 @@ class StrategyEngine:
         is_engulfing = is_last_bullish and (close >= prev_open) and (last_open <= prev_close)
 
         if is_engulfing and is_prev_bearish:
-            score += 16
-            reasons.append("تكون نموذج شمعة الابتلاع الشرائي (Bullish Engulfing)")
+            score += 20
+            reasons.append("تكون نموذج شمعة الابتلاع الشرائي المؤكدة")
         elif close > last_open:
-            score += 6
+            score += 8
             reasons.append("شمعة انعكاسية صاعدة")
 
-        # 6. فلتر معدل التغير (Rate of Change 5 bars) لمنع مطاردة الصفقات المتأخرة
+        # 6. فلتر سرعة الحركة (ROC 5bar) لتجنب الملاحقة
         price_5bar_ago = float(df["close"].iloc[-6]) if len(df) >= 6 else close
         roc_5bar = (close - price_5bar_ago) / price_5bar_ago * 100 if price_5bar_ago > 0 else 0.0
 
-        if roc_5bar > 4.2:
+        if roc_5bar > 4.5:
             score -= 30
-            reasons.append("رفض: صعود سريع سابق (تم تفويت البداية - تجنب الدخول المتأخر)")
+            reasons.append("رفض: صعود سابق سريع (تفويت البداية)")
         elif -2.0 <= roc_5bar <= 2.5:
             score += 10
-            reasons.append("حركة هادئة في بداية الزخم")
+            reasons.append("حركة تجميع هادئة في البداية")
 
-        # شروط الصلاحية الصارمة للتنفيذ
         valid = (
-            score >= 42
+            score >= 45
             and position_in_range <= 0.55
-            and roc_5bar < 3.8
+            and roc_5bar < 4.0
             and rsi < 65
         )
 
@@ -320,8 +313,6 @@ class StrategyEngine:
             "score": score,
             "rsi": rsi,
             "atr": atr,
-            "ema20": e20,
-            "ema50": e50,
             "range_high": range_high,
             "range_low": range_low,
             "position_in_range": position_in_range,
@@ -350,7 +341,6 @@ class StrategyEngine:
         if risk <= 0:
             return None
 
-        # نطاق الدخول حول الدعم ومستويات الخصم
         entry_low = entry_price - (0.25 * atr)
         entry_high = entry_price + (0.1 * atr)
 
@@ -366,6 +356,29 @@ class StrategyEngine:
             "tp2": tp2,
             "tp3": tp3,
         }
+
+    # ========================================================
+    # MOMENTUM CHECK AT TP1 (متابعة الزخم عند الهدف الأول)
+    # ========================================================
+    def check_momentum_at_tp1(self, candles1h):
+        try:
+            df = self.prepare_dataframe(candles1h)
+            if df.empty or len(df) < 10:
+                return "NEUTRAL", "بيانات غير كافية لفحص الزخم"
+            
+            rsi_series = self.calculate_rsi(df["close"])
+            current_rsi = float(rsi_series.iloc[-1])
+            volume_mean = df["volume"].tail(10).mean()
+            last_volume = float(df["volume"].iloc[-1])
+
+            if current_rsi > 70:
+                return "OVERBOUGHT", "⚠️ تنبيه: RSI وصل تشبع شرائي (>70) قرب الهدف، يفضل جزيء الأرباح أو رفع وقف الخسارة لنقطة الدخول."
+            elif last_volume > volume_mean * 1.5:
+                return "STRONG", "🚀 الزخم قوي جداً مع حجم تداول مرتفع يدعم الوصول للهدف الثاني والثالث."
+            else:
+                return "NORMAL", "⚖️ الزخم مستقر وطبيعي داخل المسار الصاعد."
+        except Exception:
+            return "NORMAL", "⚖️ زاخم التداول مستقر."
 
     # ========================================================
     # MAIN ANALYSIS
@@ -444,7 +457,7 @@ class StrategyEngine:
                     score=0,
                     rsi=h1_info.get("rsi", 50),
                     atr=h1_info.get("atr", 0),
-                    reason="1H لم يؤكد منطقة تجميع مبكرة (تم رفض دخول متأخر)",
+                    reason="1H لم يؤكد منطقة تجميع مبكرة (تم رفض الدخول المتأخر)",
                     details={"daily": daily_info, "4h": h4_info, "1h": h1_info},
                 )
 
@@ -524,27 +537,3 @@ class StrategyEngine:
         except Exception as exc:
             logger.exception("Analysis error: %s", exc)
             return "NEUTRAL", 0.0, neutral
-
-    def calculate_risk_management(self, entry_price, atr, direction="LONG"):
-        try:
-            entry_price = float(entry_price)
-            atr = float(atr)
-            if entry_price <= 0 or atr <= 0:
-                return {}
-            if direction.upper() == "LONG":
-                stop = entry_price - (1.6 * atr)
-                risk = entry_price - stop
-                return {
-                    "direction": "LONG",
-                    "entry": entry_price,
-                    "stop_loss": stop,
-                    "tp1": entry_price + (1.6 * risk),
-                    "tp2": entry_price + (2.6 * risk),
-                    "tp3": entry_price + (4.2 * risk),
-                    "risk_amount_per_unit": risk,
-                    "risk_percent": (risk / entry_price * 100),
-                }
-            return {}
-        except Exception as exc:
-            logger.error("calculate_risk_management error: %s", exc)
-            return {}
