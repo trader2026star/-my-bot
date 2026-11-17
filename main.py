@@ -313,8 +313,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             position_in_range = float(details.get("position_in_range", 0))
             roc_5bar = float(details.get("roc_5bar", 0))
 
-            # فحص الزخم عند الهدف الأول تلقائياً
-            momentum_status, momentum_msg = engine.check_momentum_at_tp1(candles1h)
+            # فحص الزخم التلقائي عند الهدف الأول
+            _, momentum_msg = engine.check_momentum_at_tp1(candles1h)
 
             msg = (
                 "🚀 <b>MY EXPERT CRYPTO BOT V123.5</b>\n"
@@ -332,12 +332,12 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
                 f"<code>{format_num(stop_loss, d)}</code>\n\n"
                 f"📊 <b>RSI 1H:</b> <code>{rsi:.1f}</code>\n"
                 f"📍 <b>موقع السعر بالنطاق:</b> <code>{position_in_range * 100:.1f}% (منطقة خصم الفيبو)</code>\n"
-                f"📈 <b>معدل التغير (ROC 5bar):</b> <code>{roc_5bar:+.2f}% (بدون صعود مبالغ فيه)</code>\n\n"
+                f"📈 <b>معدل التغير (ROC 5bar):</b> <code>{roc_5bar:+.2f}%</code>\n\n"
                 f"🎯 <b>متابعة الزخم عند الهدف الأول (TP1):</b>\n{momentum_msg}\n\n"
                 "🧭 <b>التحليل:</b>\n"
                 "• 1D Bias صاعد\n"
                 "• 4H Structure صاعد\n"
-                "• 1H Fibo Accumulation مؤكدة\n\n"
+                "• 1H Fibo & Volume PoC Accumulation مؤكدة\n\n"
                 "⚠️ <b>إشارة تحليلية فقط — لا ينفذ البوت أي أوامر.</b>\n"
                 "💡 <b>الرافعة المقترحة: 3x–5x.</b>"
             )
@@ -383,7 +383,7 @@ def run_full_scan(chat_id=None):
         if chat_id:
             tg_send(
                 "🔍 <b>جارٍ مسح سوق BingX بحثاً عن فرص التجميع المبكر...</b>\n"
-                "🧭 Daily → 4H → 1H (استراتيجية Fibo)",
+                "🧭 Daily → 4H → 1H (استراتيجية Fibo & Volume Profile)",
                 chat_id,
             )
         symbols = get_full_market_universe()
@@ -435,7 +435,7 @@ HELP_TEXT = (
     "🧭 <b>أسلوب التحليل:</b>\n"
     "• 1D = الاتجاه العام\n"
     "• 4H = الهيكل\n"
-    "• 1H = التجميع المبكر عند مستويات فيبو (50%-61.8%)\n\n"
+    "• 1H = التجميع المبكر عند مستويات فيبو (50%-61.8%) مع بروفايل الحجم\n\n"
     "🟢 <b>نوع الإشارات:</b> LONG (أول الحركة فقط)\n\n"
     "📌 أرسل رمز العملة مثل:\n"
     "<code>BTC</code>\n"
@@ -522,7 +522,7 @@ def telegram_webhook():
 def bootstrap():
     db_init()
     logger.info("MY EXPERT CRYPTO BOT V123.5 bootstrapped.")
-    logger.info("Analysis: 1D -> 4H -> 1H (Fibo Accumulation + Momentum Monitor)")
+    logger.info("Analysis: 1D -> 4H -> 1H (Fibo Accumulation + Volume PoC)")
     logger.info("Direction: LONG ONLY")
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
