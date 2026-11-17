@@ -1,12 +1,6 @@
 # ============================================================ #
-# analysis.py — StrategyEngine V123.5 (Fibo & Volume Profile)  #
-# MTF Swing Accumulation & Early Detection Engine            #
-#                                                              #
-# LONG ONLY                                                    #
-# Timeframes:                                                  #
-# 1D -> Market Bias                                            #
-# 4H -> Structure                                              #
-# 1H -> Early Accumulation / Fibo Discount Entry & Volume PoC  #
+# analysis.py — StrategyEngine V123.8 (All-Markets Edition)    #
+# Crypto + Forex + Metals + US Stocks & ETFs (SOXS, SPY, etc.) #
 # ============================================================ #
 
 import logging
@@ -69,9 +63,6 @@ class StrategyEngine:
         self.risk_per_trade = min(0.02, max(0.005, float(risk_per_trade)))
         self.min_score = int(min_score)
 
-    # ========================================================
-    # BASIC INDICATORS
-    # ========================================================
     def calculate_rsi(self, series, period=14):
         s = pd.to_numeric(series, errors="coerce")
         delta = s.diff()
@@ -108,9 +99,6 @@ class StrategyEngine:
             span=period, adjust=False, min_periods=period
         ).mean().replace([np.inf, -np.inf], np.nan)
 
-    # ========================================================
-    # DATA PREPARATION
-    # ========================================================
     def prepare_dataframe(self, candles):
         if candles is None or len(candles) == 0:
             return pd.DataFrame()
@@ -128,9 +116,6 @@ class StrategyEngine:
             logger.error("prepare_dataframe error: %s", exc)
             return pd.DataFrame()
 
-    # ========================================================
-    # MARKET BIAS (1D)
-    # ========================================================
     def _daily_bias(self, df):
         if len(df) < 35:
             return {"bullish": False, "score": 0, "reason": "Daily data insufficient"}
@@ -165,9 +150,6 @@ class StrategyEngine:
             "reason": "، ".join(reasons),
         }
 
-    # ========================================================
-    # 4H STRUCTURE
-    # ========================================================
     def _four_hour_structure(self, df):
         if len(df) < 35:
             return {"bullish": False, "score": 0, "reason": "4H data insufficient"}
@@ -205,10 +187,6 @@ class StrategyEngine:
             "reason": "، ".join(reasons),
         }
 
-    # ========================================================
-    # 1H EARLY ACCUMULATION & ENTRY
-    # Strategy: Fibo 50%-0.618 + Volume Profile PoC + Bullish Engulfing
-    # ========================================================
     def _one_hour_entry(self, df):
         if len(df) < 30:
             return {"valid": False, "score": 0, "reason": "1H data insufficient"}
@@ -226,7 +204,6 @@ class StrategyEngine:
         score = 0
         reasons = []
 
-        # 1. نطاق الأسعار لحساب الفيبوناتشي
         recent = df.tail(24).copy()
         range_high = float(recent["high"].max())
         range_low = float(recent["low"].min())
@@ -240,7 +217,6 @@ class StrategyEngine:
 
         position_in_range = (close - range_low) / range_size
 
-        # 2. مستويات فيبوناتشي الذهبية (50% - 61.8%)
         if fibo_618 <= close <= fibo_50:
             score += 25
             reasons.append("الارتداد من مستويات فيبو الذهبية (50% - 61.8%)")
@@ -251,7 +227,6 @@ class StrategyEngine:
             score -= 30
             reasons.append("رفض: تجاوز منتصف النطاق (دخول متأخر)")
 
-        # 3. RSI تجميعي مثالي
         if 40 <= rsi <= 60:
             score += 15
             reasons.append("RSI في نطاق تجميعي هادئ")
@@ -259,14 +234,22 @@ class StrategyEngine:
             score -= 25
             reasons.append("رفض: RSI مرتفع وزخم مستهلك")
 
-        # 4. تفعيل بروفايل الحجم (Volume Profile PoC)
         try:
             recent["price_bin"] = pd.cut(recent["close"], bins=5, labels=False, include_lowest=True)
             volume_by_bin = recent.groupby("price_bin")["volume"].sum()
             poc_bin = volume_by_bin.idxmax() if not volume_by_bin.empty else 2
             
-            current_bin = pd.cut(pd.Series([close]), bins=pd.cut(recent["close"], bins=5, retbins=True)[1], labels=False, include_lowest=True)
-            current_bin_val = current_bin.iloc[0] if not current_bin.empty and not pd.isna(current_bin.iloc[0]) else poc_bin
+            current_bin = pd.cut(
+                pd.Series([close]),
+                bins=pd.cut(recent["close"], bins=5, retbins=True)[1],
+                labels=False,
+                include_lowest=True,
+            )
+            current_bin_val = (
+                current_bin.iloc[0]
+                if not current_bin.empty and not pd.isna(current_bin.iloc[0])
+                else poc_bin
+            )
 
             if current_bin_val <= poc_bin:
                 score += 15
@@ -274,11 +257,10 @@ class StrategyEngine:
         except Exception:
             score += 5
 
-        # 5. شمعة الابتلاع الشرائي (Bullish Engulfing)
         prev_open = float(df["open"].iloc[-2])
         prev_close = float(df["close"].iloc[-2])
         last_open = float(df["open"].iloc[-1])
-        
+
         is_prev_bearish = prev_close < prev_open
         is_last_bullish = close > last_open
         is_engulfing = is_last_bullish and (close >= prev_open) and (last_open <= prev_close)
@@ -290,7 +272,6 @@ class StrategyEngine:
             score += 8
             reasons.append("شمعة انعكاسية صاعدة")
 
-        # 6. فلتر سرعة الحركة (ROC 5bar) لتجنب الملاحقة
         price_5bar_ago = float(df["close"].iloc[-6]) if len(df) >= 6 else close
         roc_5bar = (close - price_5bar_ago) / price_5bar_ago * 100 if price_5bar_ago > 0 else 0.0
 
@@ -320,9 +301,6 @@ class StrategyEngine:
             "reason": "، ".join(reasons),
         }
 
-    # ========================================================
-    # RISK / ENTRY PLAN
-    # ========================================================
     def _build_trade_plan(self, df1h, entry_price, atr, score):
         if entry_price <= 0 or atr <= 0:
             return None
@@ -357,32 +335,26 @@ class StrategyEngine:
             "tp3": tp3,
         }
 
-    # ========================================================
-    # MOMENTUM CHECK AT TP1 (متابعة الزخم عند الهدف الأول)
-    # ========================================================
     def check_momentum_at_tp1(self, candles1h):
         try:
             df = self.prepare_dataframe(candles1h)
             if df.empty or len(df) < 10:
                 return "NEUTRAL", "بيانات غير كافية لفحص الزخم"
-            
+
             rsi_series = self.calculate_rsi(df["close"])
             current_rsi = float(rsi_series.iloc[-1])
             volume_mean = df["volume"].tail(10).mean()
             last_volume = float(df["volume"].iloc[-1])
 
             if current_rsi > 70:
-                return "OVERBOUGHT", "⚠️ تنبيه: RSI وصل تشبع شرائي (>70) قرب الهدف، يفضل جزيء الأرباح أو رفع وقف الخسارة لنقطة الدخول."
+                return "OVERBOUGHT", "⚠️ تنبيه: RSI وصل تشبع شرائي (>70) قرب الهدف، يفضل جني جزء من الأرباح أو تأمين الدخول."
             elif last_volume > volume_mean * 1.5:
                 return "STRONG", "🚀 الزخم قوي جداً مع حجم تداول مرتفع يدعم الوصول للهدف الثاني والثالث."
             else:
                 return "NORMAL", "⚖️ الزخم مستقر وطبيعي داخل المسار الصاعد."
         except Exception:
-            return "NORMAL", "⚖️ زاخم التداول مستقر."
+            return "NORMAL", "⚖️ زخم التداول مستقر."
 
-    # ========================================================
-    # MAIN ANALYSIS
-    # ========================================================
     def analyze_market_structure(
         self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None, asset_type="crypto"
     ):
@@ -529,7 +501,7 @@ class StrategyEngine:
                     "timeframes": "1D + 4H + 1H",
                     "position_in_range": round(h1_info["position_in_range"], 3),
                     "roc_5bar": round(h1_info["roc_5bar"], 2),
-                    "leverage": "3x-5x",
+                    "asset_type": asset_type,
                 },
             )
             return "LONG", price, signal
