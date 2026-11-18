@@ -77,6 +77,35 @@ class StrategyEngine:
     def calculate_ema(self, series, period):
         return pd.to_numeric(series, errors="coerce").ewm(span=period, adjust=False, min_periods=period).mean()
 
+    # --- تم إضافة دوال ADX و MACD هنا بدقة بدون حذف أي كود قديم ---
+    def calculate_adx(self, df, period=14):
+        try:
+            h = pd.to_numeric(df["high"], errors="coerce")
+            l = pd.to_numeric(df["low"], errors="coerce")
+            c = pd.to_numeric(df["close"], errors="coerce")
+            plus_dm = h.diff()
+            minus_dm = l.diff()
+            plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
+            minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
+            tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+            atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+            plus_di = 100 * pd.Series(plus_dm).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
+            minus_di = 100 * pd.Series(minus_dm).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
+            dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-10)
+            adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+            return adx.replace([np.inf, -np.inf], np.nan).fillna(25.0)
+        except Exception:
+            return pd.Series([25.0] * len(df))
+
+    def calculate_macd(self, series, fast=12, slow=26, signal=9):
+        s = pd.to_numeric(series, errors="coerce")
+        exp1 = s.ewm(span=fast, adjust=False).mean()
+        exp2 = s.ewm(span=slow, adjust=False).mean()
+        macd_line = exp1 - exp2
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        hist = macd_line - signal_line
+        return macd_line, signal_line, hist
+
     def prepare_dataframe(self, candles):
         if candles is None or len(candles) == 0:
             return pd.DataFrame()
@@ -125,7 +154,6 @@ class StrategyEngine:
         if direction == "LONG":
             higher_structure = last_h >= prev_h and last_l >= prev_l * 0.997
             bos = close > prev_h or close > last_h
-            # Liquidity sweep: wick under a recent swing then reclaim.
             sweep = float(recent["low"].min()) < prev_l and close > prev_l
             mss = sweep and close > float(recent["high"].iloc[:-1].max()) if len(recent) > 2 else False
             score = (18 if higher_structure else 0) + (14 if bos else 0) + (12 if sweep else 0) + (8 if mss else 0)
@@ -159,14 +187,59 @@ class StrategyEngine:
         e20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
         e50 = float(self.calculate_ema(df["close"], 50).iloc[-1])
         rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
+        
+        # --- دمج فلاتر الاتجاه (ADX) والزخم (MACD) داخل _bias بدون حذف القديم ---
+        adx_series = self.calculate_adx(df)
+        adx = float(adx_series.iloc[-1]) if not adx_series.empty else 25.0
+        _, _, macd_hist = self.calculate_macd(df["close"])
+        hist_val = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
+
+        reasons = []
+        score = 0
+
         if direction == "LONG":
-            ok = close > e20 and e20 >= e50
-            score = (12 if close > e20 else 0) + (10 if e20 >= e50 else 0) + (6 if 45 <= rsi <= 72 else 0)
+            trend_ok = close > e20 and e20 >= e50 and adx >= 22
+            momentum_ok = hist_val > 0
+
+            if close > e20: score += 10
+            if e20 >= e50: score += 10
+            if adx >= 25:
+                score += 12; reasons.append(f"Strong Trend ADX({adx:.1f})")
+            elif adx >= 22:
+                score += 6; reasons.append(f"Moderate Trend ADX({adx:.1f})")
+            else:
+                trend_ok = False; reasons.append(f"Weak Sideways ADX({adx:.1f})")
+
+            if momentum_ok:
+                score += 8; reasons.append("MACD Bullish Momentum")
+            else:
+                score -= 10; reasons.append("MACD Momentum weak")
+
+            if 45 <= rsi <= 72: score += 6
+            ok = trend_ok and momentum_ok
         else:
-            ok = close < e20 and e20 <= e50
-            score = (12 if close < e20 else 0) + (10 if e20 <= e50 else 0) + (6 if 28 <= rsi <= 55 else 0)
-        return {"ok": ok, "score": score, "rsi": rsi, "ema20": e20, "ema50": e50,
-                "reason": f"EMA/RSI bias {'bullish' if direction == 'LONG' else 'bearish'}" if ok else "Bias conflict"}
+            trend_ok = close < e20 and e20 <= e50 and adx >= 22
+            momentum_ok = hist_val < 0
+
+            if close < e20: score += 10
+            if e20 <= e50: score += 10
+            if adx >= 25:
+                score += 12; reasons.append(f"Strong Trend ADX({adx:.1f})")
+            elif adx >= 22:
+                score += 6; reasons.append(f"Moderate Trend ADX({adx:.1f})")
+            else:
+                trend_ok = False; reasons.append(f"Weak Sideways ADX({adx:.1f})")
+
+            if momentum_ok:
+                score += 8; reasons.append("MACD Bearish Momentum")
+            else:
+                score -= 10; reasons.append("MACD Momentum weak")
+
+            if 28 <= rsi <= 55: score += 6
+            ok = trend_ok and momentum_ok
+
+        return {"ok": ok, "score": score, "rsi": rsi, "adx": adx, "ema20": e20, "ema50": e50,
+                "reason": "، ".join(reasons) if reasons else "Bias conflict"}
 
     def _value_entry(self, df, direction):
         if len(df) < 30:
@@ -386,7 +459,7 @@ class StrategyEngine:
             score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
             quality = "A+" if score >= 90 else "A" if score >= 82 else "B+"
             reason = (
-                f"{direction} | 1D bias + 4H structure + 1H value zone + "
+                f"{direction} | 1D bias (ADX+MACD) + 4H structure + 1H value zone + "
                 f"timed entry confirmation | {struct['reason']}"
             )
             decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
