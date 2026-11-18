@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V124.0 Elite Multi-Market
+# main.py — Bot V124.1 Elite Multi-Market (With ADX & MACD Filters)
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only. Telegram/BingX/Yahoo connectivity preserved.
 # ============================================================
@@ -261,10 +261,10 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.1 (ADX+MACD)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"{emoji} <b>{side} — توقيت دخول مؤكد</b>\n\n"
+                f"{emoji} <b>{side} — توقيت دخول مؤكد (ترند وزخم)</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{signal.get('score',0)}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -304,7 +304,7 @@ def run_full_scan(chat_id=None):
         if chat_id: tg_send("⏳ يوجد فحص شامل قيد التشغيل حاليًا.", chat_id)
         return
     try:
-        if chat_id: tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals...</b>", chat_id)
+        if chat_id: tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (مع فلاتر الاتجاه والزخم)...</b>", chat_id)
         symbols = get_full_market_universe()
         found = 0
         for sym in symbols:
@@ -337,9 +337,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.1</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🟢 LONG و 🔴 SHORT\n"
+    "🟢 LONG و 🔴 SHORT (مدعوم بفلتر ADX & MACD)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل.\n"
     "⚠️ إشارات تحليلية فقط — لا تنفيذ تلقائي."
@@ -368,7 +368,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status":"running", "version":"V124.0-Elite", "stats":scan_stats})
+    return jsonify({"status":"running", "version":"V124.1-Elite-ADX", "stats":scan_stats})
 
 
 @app.route("/health")
@@ -389,7 +389,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V124.0 bootstrapped: LONG+SHORT, timing filter, multi-market.")
+    logger.info("Bot V124.1 bootstrapped: LONG+SHORT, ADX+MACD filters, multi-market.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
