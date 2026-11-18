@@ -1,7 +1,8 @@
-# ============================================================ #
-# analysis.py — StrategyEngine V123.8 (All-Markets Edition)    #
-# Crypto + Forex + Metals + US Stocks & ETFs (SOXS, SPY, etc.) #
-# ============================================================ #
+# ============================================================
+# analysis.py — StrategyEngine V124.0 Elite Entry Timing
+# Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
+# Signal-only: LONG / SHORT, no automatic order execution.
+# ============================================================
 
 import logging
 import uuid
@@ -23,18 +24,8 @@ def _new_signal_id():
     return uuid.uuid4().hex[:16]
 
 
-def build_signal(
-    direction,
-    entry_low,
-    entry_high,
-    stop_loss,
-    take_profits,
-    score,
-    rsi,
-    atr,
-    reason,
-    details=None,
-):
+def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
+                 score, rsi, atr, reason, details=None):
     return {
         "signal_id": _new_signal_id(),
         "created_at": _now_iso(),
@@ -53,12 +44,15 @@ def build_signal(
 
 
 class StrategyEngine:
-    def __init__(
-        self,
-        capital=10000.0,
-        risk_per_trade=0.01,
-        min_score=MIN_SCORE_DEFAULT,
-    ):
+    """Timing-first multi-market signal engine.
+
+    Principle: trend alignment alone never creates a trade.
+    A trade needs direction + structure + retracement/value + momentum
+    confirmation + acceptable extension/risk.
+    """
+
+    def __init__(self, capital=10000.0, risk_per_trade=0.01,
+                 min_score=MIN_SCORE_DEFAULT):
         self.capital = max(1.0, float(capital))
         self.risk_per_trade = min(0.02, max(0.005, float(risk_per_trade)))
         self.min_score = int(min_score)
@@ -68,444 +62,356 @@ class StrategyEngine:
         delta = s.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        avg_gain = gain.ewm(
-            alpha=1.0 / period, min_periods=period, adjust=False
-        ).mean()
-        avg_loss = loss.ewm(
-            alpha=1.0 / period, min_periods=period, adjust=False
-        ).mean()
+        avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
         rs = avg_gain / avg_loss.replace(0, np.nan)
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.replace([np.inf, -np.inf], np.nan).fillna(50)
+        return (100 - (100 / (1 + rs))).replace([np.inf, -np.inf], np.nan).fillna(50)
 
     def calculate_atr(self, df, period=14):
         h = pd.to_numeric(df["high"], errors="coerce")
         l = pd.to_numeric(df["low"], errors="coerce")
         c = pd.to_numeric(df["close"], errors="coerce")
-        tr = pd.concat(
-            [
-                h - l,
-                (h - c.shift()).abs(),
-                (l - c.shift()).abs(),
-            ],
-            axis=1,
-        ).max(axis=1)
-        return tr.ewm(
-            alpha=1.0 / period, min_periods=period, adjust=False
-        ).mean().replace([np.inf, -np.inf], np.nan).fillna(0)
+        tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+        return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().replace([np.inf, -np.inf], np.nan).fillna(0)
 
     def calculate_ema(self, series, period):
-        return pd.to_numeric(series, errors="coerce").ewm(
-            span=period, adjust=False, min_periods=period
-        ).mean().replace([np.inf, -np.inf], np.nan)
+        return pd.to_numeric(series, errors="coerce").ewm(span=period, adjust=False, min_periods=period).mean()
 
     def prepare_dataframe(self, candles):
         if candles is None or len(candles) == 0:
             return pd.DataFrame()
         try:
-            df = pd.DataFrame(
-                candles,
-                columns=["timestamp", "open", "high", "low", "close", "volume"],
-            )
-            for col in ["timestamp", "open", "high", "low", "close", "volume"]:
+            df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            for col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df.dropna().drop_duplicates(subset=["timestamp"])
-            df = df.sort_values("timestamp").reset_index(drop=True)
+            df = df.dropna().drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
             return df
         except Exception as exc:
             logger.error("prepare_dataframe error: %s", exc)
             return pd.DataFrame()
 
-    def _daily_bias(self, df):
-        if len(df) < 35:
-            return {"bullish": False, "score": 0, "reason": "Daily data insufficient"}
+    def _swings(self, df, left=2, right=2):
+        """Return confirmed local swing highs/lows, excluding the newest unconfirmed edge."""
+        if len(df) < left + right + 5:
+            return [], []
+        highs, lows = [], []
+        h = df["high"].to_numpy(dtype=float)
+        l = df["low"].to_numpy(dtype=float)
+        last_confirmed = len(df) - right - 1
+        for i in range(left, last_confirmed + 1):
+            if h[i] >= np.max(h[i-left:i+right+1]) and h[i] > np.max(h[i-left:i]):
+                highs.append((i, h[i]))
+            if l[i] <= np.min(l[i-left:i+right+1]) and l[i] < np.min(l[i-left:i]):
+                lows.append((i, l[i]))
+        return highs, lows
+
+    def _structure(self, df, direction):
+        highs, lows = self._swings(df)
         close = float(df["close"].iloc[-1])
-        ema20 = self.calculate_ema(df["close"], 20)
-        ema50 = self.calculate_ema(df["close"], 50)
-        rsi_series = self.calculate_rsi(df["close"])
-        rsi = float(rsi_series.iloc[-1])
-        e20 = float(ema20.iloc[-1]) if not ema20.empty and not pd.isna(ema20.iloc[-1]) else close
-        e50 = float(ema50.iloc[-1]) if not ema50.empty and not pd.isna(ema50.iloc[-1]) else close
+        if len(highs) < 2 or len(lows) < 2:
+            return {"ok": False, "score": 0, "bos": False, "mss": False, "sweep": False,
+                    "swing_high": float(df["high"].tail(20).max()),
+                    "swing_low": float(df["low"].tail(20).min()), "reason": "Swing structure insufficient"}
 
-        score = 0
-        reasons = []
+        prev_h, last_h = highs[-2][1], highs[-1][1]
+        prev_l, last_l = lows[-2][1], lows[-1][1]
+        swing_high = last_h
+        swing_low = last_l
+        recent = df.tail(8)
+        sweep = False
+        bos = False
+        mss = False
 
-        if close > e20:
-            score += 12
-            reasons.append("السعر فوق EMA20")
-        if e20 > e50:
-            score += 12
-            reasons.append("EMA20 فوق EMA50 (اتجاه صاعد يومي)")
-        if 45 <= rsi <= 70:
-            score += 6
-            reasons.append("RSI يومي صحي")
+        if direction == "LONG":
+            higher_structure = last_h >= prev_h and last_l >= prev_l * 0.997
+            bos = close > prev_h or close > last_h
+            # Liquidity sweep: wick under a recent swing then reclaim.
+            sweep = float(recent["low"].min()) < prev_l and close > prev_l
+            mss = sweep and close > float(recent["high"].iloc[:-1].max()) if len(recent) > 2 else False
+            score = (18 if higher_structure else 0) + (14 if bos else 0) + (12 if sweep else 0) + (8 if mss else 0)
+            ok = higher_structure or bos
+            reason = []
+            if higher_structure: reason.append("Higher-High/Higher-Low")
+            if bos: reason.append("Bullish BOS")
+            if sweep: reason.append("Liquidity sweep below swing")
+            if mss: reason.append("Bullish MSS")
+        else:
+            lower_structure = last_h <= prev_h * 1.003 and last_l <= prev_l
+            bos = close < prev_l or close < last_l
+            sweep = float(recent["high"].max()) > prev_h and close < prev_h
+            mss = sweep and close < float(recent["low"].iloc[:-1].min()) if len(recent) > 2 else False
+            score = (18 if lower_structure else 0) + (14 if bos else 0) + (12 if sweep else 0) + (8 if mss else 0)
+            ok = lower_structure or bos
+            reason = []
+            if lower_structure: reason.append("Lower-High/Lower-Low")
+            if bos: reason.append("Bearish BOS")
+            if sweep: reason.append("Liquidity sweep above swing")
+            if mss: reason.append("Bearish MSS")
 
-        bullish = score >= 20 and close > e20
-        return {
-            "bullish": bullish,
-            "score": score,
-            "rsi": rsi,
-            "ema20": e20,
-            "ema50": e50,
-            "reason": "، ".join(reasons),
-        }
+        return {"ok": ok, "score": min(52, score), "bos": bos, "mss": mss, "sweep": sweep,
+                "swing_high": swing_high, "swing_low": swing_low,
+                "reason": "، ".join(reason) if reason else "No clean structure confirmation"}
 
-    def _four_hour_structure(self, df):
-        if len(df) < 35:
-            return {"bullish": False, "score": 0, "reason": "4H data insufficient"}
+    def _bias(self, df, direction):
+        if len(df) < 60:
+            return {"ok": False, "score": 0, "rsi": 50, "reason": "Bias data insufficient"}
         close = float(df["close"].iloc[-1])
-        ema20 = self.calculate_ema(df["close"], 20)
-        ema50 = self.calculate_ema(df["close"], 50)
-        e20 = float(ema20.iloc[-1]) if not ema20.empty and not pd.isna(ema20.iloc[-1]) else close
-        e50 = float(ema50.iloc[-1]) if not ema50.empty and not pd.isna(ema50.iloc[-1]) else close
+        e20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
+        e50 = float(self.calculate_ema(df["close"], 50).iloc[-1])
+        rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
+        if direction == "LONG":
+            ok = close > e20 and e20 >= e50
+            score = (12 if close > e20 else 0) + (10 if e20 >= e50 else 0) + (6 if 45 <= rsi <= 72 else 0)
+        else:
+            ok = close < e20 and e20 <= e50
+            score = (12 if close < e20 else 0) + (10 if e20 <= e50 else 0) + (6 if 28 <= rsi <= 55 else 0)
+        return {"ok": ok, "score": score, "rsi": rsi, "ema20": e20, "ema50": e50,
+                "reason": f"EMA/RSI bias {'bullish' if direction == 'LONG' else 'bearish'}" if ok else "Bias conflict"}
 
-        recent = df.tail(12)
-        recent_low = float(recent["low"].min())
-        previous_low = float(df.iloc[-24:-12]["low"].min()) if len(df) >= 24 else recent_low
-
-        score = 0
-        reasons = []
-
-        if close > e20:
-            score += 10
-            reasons.append("4H فوق EMA20")
-        if e20 > e50:
-            score += 10
-            reasons.append("4H EMA20 > EMA50")
-        if recent_low >= previous_low * 0.97:
-            score += 10
-            reasons.append("هيكل 4H يحافظ على قاع أعلى (Higher Low)")
-
-        bullish = score >= 20 and close > e20
-        return {
-            "bullish": bullish,
-            "score": score,
-            "recent_low": recent_low,
-            "previous_low": previous_low,
-            "ema20": e20,
-            "ema50": e50,
-            "reason": "، ".join(reasons),
-        }
-
-    def _one_hour_entry(self, df):
+    def _value_entry(self, df, direction):
         if len(df) < 30:
-            return {"valid": False, "score": 0, "reason": "1H data insufficient"}
-
+            return {"ok": False, "score": 0, "rsi": 50, "atr": 0, "position": 0.5,
+                    "extension": 0, "reason": "Entry timeframe insufficient"}
+        atr = float(self.calculate_atr(df).iloc[-1])
+        rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
         close = float(df["close"].iloc[-1])
-        rsi_series = self.calculate_rsi(df["close"])
-        atr_series = self.calculate_atr(df)
-
-        rsi = float(rsi_series.iloc[-1])
-        atr = float(atr_series.iloc[-1])
-
-        if atr <= 0 or close <= 0:
-            return {"valid": False, "score": 0, "reason": "Invalid ATR/price"}
-
+        hi = float(df["high"].tail(40).max())
+        lo = float(df["low"].tail(40).min())
+        rng = max(hi - lo, atr, close * 1e-9)
+        position = (close - lo) / rng
+        ema20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
+        extension = abs(close - ema20) / max(atr, close * 1e-9)
         score = 0
         reasons = []
+        if direction == "LONG":
+            if 0.25 <= position <= 0.55:
+                score += 18; reasons.append("Discount/value zone")
+            elif 0.55 < position <= 0.62:
+                score += 6; reasons.append("Moderate value zone")
+            else:
+                score -= 24; reasons.append("Premium/late location rejected")
+            if 42 <= rsi <= 62:
+                score += 14; reasons.append("RSI supports controlled entry")
+            elif rsi > 70:
+                score -= 25; reasons.append("Overbought")
+            if extension <= 1.8:
+                score += 10; reasons.append("Not overextended from EMA20")
+            elif extension > 2.8:
+                score -= 20; reasons.append("Extended from EMA20")
+        else:
+            if 0.45 <= position <= 0.75:
+                score += 18; reasons.append("Premium/value zone")
+            elif 0.38 <= position < 0.45:
+                score += 6; reasons.append("Moderate value zone")
+            else:
+                score -= 24; reasons.append("Discount/late location rejected")
+            if 38 <= rsi <= 58:
+                score += 14; reasons.append("RSI supports controlled short")
+            elif rsi < 30:
+                score -= 25; reasons.append("Oversold")
+            if extension <= 1.8:
+                score += 10; reasons.append("Not overextended from EMA20")
+            elif extension > 2.8:
+                score -= 20; reasons.append("Extended from EMA20")
 
-        recent = df.tail(24).copy()
-        range_high = float(recent["high"].max())
-        range_low = float(recent["low"].min())
-        range_size = range_high - range_low
+        # Detect an already explosive move even if the last 5 candles cooled down.
+        look = df.tail(12)
+        move = (float(look["close"].iloc[-1]) - float(look["close"].iloc[0])) / float(look["close"].iloc[0]) * 100
+        if direction == "LONG" and move > 8:
+            score -= 24; reasons.append("Recent 12-bar impulse too strong")
+        if direction == "SHORT" and move < -8:
+            score -= 24; reasons.append("Recent 12-bar impulse too strong")
 
-        if range_size <= 0:
-            return {"valid": False, "score": 0, "reason": "Invalid 1H range"}
+        # Volume expansion is useful only as confirmation, not as a standalone entry.
+        vmean = float(df["volume"].tail(20).mean())
+        vlast = float(df["volume"].iloc[-1])
+        if vmean > 0 and vlast >= vmean * 1.15:
+            score += 6; reasons.append("Volume confirmation")
 
-        fibo_50 = range_high - (0.50 * range_size)
-        fibo_618 = range_high - (0.618 * range_size)
+        return {"ok": score >= 24, "score": max(-20, score), "rsi": rsi, "atr": atr,
+                "position": position, "extension": extension, "move12": move,
+                "range_high": hi, "range_low": lo,
+                "reason": "، ".join(reasons)}
 
-        position_in_range = (close - range_low) / range_size
+    def _entry_confirmation(self, df, direction):
+        if df is None or len(df) < 20:
+            return {"ok": True, "score": 0, "reason": "15M unavailable; using higher-timeframe timing"}
+        close = float(df["close"].iloc[-1])
+        op = float(df["open"].iloc[-1])
+        hi = float(df["high"].iloc[-1])
+        lo = float(df["low"].iloc[-1])
+        atr = float(self.calculate_atr(df).iloc[-1])
+        rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
+        prev_hi = float(df["high"].tail(8).iloc[:-1].max())
+        prev_lo = float(df["low"].tail(8).iloc[:-1].min())
+        score = 0
+        reasons = []
+        if direction == "LONG":
+            if close > op: score += 8; reasons.append("15M bullish close")
+            if lo < prev_lo and close > prev_lo: score += 12; reasons.append("15M sell-side sweep/reclaim")
+            if close > prev_hi: score += 10; reasons.append("15M micro BOS")
+            if 40 <= rsi <= 68: score += 6; reasons.append("15M RSI controlled")
+        else:
+            if close < op: score += 8; reasons.append("15M bearish close")
+            if hi > prev_hi and close < prev_hi: score += 12; reasons.append("15M buy-side sweep/reclaim")
+            if close < prev_lo: score += 10; reasons.append("15M micro BOS")
+            if 32 <= rsi <= 60: score += 6; reasons.append("15M RSI controlled")
+        # Never accept a huge final candle as a clean entry confirmation.
+        body = abs(close - op)
+        if atr > 0 and body > 1.8 * atr:
+            score -= 18; reasons.append("15M candle too extended")
+        return {"ok": score >= 14, "score": score, "atr": atr, "rsi": rsi,
+                "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
 
-        if fibo_618 <= close <= fibo_50:
-            score += 25
-            reasons.append("الارتداد من مستويات فيبو الذهبية (50% - 61.8%)")
-        elif position_in_range <= 0.45:
-            score += 16
-            reasons.append("السعر في منطقة الخصم (Discount Zone)")
-        elif position_in_range > 0.65:
-            score -= 30
-            reasons.append("رفض: تجاوز منتصف النطاق (دخول متأخر)")
-
-        if 40 <= rsi <= 60:
-            score += 15
-            reasons.append("RSI في نطاق تجميعي هادئ")
-        elif rsi > 68:
-            score -= 25
-            reasons.append("رفض: RSI مرتفع وزخم مستهلك")
-
-        try:
-            recent["price_bin"] = pd.cut(recent["close"], bins=5, labels=False, include_lowest=True)
-            volume_by_bin = recent.groupby("price_bin")["volume"].sum()
-            poc_bin = volume_by_bin.idxmax() if not volume_by_bin.empty else 2
-            
-            current_bin = pd.cut(
-                pd.Series([close]),
-                bins=pd.cut(recent["close"], bins=5, retbins=True)[1],
-                labels=False,
-                include_lowest=True,
-            )
-            current_bin_val = (
-                current_bin.iloc[0]
-                if not current_bin.empty and not pd.isna(current_bin.iloc[0])
-                else poc_bin
-            )
-
-            if current_bin_val <= poc_bin:
-                score += 15
-                reasons.append("التفاعل مع نقطة التحكم في الحجم (Volume PoC)")
-        except Exception:
-            score += 5
-
-        prev_open = float(df["open"].iloc[-2])
-        prev_close = float(df["close"].iloc[-2])
-        last_open = float(df["open"].iloc[-1])
-
-        is_prev_bearish = prev_close < prev_open
-        is_last_bullish = close > last_open
-        is_engulfing = is_last_bullish and (close >= prev_open) and (last_open <= prev_close)
-
-        if is_engulfing and is_prev_bearish:
-            score += 20
-            reasons.append("تكون نموذج شمعة الابتلاع الشرائي المؤكدة")
-        elif close > last_open:
-            score += 8
-            reasons.append("شمعة انعكاسية صاعدة")
-
-        price_5bar_ago = float(df["close"].iloc[-6]) if len(df) >= 6 else close
-        roc_5bar = (close - price_5bar_ago) / price_5bar_ago * 100 if price_5bar_ago > 0 else 0.0
-
-        if roc_5bar > 4.5:
-            score -= 30
-            reasons.append("رفض: صعود سابق سريع (تفويت البداية)")
-        elif -2.0 <= roc_5bar <= 2.5:
-            score += 10
-            reasons.append("حركة تجميع هادئة في البداية")
-
-        valid = (
-            score >= 45
-            and position_in_range <= 0.55
-            and roc_5bar < 4.0
-            and rsi < 65
-        )
-
-        return {
-            "valid": valid,
-            "score": score,
-            "rsi": rsi,
-            "atr": atr,
-            "range_high": range_high,
-            "range_low": range_low,
-            "position_in_range": position_in_range,
-            "roc_5bar": roc_5bar,
-            "reason": "، ".join(reasons),
-        }
-
-    def _build_trade_plan(self, df1h, entry_price, atr, score):
+    def _trade_plan(self, df1h, entry_price, atr, direction, structure):
         if entry_price <= 0 or atr <= 0:
             return None
-        recent_low = float(df1h["low"].tail(14).min())
-        structure_stop = recent_low * 0.985
-        atr_stop = entry_price - (1.6 * atr)
-        stop_loss = min(structure_stop, atr_stop)
-
-        risk_pct = (entry_price - stop_loss) / entry_price * 100
-        if risk_pct < 0.8:
-            stop_loss = entry_price - (1.3 * atr)
-        if risk_pct > 7.0:
-            stop_loss = entry_price * 0.93
-
-        risk = entry_price - stop_loss
-        if risk <= 0:
-            return None
-
-        entry_low = entry_price - (0.25 * atr)
-        entry_high = entry_price + (0.1 * atr)
-
-        tp1 = entry_price + (1.6 * risk)
-        tp2 = entry_price + (2.6 * risk)
-        tp3 = entry_price + (4.2 * risk)
-
-        return {
-            "entry_low": entry_low,
-            "entry_high": entry_high,
-            "stop_loss": stop_loss,
-            "tp1": tp1,
-            "tp2": tp2,
-            "tp3": tp3,
-        }
+        swing_low = float(structure.get("swing_low", df1h["low"].tail(20).min()))
+        swing_high = float(structure.get("swing_high", df1h["high"].tail(20).max()))
+        if direction == "LONG":
+            structural = swing_low - 0.35 * atr
+            atr_stop = entry_price - 1.8 * atr
+            stop = min(structural, atr_stop)
+            risk = entry_price - stop
+            if risk <= 0: return None
+            risk_pct = risk / entry_price * 100
+            if risk_pct > 6.5: return None
+            if risk_pct < 0.45:
+                stop = entry_price - 1.25 * atr
+                risk = entry_price - stop
+            entry_low = max(0.0, entry_price - 0.20 * atr)
+            entry_high = entry_price + 0.08 * atr
+            tps = [entry_price + 1.5 * risk, entry_price + 2.5 * risk, entry_price + 4.0 * risk]
+        else:
+            structural = swing_high + 0.35 * atr
+            atr_stop = entry_price + 1.8 * atr
+            stop = max(structural, atr_stop)
+            risk = stop - entry_price
+            if risk <= 0: return None
+            risk_pct = risk / entry_price * 100
+            if risk_pct > 6.5: return None
+            if risk_pct < 0.45:
+                stop = entry_price + 1.25 * atr
+                risk = stop - entry_price
+            entry_low = entry_price - 0.08 * atr
+            entry_high = entry_price + 0.20 * atr
+            tps = [entry_price - 1.5 * risk, entry_price - 2.5 * risk, entry_price - 4.0 * risk]
+        return {"entry_low": entry_low, "entry_high": entry_high, "stop_loss": stop,
+                "tp1": tps[0], "tp2": tps[1], "tp3": tps[2], "risk_pct": risk / entry_price * 100}
 
     def check_momentum_at_tp1(self, candles1h):
         try:
             df = self.prepare_dataframe(candles1h)
             if df.empty or len(df) < 10:
                 return "NEUTRAL", "بيانات غير كافية لفحص الزخم"
-
-            rsi_series = self.calculate_rsi(df["close"])
-            current_rsi = float(rsi_series.iloc[-1])
-            volume_mean = df["volume"].tail(10).mean()
-            last_volume = float(df["volume"].iloc[-1])
-
-            if current_rsi > 70:
-                return "OVERBOUGHT", "⚠️ تنبيه: RSI وصل تشبع شرائي (>70) قرب الهدف، يفضل جني جزء من الأرباح أو تأمين الدخول."
-            elif last_volume > volume_mean * 1.5:
-                return "STRONG", "🚀 الزخم قوي جداً مع حجم تداول مرتفع يدعم الوصول للهدف الثاني والثالث."
-            else:
-                return "NORMAL", "⚖️ الزخم مستقر وطبيعي داخل المسار الصاعد."
+            rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
+            mean_v = float(df["volume"].tail(10).mean())
+            last_v = float(df["volume"].iloc[-1])
+            if rsi > 70:
+                return "OVERBOUGHT", "⚠️ RSI متشبع شرائي؛ يفضل تأمين جزء من الربح."
+            if rsi < 30:
+                return "OVERSOLD", "⚠️ RSI متشبع بيعي؛ يفضل تأمين جزء من الربح في الشورت."
+            if mean_v > 0 and last_v > mean_v * 1.5:
+                return "STRONG", "🚀 الزخم والحجم مرتفعان."
+            return "NORMAL", "⚖️ الزخم مستقر."
         except Exception:
-            return "NORMAL", "⚖️ زخم التداول مستقر."
+            return "NORMAL", "⚖️ الزخم مستقر."
 
-    def analyze_market_structure(
-        self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None, asset_type="crypto"
-    ):
-        neutral = build_signal(
-            direction="NEUTRAL",
-            entry_low=0.0,
-            entry_high=0.0,
-            stop_loss=0.0,
-            take_profits=[],
-            score=0,
-            rsi=50.0,
-            atr=0.0,
-            reason="لا توجد فرصة تجميع مبكرة مكتملة الشروط",
-            details={},
-        )
+    def _make_neutral(self, reason="لا توجد فرصة مكتملة", score=0, rsi=50, atr=0, details=None):
+        return build_signal("NEUTRAL", 0, 0, 0, [], score, rsi, atr, reason, details or {})
+
+    def analyze_market_structure(self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None,
+                                 asset_type="crypto", ohlcv_15m=None):
+        neutral = self._make_neutral()
         try:
-            if ohlcv_daily is None or ohlcv_4h is None or ohlcv_1h is None:
-                return "NEUTRAL", 0.0, neutral
-            if (
-                len(ohlcv_daily) < 40
-                or len(ohlcv_4h) < 35
-                or len(ohlcv_1h) < 30
-            ):
-                return "NEUTRAL", 0.0, neutral
-
             daily = self.prepare_dataframe(ohlcv_daily)
             h4 = self.prepare_dataframe(ohlcv_4h)
             h1 = self.prepare_dataframe(ohlcv_1h)
+            m15 = self.prepare_dataframe(ohlcv_15m)
+            if len(daily) < 55 or len(h4) < 40 or len(h1) < 35:
+                return "NEUTRAL", 0.0, self._make_neutral("بيانات غير كافية")
 
-            if len(daily) < 35 or len(h4) < 30 or len(h1) < 25:
-                return "NEUTRAL", 0.0, neutral
+            long_d = self._bias(daily, "LONG")
+            short_d = self._bias(daily, "SHORT")
+            long_h4 = self._structure(h4, "LONG")
+            short_h4 = self._structure(h4, "SHORT")
+            long_h1 = self._value_entry(h1, "LONG")
+            short_h1 = self._value_entry(h1, "SHORT")
 
-            daily_info = self._daily_bias(daily)
-            h4_info = self._four_hour_structure(h4)
-            h1_info = self._one_hour_entry(h1)
+            candidates = []
+            for direction, bias, struct, value in [
+                ("LONG", long_d, long_h4, long_h1),
+                ("SHORT", short_d, short_h4, short_h1),
+            ]:
+                if not bias["ok"] or not struct["ok"] or not value["ok"]:
+                    continue
+                conf = self._entry_confirmation(m15, direction)
+                score = int(round(min(100, max(0, bias["score"] + struct["score"] + value["score"] + conf["score"]))))
+                # Hard late-entry guards.
+                if value["position"] > 0.66 if direction == "LONG" else value["position"] < 0.34:
+                    continue
+                if value["extension"] > 2.8 or abs(value["move12"]) > 12:
+                    continue
+                # 15M is an enhancer when available; it cannot rescue a bad 1H location.
+                if not conf["ok"] and not m15.empty:
+                    continue
+                if score < self.min_score:
+                    continue
+                price = float(h1["close"].iloc[-1])
+                plan = self._trade_plan(h1, price, value["atr"], direction, struct)
+                if not plan:
+                    continue
+                # Require TP1 to offer at least 1.5R by construction and sane direction.
+                if direction == "LONG" and not (plan["stop_loss"] < price < plan["tp1"]):
+                    continue
+                if direction == "SHORT" and not (plan["tp1"] < price < plan["stop_loss"]):
+                    continue
+                candidates.append((score, direction, bias, struct, value, conf, plan, price))
 
-            if not daily_info["bullish"]:
-                return "NEUTRAL", 0.0, build_signal(
-                    direction="NEUTRAL",
-                    entry_low=0,
-                    entry_high=0,
-                    stop_loss=0,
-                    take_profits=[],
-                    score=0,
-                    rsi=daily_info.get("rsi", 50),
-                    atr=0,
-                    reason="Daily bias غير صاعد",
-                    details={"daily": daily_info, "4h": h4_info, "1h": h1_info},
+            if not candidates:
+                # Return the strongest diagnostic candidate even when rejected.
+                diagnostics = {
+                    "daily_long": long_d, "daily_short": short_d,
+                    "4h_long": long_h4, "4h_short": short_h4,
+                    "1h_long": long_h1, "1h_short": short_h1,
+                    "15m": "available" if not m15.empty else "unavailable",
+                }
+                best_value = long_h1 if long_h1.get("score", -999) >= short_h1.get("score", -999) else short_h1
+                return "NEUTRAL", 0.0, self._make_neutral(
+                    "لا توجد صفقة: الاتجاه أو منطقة الدخول أو تأكيد 15M غير مكتمل",
+                    max(0, min(100, int(best_value.get("score", 0)))),
+                    best_value.get("rsi", 50), best_value.get("atr", 0), diagnostics
                 )
 
-            if not h4_info["bullish"]:
-                return "NEUTRAL", 0.0, build_signal(
-                    direction="NEUTRAL",
-                    entry_low=0,
-                    entry_high=0,
-                    stop_loss=0,
-                    take_profits=[],
-                    score=0,
-                    rsi=daily_info.get("rsi", 50),
-                    atr=0,
-                    reason="4H structure غير صاعد",
-                    details={"daily": daily_info, "4h": h4_info, "1h": h1_info},
-                )
-
-            if not h1_info["valid"]:
-                return "NEUTRAL", 0.0, build_signal(
-                    direction="NEUTRAL",
-                    entry_low=0,
-                    entry_high=0,
-                    stop_loss=0,
-                    take_profits=[],
-                    score=0,
-                    rsi=h1_info.get("rsi", 50),
-                    atr=h1_info.get("atr", 0),
-                    reason="1H لم يؤكد منطقة تجميع مبكرة (تم رفض الدخول المتأخر)",
-                    details={"daily": daily_info, "4h": h4_info, "1h": h1_info},
-                )
-
-            raw_score = (
-                float(daily_info["score"])
-                + float(h4_info["score"])
-                + float(h1_info["score"])
+            score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
+            quality = "A+" if score >= 90 else "A" if score >= 82 else "B+"
+            reason = (
+                f"{direction} | 1D bias + 4H structure + 1H value zone + "
+                f"timed entry confirmation | {struct['reason']}"
             )
-            score = int(
-                round(min(100, max(0, (raw_score / 120.0) * 100.0)))
-            )
-
-            if score < self.min_score:
-                return "NEUTRAL", 0.0, build_signal(
-                    direction="NEUTRAL",
-                    entry_low=0,
-                    entry_high=0,
-                    stop_loss=0,
-                    take_profits=[],
-                    score=score,
-                    rsi=h1_info["rsi"],
-                    atr=h1_info["atr"],
-                    reason=f"التقييم {score}/100 أقل من الحد الأدنى {self.min_score}",
-                    details={"daily": daily_info, "4h": h4_info, "1h": h1_info},
-                )
-
-            price = float(h1["close"].iloc[-1])
-            atr = float(h1_info["atr"])
-            trade = self._build_trade_plan(h1, price, atr, score)
-            if not trade:
-                return "NEUTRAL", 0.0, neutral
-
-            if score >= 88:
-                quality = "A+ | تجميع مبكر قوي جدًا (Fibo + PoC + Engulfing)"
-            elif score >= 82:
-                quality = "A | فرصة تجميع ممتازة"
-            elif score >= 76:
-                quality = "B+ | فرصة جيدة"
-            else:
-                quality = "B | فرصة مشروطة"
-
-            reason_parts = [
-                "Daily Bias صاعد",
-                "4H Structure صاعد",
-                "1H Fibo & Volume Profile Accumulation Confirmed",
-            ]
-            if h1_info["roc_5bar"] <= 2.0:
-                reason_parts.append("دخول مبكر بدقة قبل الانفجار")
-
-            reason = " | ".join(reason_parts)
-            decimals = 8 if price < 0.1 else (6 if price < 1 else (4 if price < 100 else 2))
-
+            decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
             signal = build_signal(
-                direction="LONG",
-                entry_low=round(trade["entry_low"], decimals),
-                entry_high=round(trade["entry_high"], decimals),
-                stop_loss=round(trade["stop_loss"], decimals),
-                take_profits=[
-                    round(trade["tp1"], decimals),
-                    round(trade["tp2"], decimals),
-                    round(trade["tp3"], decimals),
-                ],
-                score=score,
-                rsi=h1_info["rsi"],
-                atr=atr,
-                reason=reason,
-                details={
+                direction,
+                round(plan["entry_low"], decimals),
+                round(plan["entry_high"], decimals),
+                round(plan["stop_loss"], decimals),
+                [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
+                score,
+                value["rsi"], value["atr"], reason,
+                {
                     "quality": quality,
-                    "timeframes": "1D + 4H + 1H",
-                    "position_in_range": round(h1_info["position_in_range"], 3),
-                    "roc_5bar": round(h1_info["roc_5bar"], 2),
+                    "timeframes": "1D + 4H + 1H + 15M" if not m15.empty else "1D + 4H + 1H",
+                    "position_in_range": round(value["position"], 3),
+                    "extension_atr": round(value["extension"], 2),
+                    "move12": round(value["move12"], 2),
+                    "structure": struct,
+                    "confirmation_15m": conf,
+                    "risk_pct": round(plan["risk_pct"], 2),
                     "asset_type": asset_type,
+                    "entry_timing": "confirmed",
                 },
             )
-            return "LONG", price, signal
-
+            return direction, price, signal
         except Exception as exc:
             logger.exception("Analysis error: %s", exc)
             return "NEUTRAL", 0.0, neutral
