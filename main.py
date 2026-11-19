@@ -159,6 +159,7 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
             bars = _fetch_yfinance_ohlcv(sym, timeframe)
             if bars: return sym, bars, "stock"
 
+        is_crypto_pair = ("/" in sym) or (":USDT" in sym)
         base = sym.split(":")[0].split("/")[0]
         if base.endswith("USDT") and len(base) > 4:
             base = base[:-4]
@@ -170,6 +171,8 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
             except Exception as exc:
                 logger.debug("BingX OHLCV %s %s: %s", c_sym, timeframe, exc)
             time.sleep(0.04)
+        if is_crypto_pair:
+            return None, None, "unknown"
         bars = _fetch_yfinance_ohlcv(sym, timeframe)
         if bars: return sym, bars, "stock"
     except Exception as exc:
@@ -330,7 +333,11 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
+                logger.info("Auto scheduler starting full scan (stats=%s)", scan_stats)
                 run_full_scan()
+                logger.info("Auto scheduler finished cycle (stats=%s)", scan_stats)
+            else:
+                logger.warning("Auto scheduler skipped: TELEGRAM_CHAT_ID is empty")
         except Exception as exc:
             logger.exception("Scheduler error: %s", exc)
         time.sleep(14400)
