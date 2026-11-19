@@ -1,12 +1,11 @@
 # ============================================================
-# main.py — Bot V124.5 High-Conviction Safe Mode
-# Crypto + Stocks/ETFs + Forex/Metals | LONG + SHORT
+# main.py — Bot V124.4 Daily EMA200 & Close Timing
+# Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only. Telegram/BingX/Yahoo connectivity preserved.
 # ============================================================
 
 import os
 import time
-import warnings
 import threading
 import logging
 import sqlite3
@@ -17,8 +16,6 @@ import pandas as pd
 import yfinance as yf
 from flask import Flask, jsonify, request
 from analysis import StrategyEngine
-
-warnings.filterwarnings("ignore")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("MainBot")
@@ -40,7 +37,7 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=72)
+engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=76)
 
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
@@ -269,10 +266,10 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.5 (Safe Mode)</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.4 (EMA200 + Close)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"{emoji} <b>{side} — وضع الأمان العالي (تأكيد إغلاق + توافق زخم)</b>\n\n"
+                f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{signal.get('score',0)}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -316,7 +313,7 @@ def run_full_scan(chat_id=None):
         if chat_id: tg_send("⏳ يوجد فحص شامل قيد التشغيل حاليًا.", chat_id)
         return
     try:
-        if chat_id: tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (وضع الأمان العالي)...</b>", chat_id)
+        if chat_id: tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (مع فلاتر الاتجاه والزخم)...</b>", chat_id)
         symbols = get_full_market_universe()
         found = 0
         for sym in symbols:
@@ -342,20 +339,20 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("AUTO_SCHEDULER starting full scan (stats=%s)", scan_stats)
+                logger.info("Auto scheduler starting full scan (stats=%s)", scan_stats)
                 run_full_scan()
-                logger.info("AUTO_SCHEDULER finished cycle (stats=%s)", scan_stats)
+                logger.info("Auto scheduler finished cycle (stats=%s)", scan_stats)
             else:
-                logger.warning("AUTO_SCHEDULER skipped: TELEGRAM_CHAT_ID is empty")
+                logger.warning("Auto scheduler skipped: TELEGRAM_CHAT_ID is empty")
         except Exception as exc:
             logger.exception("Scheduler error: %s", exc)
-        time.sleep(7200)
+        time.sleep(14400)
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.5</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.4</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🟢 LONG و 🔴 SHORT (وضع الأمان العالي: EMA200 + تأكيد إغلاق + توافق زخم)\n"
+    "🟢 LONG و 🔴 SHORT (محسن بـ EMA200 اليومي وتأكيد الإغلاق)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل.\n"
     "⚠️ إشارات تحليلية فقط — لا تنفيذ تلقائي."
@@ -384,7 +381,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status":"running", "version":"V124.5-SafeMode", "stats":scan_stats})
+    return jsonify({"status":"running", "version":"V124.4-EMA200-Close", "stats":scan_stats})
 
 
 @app.route("/health")
@@ -405,7 +402,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V124.5 bootstrapped: High-Conviction Safe Mode, multi-market.")
+    logger.info("Bot V124.4 bootstrapped: LONG+SHORT, EMA200 + Close confirmation, multi-market.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
