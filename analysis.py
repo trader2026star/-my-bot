@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V124.0 Elite Entry Timing
+# analysis.py — StrategyEngine V124.2 Elite Entry Timing
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
 # Signal-only: LONG / SHORT, no automatic order execution.
 # ============================================================
@@ -77,7 +77,6 @@ class StrategyEngine:
     def calculate_ema(self, series, period):
         return pd.to_numeric(series, errors="coerce").ewm(span=period, adjust=False, min_periods=period).mean()
 
-    # --- تم إضافة دوال ADX و MACD هنا بدقة بدون حذف أي كود قديم ---
     def calculate_adx(self, df, period=14):
         try:
             h = pd.to_numeric(df["high"], errors="coerce")
@@ -105,6 +104,61 @@ class StrategyEngine:
         signal_line = macd_line.ewm(span=signal, adjust=False).mean()
         hist = macd_line - signal_line
         return macd_line, signal_line, hist
+
+    def calculate_fib_and_poc(self, df, direction, lookback=40):
+        """حساب مستويات فيبوناتشي ونقطة التحكم في الحجم (PoC) داخل النطاق."""
+        try:
+            sub = df.tail(lookback)
+            hi = float(sub["high"].max())
+            lo = float(sub["low"].min())
+            rng = max(hi - lo, 1e-9)
+            if direction == "LONG":
+                # 0% عند القمة و100% عند القاع لتوافق التصحيح الهابط نحو الدعم
+                fib_382 = hi - 0.382 * rng
+                fib_500 = hi - 0.500 * rng
+                fib_618 = hi - 0.618 * rng
+            else:
+                fib_382 = lo + 0.382 * rng
+                fib_500 = lo + 0.500 * rng
+                fib_618 = lo + 0.618 * rng
+
+            # حساب بروفايل الحجم التقريبي (PoC) عبر 20 مستوى سعري
+            bins = 20
+            edges = np.linspace(lo, hi, bins + 1)
+            vol_profile = np.zeros(bins, dtype=float)
+            closes = sub["close"].to_numpy(dtype=float)
+            vols = sub["volume"].to_numpy(dtype=float)
+            for c_val, v_val in zip(closes, vols):
+                idx = min(bins - 1, max(0, int(np.searchsorted(edges, c_val, side="right") - 1)))
+                vol_profile[idx] += max(0.0, float(v_val))
+            poc_idx = int(np.argmax(vol_profile))
+            poc_price = float((edges[poc_idx] + edges[poc_idx + 1]) / 2.0)
+
+            return {
+                "fib_382": fib_382,
+                "fib_500": fib_500,
+                "fib_618": fib_618,
+                "poc": poc_price,
+                "range_high": hi,
+                "range_low": lo,
+            }
+        except Exception:
+            return {"fib_382": 0.0, "fib_500": 0.0, "fib_618": 0.0, "poc": 0.0}
+
+    def has_engulfing(self, df, direction):
+        """التحقق من وجود شمعة ابتلاعية داعمة للاتجاه."""
+        try:
+            if len(df) < 2:
+                return False
+            prev_o = float(df["open"].iloc[-2])
+            prev_c = float(df["close"].iloc[-2])
+            curr_o = float(df["open"].iloc[-1])
+            curr_c = float(df["close"].iloc[-1])
+            if direction == "LONG":
+                return prev_c < prev_o and curr_c > curr_o and curr_c >= prev_o and curr_o <= prev_c
+            return prev_c > prev_o and curr_c < curr_o and curr_c <= prev_o and curr_o >= prev_c
+        except Exception:
+            return False
 
     def prepare_dataframe(self, candles):
         if candles is None or len(candles) == 0:
@@ -187,8 +241,7 @@ class StrategyEngine:
         e20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
         e50 = float(self.calculate_ema(df["close"], 50).iloc[-1])
         rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
-        
-        # --- دمج فلاتر الاتجاه (ADX) والزخم (MACD) داخل _bias بدون حذف القديم ---
+
         adx_series = self.calculate_adx(df)
         adx = float(adx_series.iloc[-1]) if not adx_series.empty else 25.0
         _, _, macd_hist = self.calculate_macd(df["close"])
@@ -200,7 +253,6 @@ class StrategyEngine:
         if direction == "LONG":
             trend_ok = close > e20 and e20 >= e50 and adx >= 22
             momentum_ok = hist_val > 0
-
             if close > e20: score += 10
             if e20 >= e50: score += 10
             if adx >= 25:
@@ -209,18 +261,15 @@ class StrategyEngine:
                 score += 6; reasons.append(f"Moderate Trend ADX({adx:.1f})")
             else:
                 trend_ok = False; reasons.append(f"Weak Sideways ADX({adx:.1f})")
-
             if momentum_ok:
                 score += 8; reasons.append("MACD Bullish Momentum")
             else:
                 score -= 10; reasons.append("MACD Momentum weak")
-
             if 45 <= rsi <= 72: score += 6
             ok = trend_ok and momentum_ok
         else:
             trend_ok = close < e20 and e20 <= e50 and adx >= 22
             momentum_ok = hist_val < 0
-
             if close < e20: score += 10
             if e20 <= e50: score += 10
             if adx >= 25:
@@ -229,12 +278,10 @@ class StrategyEngine:
                 score += 6; reasons.append(f"Moderate Trend ADX({adx:.1f})")
             else:
                 trend_ok = False; reasons.append(f"Weak Sideways ADX({adx:.1f})")
-
             if momentum_ok:
                 score += 8; reasons.append("MACD Bearish Momentum")
             else:
                 score -= 10; reasons.append("MACD Momentum weak")
-
             if 28 <= rsi <= 55: score += 6
             ok = trend_ok and momentum_ok
 
@@ -287,7 +334,22 @@ class StrategyEngine:
             elif extension > 2.8:
                 score -= 20; reasons.append("Extended from EMA20")
 
-        # Detect an already explosive move even if the last 5 candles cooled down.
+        # توافق فيبوناتشي (منطقة 50% / 61.8%) وبروفايل الحجم (PoC)
+        fib_poc = self.calculate_fib_and_poc(df, direction, lookback=40)
+        fib_mid = fib_poc.get("fib_500", 0.0)
+        poc_val = fib_poc.get("poc", 0.0)
+        tol = max(atr * 0.85, close * 0.004)
+        fib_hit = fib_mid > 0 and abs(close - fib_mid) <= tol
+        poc_hit = poc_val > 0 and abs(close - poc_val) <= tol
+        engulf = self.has_engulfing(df, direction)
+
+        if fib_hit:
+            score += 8; reasons.append("Fib 50% confluence")
+        if poc_hit:
+            score += 8; reasons.append("Volume PoC support/resistance")
+        if engulf:
+            score += 7; reasons.append("Engulfing candle")
+
         look = df.tail(12)
         move = (float(look["close"].iloc[-1]) - float(look["close"].iloc[0])) / float(look["close"].iloc[0]) * 100
         if direction == "LONG" and move > 8:
@@ -295,7 +357,6 @@ class StrategyEngine:
         if direction == "SHORT" and move < -8:
             score -= 24; reasons.append("Recent 12-bar impulse too strong")
 
-        # Volume expansion is useful only as confirmation, not as a standalone entry.
         vmean = float(df["volume"].tail(20).mean())
         vlast = float(df["volume"].iloc[-1])
         if vmean > 0 and vlast >= vmean * 1.15:
@@ -304,6 +365,7 @@ class StrategyEngine:
         return {"ok": score >= 24, "score": max(-20, score), "rsi": rsi, "atr": atr,
                 "position": position, "extension": extension, "move12": move,
                 "range_high": hi, "range_low": lo,
+                "fib_poc": fib_poc, "engulfing": engulf,
                 "reason": "، ".join(reasons)}
 
     def _entry_confirmation(self, df, direction):
@@ -323,13 +385,14 @@ class StrategyEngine:
             if close > op: score += 8; reasons.append("15M bullish close")
             if lo < prev_lo and close > prev_lo: score += 12; reasons.append("15M sell-side sweep/reclaim")
             if close > prev_hi: score += 10; reasons.append("15M micro BOS")
+            if self.has_engulfing(df, "LONG"): score += 6; reasons.append("15M bullish engulfing")
             if 40 <= rsi <= 68: score += 6; reasons.append("15M RSI controlled")
         else:
             if close < op: score += 8; reasons.append("15M bearish close")
             if hi > prev_hi and close < prev_hi: score += 12; reasons.append("15M buy-side sweep/reclaim")
             if close < prev_lo: score += 10; reasons.append("15M micro BOS")
+            if self.has_engulfing(df, "SHORT"): score += 6; reasons.append("15M bearish engulfing")
             if 32 <= rsi <= 60: score += 6; reasons.append("15M RSI controlled")
-        # Never accept a huge final candle as a clean entry confirmation.
         body = abs(close - op)
         if atr > 0 and body > 1.8 * atr:
             score -= 18; reasons.append("15M candle too extended")
@@ -420,12 +483,10 @@ class StrategyEngine:
                     continue
                 conf = self._entry_confirmation(m15, direction)
                 score = int(round(min(100, max(0, bias["score"] + struct["score"] + value["score"] + conf["score"]))))
-                # Hard late-entry guards.
                 if value["position"] > 0.66 if direction == "LONG" else value["position"] < 0.34:
                     continue
                 if value["extension"] > 2.8 or abs(value["move12"]) > 12:
                     continue
-                # 15M is an enhancer when available; it cannot rescue a bad 1H location.
                 if not conf["ok"] and not m15.empty:
                     continue
                 if score < self.min_score:
@@ -434,7 +495,6 @@ class StrategyEngine:
                 plan = self._trade_plan(h1, price, value["atr"], direction, struct)
                 if not plan:
                     continue
-                # Require TP1 to offer at least 1.5R by construction and sane direction.
                 if direction == "LONG" and not (plan["stop_loss"] < price < plan["tp1"]):
                     continue
                 if direction == "SHORT" and not (plan["tp1"] < price < plan["stop_loss"]):
@@ -442,7 +502,6 @@ class StrategyEngine:
                 candidates.append((score, direction, bias, struct, value, conf, plan, price))
 
             if not candidates:
-                # Return the strongest diagnostic candidate even when rejected.
                 diagnostics = {
                     "daily_long": long_d, "daily_short": short_d,
                     "4h_long": long_h4, "4h_short": short_h4,
@@ -459,7 +518,7 @@ class StrategyEngine:
             score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
             quality = "A+" if score >= 90 else "A" if score >= 82 else "B+"
             reason = (
-                f"{direction} | 1D bias (ADX+MACD) + 4H structure + 1H value zone + "
+                f"{direction} | 1D bias (ADX+MACD) + 4H structure + 1H Fib/PoC value zone + "
                 f"timed entry confirmation | {struct['reason']}"
             )
             decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
@@ -479,6 +538,8 @@ class StrategyEngine:
                     "move12": round(value["move12"], 2),
                     "structure": struct,
                     "confirmation_15m": conf,
+                    "fib_poc": value.get("fib_poc", {}),
+                    "engulfing": value.get("engulfing", False),
                     "risk_pct": round(plan["risk_pct"], 2),
                     "asset_type": asset_type,
                     "entry_timing": "confirmed",
