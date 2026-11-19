@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V124.1 Elite Multi-Market (With ADX & MACD Filters)
+# main.py — Bot V124.2 Elite Multi-Market (Fib + Volume PoC + ADX/MACD)
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only. Telegram/BingX/Yahoo connectivity preserved.
 # ============================================================
@@ -260,14 +260,15 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             tps = list(signal.get("take_profits", []))
             while len(tps) < 3: tps.append(0)
             details = signal.get("details", {}) or {}
+            fib_poc = details.get("fib_poc", {}) or {}
             _, momentum_msg = engine.check_momentum_at_tp1(h1)
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.1 (ADX+MACD)</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.2 (Fib + PoC)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"{emoji} <b>{side} — توقيت دخول مؤكد (ترند وزخم)</b>\n\n"
+                f"{emoji} <b>{side} — توقيت دخول مؤكد (فيبوناتشي وحجم)</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{signal.get('score',0)}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -277,6 +278,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
                 f"🥉 TP3: <code>{format_num(tps[2],d)}</code>\n\n"
                 f"🛑 <b>وقف الخسارة:</b> <code>{format_num(signal.get('stop_loss'),d)}</code>\n"
                 f"📊 <b>RSI:</b> <code>{float(signal.get('rsi',50)):.1f}</code>\n"
+                f"🧲 <b>PoC (أعلى حجم):</b> <code>{format_num(fib_poc.get('poc', 0), d)}</code>\n"
+                f"📏 <b>فيبو 50%:</b> <code>{format_num(fib_poc.get('fib_500', 0), d)}</code>\n"
                 f"📍 <b>موقع النطاق:</b> <code>{float(details.get('position_in_range',0))*100:.1f}%</code>\n"
                 f"📐 <b>الامتداد:</b> <code>{float(details.get('extension_atr',0)):.2f} ATR</code>\n"
                 f"⚖️ <b>المخاطرة:</b> <code>{float(details.get('risk_pct',0)):.2f}%</code>\n\n"
@@ -344,9 +347,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.1</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.2</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🟢 LONG و 🔴 SHORT (مدعوم بفلتر ADX & MACD)\n"
+    "🟢 LONG و 🔴 SHORT (مدعوم بفلتر ADX & MACD + Fib & PoC)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل.\n"
     "⚠️ إشارات تحليلية فقط — لا تنفيذ تلقائي."
@@ -375,7 +378,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status":"running", "version":"V124.1-Elite-ADX", "stats":scan_stats})
+    return jsonify({"status":"running", "version":"V124.2-Elite-FibPoC", "stats":scan_stats})
 
 
 @app.route("/health")
@@ -396,7 +399,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V124.1 bootstrapped: LONG+SHORT, ADX+MACD filters, multi-market.")
+    logger.info("Bot V124.2 bootstrapped: LONG+SHORT, Fib+PoC+ADX+MACD, multi-market.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
