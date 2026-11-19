@@ -470,6 +470,48 @@ class StrategyEngine:
                 "close_confirmed": close_conf.get("ok", False),
                 "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
 
+    def _anti_exhaustion_filter(self, df1h, df15m, direction):
+        """تجنب الدخول المتأخر بعد موجة حادة أو عكس حركة فريم 15M اللحظية."""
+        try:
+            if df1h is None or len(df1h) < 15:
+                return True, "OK"
+
+            rsi_1h = float(self.calculate_rsi(df1h["close"]).iloc[-1])
+            close_1h = float(df1h["close"].iloc[-1])
+            low_1h_recent = float(df1h["low"].tail(6).min())
+            high_1h_recent = float(df1h["high"].tail(6).max())
+
+            rsi_15m = float(self.calculate_rsi(df15m["close"]).iloc[-1]) if (df15m is not None and len(df15m) >= 15) else 50.0
+            m15_bouncing = False
+            m15_pulling_back = False
+
+            if df15m is not None and len(df15m) >= 4:
+                c1 = float(df15m["close"].iloc[-1])
+                o1 = float(df15m["open"].iloc[-1])
+                c2 = float(df15m["close"].iloc[-2])
+                o2 = float(df15m["open"].iloc[-2])
+                m15_bouncing = (c1 > o1 and c2 > o2) or (rsi_15m > 42 and c1 > c2)
+                m15_pulling_back = (c1 < o1 and c2 < o2) or (rsi_15m < 58 and c1 < c2)
+
+            if direction == "SHORT":
+                if rsi_1h < 34 or rsi_15m < 30:
+                    return False, "Oversold exhaustion on 1H/15M (avoid selling bottom)"
+                if m15_bouncing and rsi_15m > 36:
+                    return False, "Active 15M bounce against SHORT"
+                if low_1h_recent > 0 and ((close_1h - low_1h_recent) / close_1h) < 0.004:
+                    return False, "Too close to recent 1H support"
+            else:
+                if rsi_1h > 68 or rsi_15m > 72:
+                    return False, "Overbought exhaustion on 1H/15M (avoid buying top)"
+                if m15_pulling_back and rsi_15m < 64:
+                    return False, "Active 15M pullback against LONG"
+                if high_1h_recent > 0 and ((high_1h_recent - close_1h) / close_1h) < 0.004:
+                    return False, "Too close to recent 1H resistance"
+
+            return True, "Timing clean"
+        except Exception:
+            return True, "OK"
+
     def _trade_plan(self, df1h, entry_price, atr, direction, structure):
         if entry_price <= 0 or atr <= 0:
             return None
@@ -559,6 +601,9 @@ class StrategyEngine:
                 if value["extension"] > 2.5 or abs(value["move12"]) > 11:
                     continue
                 if not conf["ok"] and not m15.empty:
+                    continue
+                timing_ok, _ = self._anti_exhaustion_filter(h1, m15, direction)
+                if not timing_ok:
                     continue
                 if score < self.min_score:
                     continue
