@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V124.2 Elite Multi-Market (Fib + Volume PoC + ADX/MACD)
+# main.py — Bot V124.3 Refined Quality & Timing
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only. Telegram/BingX/Yahoo connectivity preserved.
 # ============================================================
@@ -37,7 +37,7 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=72)
+engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=76)
 
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
@@ -265,10 +265,10 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.2 (Fib + PoC)</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.3 (Refined)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"{emoji} <b>{side} — توقيت دخول مؤكد (فيبوناتشي وحجم)</b>\n\n"
+                f"{emoji} <b>{side} — توقيت دخول مؤكد ومنضبط</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{signal.get('score',0)}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -347,9 +347,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.2</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.3</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🟢 LONG و 🔴 SHORT (مدعوم بفلتر ADX & MACD + Fib & PoC)\n"
+    "🟢 LONG و 🔴 SHORT (محسن للاتجاه والزخم وفيبو/PoC)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل.\n"
     "⚠️ إشارات تحليلية فقط — لا تنفيذ تلقائي."
@@ -378,7 +378,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status":"running", "version":"V124.2-Elite-FibPoC", "stats":scan_stats})
+    return jsonify({"status":"running", "version":"V124.3-Refined", "stats":scan_stats})
 
 
 @app.route("/health")
@@ -399,7 +399,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V124.2 bootstrapped: LONG+SHORT, Fib+PoC+ADX+MACD, multi-market.")
+    logger.info("Bot V124.3 bootstrapped: LONG+SHORT, refined timing & risk, multi-market.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
