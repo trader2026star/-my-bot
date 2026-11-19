@@ -6,6 +6,7 @@
 
 import os
 import time
+import warnings
 import threading
 import logging
 import sqlite3
@@ -16,6 +17,8 @@ import pandas as pd
 import yfinance as yf
 from flask import Flask, jsonify, request
 from analysis import StrategyEngine
+
+warnings.filterwarnings("ignore")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("MainBot")
@@ -339,11 +342,11 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("Auto scheduler starting full scan (stats=%s)", scan_stats)
+                logger.info("AUTO_SCHEDULER starting full scan (stats=%s)", scan_stats)
                 run_full_scan()
-                logger.info("Auto scheduler finished cycle (stats=%s)", scan_stats)
+                logger.info("AUTO_SCHEDULER finished cycle (stats=%s)", scan_stats)
             else:
-                logger.warning("Auto scheduler skipped: TELEGRAM_CHAT_ID is empty")
+                logger.warning("AUTO_SCHEDULER skipped: TELEGRAM_CHAT_ID is empty")
         except Exception as exc:
             logger.exception("Scheduler error: %s", exc)
         time.sleep(14400)
