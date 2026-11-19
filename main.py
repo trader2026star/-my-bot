@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V124.3 Refined Quality & Timing
+# main.py — Bot V124.4 Daily EMA200 & Close Timing
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only. Telegram/BingX/Yahoo connectivity preserved.
 # ============================================================
@@ -236,7 +236,7 @@ def format_num(value, decimals):
 
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     try:
-        resolved, daily, asset_type = fetch_ohlcv(symbol_raw, "1d", 100)
+        resolved, daily, asset_type = fetch_ohlcv(symbol_raw, "1d", 220)
         if not resolved or not daily or len(daily) < 55:
             if manual: tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته اليومية غير كافية.", chat_id)
             return False, None
@@ -264,11 +264,12 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             _, momentum_msg = engine.check_momentum_at_tp1(h1)
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
+            close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.3 (Refined)</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.4 (EMA200 + Close)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"{emoji} <b>{side} — توقيت دخول مؤكد ومنضبط</b>\n\n"
+                f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{signal.get('score',0)}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -276,16 +277,18 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
                 f"🥇 TP1: <code>{format_num(tps[0],d)}</code>\n"
                 f"🥈 TP2: <code>{format_num(tps[1],d)}</code>\n"
                 f"🥉 TP3: <code>{format_num(tps[2],d)}</code>\n\n"
-                f"🛑 <b>وقف الخسارة:</b> <code>{format_num(signal.get('stop_loss'),d)}</code>\n"
+                f"🛑 <b>وقف الخسارة (بإغلاق شمعة):</b> <code>{format_num(signal.get('stop_loss'),d)}</code>\n"
                 f"📊 <b>RSI:</b> <code>{float(signal.get('rsi',50)):.1f}</code>\n"
                 f"🧲 <b>PoC (أعلى حجم):</b> <code>{format_num(fib_poc.get('poc', 0), d)}</code>\n"
                 f"📏 <b>فيبو 50%:</b> <code>{format_num(fib_poc.get('fib_500', 0), d)}</code>\n"
+                f"🧭 <b>EMA200 اليومي:</b> <code>{format_num(details.get('ema200', 0), d)}</code>\n"
+                f"🕯️ <b>تأكيد الإغلاق:</b> <code>{close_tag}</code>\n"
                 f"📍 <b>موقع النطاق:</b> <code>{float(details.get('position_in_range',0))*100:.1f}%</code>\n"
                 f"📐 <b>الامتداد:</b> <code>{float(details.get('extension_atr',0)):.2f} ATR</code>\n"
                 f"⚖️ <b>المخاطرة:</b> <code>{float(details.get('risk_pct',0)):.2f}%</code>\n\n"
                 f"🧠 <b>السبب:</b> {signal.get('reason','')}\n\n"
                 f"🎯 <b>متابعة الزخم:</b>\n{momentum_msg}\n\n"
-                "⚠️ <b>إشارة تحليلية فقط — لا يتم تنفيذ أوامر تلقائيًا.</b>"
+                "⚠️ <b>إشارة تحليلية فقط (يُعتد بالوقف عند إغلاق شمعة) — لا تنفيذ تلقائي.</b>"
             )
             sent = tg_send(msg, chat_id)
             if sent: scan_stats["signals_sent"] += 1
@@ -347,9 +350,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.3</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.4</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🟢 LONG و 🔴 SHORT (محسن للاتجاه والزخم وفيبو/PoC)\n"
+    "🟢 LONG و 🔴 SHORT (محسن بـ EMA200 اليومي وتأكيد الإغلاق)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل.\n"
     "⚠️ إشارات تحليلية فقط — لا تنفيذ تلقائي."
@@ -378,7 +381,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status":"running", "version":"V124.3-Refined", "stats":scan_stats})
+    return jsonify({"status":"running", "version":"V124.4-EMA200-Close", "stats":scan_stats})
 
 
 @app.route("/health")
@@ -399,7 +402,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V124.3 bootstrapped: LONG+SHORT, refined timing & risk, multi-market.")
+    logger.info("Bot V124.4 bootstrapped: LONG+SHORT, EMA200 + Close confirmation, multi-market.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
