@@ -349,7 +349,7 @@ def background_auto_scheduler():
                 logger.warning("AUTO_SCHEDULER skipped: TELEGRAM_CHAT_ID is empty")
         except Exception as exc:
             logger.exception("Scheduler error: %s", exc)
-        time.sleep(14400)
+        time.sleep(7200)
 
 
 HELP_TEXT = (
