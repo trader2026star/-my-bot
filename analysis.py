@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V124.3 Refined Quality & Timing
+# analysis.py — StrategyEngine V124.4 Daily EMA200 & Close Timing
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
 # Signal-only: LONG / SHORT, no automatic order execution.
 # ============================================================
@@ -64,7 +64,7 @@ class StrategyEngine:
         loss = -delta.clip(upper=0)
         avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, 1e-10)
+        rs = avg_gain / avg_loss.replace(0, np.nan)
         return (100 - (100 / (1 + rs))).replace([np.inf, -np.inf], np.nan).fillna(50)
 
     def calculate_atr(self, df, period=14):
@@ -156,6 +156,41 @@ class StrategyEngine:
         except Exception:
             return False
 
+    def has_close_confirmation(self, df, direction):
+        """تأكيد إغلاق الشمعة في الاتجاه المطلوب وعدم الاكتفاء بالذيول."""
+        try:
+            if df is None or len(df) < 3:
+                return {"ok": False, "score": 0, "reason": "Insufficient candles for close confirmation"}
+            c_last = float(df["close"].iloc[-1])
+            o_last = float(df["open"].iloc[-1])
+            h_last = float(df["high"].iloc[-1])
+            l_last = float(df["low"].iloc[-1])
+            c_prev = float(df["close"].iloc[-2])
+            rng_last = max(h_last - l_last, 1e-9)
+            body_last = abs(c_last - o_last)
+            body_ratio = body_last / rng_last
+
+            if direction == "LONG":
+                bull_close = c_last > o_last and c_last >= c_prev and body_ratio >= 0.45
+                score = (8 if bull_close else 0) + (4 if body_ratio >= 0.60 else 0)
+                return {
+                    "ok": bull_close,
+                    "score": score,
+                    "body_ratio": round(body_ratio, 2),
+                    "reason": "Bullish close confirmed" if bull_close else "Weak/wick-heavy candle close",
+                }
+            else:
+                bear_close = c_last < o_last and c_last <= c_prev and body_ratio >= 0.45
+                score = (8 if bear_close else 0) + (4 if body_ratio >= 0.60 else 0)
+                return {
+                    "ok": bear_close,
+                    "score": score,
+                    "body_ratio": round(body_ratio, 2),
+                    "reason": "Bearish close confirmed" if bear_close else "Weak/wick-heavy candle close",
+                }
+        except Exception:
+            return {"ok": False, "score": 0, "reason": "Close check error"}
+
     def prepare_dataframe(self, candles):
         if candles is None or len(candles) == 0:
             return pd.DataFrame()
@@ -235,6 +270,9 @@ class StrategyEngine:
         close = float(df["close"].iloc[-1])
         e20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
         e50 = float(self.calculate_ema(df["close"], 50).iloc[-1])
+        ema200_series = self.calculate_ema(df["close"], 200) if len(df) >= 200 else pd.Series([np.nan])
+        ema200 = float(ema200_series.iloc[-1]) if not ema200_series.empty and pd.notna(ema200_series.iloc[-1]) else 0.0
+        atr_d = float(self.calculate_atr(df).iloc[-1])
         rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
 
         adx_series = self.calculate_adx(df)
@@ -244,12 +282,25 @@ class StrategyEngine:
 
         reasons = []
         score = 0
+        ema200_support = False
 
         if direction == "LONG":
             trend_ok = close > e20 and e20 >= e50 and adx >= 23
             momentum_ok = hist_val > 0
             if close > e20: score += 10
             if e20 >= e50: score += 10
+            if ema200 > 0:
+                if close >= ema200:
+                    score += 6
+                    if abs(close - ema200) <= max(atr_d * 1.5, close * 0.015):
+                        ema200_support = True
+                        score += 6
+                        reasons.append("Daily EMA200 support bounce")
+                    else:
+                        reasons.append("Above Daily EMA200")
+                else:
+                    score -= 6
+                    reasons.append("Below Daily EMA200")
             if adx >= 26:
                 score += 12; reasons.append(f"Strong Trend ADX({adx:.1f})")
             elif adx >= 23:
@@ -267,6 +318,18 @@ class StrategyEngine:
             momentum_ok = hist_val < 0
             if close < e20: score += 10
             if e20 <= e50: score += 10
+            if ema200 > 0:
+                if close <= ema200:
+                    score += 6
+                    if abs(close - ema200) <= max(atr_d * 1.5, close * 0.015):
+                        ema200_support = True
+                        score += 6
+                        reasons.append("Daily EMA200 resistance rejection")
+                    else:
+                        reasons.append("Below Daily EMA200")
+                else:
+                    score -= 6
+                    reasons.append("Above Daily EMA200")
             if adx >= 26:
                 score += 12; reasons.append(f"Strong Trend ADX({adx:.1f})")
             elif adx >= 23:
@@ -281,6 +344,7 @@ class StrategyEngine:
             ok = trend_ok and momentum_ok
 
         return {"ok": ok, "score": score, "rsi": rsi, "adx": adx, "ema20": e20, "ema50": e50,
+                "ema200": ema200, "ema200_confluence": ema200_support,
                 "reason": "، ".join(reasons) if reasons else "Bias conflict"}
 
     def _value_entry(self, df, direction):
@@ -342,6 +406,7 @@ class StrategyEngine:
         fib_hit = fib_mid > 0 and abs(close - fib_mid) <= tol
         poc_hit = poc_val > 0 and abs(close - poc_val) <= tol
         engulf = self.has_engulfing(df, direction)
+        close_conf = self.has_close_confirmation(df, direction)
 
         if fib_hit:
             score += 8; reasons.append("Fib 50% confluence")
@@ -349,6 +414,8 @@ class StrategyEngine:
             score += 8; reasons.append("Volume PoC support/resistance")
         if engulf:
             score += 8; reasons.append("Engulfing candle")
+        if close_conf.get("ok"):
+            score += close_conf.get("score", 0); reasons.append("1H close confirmed")
 
         look = df.tail(12)
         move = (float(look["close"].iloc[-1]) - float(look["close"].iloc[0])) / float(look["close"].iloc[0]) * 100
@@ -365,7 +432,7 @@ class StrategyEngine:
         return {"ok": score >= 28, "score": max(-20, score), "rsi": rsi, "atr": atr,
                 "position": position, "extension": extension, "move12": move,
                 "range_high": hi, "range_low": lo,
-                "fib_poc": fib_poc, "engulfing": engulf,
+                "fib_poc": fib_poc, "engulfing": engulf, "close_confirmed": close_conf.get("ok", False),
                 "reason": "، ".join(reasons)}
 
     def _entry_confirmation(self, df, direction):
@@ -379,6 +446,7 @@ class StrategyEngine:
         rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
         prev_hi = float(df["high"].tail(8).iloc[:-1].max())
         prev_lo = float(df["low"].tail(8).iloc[:-1].min())
+        close_conf = self.has_close_confirmation(df, direction)
         score = 0
         reasons = []
         if direction == "LONG":
@@ -386,17 +454,20 @@ class StrategyEngine:
             if lo < prev_lo and close > prev_lo: score += 12; reasons.append("15M sell-side sweep/reclaim")
             if close > prev_hi: score += 10; reasons.append("15M micro BOS")
             if self.has_engulfing(df, "LONG"): score += 6; reasons.append("15M bullish engulfing")
+            if close_conf.get("ok"): score += 6; reasons.append("15M close confirmed")
             if 40 <= rsi <= 65: score += 6; reasons.append("15M RSI controlled")
         else:
             if close < op: score += 8; reasons.append("15M bearish close")
             if hi > prev_hi and close < prev_hi: score += 12; reasons.append("15M buy-side sweep/reclaim")
             if close < prev_lo: score += 10; reasons.append("15M micro BOS")
             if self.has_engulfing(df, "SHORT"): score += 6; reasons.append("15M bearish engulfing")
+            if close_conf.get("ok"): score += 6; reasons.append("15M close confirmed")
             if 35 <= rsi <= 60: score += 6; reasons.append("15M RSI controlled")
         body = abs(close - op)
         if atr > 0 and body > 1.7 * atr:
             score -= 18; reasons.append("15M candle too extended")
         return {"ok": score >= 16, "score": score, "atr": atr, "rsi": rsi,
+                "close_confirmed": close_conf.get("ok", False),
                 "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
 
     def _trade_plan(self, df1h, entry_price, atr, direction, structure):
@@ -518,8 +589,8 @@ class StrategyEngine:
             score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
             quality = "A+" if score >= 90 else "A" if score >= 82 else "B+"
             reason = (
-                f"{direction} | 1D bias (ADX+MACD) + 4H structure + 1H Fib/PoC value zone + "
-                f"timed entry confirmation | {struct['reason']}"
+                f"{direction} | 1D bias (EMA200+ADX+MACD) + 4H structure + 1H Fib/PoC + "
+                f"close confirmation | {struct['reason']}"
             )
             decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
             signal = build_signal(
@@ -540,6 +611,9 @@ class StrategyEngine:
                     "confirmation_15m": conf,
                     "fib_poc": value.get("fib_poc", {}),
                     "engulfing": value.get("engulfing", False),
+                    "close_confirmed": value.get("close_confirmed", False) or conf.get("close_confirmed", False),
+                    "ema200": round(bias.get("ema200", 0.0), decimals),
+                    "ema200_confluence": bias.get("ema200_confluence", False),
                     "risk_pct": round(plan["risk_pct"], 2),
                     "asset_type": asset_type,
                     "entry_timing": "confirmed",
