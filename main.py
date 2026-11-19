@@ -78,8 +78,205 @@ def db_query(sql, params=(), one=False):
 def db_init():
     try:
         db_query("CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)")
+        db_query("""
+            CREATE TABLE IF NOT EXISTS tracked_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol_raw TEXT NOT NULL,
+                resolved TEXT NOT NULL,
+                asset_type TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                entry_low REAL NOT NULL,
+                entry_high REAL NOT NULL,
+                stop_loss REAL NOT NULL,
+                tp1 REAL NOT NULL,
+                tp2 REAL NOT NULL,
+                tp3 REAL NOT NULL,
+                score INTEGER NOT NULL,
+                hit_tp1 INTEGER DEFAULT 0,
+                hit_tp2 INTEGER DEFAULT 0,
+                hit_tp3 INTEGER DEFAULT 0,
+                hit_sl INTEGER DEFAULT 0,
+                closed INTEGER DEFAULT 0,
+                created_at REAL NOT NULL
+            )
+        """)
     except Exception as exc:
         logger.error("DB init error: %s", exc)
+
+
+def record_tracked_signal(symbol_raw, resolved, asset_type, direction, entry_low, entry_high, stop_loss, tps, score):
+    try:
+        tp1 = float(tps[0]) if len(tps) > 0 else 0.0
+        tp2 = float(tps[1]) if len(tps) > 1 else 0.0
+        tp3 = float(tps[2]) if len(tps) > 2 else 0.0
+        existing = db_query(
+            "SELECT id FROM tracked_signals WHERE resolved = ? AND direction = ? AND closed = 0 ORDER BY id DESC LIMIT 1",
+            (resolved, direction),
+            one=True,
+        )
+        if existing:
+            return
+        db_query(
+            """
+            INSERT INTO tracked_signals (
+                symbol_raw, resolved, asset_type, direction,
+                entry_low, entry_high, stop_loss, tp1, tp2, tp3, score, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                symbol_raw, resolved, asset_type, direction,
+                float(entry_low), float(entry_high), float(stop_loss),
+                tp1, tp2, tp3, int(score), time.time(),
+            ),
+        )
+    except Exception as exc:
+        logger.error("record_tracked_signal error: %s", exc)
+
+
+def evaluate_momentum_action(h1_candles, direction):
+    """تحديد قرار الاستمرار (كمل) أو الخروج (اخرج) بناءً على الزخم والحجم."""
+    try:
+        df = engine.prepare_dataframe(h1_candles)
+        if df.empty or len(df) < 12:
+            return "⚖️ الزخم غير مكتمل — راقب بحذر وقرر حسب راحتك."
+        rsi = float(engine.calculate_rsi(df["close"]).iloc[-1])
+        mean_v = float(df["volume"].tail(10).mean())
+        last_v = float(df["volume"].iloc[-1])
+        _, _, macd_hist = engine.calculate_macd(df["close"])
+        hist_now = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
+        hist_prev = float(macd_hist.iloc[-2]) if len(macd_hist) >= 2 else hist_now
+
+        strong_vol = mean_v > 0 and last_v >= mean_v * 1.35
+        weak_vol = mean_v > 0 and last_v < mean_v * 0.75
+
+        if direction == "LONG":
+            if rsi >= 72 or weak_vol or hist_now < hist_prev:
+                return "⚠️ <b>الزخم قل — اخرج</b> (تباطؤ/تشبع أو ضعف حجم بعد الهدف؛ تأمين الربح أولى)."
+            if strong_vol and hist_now >= hist_prev and rsi < 70:
+                return "🚀 <b>الزخم زيادة — كمل</b> (الزخم والحجم داعمان لاستمرار الصعود نحو الهدف التالي)."
+            return "🟢 <b>الزخم جيد — كمل بحذر</b> (المسار إيجابي مع إمكانية حجز جزء من الربح)."
+        else:
+            if rsi <= 28 or weak_vol or hist_now > hist_prev:
+                return "⚠️ <b>الزخم قل — اخرج</b> (تباطؤ/تشبع بيعي أو ضعف حجم بعد الهدف؛ تأمين الربح أولى)."
+            if strong_vol and hist_now <= hist_prev and rsi > 30:
+                return "🚀 <b>الزخم زيادة — كمل</b> (الزخم والحجم داعمان لاستمرار الهبوط نحو الهدف التالي)."
+            return "🔴 <b>الزخم جيد — كمل بحذر</b> (المسار هابط مع إمكانية حجز جزء من الربح)."
+    except Exception as exc:
+        logger.debug("evaluate_momentum_action error: %s", exc)
+        return "⚖️ الزخم مستقر — راقب الهدف التالي."
+
+
+def check_tracked_signals():
+    """متابعة الصفقات المفتوحة وإرسال تنبيهات الأهداف والوقف وقرار الزخم."""
+    try:
+        rows = db_query("SELECT * FROM tracked_signals WHERE closed = 0 ORDER BY id ASC")
+        if not rows:
+            return
+        now = time.time()
+        for row in rows:
+            try:
+                sig_id = row["id"]
+                created_at = float(row["created_at"])
+                if now - created_at > 172800:
+                    db_query("UPDATE tracked_signals SET closed = 1 WHERE id = ?", (sig_id,))
+                    continue
+
+                symbol_raw = row["symbol_raw"]
+                resolved = row["resolved"]
+                direction = row["direction"]
+                tp1 = float(row["tp1"])
+                tp2 = float(row["tp2"])
+                tp3 = float(row["tp3"])
+                sl = float(row["stop_loss"])
+                hit_tp1 = int(row["hit_tp1"])
+                hit_tp2 = int(row["hit_tp2"])
+                hit_tp3 = int(row["hit_tp3"])
+                hit_sl = int(row["hit_sl"])
+
+                _, h1, _ = fetch_ohlcv(symbol_raw, "1h", 60)
+                _, m15, _ = fetch_ohlcv(symbol_raw, "15m", 40)
+                df_check = engine.prepare_dataframe(m15) if m15 else engine.prepare_dataframe(h1)
+                if df_check.empty:
+                    continue
+
+                curr_price = float(df_check["close"].iloc[-1])
+                recent_high = float(df_check["high"].tail(3).max())
+                recent_low = float(df_check["low"].tail(3).min())
+                d = decimals_for(curr_price)
+                action_msg = evaluate_momentum_action(h1, direction)
+
+                if direction == "LONG":
+                    if not hit_sl and recent_low <= sl and not hit_tp1:
+                        db_query("UPDATE tracked_signals SET hit_sl = 1, closed = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🛑 <b>تنبيه وقف خسارة — {resolved}</b>\n"
+                            f"الاتجاه: <code>LONG</code> | السعر الحالي: <code>{format_num(curr_price, d)}</code>\n"
+                            f"الوقف المحدد: <code>{format_num(sl, d)}</code>\n"
+                            "📌 تم إغلاق متابعة الصفقة لتقييم جودة الإشارة."
+                        )
+                        continue
+
+                    if not hit_tp1 and tp1 > 0 and recent_high >= tp1:
+                        db_query("UPDATE tracked_signals SET hit_tp1 = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🥇 <b>تحقق الهدف الأول (TP1) — {resolved}</b>\n"
+                            f"الاتجاه: <code>LONG</code> | السعر: <code>{format_num(curr_price, d)}</code> | TP1: <code>{format_num(tp1, d)}</code>\n"
+                            f"🎯 <b>قرار الزخم:</b>\n{action_msg}"
+                        )
+
+                    if not hit_tp2 and tp2 > 0 and recent_high >= tp2:
+                        db_query("UPDATE tracked_signals SET hit_tp2 = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🥈 <b>تحقق الهدف الثاني (TP2) — {resolved}</b>\n"
+                            f"الاتجاه: <code>LONG</code> | السعر: <code>{format_num(curr_price, d)}</code> | TP2: <code>{format_num(tp2, d)}</code>\n"
+                            f"🎯 <b>قرار الزخم:</b>\n{action_msg}"
+                        )
+
+                    if not hit_tp3 and tp3 > 0 and recent_high >= tp3:
+                        db_query("UPDATE tracked_signals SET hit_tp3 = 1, closed = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🥉 <b>تحقق الهدف الثالث (TP3) واكتمال الصفقة — {resolved}</b>\n"
+                            f"الاتجاه: <code>LONG</code> | السعر: <code>{format_num(curr_price, d)}</code> | TP3: <code>{format_num(tp3, d)}</code>\n"
+                            "✅ صفقة ناجحة حتى الهدف الثالث."
+                        )
+                else:
+                    if not hit_sl and recent_high >= sl and not hit_tp1:
+                        db_query("UPDATE tracked_signals SET hit_sl = 1, closed = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🛑 <b>تنبيه وقف خسارة — {resolved}</b>\n"
+                            f"الاتجاه: <code>SHORT</code> | السعر الحالي: <code>{format_num(curr_price, d)}</code>\n"
+                            f"الوقف المحدد: <code>{format_num(sl, d)}</code>\n"
+                            "📌 تم إغلاق متابعة الصفقة لتقييم جودة الإشارة."
+                        )
+                        continue
+
+                    if not hit_tp1 and tp1 > 0 and recent_low <= tp1:
+                        db_query("UPDATE tracked_signals SET hit_tp1 = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🥇 <b>تحقق الهدف الأول (TP1) — {resolved}</b>\n"
+                            f"الاتجاه: <code>SHORT</code> | السعر: <code>{format_num(curr_price, d)}</code> | TP1: <code>{format_num(tp1, d)}</code>\n"
+                            f"🎯 <b>قرار الزخم:</b>\n{action_msg}"
+                        )
+
+                    if not hit_tp2 and tp2 > 0 and recent_low <= tp2:
+                        db_query("UPDATE tracked_signals SET hit_tp2 = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🥈 <b>تحقق الهدف الثاني (TP2) — {resolved}</b>\n"
+                            f"الاتجاه: <code>SHORT</code> | السعر: <code>{format_num(curr_price, d)}</code> | TP2: <code>{format_num(tp2, d)}</code>\n"
+                            f"🎯 <b>قرار الزخم:</b>\n{action_msg}"
+                        )
+
+                    if not hit_tp3 and tp3 > 0 and recent_low <= tp3:
+                        db_query("UPDATE tracked_signals SET hit_tp3 = 1, closed = 1 WHERE id = ?", (sig_id,))
+                        tg_send(
+                            f"🥉 <b>تحقق الهدف الثالث (TP3) واكتمال الصفقة — {resolved}</b>\n"
+                            f"الاتجاه: <code>SHORT</code> | السعر: <code>{format_num(curr_price, d)}</code> | TP3: <code>{format_num(tp3, d)}</code>\n"
+                            "✅ صفقة ناجحة حتى الهدف الثالث."
+                        )
+            except Exception as row_exc:
+                logger.debug("Track row %s error: %s", row["id"], row_exc)
+    except Exception as exc:
+        logger.error("check_tracked_signals error: %s", exc)
 
 
 def ex_call(fn, *args, **kwargs):
@@ -291,7 +488,13 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
                 "⚠️ <b>إشارة تحليلية فقط (يُعتد بالوقف عند إغلاق شمعة) — لا تنفيذ تلقائي.</b>"
             )
             sent = tg_send(msg, chat_id)
-            if sent: scan_stats["signals_sent"] += 1
+            if sent:
+                scan_stats["signals_sent"] += 1
+                record_tracked_signal(
+                    symbol_raw, resolved, asset_type, direction,
+                    signal.get("entry_low", price), signal.get("entry_high", price),
+                    signal.get("stop_loss", 0), tps, signal.get("score", 0),
+                )
             return True, signal
 
         if manual:
@@ -339,6 +542,7 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
+                check_tracked_signals()
                 logger.info("Auto scheduler starting full scan (stats=%s)", scan_stats)
                 run_full_scan()
                 logger.info("Auto scheduler finished cycle (stats=%s)", scan_stats)
