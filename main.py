@@ -37,7 +37,7 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=76)
+engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=72)
 
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
