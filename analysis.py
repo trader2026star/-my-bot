@@ -471,7 +471,7 @@ class StrategyEngine:
                 "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
 
     def _anti_exhaustion_filter(self, df1h, df15m, direction):
-        """تجنب الدخول المتأخر بعد موجة حادة أو عكس حركة فريم 15M اللحظية."""
+        """تجنب الدخول المتأخر بعد موجة حادة أو عكس حركة فريم 15M اللحظية بميزان متماثل بين LONG و SHORT."""
         try:
             if df1h is None or len(df1h) < 15:
                 return True, "OK"
@@ -490,20 +490,20 @@ class StrategyEngine:
                 o1 = float(df15m["open"].iloc[-1])
                 c2 = float(df15m["close"].iloc[-2])
                 o2 = float(df15m["open"].iloc[-2])
-                m15_bouncing = (c1 > o1 and c2 > o2) or (rsi_15m > 42 and c1 > c2)
-                m15_pulling_back = (c1 < o1 and c2 < o2) or (rsi_15m < 58 and c1 < c2)
+                m15_bouncing = (c1 > o1 and c2 > o2) and (rsi_15m > 36)
+                m15_pulling_back = (c1 < o1 and c2 < o2) and (rsi_15m < 64)
 
             if direction == "SHORT":
                 if rsi_1h < 34 or rsi_15m < 30:
                     return False, "Oversold exhaustion on 1H/15M (avoid selling bottom)"
-                if m15_bouncing and rsi_15m > 36:
+                if m15_bouncing:
                     return False, "Active 15M bounce against SHORT"
                 if low_1h_recent > 0 and ((close_1h - low_1h_recent) / close_1h) < 0.004:
                     return False, "Too close to recent 1H support"
             else:
                 if rsi_1h > 68 or rsi_15m > 72:
                     return False, "Overbought exhaustion on 1H/15M (avoid buying top)"
-                if m15_pulling_back and rsi_15m < 64:
+                if m15_pulling_back:
                     return False, "Active 15M pullback against LONG"
                 if high_1h_recent > 0 and ((high_1h_recent - close_1h) / close_1h) < 0.004:
                     return False, "Too close to recent 1H resistance"
