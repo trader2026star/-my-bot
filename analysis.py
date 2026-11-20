@@ -82,19 +82,25 @@ class StrategyEngine:
             h = pd.to_numeric(df["high"], errors="coerce")
             l = pd.to_numeric(df["low"], errors="coerce")
             c = pd.to_numeric(df["close"], errors="coerce")
-            plus_dm = h.diff()
-            minus_dm = l.diff()
-            plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
-            minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
+            plus_dm_raw = h.diff()
+            minus_dm_raw = l.diff()
+            plus_dm = pd.Series(
+                np.where((plus_dm_raw > minus_dm_raw) & (plus_dm_raw > 0), plus_dm_raw, 0.0),
+                index=df.index,
+            )
+            minus_dm = pd.Series(
+                np.where((minus_dm_raw > plus_dm_raw) & (minus_dm_raw > 0), minus_dm_raw, 0.0),
+                index=df.index,
+            )
             tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
             atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
-            plus_di = 100 * pd.Series(plus_dm).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
-            minus_di = 100 * pd.Series(minus_dm).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
+            plus_di = 100 * plus_dm.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
+            minus_di = 100 * minus_dm.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
             dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-10)
             adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
             return adx.replace([np.inf, -np.inf], np.nan).fillna(25.0)
         except Exception:
-            return pd.Series([25.0] * len(df))
+            return pd.Series([25.0] * len(df), index=df.index)
 
     def calculate_macd(self, series, fast=12, slow=26, signal=9):
         s = pd.to_numeric(series, errors="coerce")
@@ -157,7 +163,6 @@ class StrategyEngine:
             return False
 
     def has_close_confirmation(self, df, direction):
-        """تأكيد إغلاق الشمعة في الاتجاه المطلوب وعدم الاكتفاء بالذيول."""
         try:
             if df is None or len(df) < 3:
                 return {"ok": False, "score": 0, "reason": "Insufficient candles for close confirmation"}
@@ -474,7 +479,6 @@ class StrategyEngine:
                 "reason": "، ".join(reasons) if reasons else "15M confirmation moderate"}
 
     def _anti_exhaustion_filter(self, df1h, df15m, direction):
-        """تجنب الدخول المتأخر بعد موجة حادة أو عكس حركة فريم 15M اللحظية."""
         try:
             if df1h is None or len(df1h) < 15:
                 return True, "OK"
