@@ -33,7 +33,7 @@ if not WEBHOOK_URL:
 
 bingx = ccxt.bingx({
     "enableRateLimit": True,
-    "timeout": 12000,
+    "timeout": 15000,
     "options": {"defaultType": "swap"},
 })
 
@@ -48,7 +48,7 @@ _seen_lock = threading.Lock()
 _all_markets_cache = []
 _markets_cache_time = 0
 _sent_signals_cache = {}
-SIGNAL_COOLDOWN_SECONDS = 7200
+SIGNAL_COOLDOWN_SECONDS = 14400
 
 US_STOCKS_AND_ETFS = [
     "SOXS", "SOXL", "SPY", "QQQ", "TQQQ", "SQQQ",
@@ -370,7 +370,7 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
                     return c_sym, bars, "crypto"
             except Exception as exc:
                 logger.debug("BingX OHLCV %s %s: %s", c_sym, timeframe, exc)
-            time.sleep(0.015)
+            time.sleep(0.04)
         if is_crypto_pair:
             return None, None, "unknown"
         bars = _fetch_yfinance_ohlcv(sym, timeframe)
@@ -388,7 +388,7 @@ def tg_send(message, chat_id=None):
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": target, "text": message, "parse_mode":"HTML", "disable_web_page_preview":True},
-            timeout=12,
+            timeout=15,
         )
         if not response.ok:
             logger.error("Telegram send failed: %s %s", response.status_code, response.text[:300])
@@ -407,7 +407,7 @@ def configure_webhook():
         return
     try:
         url = f"{WEBHOOK_URL}/tg-webhook"
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook", json={"url":url, "drop_pending_updates":False}, timeout=12)
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook", json={"url":url, "drop_pending_updates":False}, timeout=15)
         logger.info("Telegram webhook setup: %s", r.text[:500])
     except Exception as exc:
         logger.error("Webhook setup error: %s", exc)
@@ -529,7 +529,7 @@ def run_full_scan(chat_id=None):
             except Exception as exc:
                 scan_stats["errors"] += 1
                 logger.debug("Scan skip %s: %s", sym, exc)
-            time.sleep(0.03)
+            time.sleep(0.12)
         if chat_id:
             tg_send(f"✅ <b>انتهى الفحص.</b>\n\n🔎 الأصول المفحوصة: <code>{len(symbols)}</code>\n🟢 الفرص: <code>{found}</code>", chat_id)
     except Exception as exc:
@@ -538,17 +538,6 @@ def run_full_scan(chat_id=None):
         if chat_id: tg_send("❌ حدث خطأ أثناء الفحص الشامل.", chat_id)
     finally:
         scan_lock.release()
-
-
-def background_tracker_loop():
-    time.sleep(15)
-    while True:
-        try:
-            if TELEGRAM_CHAT_ID:
-                check_tracked_signals()
-        except Exception as exc:
-            logger.exception("Tracker loop error: %s", exc)
-        time.sleep(900)
 
 
 def background_auto_scheduler():
@@ -564,7 +553,7 @@ def background_auto_scheduler():
                 logger.warning("Auto scheduler skipped: TELEGRAM_CHAT_ID is empty")
         except Exception as exc:
             logger.exception("Scheduler error: %s", exc)
-        time.sleep(7200)
+        time.sleep(14400)
 
 
 HELP_TEXT = (
@@ -622,7 +611,6 @@ def bootstrap():
     db_init()
     logger.info("Bot V124.4 bootstrapped: LONG+SHORT, EMA200 + Close confirmation, multi-market.")
     threading.Thread(target=configure_webhook, daemon=True).start()
-    threading.Thread(target=background_tracker_loop, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
 
