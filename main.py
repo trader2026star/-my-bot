@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V124.4 Daily EMA200 & Close Timing
+# main.py — Bot V124.5 Daily EMA200 & Close Timing
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only. Telegram/BingX/Yahoo connectivity preserved.
 # ============================================================
@@ -42,6 +42,7 @@ engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=72)
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
 scan_lock = threading.Lock()
+cache_lock = threading.Lock()
 scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "errors": 0}
 _seen_updates = deque(maxlen=500)
 _seen_lock = threading.Lock()
@@ -55,6 +56,10 @@ US_STOCKS_AND_ETFS = [
     "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "AMD"
 ]
 FOREX_AND_METALS = ["XAUUSD=X", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"]
+PRIORITY_SYMBOLS = [
+    "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT", "XRP/USDT:USDT",
+    "XAUUSD=X", "SOXS", "SOXL", "NVDA", "TSLA"
+]
 
 
 def _db():
@@ -87,6 +92,20 @@ def ex_call(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
 
+def _prioritize_universe(symbols):
+    seen = set()
+    ordered = []
+    for p in PRIORITY_SYMBOLS:
+        if p in symbols and p not in seen:
+            ordered.append(p)
+            seen.add(p)
+    for s in symbols:
+        if s not in seen:
+            ordered.append(s)
+            seen.add(s)
+    return ordered
+
+
 def get_full_market_universe():
     global _all_markets_cache, _markets_cache_time
     try:
@@ -98,7 +117,8 @@ def get_full_market_universe():
                     continue
                 if market.get("quote") == "USDT" and market.get("settle") == "USDT":
                     crypto.append(symbol)
-            _all_markets_cache = sorted(set(crypto + US_STOCKS_AND_ETFS + FOREX_AND_METALS))
+            merged = sorted(set(crypto + US_STOCKS_AND_ETFS + FOREX_AND_METALS))
+            _all_markets_cache = _prioritize_universe(merged)
             _markets_cache_time = time.time()
         return _all_markets_cache or ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOXS", "XAUUSD=X"]
     except Exception as exc:
@@ -253,9 +273,13 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
 
         if direction in ("LONG", "SHORT"):
             key = resolved.split("/")[0]
-            if not manual and time.time() - _sent_signals_cache.get(key, 0) < SIGNAL_COOLDOWN_SECONDS:
-                return False, signal
-            _sent_signals_cache[key] = time.time()
+            now_ts = time.time()
+            with cache_lock:
+                last_sent = _sent_signals_cache.get(key, 0)
+                if not manual and (now_ts - last_sent) < SIGNAL_COOLDOWN_SECONDS:
+                    return False, signal
+                _sent_signals_cache[key] = now_ts
+
             d = decimals_for(price)
             tps = list(signal.get("take_profits", []))
             while len(tps) < 3: tps.append(0)
@@ -266,7 +290,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.4 (EMA200 + Close)</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.5 (EMA200 + Close)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
@@ -291,8 +315,13 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
                 "⚠️ <b>إشارة تحليلية فقط (يُعتد بالوقف عند إغلاق شمعة) — لا تنفيذ تلقائي.</b>"
             )
             sent = tg_send(msg, chat_id)
-            if sent: scan_stats["signals_sent"] += 1
-            return True, signal
+            if sent:
+                scan_stats["signals_sent"] += 1
+            else:
+                with cache_lock:
+                    if not manual:
+                        _sent_signals_cache[key] = last_sent
+            return sent, signal
 
         if manual:
             reason = signal.get("reason", "الشروط غير مكتملة") if signal else "الشروط غير مكتملة"
@@ -324,6 +353,7 @@ def run_full_scan(chat_id=None):
                 scan_stats["errors"] += 1
                 logger.debug("Scan skip %s: %s", sym, exc)
             time.sleep(0.12)
+        logger.info("Full scan complete: total=%s, found=%s, stats=%s", len(symbols), found, scan_stats)
         if chat_id:
             tg_send(f"✅ <b>انتهى الفحص.</b>\n\n🔎 الأصول المفحوصة: <code>{len(symbols)}</code>\n🟢 الفرص: <code>{found}</code>", chat_id)
     except Exception as exc:
@@ -350,7 +380,7 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.4</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.5</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "🟢 LONG و 🔴 SHORT (محسن بـ EMA200 اليومي وتأكيد الإغلاق)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -381,7 +411,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status":"running", "version":"V124.4-EMA200-Close", "stats":scan_stats})
+    return jsonify({"status":"running", "version":"V124.5-EMA200-Close", "stats":scan_stats})
 
 
 @app.route("/health")
@@ -402,7 +432,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V124.4 bootstrapped: LONG+SHORT, EMA200 + Close confirmation, multi-market.")
+    logger.info("Bot V124.5 bootstrapped: LONG+SHORT, EMA200 + Close confirmation, multi-market.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
