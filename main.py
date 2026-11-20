@@ -6,6 +6,7 @@
 
 import os
 import time
+import warnings
 import threading
 import logging
 import sqlite3
@@ -17,7 +18,10 @@ import yfinance as yf
 from flask import Flask, jsonify, request
 from analysis import StrategyEngine
 
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.getLogger("yfinance").setLevel(logging.ERROR)
 logger = logging.getLogger("MainBot")
 app = Flask(__name__)
 
@@ -254,6 +258,21 @@ def format_num(value, decimals):
         return "N/A"
 
 
+def _format_neutral_diagnostics(signal):
+    details = (signal or {}).get("details", {}) or {}
+    dl = (details.get("daily_long") or {}).get("reason", "N/A")
+    ds = (details.get("daily_short") or {}).get("reason", "N/A")
+    h4l = (details.get("4h_long") or {}).get("reason", "N/A")
+    h4s = (details.get("4h_short") or {}).get("reason", "N/A")
+    h1l = (details.get("1h_long") or {}).get("reason", "N/A")
+    h1s = (details.get("1h_short") or {}).get("reason", "N/A")
+    return (
+        f"• 1D (LONG/SHORT): {dl} | {ds}\n"
+        f"• 4H (LONG/SHORT): {h4l} | {h4s}\n"
+        f"• 1H (LONG/SHORT): {h1l} | {h1s}"
+    )
+
+
 def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     try:
         resolved, daily, asset_type = fetch_ohlcv(symbol_raw, "1d", 220)
@@ -325,10 +344,12 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
 
         if manual:
             reason = signal.get("reason", "الشروط غير مكتملة") if signal else "الشروط غير مكتملة"
+            diag_text = _format_neutral_diagnostics(signal)
             tg_send(
                 f"📊 <b>تحليل:</b> <code>{symbol_raw}</code>\n🏷️ <b>السوق:</b> {market_tag}\n━━━━━━━━━━━━━━━━━━\n"
                 "⚪ <b>لا توجد صفقة LONG/SHORT مكتملة حاليًا.</b>\n"
-                f"🔎 <b>السبب:</b> {reason}", chat_id)
+                f"🔎 <b>السبب:</b> {reason}\n\n"
+                f"📋 <b>تفاصيل الفلاتر:</b>\n<code>{diag_text}</code>", chat_id)
         return False, signal
     except Exception as exc:
         scan_stats["errors"] += 1
