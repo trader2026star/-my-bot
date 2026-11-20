@@ -352,6 +352,9 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
             ticker = aliases.get(sym, sym)
             bars = _fetch_yfinance_ohlcv(ticker, timeframe)
             if bars: return ticker.replace("=X", ""), bars, "forex"
+            if ticker == "XAUUSD=X":
+                fallback_bars = _fetch_yfinance_ohlcv("GC=F", timeframe)
+                if fallback_bars: return "XAUUSD", fallback_bars, "forex"
         if sym in US_STOCKS_AND_ETFS:
             bars = _fetch_yfinance_ohlcv(sym, timeframe)
             if bars: return sym, bars, "stock"
