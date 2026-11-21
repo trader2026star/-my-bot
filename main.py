@@ -1,7 +1,7 @@
 # ============================================================
-# main.py — Bot V125.1 Stage-Protected Pullback + Momentum
+# main.py — Bot V125.3 Regime-Aware + Stage-Protected + Momentum
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Signal-only + Open Position Profit/Momentum/BE Alerts.
+# Signal-only + Smart Regime Weighting + Position Guard Alerts.
 # ============================================================
 
 import os
@@ -13,6 +13,7 @@ import sqlite3
 from collections import deque
 import ccxt
 import requests
+import numpy as np
 import pandas as pd
 import yfinance as yf
 from flask import Flask, jsonify, request
@@ -41,7 +42,9 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=82)
+BASE_MIN_SCORE = 82
+COUNTER_REGIME_MIN_SCORE = 88
+engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=BASE_MIN_SCORE)
 
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
@@ -58,6 +61,9 @@ MAX_SAME_DIRECTION_PER_SCAN = 2
 MAX_TRACKED_POSITIONS = 12
 POSITION_TTL_SECONDS = 86400  # 24 hours max tracking per signal
 SCAN_INTERVAL_SECONDS = 7200  # 2 hours scan cycle
+
+MARKET_REGIME_CACHE = {"regime": "SIDEWAYS", "summary": "لم يُحدد بعد", "updated_ts": 0.0}
+REGIME_TTL_SECONDS = 3600  # Refresh market regime every 1 hour
 
 US_STOCKS_AND_ETFS = [
     "SOXS", "SOXL", "SPY", "QQQ", "TQQQ", "SQQQ",
@@ -321,6 +327,66 @@ def configure_webhook():
         logger.error("Webhook setup error: %s", exc)
 
 
+def get_daily_market_regime(force=False):
+    """Determines daily market bias (BULLISH / BEARISH / SIDEWAYS) from leading pairs."""
+    now_ts = time.time()
+    if not force and (now_ts - MARKET_REGIME_CACHE["updated_ts"]) < REGIME_TTL_SECONDS:
+        return MARKET_REGIME_CACHE
+
+    leaders = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+    bull_votes = 0
+    bear_votes = 0
+    details_lines = []
+
+    for sym in leaders:
+        resolved, daily, _ = fetch_ohlcv(sym, "1d", 220)
+        if not resolved or not daily or len(daily) < 60:
+            continue
+        df = engine.prepare_dataframe(daily)
+        if len(df) < 60:
+            continue
+
+        close = float(df["close"].iloc[-1])
+        ema20 = float(engine.calculate_ema(df["close"], 20).iloc[-1])
+        ema50 = float(engine.calculate_ema(df["close"], 50).iloc[-1])
+        ema200_s = engine.calculate_ema(df["close"], 200) if len(df) >= 200 else pd.Series([np.nan])
+        ema200 = float(ema200_s.iloc[-1]) if not ema200_s.empty and pd.notna(ema200_s.iloc[-1]) else ema50
+        adx = float(engine.calculate_adx(df).iloc[-1])
+        _, _, macd_hist = engine.calculate_macd(df["close"])
+        hist = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
+
+        is_bull = (close > ema20) and (ema20 >= ema50) and (close >= ema200 * 0.99) and (hist > 0) and (adx >= 20)
+        is_bear = (close < ema20) and (ema20 <= ema50) and (close <= ema200 * 1.01) and (hist < 0) and (adx >= 20)
+
+        if is_bull:
+            bull_votes += 1
+            tag = f"🟢 {resolved.split('/')[0]}: صاعد (ADX {adx:.1f})"
+        elif is_bear:
+            bear_votes += 1
+            tag = f"🔴 {resolved.split('/')[0]}: هابط (ADX {adx:.1f})"
+        else:
+            tag = f"⚖️ {resolved.split('/')[0]}: عرضي/متذبذب (ADX {adx:.1f})"
+        details_lines.append(tag)
+
+    if bull_votes >= 2 or (bull_votes == 1 and bear_votes == 0):
+        regime = "BULLISH"
+        title = "🟢 اتجاه السوق اليومي: صاعد (BULLISH)"
+    elif bear_votes >= 2 or (bear_votes == 1 and bull_votes == 0):
+        regime = "BEARISH"
+        title = "🔴 اتجاه السوق اليومي: هابط (BEARISH)"
+    else:
+        regime = "SIDEWAYS"
+        title = "⚖️ اتجاه السوق اليومي: متذبذب / عرضي (SIDEWAYS)"
+
+    summary = f"{title}\n" + "\n".join(details_lines) if details_lines else f"{title}\nبيانات القيادات غير كافية حالياً"
+    MARKET_REGIME_CACHE.update({"regime": regime, "summary": summary, "updated_ts": now_ts})
+    return MARKET_REGIME_CACHE
+
+
+def is_counter_regime(regime, direction):
+    return (regime == "BULLISH" and direction == "SHORT") or (regime == "BEARISH" and direction == "LONG")
+
+
 def decimals_for(price):
     try:
         price = float(price)
@@ -388,7 +454,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة — V125.1</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة — V125.3</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -428,10 +494,16 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
         scan_stats["scanned_pairs"] += 1
         direction, price, signal = engine.analyze_market_structure(daily, h4, h1, asset_type=asset_type, ohlcv_15m=m15)
         market_tag = {"crypto": "🪙 Crypto", "stock": "📈 Stocks / ETFs", "forex": "💱 Forex / Metals"}.get(asset_type, "📊 Market")
+        regime_info = get_daily_market_regime()
+        regime = regime_info.get("regime", "SIDEWAYS")
+        counter = is_counter_regime(regime, direction)
+        sig_score = int((signal or {}).get("score", 0))
 
         if direction in ("LONG", "SHORT"):
-            if not manual and direction_counts is not None:
-                if direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
+            if not manual:
+                if counter and sig_score < COUNTER_REGIME_MIN_SCORE:
+                    return False, signal
+                if direction_counts is not None and direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
                     return False, signal
 
             key = resolved.split("/")[0]
@@ -453,14 +525,20 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
             setup_tag = "⚡ اختراق/زخم (MOMENTUM)" if details.get("setup_type") == "MOMENTUM" else "🎯 تصحيح محمي (PULLBACK)"
+            regime_note = (
+                "⚠️ <b>ملاحظة:</b> الإشارة عكس اتجاه اليوم العام؛ يُنصح بتقليل حجم العقد وتأمين الربح مبكراً.\n\n"
+                if counter else ""
+            )
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.1</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.3</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"🧭 <b>النمط:</b> {setup_tag}\n"
+                f"🌐 <b>اتجاه اليوم:</b> <code>{regime}</code>\n"
                 f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
+                f"{regime_note}"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
-                f"⭐ <b>التقييم:</b> <code>{signal.get('score',0)}/100</code> ({details.get('quality','B+')})\n\n"
+                f"⭐ <b>التقييم:</b> <code>{sig_score}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
                 "🎯 <b>الأهداف:</b>\n"
                 f"🥇 TP1: <code>{format_num(tps[0],d)}</code>\n"
@@ -515,8 +593,13 @@ def run_full_scan(chat_id=None):
         return
     try:
         monitor_tracked_positions(chat_id=chat_id)
+        regime_info = get_daily_market_regime(force=True)
         if chat_id:
-            tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.1)...</b>", chat_id)
+            tg_send(
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.3)...</b>\n"
+                f"{regime_info.get('summary', '')}",
+                chat_id,
+            )
         symbols = get_full_market_universe()
         found = 0
         direction_counts = {"LONG": 0, "SHORT": 0}
@@ -557,9 +640,10 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.1</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.3</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "🎯 <b>PULLBACK</b> (تصحيح محمي) + ⚡ <b>MOMENTUM</b> (اختراق/كسر منضبط)\n"
+    "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل ومتابعة الصفقات.\n"
     "🛡️ أرسل <code>/positions</code> لعرض الصفقات المتابعة، أو <code>/clearpos</code> لمسحها.\n"
@@ -582,6 +666,9 @@ def handle_update(data):
         cmd = parts[0].split("@")[0].lower()
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
+        elif cmd == "/regime":
+            info = get_daily_market_regime(force=True)
+            tg_send(f"🧭 <b>تقرير اتجاه السوق اليومي</b>\n━━━━━━━━━━━━━━━━━━\n{info['summary']}", chat_id)
         elif cmd == "/scan":
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         elif cmd == "/positions":
@@ -608,7 +695,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V125.1-Stage-Protected-Momentum", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V125.3-Regime-Aware-Stage-Protected", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -631,7 +718,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V125.1 bootstrapped: Stage-Protected Pullback + Momentum + Guard Alerts.")
+    logger.info("Bot V125.3 bootstrapped: Regime-Aware Weighting + Stage-Protected Pullback + Momentum + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
