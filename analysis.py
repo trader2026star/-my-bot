@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V125.0 Stage-Protected Pullback
+# analysis.py — StrategyEngine V125.1 Stage-Protected + Momentum
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
 # Signal-only: LONG / SHORT + Open Position Guard Alerts.
 # ============================================================
@@ -46,12 +46,10 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
 class StrategyEngine:
     """Stage-protected pullback & momentum-confirmed signal engine.
 
-    Core upgrades over V124.5:
-    1. Clean-path check against PoC / opposing volume magnet before TP1.
-    2. Stricter close confirmation (no weak/partial close accepted as full A+).
-    3. More reachable TP1 (1.0R) + structured TP2 (1.8R) + TP3 (3.0R) to protect
-       gains earlier before mean-reversion spikes hit stops.
-    4. Open-position evaluator for Break-Even, TP, momentum reversal, and invalidation alerts.
+    Combines:
+    1. Stage-protected pullback setups with clean-path PoC filter and 1.0R/1.8R/3.0R targets.
+    2. Controlled momentum breakout/breakdown setups after BOS/MSS with strict RSI caps and 0.85R TP1.
+    3. Open-position evaluator for Break-Even, profit protection, TP hits, momentum shifts, and stop hits.
     """
 
     def __init__(self, capital=10000.0, risk_per_trade=0.01,
@@ -530,7 +528,6 @@ class StrategyEngine:
         if poc <= 0 or atr <= 0:
             return True
         if direction == "SHORT":
-            # In a SHORT, a high-volume PoC just below entry can stall price and cause a bounce
             if tp1 < poc < entry_price and (entry_price - poc) < max(0.8 * atr, 0.015 * entry_price):
                 return False
         else:
@@ -558,7 +555,6 @@ class StrategyEngine:
                 risk = entry_price - stop
             entry_low = max(0.0, entry_price - 0.10 * atr)
             entry_high = entry_price + 0.05 * atr
-            # Closer TP1 (1.0R) to lock profits/BE before sharp pullbacks
             tps = [entry_price + 1.0 * risk, entry_price + 1.8 * risk, entry_price + 3.0 * risk]
         else:
             structural = swing_high + 0.7 * atr
@@ -586,6 +582,104 @@ class StrategyEngine:
             "tp3": tps[2],
             "risk_pct": risk / entry_price * 100,
         }
+
+    def _momentum_continuation_candidate(self, daily, h4, h1, m15, asset_type):
+        """Captures clean BOS/MSS breakouts & breakdowns with strict exhaustion caps."""
+        if len(daily) < 55 or len(h4) < 40 or len(h1) < 35:
+            return None
+
+        price = float(h1["close"].iloc[-1])
+        atr_1h = float(self.calculate_atr(h1).iloc[-1])
+        rsi_1h = float(self.calculate_rsi(h1["close"]).iloc[-1])
+        rsi_15m = float(self.calculate_rsi(m15["close"]).iloc[-1]) if (m15 is not None and not m15.empty and len(m15) >= 15) else rsi_1h
+        if price <= 0 or atr_1h <= 0:
+            return None
+
+        for direction in ("LONG", "SHORT"):
+            bias = self._bias(daily, direction)
+            struct = self._structure(h4, direction)
+            if not bias["ok"] or not (struct.get("bos") or struct.get("mss")):
+                continue
+
+            close_1h = self.has_close_confirmation(h1, direction)
+            if not close_1h.get("ok"):
+                continue
+
+            conf_15m = self._entry_confirmation(m15, direction) if (m15 is not None and not m15.empty) else {"ok": True, "score": 0, "close_confirmed": True, "reason": "15M N/A"}
+            if m15 is not None and not m15.empty and not conf_15m.get("ok"):
+                continue
+
+            if direction == "LONG":
+                if rsi_1h > 74 or rsi_15m > 76:
+                    continue
+                stop = max(float(struct["swing_low"]) - 0.5 * atr_1h, price - 2.2 * atr_1h)
+                risk = price - stop
+                risk_pct = (risk / price) * 100
+                if risk <= 0 or risk_pct < 0.8 or risk_pct > 4.5:
+                    continue
+                tp1 = price + 0.85 * risk
+                tp2 = price + 1.60 * risk
+                tp3 = price + 2.60 * risk
+                if not (stop < price < tp1):
+                    continue
+                entry_low = max(0.0, price - 0.15 * atr_1h)
+                entry_high = price + 0.05 * atr_1h
+            else:
+                if rsi_1h < 26 or rsi_15m < 24:
+                    continue
+                stop = min(float(struct["swing_high"]) + 0.5 * atr_1h, price + 2.2 * atr_1h)
+                risk = stop - price
+                risk_pct = (risk / price) * 100
+                if risk <= 0 or risk_pct < 0.8 or risk_pct > 4.5:
+                    continue
+                tp1 = price - 0.85 * risk
+                tp2 = price - 1.60 * risk
+                tp3 = price - 2.60 * risk
+                if not (tp1 < price < stop):
+                    continue
+                entry_low = price - 0.05 * atr_1h
+                entry_high = price + 0.15 * atr_1h
+
+            fib_poc = self.calculate_fib_and_poc(h1, direction, lookback=40)
+            if not self._clean_path_to_tp1(direction, price, tp1, fib_poc, atr_1h):
+                continue
+
+            score = int(round(min(100, max(self.min_score, bias["score"] + struct["score"] + close_1h["score"] + conf_15m.get("score", 0) - 4))))
+            quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
+            decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
+            reason = f"{direction} | V125.1 Momentum Break: 1D trend + {struct['reason']} + confirmed close"
+            sig = build_signal(
+                direction,
+                round(entry_low, decimals),
+                round(entry_high, decimals),
+                round(stop, decimals),
+                [round(tp1, decimals), round(tp2, decimals), round(tp3, decimals)],
+                score,
+                rsi_1h,
+                atr_1h,
+                reason,
+                {
+                    "quality": quality,
+                    "setup_type": "MOMENTUM",
+                    "timeframes": "1D + 4H + 1H + 15M" if (m15 is not None and not m15.empty) else "1D + 4H + 1H",
+                    "position_in_range": 0.5,
+                    "extension_atr": 0.0,
+                    "move12": 0.0,
+                    "structure": struct,
+                    "confirmation_15m": conf_15m,
+                    "fib_poc": fib_poc,
+                    "engulfing": self.has_engulfing(h1, direction),
+                    "close_confirmed": True,
+                    "ema200": round(bias.get("ema200", 0.0), decimals),
+                    "ema200_confluence": bias.get("ema200_confluence", False),
+                    "risk_pct": round(risk_pct, 2),
+                    "asset_type": asset_type,
+                    "entry_timing": "momentum_break_confirmed",
+                },
+            )
+            return direction, price, sig
+
+        return None
 
     def check_momentum_at_tp1(self, candles1h):
         try:
@@ -713,54 +807,59 @@ class StrategyEngine:
                     continue
                 candidates.append((score, direction, bias, struct, value, conf, plan, price))
 
-            if not candidates:
-                diagnostics = {
-                    "daily_long": long_d, "daily_short": short_d,
-                    "4h_long": long_h4, "4h_short": short_h4,
-                    "1h_long": long_h1, "1h_short": short_h1,
-                    "15m": "available" if not m15.empty else "unavailable",
-                }
-                best_value = long_h1 if long_h1.get("score", -999) >= short_h1.get("score", -999) else short_h1
-                return "NEUTRAL", 0.0, self._make_neutral(
-                    "لا توجد صفقة: الاتجاه أو منطقة الدخول أو تأكيد الإغلاق غير مكتمل",
-                    max(0, min(100, int(best_value.get("score", 0)))),
-                    best_value.get("rsi", 50), best_value.get("atr", 0), diagnostics
+            if candidates:
+                score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
+                quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
+                reason = (
+                    f"{direction} | V125.1 Pullback: 1D trend + 4H structure + 1H value/PoC-clean + "
+                    f"confirmed close | {struct['reason']}"
                 )
+                decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
+                signal = build_signal(
+                    direction,
+                    round(plan["entry_low"], decimals),
+                    round(plan["entry_high"], decimals),
+                    round(plan["stop_loss"], decimals),
+                    [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
+                    score,
+                    value["rsi"], value["atr"], reason,
+                    {
+                        "quality": quality,
+                        "setup_type": "PULLBACK",
+                        "timeframes": "1D + 4H + 1H + 15M" if not m15.empty else "1D + 4H + 1H",
+                        "position_in_range": round(value["position"], 3),
+                        "extension_atr": round(value["extension"], 2),
+                        "move12": round(value["move12"], 2),
+                        "structure": struct,
+                        "confirmation_15m": conf,
+                        "fib_poc": value.get("fib_poc", {}),
+                        "engulfing": value.get("engulfing", False),
+                        "close_confirmed": value.get("close_confirmed", False),
+                        "ema200": round(bias.get("ema200", 0.0), decimals),
+                        "ema200_confluence": bias.get("ema200_confluence", False),
+                        "risk_pct": round(plan["risk_pct"], 2),
+                        "asset_type": asset_type,
+                        "entry_timing": "stage_protected_confirmed",
+                    },
+                )
+                return direction, price, signal
 
-            score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
-            quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
-            reason = (
-                f"{direction} | V125 Stage-Protected: 1D trend + 4H structure + 1H value/PoC-clean + "
-                f"confirmed close | {struct['reason']}"
+            mom_res = self._momentum_continuation_candidate(daily, h4, h1, m15, asset_type)
+            if mom_res is not None:
+                return mom_res
+
+            diagnostics = {
+                "daily_long": long_d, "daily_short": short_d,
+                "4h_long": long_h4, "4h_short": short_h4,
+                "1h_long": long_h1, "1h_short": short_h1,
+                "15m": "available" if not m15.empty else "unavailable",
+            }
+            best_value = long_h1 if long_h1.get("score", -999) >= short_h1.get("score", -999) else short_h1
+            return "NEUTRAL", 0.0, self._make_neutral(
+                "لا توجد صفقة: الاتجاه أو منطقة الدخول أو تأكيد الإغلاق غير مكتمل",
+                max(0, min(100, int(best_value.get("score", 0)))),
+                best_value.get("rsi", 50), best_value.get("atr", 0), diagnostics
             )
-            decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
-            signal = build_signal(
-                direction,
-                round(plan["entry_low"], decimals),
-                round(plan["entry_high"], decimals),
-                round(plan["stop_loss"], decimals),
-                [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
-                score,
-                value["rsi"], value["atr"], reason,
-                {
-                    "quality": quality,
-                    "timeframes": "1D + 4H + 1H + 15M" if not m15.empty else "1D + 4H + 1H",
-                    "position_in_range": round(value["position"], 3),
-                    "extension_atr": round(value["extension"], 2),
-                    "move12": round(value["move12"], 2),
-                    "structure": struct,
-                    "confirmation_15m": conf,
-                    "fib_poc": value.get("fib_poc", {}),
-                    "engulfing": value.get("engulfing", False),
-                    "close_confirmed": value.get("close_confirmed", False),
-                    "ema200": round(bias.get("ema200", 0.0), decimals),
-                    "ema200_confluence": bias.get("ema200_confluence", False),
-                    "risk_pct": round(plan["risk_pct"], 2),
-                    "asset_type": asset_type,
-                    "entry_timing": "stage_protected_confirmed",
-                },
-            )
-            return direction, price, signal
         except Exception as exc:
             logger.exception("Analysis error: %s", exc)
             return "NEUTRAL", 0.0, neutral
