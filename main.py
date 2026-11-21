@@ -1,10 +1,11 @@
 # ============================================================
-# main.py — Bot V124.5 Daily EMA200 & Close Timing
+# main.py — Bot V125.0 Stage-Protected Pullback & Guard
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Signal-only. Telegram/BingX/Yahoo connectivity preserved.
+# Signal-only + Open Position Profit/Momentum/BE Alerts.
 # ============================================================
 
 import os
+import json
 import time
 import warnings
 import threading
@@ -41,19 +42,22 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=72)
+engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=82)
 
 db_lock = threading.RLock()
 exchange_lock = threading.RLock()
 scan_lock = threading.Lock()
 cache_lock = threading.Lock()
-scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "errors": 0}
+scan_stats = {"scanned_pairs": 0, "signals_sent": 0, "guard_alerts_sent": 0, "errors": 0}
 _seen_updates = deque(maxlen=500)
 _seen_lock = threading.Lock()
 _all_markets_cache = []
 _markets_cache_time = 0
 _sent_signals_cache = {}
-SIGNAL_COOLDOWN_SECONDS = 14400
+SIGNAL_COOLDOWN_SECONDS = 21600  # 6 hours cooldown per ticker
+MAX_SAME_DIRECTION_PER_SCAN = 2
+MAX_TRACKED_POSITIONS = 12
+POSITION_TTL_SECONDS = 86400  # 24 hours max tracking per signal
 
 US_STOCKS_AND_ETFS = [
     "SOXS", "SOXL", "SPY", "QQQ", "TQQQ", "SQQQ",
@@ -87,8 +91,82 @@ def db_query(sql, params=(), one=False):
 def db_init():
     try:
         db_query("CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)")
+        db_query("""
+            CREATE TABLE IF NOT EXISTS tracked_positions (
+                signal_id TEXT PRIMARY KEY,
+                symbol_raw TEXT NOT NULL,
+                resolved TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                stop_loss REAL NOT NULL,
+                tp1 REAL NOT NULL,
+                tp2 REAL NOT NULL,
+                tp3 REAL NOT NULL,
+                last_action TEXT DEFAULT 'NEW',
+                created_ts REAL NOT NULL,
+                updated_ts REAL NOT NULL
+            )
+        """)
     except Exception as exc:
         logger.error("DB init error: %s", exc)
+
+
+def save_tracked_position(signal, symbol_raw, resolved):
+    try:
+        tps = list(signal.get("take_profits") or [])
+        while len(tps) < 3:
+            tps.append(0.0)
+        e_low = float(signal.get("entry_low") or 0.0)
+        e_high = float(signal.get("entry_high") or 0.0)
+        entry_mid = (e_low + e_high) / 2.0 if (e_low > 0 and e_high > 0) else max(e_low, e_high)
+        now_ts = time.time()
+        db_query(
+            """
+            INSERT OR REPLACE INTO tracked_positions
+            (signal_id, symbol_raw, resolved, direction, entry_price, stop_loss, tp1, tp2, tp3, last_action, created_ts, updated_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?)
+            """,
+            (
+                signal.get("signal_id"),
+                symbol_raw,
+                resolved,
+                signal.get("direction"),
+                entry_mid,
+                float(signal.get("stop_loss") or 0.0),
+                float(tps[0]),
+                float(tps[1]),
+                float(tps[2]),
+                now_ts,
+                now_ts,
+            ),
+        )
+        rows = db_query("SELECT signal_id FROM tracked_positions ORDER BY created_ts DESC")
+        if len(rows) > MAX_TRACKED_POSITIONS:
+            stale = [r["signal_id"] for r in rows[MAX_TRACKED_POSITIONS:]]
+            for sid in stale:
+                db_query("DELETE FROM tracked_positions WHERE signal_id = ?", (sid,))
+    except Exception as exc:
+        logger.error("save_tracked_position error: %s", exc)
+
+
+def clear_tracked_positions():
+    try:
+        db_query("DELETE FROM tracked_positions")
+        return True
+    except Exception as exc:
+        logger.error("clear_tracked_positions error: %s", exc)
+        return False
+
+
+def get_active_positions():
+    try:
+        now_ts = time.time()
+        db_query("DELETE FROM tracked_positions WHERE (? - created_ts) > ?", (now_ts, POSITION_TTL_SECONDS))
+        rows = db_query("SELECT * FROM tracked_positions ORDER BY created_ts DESC")
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.error("get_active_positions error: %s", exc)
+        return []
 
 
 def ex_call(fn, *args, **kwargs):
@@ -151,14 +229,15 @@ def _fetch_yfinance_ohlcv(ticker, timeframe):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         if timeframe == "4h":
-            df = df.resample("4h").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+            df = df.resample("4h").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
         df = df.dropna().tail(180)
         bars = []
         for idx, row in df.iterrows():
             try:
                 ts = int(pd.Timestamp(idx).timestamp() * 1000)
                 vol = float(row.get("Volume", 1000) or 1000)
-                if vol <= 0: vol = 1000.0
+                if vol <= 0:
+                    vol = 1000.0
                 bars.append([ts, float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), vol])
             except Exception:
                 continue
@@ -173,15 +252,19 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
         sym = clean_symbol_input(symbol_raw)
         if not sym:
             return None, None, "unknown"
-        aliases = {"XAU":"XAUUSD=X", "XAUUSD":"XAUUSD=X", "GOLD":"XAUUSD=X",
-                   "EURUSD":"EURUSD=X", "GBPUSD":"GBPUSD=X", "USDJPY":"USDJPY=X", "AUDUSD":"AUDUSD=X"}
+        aliases = {
+            "XAU": "XAUUSD=X", "XAUUSD": "XAUUSD=X", "GOLD": "XAUUSD=X",
+            "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "USDJPY=X", "AUDUSD": "AUDUSD=X",
+        }
         if sym in aliases or sym.endswith("=X"):
             ticker = aliases.get(sym, sym)
             bars = _fetch_yfinance_ohlcv(ticker, timeframe)
-            if bars: return ticker.replace("=X", ""), bars, "forex"
+            if bars:
+                return ticker.replace("=X", ""), bars, "forex"
         if sym in US_STOCKS_AND_ETFS:
             bars = _fetch_yfinance_ohlcv(sym, timeframe)
-            if bars: return sym, bars, "stock"
+            if bars:
+                return sym, bars, "stock"
 
         is_crypto_pair = ("/" in sym) or (":USDT" in sym)
         base = sym.split(":")[0].split("/")[0]
@@ -198,7 +281,8 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
         if is_crypto_pair:
             return None, None, "unknown"
         bars = _fetch_yfinance_ohlcv(sym, timeframe)
-        if bars: return sym, bars, "stock"
+        if bars:
+            return sym, bars, "stock"
     except Exception as exc:
         logger.debug("Safe fetch_ohlcv warning for %s: %s", symbol_raw, exc)
     return None, None, "unknown"
@@ -211,7 +295,7 @@ def tg_send(message, chat_id=None):
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": target, "text": message, "parse_mode":"HTML", "disable_web_page_preview":True},
+            json={"chat_id": target, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True},
             timeout=15,
         )
         if not response.ok:
@@ -231,7 +315,7 @@ def configure_webhook():
         return
     try:
         url = f"{WEBHOOK_URL}/tg-webhook"
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook", json={"url":url, "drop_pending_updates":False}, timeout=15)
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook", json={"url": url, "drop_pending_updates": False}, timeout=15)
         logger.info("Telegram webhook setup: %s", r.text[:500])
     except Exception as exc:
         logger.error("Webhook setup error: %s", exc)
@@ -240,11 +324,16 @@ def configure_webhook():
 def decimals_for(price):
     try:
         price = float(price)
-        if price < 0.0001: return 10
-        if price < 0.01: return 8
-        if price < 0.1: return 7
-        if price < 1: return 6
-        if price < 100: return 4
+        if price < 0.0001:
+            return 10
+        if price < 0.01:
+            return 8
+        if price < 0.1:
+            return 7
+        if price < 1:
+            return 6
+        if price < 100:
+            return 4
         return 2
     except Exception:
         return 4
@@ -273,24 +362,78 @@ def _format_neutral_diagnostics(signal):
     )
 
 
-def analyze_symbol(symbol_raw, chat_id=None, manual=False):
+def monitor_tracked_positions(chat_id=None):
+    """Checks tracked signals for Break-Even, momentum shifts, TP hits, or stop hits."""
+    positions = get_active_positions()
+    if not positions:
+        return
+    for pos in positions:
+        try:
+            _, m15, _ = fetch_ohlcv(pos["symbol_raw"], "15m", 60)
+            if not m15:
+                continue
+            current_price = float(m15[-1][4])
+            tps = [pos["tp1"], pos["tp2"], pos["tp3"]]
+            res = engine.evaluate_open_position(
+                direction=pos["direction"],
+                entry_price=pos["entry_price"],
+                stop_loss=pos["stop_loss"],
+                take_profits=tps,
+                current_price=current_price,
+                candles_15m=m15,
+            )
+            action = res.get("action", "HOLD")
+            if action == "HOLD" or action == pos.get("last_action"):
+                continue
+
+            d = decimals_for(current_price)
+            msg = (
+                "🛡️ <b>متابعة صفقة نشطة — V125.0</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
+                f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
+                f"📍 <b>الدخول المرجعي:</b> <code>{format_num(pos['entry_price'], d)}</code>\n"
+                f"🥇 <b>TP1:</b> <code>{format_num(pos['tp1'], d)}</code>\n\n"
+                f"{res.get('message', '')}"
+            )
+            if tg_send(msg, chat_id):
+                scan_stats["guard_alerts_sent"] += 1
+                if action in ("STOP_HIT", "TP3_REACHED"):
+                    db_query("DELETE FROM tracked_positions WHERE signal_id = ?", (pos["signal_id"],))
+                else:
+                    db_query(
+                        "UPDATE tracked_positions SET last_action = ?, updated_ts = ? WHERE signal_id = ?",
+                        (action, time.time(), pos["signal_id"]),
+                    )
+            time.sleep(0.1)
+        except Exception as exc:
+            logger.debug("Monitor position error for %s: %s", pos.get("resolved"), exc)
+
+
+def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None):
     try:
         resolved, daily, asset_type = fetch_ohlcv(symbol_raw, "1d", 220)
         if not resolved or not daily or len(daily) < 55:
-            if manual: tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته اليومية غير كافية.", chat_id)
+            if manual:
+                tg_send(f"❌ الأصل <code>{symbol_raw}</code> غير متوفر أو بياناته اليومية غير كافية.", chat_id)
             return False, None
         _, h4, _ = fetch_ohlcv(symbol_raw, "4h", 100)
         _, h1, _ = fetch_ohlcv(symbol_raw, "1h", 100)
         _, m15, _ = fetch_ohlcv(symbol_raw, "15m", 120)
         if len(h4 or []) < 40 or len(h1 or []) < 35:
-            if manual: tg_send(f"❌ <code>{resolved}</code> بيانات 4H/1H غير كافية.", chat_id)
+            if manual:
+                tg_send(f"❌ <code>{resolved}</code> بيانات 4H/1H غير كافية.", chat_id)
             return False, None
 
         scan_stats["scanned_pairs"] += 1
         direction, price, signal = engine.analyze_market_structure(daily, h4, h1, asset_type=asset_type, ohlcv_15m=m15)
-        market_tag = {"crypto":"🪙 Crypto", "stock":"📈 Stocks / ETFs", "forex":"💱 Forex / Metals"}.get(asset_type, "📊 Market")
+        market_tag = {"crypto": "🪙 Crypto", "stock": "📈 Stocks / ETFs", "forex": "💱 Forex / Metals"}.get(asset_type, "📊 Market")
 
         if direction in ("LONG", "SHORT"):
+            if not manual and direction_counts is not None:
+                if direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
+                    return False, signal
+
             key = resolved.split("/")[0]
             now_ts = time.time()
             with cache_lock:
@@ -301,7 +444,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
 
             d = decimals_for(price)
             tps = list(signal.get("take_profits", []))
-            while len(tps) < 3: tps.append(0)
+            while len(tps) < 3:
+                tps.append(0)
             details = signal.get("details", {}) or {}
             fib_poc = details.get("fib_poc", {}) or {}
             _, momentum_msg = engine.check_momentum_at_tp1(h1)
@@ -309,7 +453,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V124.5 (EMA200 + Close)</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.0 (Stage-Protected)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
@@ -336,6 +480,9 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
             sent = tg_send(msg, chat_id)
             if sent:
                 scan_stats["signals_sent"] += 1
+                save_tracked_position(signal, symbol_raw, resolved)
+                if not manual and direction_counts is not None:
+                    direction_counts[direction] = direction_counts.get(direction, 0) + 1
             else:
                 with cache_lock:
                     if not manual:
@@ -354,22 +501,28 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False):
     except Exception as exc:
         scan_stats["errors"] += 1
         logger.exception("Analyze %s error: %s", symbol_raw, exc)
-        if manual: tg_send(f"❌ حدث خطأ مؤقت أثناء تحليل <code>{symbol_raw}</code>.", chat_id)
+        if manual:
+            tg_send(f"❌ حدث خطأ مؤقت أثناء تحليل <code>{symbol_raw}</code>.", chat_id)
         return False, None
 
 
 def run_full_scan(chat_id=None):
     if not scan_lock.acquire(blocking=False):
-        if chat_id: tg_send("⏳ يوجد فحص شامل قيد التشغيل حاليًا.", chat_id)
+        if chat_id:
+            tg_send("⏳ يوجد فحص شامل قيد التشغيل حاليًا.", chat_id)
         return
     try:
-        if chat_id: tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (مع فلاتر الاتجاه والزخم)...</b>", chat_id)
+        monitor_tracked_positions(chat_id=chat_id)
+        if chat_id:
+            tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.0 المحمية)...</b>", chat_id)
         symbols = get_full_market_universe()
         found = 0
+        direction_counts = {"LONG": 0, "SHORT": 0}
         for sym in symbols:
             try:
-                ok, _ = analyze_symbol(sym, chat_id=None, manual=False)
-                if ok: found += 1
+                ok, _ = analyze_symbol(sym, chat_id=None, manual=False, direction_counts=direction_counts)
+                if ok:
+                    found += 1
             except Exception as exc:
                 scan_stats["errors"] += 1
                 logger.debug("Scan skip %s: %s", sym, exc)
@@ -380,7 +533,8 @@ def run_full_scan(chat_id=None):
     except Exception as exc:
         scan_stats["errors"] += 1
         logger.exception("Full scan error: %s", exc)
-        if chat_id: tg_send("❌ حدث خطأ أثناء الفحص الشامل.", chat_id)
+        if chat_id:
+            tg_send("❌ حدث خطأ أثناء الفحص الشامل.", chat_id)
     finally:
         scan_lock.release()
 
@@ -390,7 +544,7 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("Auto scheduler starting full scan (stats=%s)", scan_stats)
+                logger.info("Auto scheduler starting cycle (stats=%s)", scan_stats)
                 run_full_scan()
                 logger.info("Auto scheduler finished cycle (stats=%s)", scan_stats)
             else:
@@ -401,11 +555,12 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V124.5</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🟢 LONG و 🔴 SHORT (محسن بـ EMA200 اليومي وتأكيد الإغلاق)\n"
+    "🟢 LONG و 🔴 SHORT (نسخة V125.0 مع فلتر المسار النظيف وتأمين المراحل)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
-    "🔍 أرسل <code>/scan</code> للفحص الشامل.\n"
+    "🔍 أرسل <code>/scan</code> للفحص الشامل ومتابعة الصفقات.\n"
+    "🛡️ أرسل <code>/positions</code> لعرض الصفقات المتابعة، أو <code>/clearpos</code> لمسحها.\n"
     "⚠️ إشارات تحليلية فقط — لا تنفيذ تلقائي."
 )
 
@@ -413,17 +568,36 @@ HELP_TEXT = (
 def handle_update(data):
     try:
         message = data.get("message") or data.get("edited_message")
-        if not message: return
+        if not message:
+            return
         chat_id = message.get("chat", {}).get("id")
         text = (message.get("text") or "").strip()
-        if not chat_id or not text: return
-        if ALLOWED_CHAT_IDS and str(chat_id) not in ALLOWED_CHAT_IDS: return
+        if not chat_id or not text:
+            return
+        if ALLOWED_CHAT_IDS and str(chat_id) not in ALLOWED_CHAT_IDS:
+            return
         parts = text.split()
         cmd = parts[0].split("@")[0].lower()
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
         elif cmd == "/scan":
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
+        elif cmd == "/positions":
+            pos_list = get_active_positions()
+            if not pos_list:
+                tg_send("📭 لا توجد صفقات متابعة نشطة حالياً.", chat_id)
+            else:
+                lines = ["🛡️ <b>الصفقات المتابعة حالياً:</b>\n"]
+                for p in pos_list:
+                    d = decimals_for(p["entry_price"])
+                    lines.append(
+                        f"• <code>{p['resolved']}</code> ({p['direction']}) | دخول: <code>{format_num(p['entry_price'], d)}</code> | "
+                        f"TP1: <code>{format_num(p['tp1'], d)}</code> | حالة: <code>{p['last_action']}</code>"
+                    )
+                tg_send("\n".join(lines), chat_id)
+        elif cmd == "/clearpos":
+            clear_tracked_positions()
+            tg_send("🧹 تم مسح قائمة الصفقات المتابعة.", chat_id)
         else:
             analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception:
@@ -432,7 +606,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status":"running", "version":"V124.5-EMA200-Close", "stats":scan_stats})
+    return jsonify({"status": "running", "version": "V125.0-Stage-Protected", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -445,15 +619,17 @@ def telegram_webhook():
     data = request.get_json(silent=True) or {}
     uid = data.get("update_id")
     with _seen_lock:
-        if uid is not None and uid in _seen_updates: return "OK", 200
-        if uid is not None: _seen_updates.append(uid)
+        if uid is not None and uid in _seen_updates:
+            return "OK", 200
+        if uid is not None:
+            _seen_updates.append(uid)
     threading.Thread(target=handle_update, args=(data,), daemon=True).start()
     return "OK", 200
 
 
 def bootstrap():
     db_init()
-    logger.info("Bot V124.5 bootstrapped: LONG+SHORT, EMA200 + Close confirmation, multi-market.")
+    logger.info("Bot V125.0 bootstrapped: Stage-Protected Pullback + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
