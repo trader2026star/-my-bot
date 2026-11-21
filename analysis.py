@@ -1,7 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V125.1 Stage-Protected + Momentum
+# analysis.py — StrategyEngine V125.2 Stage-Protected + Momentum
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
-# Signal-only: LONG / SHORT + Open Position Guard Alerts.
+# Signal-only: LONG / SHORT + Symbol Momentum Fade + Guard Alerts.
 # ============================================================
 
 import logging
@@ -49,7 +49,8 @@ class StrategyEngine:
     Combines:
     1. Stage-protected pullback setups with clean-path PoC filter and 1.0R/1.8R/3.0R targets.
     2. Controlled momentum breakout/breakdown setups after BOS/MSS with strict RSI caps and 0.85R TP1.
-    3. Open-position evaluator for Break-Even, profit protection, TP hits, momentum shifts, and stop hits.
+    3. Coin-specific momentum-fade checks for both LONG and SHORT.
+    4. Open-position evaluator for Break-Even, profit protection, TP hits, momentum shifts, and stop hits.
     """
 
     def __init__(self, capital=10000.0, risk_per_trade=0.01,
@@ -368,6 +369,7 @@ class StrategyEngine:
         extension = abs(close - ema20) / max(atr, close * 1e-9)
         _, _, h1_macd_hist = self.calculate_macd(df["close"])
         h1_hist = float(h1_macd_hist.iloc[-1]) if not h1_macd_hist.empty else 0.0
+        h1_hist_prev = float(h1_macd_hist.iloc[-2]) if len(h1_macd_hist) >= 2 else h1_hist
         score = 0
         reasons = []
         momentum_aligned = True
@@ -386,6 +388,9 @@ class StrategyEngine:
             if h1_hist < 0:
                 momentum_aligned = False
                 score -= 12; reasons.append("1H counter-momentum")
+            if h1_hist < h1_hist_prev and h1_hist < 0:
+                momentum_aligned = False
+                score -= 10; reasons.append("1H momentum fading")
             if extension <= 1.6:
                 score += 9; reasons.append("Not overextended from EMA20")
             elif extension > 2.4:
@@ -404,6 +409,9 @@ class StrategyEngine:
             if h1_hist > 0:
                 momentum_aligned = False
                 score -= 12; reasons.append("1H counter-momentum")
+            if h1_hist > h1_hist_prev and h1_hist > 0:
+                momentum_aligned = False
+                score -= 10; reasons.append("1H bearish momentum fading")
             if extension <= 1.6:
                 score += 9; reasons.append("Not overextended from EMA20")
             elif extension > 2.4:
@@ -647,7 +655,7 @@ class StrategyEngine:
             score = int(round(min(100, max(self.min_score, bias["score"] + struct["score"] + close_1h["score"] + conf_15m.get("score", 0) - 4))))
             quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
             decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
-            reason = f"{direction} | V125.1 Momentum Break: 1D trend + {struct['reason']} + confirmed close"
+            reason = f"{direction} | V125.2 Momentum Break: 1D trend + {struct['reason']} + confirmed close"
             sig = build_signal(
                 direction,
                 round(entry_low, decimals),
@@ -811,7 +819,7 @@ class StrategyEngine:
                 score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
                 quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
                 reason = (
-                    f"{direction} | V125.1 Pullback: 1D trend + 4H structure + 1H value/PoC-clean + "
+                    f"{direction} | V125.2 Pullback: 1D trend + 4H structure + 1H value/PoC-clean + "
                     f"confirmed close | {struct['reason']}"
                 )
                 decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
