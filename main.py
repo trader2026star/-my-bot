@@ -1,11 +1,10 @@
 # ============================================================
-# main.py — Bot V125.0 Stage-Protected Pullback & Guard
+# main.py — Bot V125.1 Stage-Protected Pullback + Momentum
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only + Open Position Profit/Momentum/BE Alerts.
 # ============================================================
 
 import os
-import json
 import time
 import warnings
 import threading
@@ -58,6 +57,7 @@ SIGNAL_COOLDOWN_SECONDS = 21600  # 6 hours cooldown per ticker
 MAX_SAME_DIRECTION_PER_SCAN = 2
 MAX_TRACKED_POSITIONS = 12
 POSITION_TTL_SECONDS = 86400  # 24 hours max tracking per signal
+SCAN_INTERVAL_SECONDS = 7200  # 2 hours scan cycle
 
 US_STOCKS_AND_ETFS = [
     "SOXS", "SOXL", "SPY", "QQQ", "TQQQ", "SQQQ",
@@ -388,7 +388,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة — V125.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة — V125.1</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -452,10 +452,12 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
+            setup_tag = "⚡ اختراق/زخم (MOMENTUM)" if details.get("setup_type") == "MOMENTUM" else "🎯 تصحيح محمي (PULLBACK)"
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.0 (Stage-Protected)</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.1</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
+                f"🧭 <b>النمط:</b> {setup_tag}\n"
                 f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{signal.get('score',0)}/100</code> ({details.get('quality','B+')})\n\n"
@@ -514,7 +516,7 @@ def run_full_scan(chat_id=None):
     try:
         monitor_tracked_positions(chat_id=chat_id)
         if chat_id:
-            tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.0 المحمية)...</b>", chat_id)
+            tg_send("🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.1)...</b>", chat_id)
         symbols = get_full_market_universe()
         found = 0
         direction_counts = {"LONG": 0, "SHORT": 0}
@@ -551,13 +553,13 @@ def background_auto_scheduler():
                 logger.warning("Auto scheduler skipped: TELEGRAM_CHAT_ID is empty")
         except Exception as exc:
             logger.exception("Scheduler error: %s", exc)
-        time.sleep(14400)
+        time.sleep(SCAN_INTERVAL_SECONDS)
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.1</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🟢 LONG و 🔴 SHORT (نسخة V125.0 مع فلتر المسار النظيف وتأمين المراحل)\n"
+    "🎯 <b>PULLBACK</b> (تصحيح محمي) + ⚡ <b>MOMENTUM</b> (اختراق/كسر منضبط)\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل ومتابعة الصفقات.\n"
     "🛡️ أرسل <code>/positions</code> لعرض الصفقات المتابعة، أو <code>/clearpos</code> لمسحها.\n"
@@ -606,7 +608,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V125.0-Stage-Protected", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V125.1-Stage-Protected-Momentum", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -629,7 +631,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V125.0 bootstrapped: Stage-Protected Pullback + Guard Alerts.")
+    logger.info("Bot V125.1 bootstrapped: Stage-Protected Pullback + Momentum + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
