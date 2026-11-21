@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V125.2 Stage-Protected + Momentum
+# analysis.py — StrategyEngine V125.3 Stage-Protected + Momentum
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
 # Signal-only: LONG / SHORT + Symbol Momentum Fade + Guard Alerts.
 # ============================================================
@@ -48,7 +48,7 @@ class StrategyEngine:
 
     Combines:
     1. Stage-protected pullback setups with clean-path PoC filter and 1.0R/1.8R/3.0R targets.
-    2. Controlled momentum breakout/breakdown setups after BOS/MSS with strict RSI caps and 0.85R TP1.
+    2. Controlled momentum breakout/breakdown setups after BOS/MSS with strict RSI caps and TP1 protection.
     3. Coin-specific momentum-fade checks for both LONG and SHORT.
     4. Open-position evaluator for Break-Even, profit protection, TP hits, momentum shifts, and stop hits.
     """
@@ -473,18 +473,18 @@ class StrategyEngine:
             if close > prev_hi: score += 8; reasons.append("15M micro BOS")
             if self.has_engulfing(df, "LONG"): score += 6; reasons.append("15M bullish engulfing")
             if close_conf.get("ok"): score += 8; reasons.append("15M close confirmed")
-            if 42 <= rsi <= 65: score += 5; reasons.append("15M RSI controlled")
+            if 42 <= rsi <= 68: score += 5; reasons.append("15M RSI controlled")
         else:
             if close < op: score += 6; reasons.append("15M bearish close")
             if hi > prev_hi and close < prev_hi: score += 10; reasons.append("15M buy-side sweep/reclaim")
             if close < prev_lo: score += 8; reasons.append("15M micro BOS")
             if self.has_engulfing(df, "SHORT"): score += 6; reasons.append("15M bearish engulfing")
             if close_conf.get("ok"): score += 8; reasons.append("15M close confirmed")
-            if 35 <= rsi <= 58: score += 5; reasons.append("15M RSI controlled")
+            if 32 <= rsi <= 58: score += 5; reasons.append("15M RSI controlled")
         body = abs(close - op)
-        if atr > 0 and body > 1.7 * atr:
-            score -= 16; reasons.append("15M candle extended")
-        ok_15m = close_conf.get("ok", False) and (score >= 16)
+        if atr > 0 and body > 1.85 * atr:
+            score -= 14; reasons.append("15M candle extended")
+        ok_15m = close_conf.get("ok", False) and (score >= 15)
         return {"ok": ok_15m, "score": score, "atr": atr, "rsi": rsi,
                 "close_confirmed": close_conf.get("ok", False),
                 "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
@@ -512,18 +512,18 @@ class StrategyEngine:
                 m15_pulling_back = (c1 < o1 and c2 < o2) or (rsi_15m < 58 and c1 < c2)
 
             if direction == "SHORT":
-                if rsi_1h < 35 or rsi_15m < 32:
+                if rsi_1h < 33 or rsi_15m < 30:
                     return False, "Oversold exhaustion on 1H/15M"
                 if m15_bouncing and rsi_15m > 36:
                     return False, "Active 15M bounce against SHORT"
                 if low_1h_recent > 0 and ((close_1h - low_1h_recent) / close_1h) < 0.006:
                     return False, "Too close to recent 1H support"
             else:
-                if rsi_1h > 67 or rsi_15m > 70:
+                if rsi_1h > 72 or rsi_15m > 74:
                     return False, "Overbought exhaustion on 1H/15M"
-                if m15_pulling_back and rsi_15m < 64:
+                if m15_pulling_back and rsi_15m < 66:
                     return False, "Active 15M pullback against LONG"
-                if high_1h_recent > 0 and ((high_1h_recent - close_1h) / close_1h) < 0.006:
+                if high_1h_recent > 0 and ((high_1h_recent - close_1h) / close_1h) < 0.005:
                     return False, "Too close to recent 1H resistance"
 
             return True, "Timing clean"
@@ -556,7 +556,7 @@ class StrategyEngine:
             if risk <= 0:
                 return None
             risk_pct = risk / entry_price * 100
-            if risk_pct > 4.5:
+            if risk_pct > 5.0:
                 return None
             if risk_pct < 0.8:
                 stop = entry_price - 1.6 * atr
@@ -572,7 +572,7 @@ class StrategyEngine:
             if risk <= 0:
                 return None
             risk_pct = risk / entry_price * 100
-            if risk_pct > 4.5:
+            if risk_pct > 5.0:
                 return None
             if risk_pct < 0.8:
                 stop = entry_price + 1.6 * atr
@@ -592,7 +592,7 @@ class StrategyEngine:
         }
 
     def _momentum_continuation_candidate(self, daily, h4, h1, m15, asset_type):
-        """Captures clean BOS/MSS breakouts & breakdowns with strict exhaustion caps."""
+        """Captures clean BOS/MSS breakouts & breakdowns, prioritizing bullish momentum bursts."""
         if len(daily) < 55 or len(h4) < 40 or len(h1) < 35:
             return None
 
@@ -606,7 +606,10 @@ class StrategyEngine:
         for direction in ("LONG", "SHORT"):
             bias = self._bias(daily, direction)
             struct = self._structure(h4, direction)
-            if not bias["ok"] or not (struct.get("bos") or struct.get("mss")):
+            has_struct = bool(struct.get("ok") or struct.get("bos") or struct.get("mss"))
+            if not has_struct:
+                continue
+            if direction == "SHORT" and not bias.get("ok"):
                 continue
 
             close_1h = self.has_close_confirmation(h1, direction)
@@ -618,14 +621,14 @@ class StrategyEngine:
                 continue
 
             if direction == "LONG":
-                if rsi_1h > 74 or rsi_15m > 76:
+                if rsi_1h > 76 or rsi_15m > 78:
                     continue
-                stop = max(float(struct["swing_low"]) - 0.5 * atr_1h, price - 2.2 * atr_1h)
+                stop = max(float(struct["swing_low"]) - 0.5 * atr_1h, price - 2.3 * atr_1h)
                 risk = price - stop
                 risk_pct = (risk / price) * 100
-                if risk <= 0 or risk_pct < 0.8 or risk_pct > 4.5:
+                if risk <= 0 or risk_pct < 0.8 or risk_pct > 5.0:
                     continue
-                tp1 = price + 0.85 * risk
+                tp1 = price + 0.80 * risk
                 tp2 = price + 1.60 * risk
                 tp3 = price + 2.60 * risk
                 if not (stop < price < tp1):
@@ -652,10 +655,12 @@ class StrategyEngine:
             if not self._clean_path_to_tp1(direction, price, tp1, fib_poc, atr_1h):
                 continue
 
-            score = int(round(min(100, max(self.min_score, bias["score"] + struct["score"] + close_1h["score"] + conf_15m.get("score", 0) - 4))))
+            bias_bonus = int(bias.get("score", 0)) if bias.get("ok") else (6 if direction == "LONG" else 0)
+            raw_score = bias_bonus + struct["score"] + close_1h["score"] + conf_15m.get("score", 0)
+            score = int(round(min(100, max(self.min_score, raw_score))))
             quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
             decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
-            reason = f"{direction} | V125.2 Momentum Break: 1D trend + {struct['reason']} + confirmed close"
+            reason = f"{direction} | V125.3 Momentum Surge: {struct['reason']} + confirmed close"
             sig = build_signal(
                 direction,
                 round(entry_low, decimals),
@@ -819,7 +824,7 @@ class StrategyEngine:
                 score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
                 quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
                 reason = (
-                    f"{direction} | V125.2 Pullback: 1D trend + 4H structure + 1H value/PoC-clean + "
+                    f"{direction} | V125.3 Pullback: 1D trend + 4H structure + 1H value/PoC-clean + "
                     f"confirmed close | {struct['reason']}"
                 )
                 decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
