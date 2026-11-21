@@ -1,7 +1,7 @@
 # ============================================================
-# main.py — Bot V125.3 Regime-Aware + Stage-Protected + Momentum
+# main.py — Bot V125.4 Regime-Aware + Top Gainers + Momentum
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Signal-only + Smart Regime Weighting + Position Guard Alerts.
+# Signal-only + /gainers Scanner + Smart Regime + Guard Alerts.
 # ============================================================
 
 import os
@@ -212,6 +212,30 @@ def get_full_market_universe():
     except Exception as exc:
         logger.error("Market universe error: %s", exc)
         return ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOXS", "XAUUSD=X"]
+
+
+def get_top_gainers(limit=12):
+    """Fetches top 24h percentage gainers on BingX USDT perpetual swaps."""
+    try:
+        tickers = ex_call(bingx.fetch_tickers)
+        gainers = []
+        for sym, t in (tickers or {}).items():
+            if not sym.endswith(":USDT") and "/USDT" not in sym:
+                continue
+            pct = t.get("percentage")
+            if pct is None:
+                continue
+            try:
+                pct_val = float(pct)
+            except Exception:
+                continue
+            if pct_val > 3.0:
+                gainers.append((pct_val, sym))
+        gainers.sort(key=lambda x: x[0], reverse=True)
+        return gainers[:limit]
+    except Exception as exc:
+        logger.error("get_top_gainers error: %s", exc)
+        return []
 
 
 def clean_symbol_input(raw):
@@ -454,7 +478,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة — V125.3</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة — V125.4</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -530,7 +554,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
                 if counter else ""
             )
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.3</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.4</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"🧭 <b>النمط:</b> {setup_tag}\n"
@@ -586,6 +610,36 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
         return False, None
 
 
+def run_gainers_scan(chat_id=None):
+    """Scans top 24h gainers on BingX for clean LONG momentum/pullback setups."""
+    if not scan_lock.acquire(blocking=False):
+        if chat_id:
+            tg_send("⏳ يوجد فحص قيد التشغيل حاليًا.", chat_id)
+        return
+    try:
+        top = get_top_gainers(limit=12)
+        if not top:
+            if chat_id:
+                tg_send("⚠️ لم أتمكن من جلب قائمة الأعلى ربحاً حالياً.", chat_id)
+            return
+        preview = "\n".join([f"• <code>{s.split(':')[0]}</code>: <b>+{p:.1f}%</b>" for p, s in top[:8]])
+        if chat_id:
+            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ تحليل الفرص الصاعدة...", chat_id)
+        found = 0
+        for _, sym in top:
+            try:
+                ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=True)
+                if ok:
+                    found += 1
+            except Exception as exc:
+                logger.debug("Gainers scan skip %s: %s", sym, exc)
+            time.sleep(0.15)
+        if chat_id:
+            tg_send(f"✅ انتهى فحص الرابحين. الفرص المكتملة: <b>{found}</b>", chat_id)
+    finally:
+        scan_lock.release()
+
+
 def run_full_scan(chat_id=None):
     if not scan_lock.acquire(blocking=False):
         if chat_id:
@@ -596,11 +650,19 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.3)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.4)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
-        symbols = get_full_market_universe()
+        top_gainers = [s for _, s in get_top_gainers(limit=10)]
+        base_symbols = get_full_market_universe()
+        symbols = []
+        seen = set()
+        for s in top_gainers + base_symbols:
+            if s not in seen:
+                symbols.append(s)
+                seen.add(s)
+
         found = 0
         direction_counts = {"LONG": 0, "SHORT": 0}
         for sym in symbols:
@@ -640,9 +702,10 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.3</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.4</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "🎯 <b>PULLBACK</b> (تصحيح محمي) + ⚡ <b>MOMENTUM</b> (اختراق/كسر منضبط)\n"
+    "🔥 أرسل <code>/gainers</code> لفحص العملات الأعلى ربحاً حالياً.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل ومتابعة الصفقات.\n"
@@ -669,6 +732,8 @@ def handle_update(data):
         elif cmd == "/regime":
             info = get_daily_market_regime(force=True)
             tg_send(f"🧭 <b>تقرير اتجاه السوق اليومي</b>\n━━━━━━━━━━━━━━━━━━\n{info['summary']}", chat_id)
+        elif cmd == "/gainers":
+            threading.Thread(target=run_gainers_scan, args=(chat_id,), daemon=True).start()
         elif cmd == "/scan":
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         elif cmd == "/positions":
@@ -695,7 +760,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V125.3-Regime-Aware-Stage-Protected", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V125.4-Regime-Gainers-Momentum", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -718,7 +783,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V125.3 bootstrapped: Regime-Aware Weighting + Stage-Protected Pullback + Momentum + Guard Alerts.")
+    logger.info("Bot V125.4 bootstrapped: Regime-Aware + Top Gainers + Momentum + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
