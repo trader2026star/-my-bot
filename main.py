@@ -1,7 +1,7 @@
 # ============================================================
-# main.py — Bot V128.0 Clean Two-Target Engine (TP1 + TP2)
+# main.py — Bot V129.0 Adaptive Market Engine (Bull/Bear/Sideways)
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Signal-only + /gainers Scanner + Smart Regime + Position Guard Alerts.
+# Active Position Awareness + /gainers Scanner + Guard Alerts.
 # ============================================================
 
 import os
@@ -42,8 +42,8 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-BASE_MIN_SCORE = 75
-COUNTER_REGIME_MIN_SCORE = 80
+BASE_MIN_SCORE = 76
+COUNTER_REGIME_MIN_SCORE = 82
 engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=BASE_MIN_SCORE)
 
 db_lock = threading.RLock()
@@ -175,8 +175,19 @@ def get_active_positions():
         return []
 
 
+def _find_active_position(resolved):
+    try:
+        base_sym = str(resolved or "").split("/")[0].upper()
+        for pos in get_active_positions():
+            pos_base = str(pos.get("resolved") or "").split("/")[0].upper()
+            if pos_base == base_sym:
+                return pos
+        return None
+    except Exception:
+        return None
+
+
 def _is_duplicate_active_position(resolved, direction):
-    """Prevents sending duplicate signals for an asset already tracked in the same direction."""
     try:
         base_sym = str(resolved or "").split("/")[0].upper()
         for pos in get_active_positions():
@@ -228,7 +239,6 @@ def get_full_market_universe():
 
 
 def get_top_gainers(limit=12):
-    """Fetches top 24h percentage gainers on BingX USDT perpetual swaps."""
     try:
         tickers = ex_call(bingx.fetch_tickers)
         gainers = []
@@ -365,7 +375,6 @@ def configure_webhook():
 
 
 def get_daily_market_regime(force=False):
-    """Determines daily market bias (BULLISH / BEARISH / SIDEWAYS) from leading pairs."""
     now_ts = time.time()
     if not force and (now_ts - MARKET_REGIME_CACHE["updated_ts"]) < REGIME_TTL_SECONDS:
         return MARKET_REGIME_CACHE
@@ -386,14 +395,12 @@ def get_daily_market_regime(force=False):
         close = float(df["close"].iloc[-1])
         ema20 = float(engine.calculate_ema(df["close"], 20).iloc[-1])
         ema50 = float(engine.calculate_ema(df["close"], 50).iloc[-1])
-        ema200_s = engine.calculate_ema(df["close"], 200) if len(df) >= 200 else pd.Series([np.nan])
-        ema200 = float(ema200_s.iloc[-1]) if not ema200_s.empty and pd.notna(ema200_s.iloc[-1]) else ema50
         adx = float(engine.calculate_adx(df).iloc[-1])
         _, _, macd_hist = engine.calculate_macd(df["close"])
         hist = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
 
-        is_bull = (close > ema20) and (ema20 >= ema50) and (close >= ema200 * 0.99) and (hist > 0) and (adx >= 18)
-        is_bear = (close < ema20) and (ema20 <= ema50) and (close <= ema200 * 1.01) and (hist < 0) and (adx >= 18)
+        is_bull = (close > ema20) and (ema20 >= ema50 * 0.992) and (hist >= 0) and (adx >= 16)
+        is_bear = (close < ema20) and (ema20 <= ema50 * 1.008) and (hist <= 0) and (adx >= 16)
 
         if is_bull:
             bull_votes += 1
@@ -413,7 +420,7 @@ def get_daily_market_regime(force=False):
         title = "🔴 اتجاه السوق اليومي: هابط (BEARISH)"
     else:
         regime = "SIDEWAYS"
-        title = "⚖️ اتجاه السوق اليومي: متذبذب / عرضي (SIDEWAYS)"
+        title = "⚖️ اتجاه السوق اليومي: تذبذب عرضي (SIDEWAYS)"
 
     summary = f"{title}\n" + "\n".join(details_lines) if details_lines else f"{title}\nبيانات القيادات غير كافية حالياً"
     MARKET_REGIME_CACHE.update({"regime": regime, "summary": summary, "updated_ts": now_ts})
@@ -466,7 +473,6 @@ def _format_neutral_diagnostics(signal):
 
 
 def monitor_tracked_positions(chat_id=None):
-    """Checks tracked signals for TP1 -> Break-Even, TP2 completion, or stop hits."""
     positions = get_active_positions()
     if not positions:
         return
@@ -491,13 +497,13 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة (هدفين TP1/TP2) — V128.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V129.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
                 f"📍 <b>الدخول المرجعي:</b> <code>{format_num(pos['entry_price'], d)}</code>\n"
                 f"🥇 <b>TP1:</b> <code>{format_num(pos['tp1'], d)}</code>\n"
-                f"🥈 <b>TP2 (الهدف الأساسي):</b> <code>{format_num(pos['tp2'], d)}</code>\n\n"
+                f"🥈 <b>TP2:</b> <code>{format_num(pos['tp2'], d)}</code>\n\n"
                 f"{res.get('message', '')}"
             )
             if tg_send(msg, chat_id):
@@ -528,6 +534,25 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             if manual:
                 tg_send(f"❌ <code>{resolved}</code> بيانات 4H/1H غير كافية.", chat_id)
             return False, None
+
+        # If manual request asks for an asset already tracked actively, show the active trade plan instead of conflicting
+        if manual:
+            active_pos = _find_active_position(resolved)
+            if active_pos:
+                d_pos = decimals_for(active_pos["entry_price"])
+                curr_p = float(m15[-1][4]) if m15 else float(h1[-1][4])
+                tg_send(
+                    f"📌 <b>صفقة نشطة قيد المتابعة:</b> <code>{active_pos['resolved']}</code> ({active_pos['direction']})\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"💵 <b>السعر الحالي:</b> <code>{format_num(curr_p, d_pos)}</code>\n"
+                    f"📍 <b>الدخول:</b> <code>{format_num(active_pos['entry_price'], d_pos)}</code>\n"
+                    f"🥇 <b>TP1:</b> <code>{format_num(active_pos['tp1'], d_pos)}</code>\n"
+                    f"🥈 <b>TP2:</b> <code>{format_num(active_pos['tp2'], d_pos)}</code>\n"
+                    f"🛑 <b>الوقف:</b> <code>{format_num(active_pos['stop_loss'], d_pos)}</code>\n"
+                    f"📊 <b>الحالة:</b> <code>{active_pos['last_action']}</code>",
+                    chat_id,
+                )
+                return True, None
 
         scan_stats["scanned_pairs"] += 1
         direction, price, signal = engine.analyze_market_structure(daily, h4, h1, asset_type=asset_type, ohlcv_15m=m15)
@@ -566,18 +591,14 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
-            regime_note = (
-                "⚠️ <b>ملاحظة:</b> الإشارة عكس اتجاه اليوم العام؛ التزم بـ TP1 لنقل الوقف وTP2 لجني الربح.\n\n"
-                if counter else ""
-            )
+            sig_regime = details.get("regime", regime)
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V128.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V129.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                "🎯 <b>النظام:</b> هدفين عمليين (TP1 + TP2)\n"
-                f"🌐 <b>اتجاه اليوم:</b> <code>{regime}</code>\n"
+                f"🧭 <b>حالة السوق:</b> <code>{sig_regime}</code>\n"
+                "🎯 <b>النظام:</b> متكيّف (صعود/هبوط/عرضي) — هدفين TP1 + TP2\n"
                 f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
-                f"{regime_note}"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{sig_score}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -625,7 +646,6 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
 
 
 def run_gainers_scan(chat_id=None):
-    """Scans top 24h gainers on BingX for clean LONG two-target setups."""
     if not scan_lock.acquire(blocking=False):
         if chat_id:
             tg_send("⏳ يوجد فحص قيد التشغيل حاليًا.", chat_id)
@@ -638,7 +658,7 @@ def run_gainers_scan(chat_id=None):
             return
         preview = "\n".join([f"• <code>{s.split(':')[0]}</code>: <b>+{p:.1f}%</b>" for p, s in top[:8]])
         if chat_id:
-            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ تحليل الفرص الصاعدة (هدفين TP1/TP2)...", chat_id)
+            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ تحليل الفرص الصاعدة (TP1/TP2)...", chat_id)
         found = 0
         for _, sym in top:
             try:
@@ -664,7 +684,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V128.0 — هدفين)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V129.0)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -716,9 +736,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V128.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V129.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🎯 <b>نظام هدفين (TP1 + TP2):</b> أهداف واقعية ومباشرة بدون مطاردة هدف تالت\n"
+    "🎯 <b>نظام متكيّف (صعود/هبوط/عرضي):</b> هدفين عمليين TP1 + TP2 مع تتبع الصفقات النشطة\n"
     "🔥 أرسل <code>/gainers</code> لفحص العملات الأعلى ربحاً حالياً.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -775,7 +795,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V128.0-Clean-Two-Target", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V129.0-Adaptive-Two-Target", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -798,7 +818,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V128.0 bootstrapped: Clean Two-Target Engine (TP1 + TP2) + Guard Alerts.")
+    logger.info("Bot V129.0 bootstrapped: Adaptive Regime Engine (Bull/Bear/Sideways) + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
