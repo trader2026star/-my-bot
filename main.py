@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V125.5 Profit-Focused + Top Gainers + Guard Alerts
+# main.py — Bot V125.6 Quant-Disciplined + Top Gainers + Guard Alerts
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only + /gainers Scanner + Smart Regime + Position Guard Alerts.
 # ============================================================
@@ -173,6 +173,19 @@ def get_active_positions():
     except Exception as exc:
         logger.error("get_active_positions error: %s", exc)
         return []
+
+
+def _is_duplicate_active_position(resolved, direction):
+    """Prevents sending duplicate signals for an asset already tracked in the same direction."""
+    try:
+        base_sym = str(resolved or "").split("/")[0].upper()
+        for pos in get_active_positions():
+            pos_base = str(pos.get("resolved") or "").split("/")[0].upper()
+            if pos_base == base_sym and pos.get("direction") == direction:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def ex_call(fn, *args, **kwargs):
@@ -478,7 +491,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة — V125.5</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة — V125.6</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -500,7 +513,7 @@ def monitor_tracked_positions(chat_id=None):
             logger.debug("Monitor position error for %s: %s", pos.get("resolved"), exc)
 
 
-def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None):
+def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None, prefer_long=False):
     try:
         resolved, daily, asset_type = fetch_ohlcv(symbol_raw, "1d", 220)
         if not resolved or not daily or len(daily) < 55:
@@ -517,6 +530,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
 
         scan_stats["scanned_pairs"] += 1
         direction, price, signal = engine.analyze_market_structure(daily, h4, h1, asset_type=asset_type, ohlcv_15m=m15)
+        if prefer_long and direction == "SHORT":
+            direction = "NEUTRAL"
         market_tag = {"crypto": "🪙 Crypto", "stock": "📈 Stocks / ETFs", "forex": "💱 Forex / Metals"}.get(asset_type, "📊 Market")
         regime_info = get_daily_market_regime()
         regime = regime_info.get("regime", "SIDEWAYS")
@@ -525,6 +540,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
 
         if direction in ("LONG", "SHORT"):
             if not manual:
+                if _is_duplicate_active_position(resolved, direction):
+                    return False, signal
                 if counter and sig_score < COUNTER_REGIME_MIN_SCORE:
                     return False, signal
                 if direction_counts is not None and direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
@@ -554,7 +571,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
                 if counter else ""
             )
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.5</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.6</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"🧭 <b>النمط:</b> {setup_tag}\n"
@@ -624,11 +641,11 @@ def run_gainers_scan(chat_id=None):
             return
         preview = "\n".join([f"• <code>{s.split(':')[0]}</code>: <b>+{p:.1f}%</b>" for p, s in top[:8]])
         if chat_id:
-            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ تحليل الفرص الصاعدة...", chat_id)
+            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ تحليل الفرص الصاعدة (LONG)...", chat_id)
         found = 0
         for _, sym in top:
             try:
-                ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False)
+                ok, _ = analyze_symbol(sym, chat_id=chat_id, manual=False, prefer_long=True)
                 if ok:
                     found += 1
             except Exception as exc:
@@ -650,7 +667,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.5)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.6)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -702,7 +719,7 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.5</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.6</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "🎯 <b>PULLBACK</b> (تصحيح محمي) + ⚡ <b>MOMENTUM</b> (اختراق/كسر منضبط)\n"
     "🔥 أرسل <code>/gainers</code> لفحص العملات الأعلى ربحاً حالياً.\n"
@@ -760,7 +777,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V125.5-Profit-Focused-Squeeze-Guard", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V125.6-Quant-Disciplined-Gainers", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -783,7 +800,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V125.5 bootstrapped: Profit-Focused + Squeeze Guard + Top Gainers + Guard Alerts.")
+    logger.info("Bot V125.6 bootstrapped: Quant-Disciplined + Top Gainers + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
