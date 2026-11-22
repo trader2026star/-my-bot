@@ -1,7 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V125.4 Profit-Focused + Squeeze Guard
+# analysis.py — StrategyEngine V125.5 Quant-Disciplined + Squeeze Guard
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
-# Signal-only: LONG / SHORT + Momentum + Squeeze Guard + Position Alerts.
+# Signal-only: LONG / SHORT + Momentum + Squeeze Guard + R:R & Anti-Chase.
 # ============================================================
 
 import logging
@@ -44,12 +44,12 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
 
 
 class StrategyEngine:
-    """Balanced pullback & momentum-confirmed signal engine.
+    """Quant-disciplined pullback & momentum-confirmed signal engine.
 
     Combines:
-    1. Stage-protected pullback setups with clean-path PoC filter and 1.0R/1.8R/3.0R targets.
+    1. Stage-protected pullback setups with clean-path PoC filter and 0.95R/1.75R/2.90R targets.
     2. Controlled momentum breakout/breakdown setups after BOS/MSS with squeeze guard and fast TP1.
-    3. Coin-specific momentum-fade checks for both LONG and SHORT.
+    3. Disciplined R:R validation and anti-chase guard to prevent stretched candle entries.
     4. Open-position evaluator for Break-Even, profit protection, TP hits, momentum shifts, and stop hits.
     """
 
@@ -223,6 +223,28 @@ class StrategyEngine:
             return (range_in_atr < 2.3 and near_ema20 and low_volume) or (mas_clustered and range_in_atr < 2.0 and low_volume)
         except Exception:
             return False
+
+    def _has_valid_rr_and_no_chase(self, direction, entry_price, stop_loss, tp1, tp2, atr, df):
+        """Ensures disciplined R:R and avoids chasing stretched impulses."""
+        try:
+            if entry_price <= 0 or atr <= 0:
+                return False
+            risk = abs(entry_price - stop_loss)
+            reward1 = abs(tp1 - entry_price)
+            reward2 = abs(tp2 - entry_price)
+            if risk <= 0 or (reward1 / risk) < 0.75 or (reward2 / risk) < 1.45:
+                return False
+
+            if df is not None and len(df) >= 5:
+                c_last = float(df["close"].iloc[-1])
+                o_last = float(df["open"].iloc[-1])
+                if direction == "LONG" and (c_last - o_last) > (2.1 * atr):
+                    return False
+                if direction == "SHORT" and (o_last - c_last) > (2.1 * atr):
+                    return False
+            return True
+        except Exception:
+            return True
 
     def prepare_dataframe(self, candles):
         if candles is None or len(candles) == 0:
@@ -671,6 +693,9 @@ class StrategyEngine:
                 entry_low = price - 0.05 * atr_1h
                 entry_high = price + 0.15 * atr_1h
 
+            if not self._has_valid_rr_and_no_chase(direction, price, stop, tp1, tp2, atr_1h, h1):
+                continue
+
             fib_poc = self.calculate_fib_and_poc(h1, direction, lookback=40)
             if not self._clean_path_to_tp1(direction, price, tp1, fib_poc, atr_1h):
                 continue
@@ -680,7 +705,7 @@ class StrategyEngine:
             score = int(round(min(100, max(self.min_score, raw_score))))
             quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
             decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
-            reason = f"{direction} | V125.4 Momentum Surge: {struct['reason']} + confirmed close"
+            reason = f"{direction} | V125.5 Momentum Surge: {struct['reason']} + confirmed close"
             sig = build_signal(
                 direction,
                 round(entry_low, decimals),
@@ -838,6 +863,8 @@ class StrategyEngine:
                 plan = self._trade_plan(h1, price, value["atr"], direction, struct)
                 if not plan:
                     continue
+                if not self._has_valid_rr_and_no_chase(direction, price, plan["stop_loss"], plan["tp1"], plan["tp2"], value["atr"], h1):
+                    continue
                 if not self._clean_path_to_tp1(direction, price, plan["tp1"], value.get("fib_poc", {}), value["atr"]):
                     continue
                 if direction == "LONG" and not (plan["stop_loss"] < price < plan["tp1"]):
@@ -850,7 +877,7 @@ class StrategyEngine:
                 score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
                 quality = "A+" if score >= 92 else "A" if score >= 85 else "B+"
                 reason = (
-                    f"{direction} | V125.4 Pullback: 4H structure + 1H value/PoC-clean + "
+                    f"{direction} | V125.5 Pullback: 4H structure + 1H value/PoC-clean + "
                     f"confirmed close | {struct['reason']}"
                 )
                 decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
