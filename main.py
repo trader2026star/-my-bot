@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V125.6 Quant-Disciplined + Top Gainers + Guard Alerts
+# main.py — Bot V126.0 Sweep + MSS + Confluence + Guard Alerts
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only + /gainers Scanner + Smart Regime + Position Guard Alerts.
 # ============================================================
@@ -42,8 +42,8 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-BASE_MIN_SCORE = 80
-COUNTER_REGIME_MIN_SCORE = 86
+BASE_MIN_SCORE = 82
+COUNTER_REGIME_MIN_SCORE = 87
 engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=BASE_MIN_SCORE)
 
 db_lock = threading.RLock()
@@ -491,7 +491,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة — V125.6</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة — V126.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -565,13 +565,13 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
-            setup_tag = "⚡ اختراق/زخم (MOMENTUM)" if details.get("setup_type") == "MOMENTUM" else "🎯 تصحيح محمي (PULLBACK)"
+            setup_tag = "⚡ سحب سيولة/MSS (MOMENTUM)" if details.get("setup_type") == "MOMENTUM" else "🎯 تصحيح سحب/MSS (PULLBACK)"
             regime_note = (
                 "⚠️ <b>ملاحظة:</b> الإشارة عكس اتجاه اليوم العام؛ يُنصح بتقليل حجم العقد وتأمين الربح مبكراً.\n\n"
                 if counter else ""
             )
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V125.6</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V126.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"🧭 <b>النمط:</b> {setup_tag}\n"
@@ -628,7 +628,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
 
 
 def run_gainers_scan(chat_id=None):
-    """Scans top 24h gainers on BingX for clean LONG momentum/pullback setups."""
+    """Scans top 24h gainers on BingX for clean LONG sweep/MSS/pullback setups."""
     if not scan_lock.acquire(blocking=False):
         if chat_id:
             tg_send("⏳ يوجد فحص قيد التشغيل حاليًا.", chat_id)
@@ -667,7 +667,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V125.6)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V126.0)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -719,9 +719,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V125.6</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V126.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🎯 <b>PULLBACK</b> (تصحيح محمي) + ⚡ <b>MOMENTUM</b> (اختراق/كسر منضبط)\n"
+    "🎯 <b>Sweep + MSS Pullback</b> + ⚡ <b>Sweep + MSS Momentum</b>\n"
     "🔥 أرسل <code>/gainers</code> لفحص العملات الأعلى ربحاً حالياً.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -777,7 +777,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V125.6-Quant-Disciplined-Gainers", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V126.0-Sweep-MSS-Confluence", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -800,7 +800,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V125.6 bootstrapped: Quant-Disciplined + Top Gainers + Guard Alerts.")
+    logger.info("Bot V126.0 bootstrapped: Sweep + MSS + Confluence + Top Gainers + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
