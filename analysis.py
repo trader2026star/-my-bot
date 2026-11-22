@@ -1,7 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V128.0 Clean Two-Target Engine
+# analysis.py — StrategyEngine V129.0 Adaptive Market Engine
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
-# Practical, straightforward setups targeting TP1 (0.60R) & TP2 (1.20R).
+# Adapts to Bullish, Bearish, and Sideways regimes targeting TP1 & TP2.
 # ============================================================
 
 import logging
@@ -13,7 +13,7 @@ import pandas as pd
 logger = logging.getLogger("StrategyEngine")
 
 SIGNAL_EXPIRY_SECONDS = 86400
-MIN_SCORE_DEFAULT = 75
+MIN_SCORE_DEFAULT = 76
 
 
 def _now_iso():
@@ -44,7 +44,7 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
 
 
 class StrategyEngine:
-    """Straightforward two-target engine focused on realistic TP1 & TP2 completion."""
+    """Adaptive regime-aware engine for Bullish, Bearish, and Sideways conditions."""
 
     def __init__(self, capital=10000.0, risk_per_trade=0.01,
                  min_score=MIN_SCORE_DEFAULT):
@@ -105,6 +105,31 @@ class StrategyEngine:
         signal_line = macd_line.ewm(span=signal, adjust=False).mean()
         hist = macd_line - signal_line
         return macd_line, signal_line, hist
+
+    def detect_regime_state(self, df_daily, df_h4):
+        """Classifies market state into BULLISH, BEARISH, or SIDEWAYS."""
+        try:
+            if df_daily is None or len(df_daily) < 55:
+                return "SIDEWAYS", 20.0
+            close = float(df_daily["close"].iloc[-1])
+            ema20 = float(self.calculate_ema(df_daily["close"], 20).iloc[-1])
+            ema50 = float(self.calculate_ema(df_daily["close"], 50).iloc[-1])
+            adx = float(self.calculate_adx(df_daily).iloc[-1])
+            _, _, hist_s = self.calculate_macd(df_daily["close"])
+            hist = float(hist_s.iloc[-1]) if not hist_s.empty else 0.0
+
+            h4_adx = float(self.calculate_adx(df_h4).iloc[-1]) if (df_h4 is not None and len(df_h4) >= 20) else adx
+            effective_adx = max(adx, h4_adx * 0.85)
+
+            if effective_adx < 16.0:
+                return "SIDEWAYS", effective_adx
+            if close > ema20 and ema20 >= ema50 * 0.992 and hist >= 0:
+                return "BULLISH", effective_adx
+            if close < ema20 and ema20 <= ema50 * 1.008 and hist <= 0:
+                return "BEARISH", effective_adx
+            return "SIDEWAYS", effective_adx
+        except Exception:
+            return "SIDEWAYS", 20.0
 
     def calculate_fib_and_poc(self, df, direction, lookback=36):
         try:
@@ -170,37 +195,36 @@ class StrategyEngine:
             body_ratio = body_last / rng_last
 
             if direction == "LONG":
-                bull_close = c_last > o_last and body_ratio >= 0.30
-                strong_body = body_ratio >= 0.50
+                bull_close = c_last > o_last and body_ratio >= 0.35
+                strong_body = body_ratio >= 0.55
                 score = (12 if bull_close else 0) + (6 if strong_body else 0)
                 return {
                     "ok": bull_close,
                     "score": score,
                     "body_ratio": round(body_ratio, 2),
-                    "reason": "Bullish candle close" if bull_close else "No bullish candle close",
+                    "reason": "Bullish candle close" if bull_close else "Weak bullish close",
                 }
             else:
-                bear_close = c_last < o_last and body_ratio >= 0.30
-                strong_body = body_ratio >= 0.50
+                bear_close = c_last < o_last and body_ratio >= 0.35
+                strong_body = body_ratio >= 0.55
                 score = (12 if bear_close else 0) + (6 if strong_body else 0)
                 return {
                     "ok": bear_close,
                     "score": score,
                     "body_ratio": round(body_ratio, 2),
-                    "reason": "Bearish candle close" if bear_close else "No bearish candle close",
+                    "reason": "Bearish candle close" if bear_close else "Weak bearish close",
                 }
         except Exception:
             return {"ok": False, "score": 0, "body_ratio": 0.0, "reason": "Close check error"}
 
     def _is_dead_flat(self, df, atr):
-        """Avoids dead sideways candles with zero range expansion."""
         try:
             if df is None or len(df) < 15 or atr <= 0:
                 return False
             sub = df.tail(10)
             hi = float(sub["high"].max())
             lo = float(sub["low"].min())
-            return ((hi - lo) / atr) < 1.5
+            return ((hi - lo) / atr) < 1.6
         except Exception:
             return False
 
@@ -235,9 +259,9 @@ class StrategyEngine:
         highs, lows = self._swings(df)
         close = float(df["close"].iloc[-1])
         if len(highs) < 2 or len(lows) < 2:
-            return {"ok": True, "score": 16, "bos": False, "mss": False, "sweep": False,
+            return {"ok": True, "score": 14, "bos": False, "mss": False, "sweep": False,
                     "swing_high": float(df["high"].tail(18).max()),
-                    "swing_low": float(df["low"].tail(18).min()), "reason": "Basic trend structure"}
+                    "swing_low": float(df["low"].tail(18).min()), "reason": "Range/swing baseline"}
 
         prev_h, last_h = highs[-2][1], highs[-1][1]
         prev_l, last_l = lows[-2][1], lows[-1][1]
@@ -251,7 +275,7 @@ class StrategyEngine:
             bos = close > prev_h or close > last_h
             sweep = float(recent["low"].min()) < prev_l and close > prev_l
             mss = sweep and close > float(recent["high"].iloc[:-1].max()) if len(recent) > 2 else False
-            score = (18 if higher_structure else 0) + (14 if bos else 0) + (14 if sweep else 0) + (10 if mss else 0)
+            score = (18 if higher_structure else 0) + (14 if bos else 0) + (15 if sweep else 0) + (10 if mss else 0)
             ok = higher_structure or bos or sweep or mss
             reason = []
             if sweep: reason.append("Sell-side sweep")
@@ -263,7 +287,7 @@ class StrategyEngine:
             bos = close < prev_l or close < last_l
             sweep = float(recent["high"].max()) > prev_h and close < prev_h
             mss = sweep and close < float(recent["low"].iloc[:-1].min()) if len(recent) > 2 else False
-            score = (18 if lower_structure else 0) + (14 if bos else 0) + (14 if sweep else 0) + (10 if mss else 0)
+            score = (18 if lower_structure else 0) + (14 if bos else 0) + (15 if sweep else 0) + (10 if mss else 0)
             ok = lower_structure or bos or sweep or mss
             reason = []
             if sweep: reason.append("Buy-side sweep")
@@ -271,9 +295,9 @@ class StrategyEngine:
             if lower_structure: reason.append("LH/LL")
             if bos: reason.append("Bearish BOS")
 
-        return {"ok": ok, "score": min(50, max(12, score)), "bos": bos, "mss": mss, "sweep": sweep,
+        return {"ok": ok, "score": min(50, max(10, score)), "bos": bos, "mss": mss, "sweep": sweep,
                 "swing_high": last_h, "swing_low": last_l,
-                "reason": "، ".join(reason) if reason else "Directional bias"}
+                "reason": "، ".join(reason) if reason else "Directional structure"}
 
     def _bias(self, df, direction):
         if len(df) < 55:
@@ -313,13 +337,13 @@ class StrategyEngine:
             if adx >= 20:
                 score += 9; reasons.append(f"ADX({adx:.1f})")
             else:
-                score += 5; reasons.append(f"Moderate ADX({adx:.1f})")
+                score += 5; reasons.append(f"Range ADX({adx:.1f})")
             if hist_val >= 0:
                 score += 8; reasons.append("MACD Bullish")
             else:
                 reasons.append("MACD soft")
             if 35 <= rsi <= 75: score += 5
-            ok = trend_ok and (adx >= 14 or hist_val >= 0)
+            ok = trend_ok and (adx >= 12 or hist_val >= 0)
         else:
             trend_ok = close <= e20 * 1.015 or e20 <= e50 * 1.015
             if close <= e20 * 1.015: score += 10
@@ -338,19 +362,19 @@ class StrategyEngine:
             if adx >= 20:
                 score += 9; reasons.append(f"ADX({adx:.1f})")
             else:
-                score += 5; reasons.append(f"Moderate ADX({adx:.1f})")
+                score += 5; reasons.append(f"Range ADX({adx:.1f})")
             if hist_val <= 0:
                 score += 8; reasons.append("MACD Bearish")
             else:
                 reasons.append("MACD soft")
             if 25 <= rsi <= 65: score += 5
-            ok = trend_ok and (adx >= 14 or hist_val <= 0)
+            ok = trend_ok and (adx >= 12 or hist_val <= 0)
 
         return {"ok": ok, "score": score, "rsi": rsi, "adx": adx, "ema20": e20, "ema50": e50,
                 "ema200": ema200, "ema200_confluence": ema200_support,
                 "reason": "، ".join(reasons) if reasons else "Neutral bias"}
 
-    def _value_entry(self, df, direction):
+    def _value_entry(self, df, direction, regime="SIDEWAYS"):
         if len(df) < 30:
             return {"ok": False, "score": 0, "rsi": 50, "atr": 0, "position": 0.5,
                     "extension": 0, "reason": "Entry timeframe insufficient"}
@@ -367,30 +391,50 @@ class StrategyEngine:
         reasons = []
 
         if direction == "LONG":
-            if position <= 0.75:
-                score += 16; reasons.append("Reachable TP1/TP2 zone")
+            # In SIDEWAYS regime, prefer lower range edge for cleaner bounce toward TP1/TP2
+            if regime == "SIDEWAYS":
+                if position <= 0.42:
+                    score += 18; reasons.append("Range bottom edge")
+                elif position <= 0.58:
+                    score += 8; reasons.append("Mid-low range")
+                else:
+                    score -= 16; reasons.append("Too high in sideways range")
             else:
-                score -= 10; reasons.append("High range")
+                if position <= 0.72:
+                    score += 16; reasons.append("Trend value zone")
+                else:
+                    score -= 12; reasons.append("High range")
+
             if 38 <= rsi <= 72:
                 score += 12; reasons.append("RSI supportive")
-            elif rsi > 78:
+            elif rsi > 76:
                 score -= 18; reasons.append("Overbought")
-            if extension <= 2.2:
+            if extension <= 2.1:
                 score += 9; reasons.append("Near EMA20")
-            elif extension > 3.0:
+            elif extension > 2.9:
                 score -= 14; reasons.append("Extended")
         else:
-            if position >= 0.25:
-                score += 16; reasons.append("Reachable TP1/TP2 zone")
+            # In SIDEWAYS regime, prefer upper range edge for cleaner rejection toward TP1/TP2
+            if regime == "SIDEWAYS":
+                if position >= 0.58:
+                    score += 18; reasons.append("Range top edge")
+                elif position >= 0.42:
+                    score += 8; reasons.append("Mid-high range")
+                else:
+                    score -= 16; reasons.append("Too low in sideways range")
             else:
-                score -= 10; reasons.append("Low range")
+                if position >= 0.28:
+                    score += 16; reasons.append("Trend short zone")
+                else:
+                    score -= 12; reasons.append("Low range")
+
             if 28 <= rsi <= 62:
                 score += 12; reasons.append("RSI supportive")
-            elif rsi < 22:
+            elif rsi < 24:
                 score -= 18; reasons.append("Oversold")
-            if extension <= 2.2:
+            if extension <= 2.1:
                 score += 9; reasons.append("Near EMA20")
-            elif extension > 3.0:
+            elif extension > 2.9:
                 score -= 14; reasons.append("Extended")
 
         fib_poc = self.calculate_fib_and_poc(df, direction, lookback=36)
@@ -402,11 +446,11 @@ class StrategyEngine:
         if close_conf.get("ok"):
             score += close_conf.get("score", 0); reasons.append("1H close OK")
         else:
-            score -= 5; reasons.append("Weak 1H close")
+            score -= 6; reasons.append("Weak 1H close")
 
         look = df.tail(12)
         move = (float(look["close"].iloc[-1]) - float(look["close"].iloc[0])) / max(float(look["close"].iloc[0]), 1e-9) * 100
-        if abs(move) > 15.0:
+        if abs(move) > 14.0:
             score -= 12; reasons.append("Over-stretched move")
 
         return {"ok": score >= 18, "score": max(-15, score), "rsi": rsi, "atr": atr,
@@ -451,12 +495,15 @@ class StrategyEngine:
                 "close_confirmed": close_conf.get("ok", False),
                 "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
 
-    def _two_target_plan(self, df1h, entry_price, atr, direction, structure):
-        """Builds a clean two-target plan: TP1 (0.60R) to secure, TP2 (1.20R) as main exit."""
+    def _adaptive_two_target_plan(self, df1h, entry_price, atr, direction, structure, regime):
+        """Adjusts target spacing slightly in SIDEWAYS vs TRENDING regimes for realistic TP1 & TP2."""
         if entry_price <= 0 or atr <= 0:
             return None
         swing_low = float(structure.get("swing_low", df1h["low"].tail(18).min()))
         swing_high = float(structure.get("swing_high", df1h["high"].tail(18).max()))
+        tp1_r = 0.55 if regime == "SIDEWAYS" else 0.65
+        tp2_r = 1.05 if regime == "SIDEWAYS" else 1.25
+
         if direction == "LONG":
             structural = swing_low - 0.60 * atr
             atr_stop = entry_price - 1.75 * atr
@@ -472,8 +519,7 @@ class StrategyEngine:
                 risk = entry_price - stop
             entry_low = max(0.0, entry_price - 0.12 * atr)
             entry_high = entry_price + 0.05 * atr
-            # Focus is strictly TP1 (0.60R) and TP2 (1.20R)
-            tps = [entry_price + 0.60 * risk, entry_price + 1.20 * risk, entry_price + 1.60 * risk]
+            tps = [entry_price + tp1_r * risk, entry_price + tp2_r * risk, entry_price + 1.65 * risk]
         else:
             structural = swing_high + 0.60 * atr
             atr_stop = entry_price + 1.75 * atr
@@ -489,7 +535,7 @@ class StrategyEngine:
                 risk = stop - entry_price
             entry_low = entry_price - 0.05 * atr
             entry_high = entry_price + 0.12 * atr
-            tps = [entry_price - 0.60 * risk, entry_price - 1.20 * risk, entry_price - 1.60 * risk]
+            tps = [entry_price - tp1_r * risk, entry_price - tp2_r * risk, entry_price - 1.65 * risk]
 
         return {
             "entry_low": entry_low,
@@ -515,7 +561,6 @@ class StrategyEngine:
 
     def evaluate_open_position(self, direction, entry_price, stop_loss, take_profits,
                                current_price, candles_15m=None):
-        """Evaluates active positions strictly around TP1 (Break-Even) and TP2 (Exit)."""
         try:
             entry = float(entry_price)
             sl = float(stop_loss)
@@ -528,14 +573,14 @@ class StrategyEngine:
                 if curr <= sl:
                     return {"action": "STOP_HIT", "message": "🛑 ضرب وقف الخسارة؛ إغلاق الصفقة والتركيز على الفرصة التالية."}
                 if tp2 is not None and curr >= tp2:
-                    return {"action": "TP2_REACHED", "message": "🎯 مبروك! تم الوصول للهدف الثاني (TP2)؛ أقفل الصفقة واستلم ربحك."}
+                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الصفقة واحجز ربحك."}
                 if tp1 is not None and curr >= tp1:
                     return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وانتظر TP2."}
             else:
                 if curr >= sl:
                     return {"action": "STOP_HIT", "message": "🛑 ضرب وقف الخسارة؛ إغلاق الصفقة والتركيز على الفرصة التالية."}
                 if tp2 is not None and curr <= tp2:
-                    return {"action": "TP2_REACHED", "message": "🎯 مبروك! تم الوصول للهدف الثاني (TP2)؛ أقفل الصفقة واستلم ربحك."}
+                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الصفقة واحجز ربحك."}
                 if tp1 is not None and curr <= tp1:
                     return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وانتظر TP2."}
 
@@ -543,7 +588,7 @@ class StrategyEngine:
         except Exception:
             return {"action": "HOLD", "message": "⏳ الصفقة قيد المتابعة."}
 
-    def _make_neutral(self, reason="لا توجد فرصة واضحة لهدفين حالياً", score=0, rsi=50, atr=0, details=None):
+    def _make_neutral(self, reason="لا توجد فرصة واضحة حالياً", score=0, rsi=50, atr=0, details=None):
         return build_signal("NEUTRAL", 0, 0, 0, [], score, rsi, atr, reason, details or {})
 
     def analyze_market_structure(self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None,
@@ -557,18 +602,25 @@ class StrategyEngine:
             if len(daily) < 55 or len(h4) < 40 or len(h1) < 35:
                 return "NEUTRAL", 0.0, self._make_neutral("بيانات غير كافية")
 
+            regime, adx_val = self.detect_regime_state(daily, h4)
+            regime_min_score = (self.min_score + 4) if regime == "SIDEWAYS" else self.min_score
+
             long_d = self._bias(daily, "LONG")
             short_d = self._bias(daily, "SHORT")
             long_h4 = self._structure(h4, "LONG")
             short_h4 = self._structure(h4, "SHORT")
-            long_h1 = self._value_entry(h1, "LONG")
-            short_h1 = self._value_entry(h1, "SHORT")
+            long_h1 = self._value_entry(h1, "LONG", regime=regime)
+            short_h1 = self._value_entry(h1, "SHORT", regime=regime)
 
             candidates = []
             for direction, bias, struct, value in [
                 ("LONG", long_d, long_h4, long_h1),
                 ("SHORT", short_d, short_h4, short_h1),
             ]:
+                if regime == "BULLISH" and direction == "SHORT":
+                    continue
+                if regime == "BEARISH" and direction == "LONG":
+                    continue
                 if not struct["ok"] or not value["ok"]:
                     continue
                 if not value.get("close_confirmed", False):
@@ -578,12 +630,12 @@ class StrategyEngine:
                     continue
                 bias_pts = bias["score"] if bias["ok"] else 8
                 score = int(round(min(100, max(0, bias_pts + struct["score"] + value["score"] + conf["score"]))))
-                if score < self.min_score:
+                if score < regime_min_score:
                     continue
                 price = float(h1["close"].iloc[-1])
                 if self._is_dead_flat(h1, value["atr"]):
                     continue
-                plan = self._two_target_plan(h1, price, value["atr"], direction, struct)
+                plan = self._adaptive_two_target_plan(h1, price, value["atr"], direction, struct, regime)
                 if not plan:
                     continue
                 if direction == "LONG" and not (plan["stop_loss"] < price < plan["tp1"]):
@@ -595,7 +647,7 @@ class StrategyEngine:
             if candidates:
                 score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
                 quality = "A+" if score >= 88 else "A" if score >= 82 else "B+"
-                reason = f"{direction} | V128.0 Two-Target (TP1/TP2): {struct['reason']} + close confirmed"
+                reason = f"{direction} | V129.0 [{regime}] TP1/TP2: {struct['reason']} + close confirmed"
                 decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
                 signal = build_signal(
                     direction,
@@ -607,8 +659,10 @@ class StrategyEngine:
                     value["rsi"], value["atr"], reason,
                     {
                         "quality": quality,
-                        "setup_type": "TWO_TARGET",
+                        "setup_type": "ADAPTIVE_TWO_TARGET",
                         "target_focus": "TP1 + TP2",
+                        "regime": regime,
+                        "adx": round(adx_val, 1),
                         "timeframes": "1D + 4H + 1H + 15M" if not m15.empty else "1D + 4H + 1H",
                         "position_in_range": round(value["position"], 3),
                         "extension_atr": round(value["extension"], 2),
@@ -622,7 +676,7 @@ class StrategyEngine:
                         "ema200_confluence": bias.get("ema200_confluence", False),
                         "risk_pct": round(plan["risk_pct"], 2),
                         "asset_type": asset_type,
-                        "entry_timing": "two_target_confirmed",
+                        "entry_timing": "adaptive_confirmed",
                     },
                 )
                 return direction, price, signal
@@ -632,10 +686,11 @@ class StrategyEngine:
                 "4h_long": long_h4, "4h_short": short_h4,
                 "1h_long": long_h1, "1h_short": short_h1,
                 "15m": "available" if not m15.empty else "unavailable",
+                "regime": regime,
             }
             best_value = long_h1 if long_h1.get("score", -999) >= short_h1.get("score", -999) else short_h1
             return "NEUTRAL", 0.0, self._make_neutral(
-                "لا توجد فرصة واضحة لهدفين (TP1/TP2) حالياً",
+                f"لا توجد صفقة مكتملة في وضع [{regime}] حالياً (TP1/TP2)",
                 max(0, min(100, int(best_value.get("score", 0)))),
                 best_value.get("rsi", 50), best_value.get("atr", 0), diagnostics
             )
