@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V126.0 Sweep + MSS + Confluence + Guard Alerts
+# main.py — Bot V127.0 Two-Target Practical Engine (TP1 + TP2)
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only + /gainers Scanner + Smart Regime + Position Guard Alerts.
 # ============================================================
@@ -42,8 +42,8 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-BASE_MIN_SCORE = 82
-COUNTER_REGIME_MIN_SCORE = 87
+BASE_MIN_SCORE = 78
+COUNTER_REGIME_MIN_SCORE = 84
 engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=BASE_MIN_SCORE)
 
 db_lock = threading.RLock()
@@ -392,8 +392,8 @@ def get_daily_market_regime(force=False):
         _, _, macd_hist = engine.calculate_macd(df["close"])
         hist = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
 
-        is_bull = (close > ema20) and (ema20 >= ema50) and (close >= ema200 * 0.99) and (hist > 0) and (adx >= 20)
-        is_bear = (close < ema20) and (ema20 <= ema50) and (close <= ema200 * 1.01) and (hist < 0) and (adx >= 20)
+        is_bull = (close > ema20) and (ema20 >= ema50) and (close >= ema200 * 0.99) and (hist > 0) and (adx >= 18)
+        is_bear = (close < ema20) and (ema20 <= ema50) and (close <= ema200 * 1.01) and (hist < 0) and (adx >= 18)
 
         if is_bull:
             bull_votes += 1
@@ -466,7 +466,7 @@ def _format_neutral_diagnostics(signal):
 
 
 def monitor_tracked_positions(chat_id=None):
-    """Checks tracked signals for Break-Even, momentum shifts, TP hits, or stop hits."""
+    """Checks tracked signals for TP1 -> Break-Even, TP2 completion, or stop hits."""
     positions = get_active_positions()
     if not positions:
         return
@@ -491,17 +491,18 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة — V126.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة (هدفين TP1/TP2) — V127.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
                 f"📍 <b>الدخول المرجعي:</b> <code>{format_num(pos['entry_price'], d)}</code>\n"
-                f"🥇 <b>TP1:</b> <code>{format_num(pos['tp1'], d)}</code>\n\n"
+                f"🥇 <b>TP1:</b> <code>{format_num(pos['tp1'], d)}</code>\n"
+                f"🥈 <b>TP2 (الهدف الأساسي):</b> <code>{format_num(pos['tp2'], d)}</code>\n\n"
                 f"{res.get('message', '')}"
             )
             if tg_send(msg, chat_id):
                 scan_stats["guard_alerts_sent"] += 1
-                if action in ("STOP_HIT", "TP3_REACHED"):
+                if action in ("STOP_HIT", "TP2_REACHED"):
                     db_query("DELETE FROM tracked_positions WHERE signal_id = ?", (pos["signal_id"],))
                 else:
                     db_query(
@@ -565,26 +566,26 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
-            setup_tag = "⚡ سحب سيولة/MSS (MOMENTUM)" if details.get("setup_type") == "MOMENTUM" else "🎯 تصحيح سحب/MSS (PULLBACK)"
+            setup_tag = "⚡ زخم هدفين (MOMENTUM)" if details.get("setup_type") == "MOMENTUM" else "🎯 تصحيح هدفين (PULLBACK)"
             regime_note = (
-                "⚠️ <b>ملاحظة:</b> الإشارة عكس اتجاه اليوم العام؛ يُنصح بتقليل حجم العقد وتأمين الربح مبكراً.\n\n"
+                "⚠️ <b>ملاحظة:</b> الإشارة عكس اتجاه اليوم العام؛ يُنصح بتأمين الربح عند TP1 ثم إغلاق الصفقة عند TP2.\n\n"
                 if counter else ""
             )
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V126.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V127.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"🧭 <b>النمط:</b> {setup_tag}\n"
+                f"🧭 <b>النمط:</b> {setup_tag} (تركيز TP1 + TP2)\n"
                 f"🌐 <b>اتجاه اليوم:</b> <code>{regime}</code>\n"
                 f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
                 f"{regime_note}"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{sig_score}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
-                "🎯 <b>الأهداف:</b>\n"
-                f"🥇 TP1: <code>{format_num(tps[0],d)}</code>\n"
-                f"🥈 TP2: <code>{format_num(tps[1],d)}</code>\n"
-                f"🥉 TP3: <code>{format_num(tps[2],d)}</code>\n\n"
+                "🎯 <b>الأهداف العملية (التركيز على أول هدفين):</b>\n"
+                f"🥇 TP1 (تأمين/نقل الوقف): <code>{format_num(tps[0],d)}</code>\n"
+                f"🥈 TP2 (الهدف الأساسي): <code>{format_num(tps[1],d)}</code>\n"
+                f"📌 TP3 (اختياري/إضافي): <code>{format_num(tps[2],d)}</code>\n\n"
                 f"🛑 <b>وقف الخسارة (بإغلاق شمعة):</b> <code>{format_num(signal.get('stop_loss'),d)}</code>\n"
                 f"📊 <b>RSI:</b> <code>{float(signal.get('rsi',50)):.1f}</code>\n"
                 f"🧲 <b>PoC (أعلى حجم):</b> <code>{format_num(fib_poc.get('poc', 0), d)}</code>\n"
@@ -596,7 +597,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
                 f"⚖️ <b>المخاطرة:</b> <code>{float(details.get('risk_pct',0)):.2f}%</code>\n\n"
                 f"🧠 <b>السبب:</b> {signal.get('reason','')}\n\n"
                 f"🎯 <b>متابعة الزخم:</b>\n{momentum_msg}\n\n"
-                "⚠️ <b>إشارة تحليلية فقط (يُعتد بالوقف عند إغلاق شمعة) — لا تنفيذ تلقائي.</b>"
+                "⚠️ <b>إشارة تحليلية فقط (التركيز على TP1 وTP2) — لا تنفيذ تلقائي.</b>"
             )
             sent = tg_send(msg, chat_id)
             if sent:
@@ -628,7 +629,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
 
 
 def run_gainers_scan(chat_id=None):
-    """Scans top 24h gainers on BingX for clean LONG sweep/MSS/pullback setups."""
+    """Scans top 24h gainers on BingX for clean LONG two-target setups."""
     if not scan_lock.acquire(blocking=False):
         if chat_id:
             tg_send("⏳ يوجد فحص قيد التشغيل حاليًا.", chat_id)
@@ -641,7 +642,7 @@ def run_gainers_scan(chat_id=None):
             return
         preview = "\n".join([f"• <code>{s.split(':')[0]}</code>: <b>+{p:.1f}%</b>" for p, s in top[:8]])
         if chat_id:
-            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ تحليل الفرص الصاعدة (LONG)...", chat_id)
+            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ تحليل الفرص الصاعدة (هدفين TP1/TP2)...", chat_id)
         found = 0
         for _, sym in top:
             try:
@@ -667,7 +668,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V126.0)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V127.0 — هدفين)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -719,9 +720,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V126.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V127.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🎯 <b>Sweep + MSS Pullback</b> + ⚡ <b>Sweep + MSS Momentum</b>\n"
+    "🎯 <b>استراتيجية هدفين (TP1 + TP2):</b> أهداف واقعية ومباشرة بدون مطاردة TP3\n"
     "🔥 أرسل <code>/gainers</code> لفحص العملات الأعلى ربحاً حالياً.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -758,12 +759,13 @@ def handle_update(data):
             if not pos_list:
                 tg_send("📭 لا توجد صفقات متابعة نشطة حالياً.", chat_id)
             else:
-                lines = ["🛡️ <b>الصفقات المتابعة حالياً:</b>\n"]
+                lines = ["🛡️ <b>الصفقات المتابعة حالياً (TP1/TP2):</b>\n"]
                 for p in pos_list:
                     d = decimals_for(p["entry_price"])
                     lines.append(
                         f"• <code>{p['resolved']}</code> ({p['direction']}) | دخول: <code>{format_num(p['entry_price'], d)}</code> | "
-                        f"TP1: <code>{format_num(p['tp1'], d)}</code> | حالة: <code>{p['last_action']}</code>"
+                        f"TP1: <code>{format_num(p['tp1'], d)}</code> | TP2: <code>{format_num(p['tp2'], d)}</code> | "
+                        f"حالة: <code>{p['last_action']}</code>"
                     )
                 tg_send("\n".join(lines), chat_id)
         elif cmd == "/clearpos":
@@ -777,7 +779,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V126.0-Sweep-MSS-Confluence", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V127.0-Two-Target-Practical", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -800,7 +802,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V126.0 bootstrapped: Sweep + MSS + Confluence + Top Gainers + Guard Alerts.")
+    logger.info("Bot V127.0 bootstrapped: Two-Target Practical Engine (TP1 + TP2) + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
