@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V127.0 Two-Target Practical Engine (TP1 + TP2)
+# main.py — Bot V128.0 Clean Two-Target Engine (TP1 + TP2)
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
 # Signal-only + /gainers Scanner + Smart Regime + Position Guard Alerts.
 # ============================================================
@@ -42,8 +42,8 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-BASE_MIN_SCORE = 78
-COUNTER_REGIME_MIN_SCORE = 84
+BASE_MIN_SCORE = 75
+COUNTER_REGIME_MIN_SCORE = 80
 engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=BASE_MIN_SCORE)
 
 db_lock = threading.RLock()
@@ -491,7 +491,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة (هدفين TP1/TP2) — V127.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة (هدفين TP1/TP2) — V128.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -566,34 +566,30 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
-            setup_tag = "⚡ زخم هدفين (MOMENTUM)" if details.get("setup_type") == "MOMENTUM" else "🎯 تصحيح هدفين (PULLBACK)"
             regime_note = (
-                "⚠️ <b>ملاحظة:</b> الإشارة عكس اتجاه اليوم العام؛ يُنصح بتأمين الربح عند TP1 ثم إغلاق الصفقة عند TP2.\n\n"
+                "⚠️ <b>ملاحظة:</b> الإشارة عكس اتجاه اليوم العام؛ التزم بـ TP1 لنقل الوقف وTP2 لجني الربح.\n\n"
                 if counter else ""
             )
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V127.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V128.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"🧭 <b>النمط:</b> {setup_tag} (تركيز TP1 + TP2)\n"
+                "🎯 <b>النظام:</b> هدفين عمليين (TP1 + TP2)\n"
                 f"🌐 <b>اتجاه اليوم:</b> <code>{regime}</code>\n"
                 f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
                 f"{regime_note}"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{sig_score}/100</code> ({details.get('quality','B+')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
-                "🎯 <b>الأهداف العملية (التركيز على أول هدفين):</b>\n"
+                "🎯 <b>الأهداف العملية (هدفين فقط):</b>\n"
                 f"🥇 TP1 (تأمين/نقل الوقف): <code>{format_num(tps[0],d)}</code>\n"
-                f"🥈 TP2 (الهدف الأساسي): <code>{format_num(tps[1],d)}</code>\n"
-                f"📌 TP3 (اختياري/إضافي): <code>{format_num(tps[2],d)}</code>\n\n"
+                f"🥈 TP2 (الهدف الرئيسي للإغلاق): <code>{format_num(tps[1],d)}</code>\n\n"
                 f"🛑 <b>وقف الخسارة (بإغلاق شمعة):</b> <code>{format_num(signal.get('stop_loss'),d)}</code>\n"
                 f"📊 <b>RSI:</b> <code>{float(signal.get('rsi',50)):.1f}</code>\n"
                 f"🧲 <b>PoC (أعلى حجم):</b> <code>{format_num(fib_poc.get('poc', 0), d)}</code>\n"
                 f"📏 <b>فيبو 50%:</b> <code>{format_num(fib_poc.get('fib_500', 0), d)}</code>\n"
                 f"🧭 <b>EMA200 اليومي:</b> <code>{format_num(details.get('ema200', 0), d)}</code>\n"
                 f"🕯️ <b>تأكيد الإغلاق:</b> <code>{close_tag}</code>\n"
-                f"📍 <b>موقع النطاق:</b> <code>{float(details.get('position_in_range',0))*100:.1f}%</code>\n"
-                f"📐 <b>الامتداد:</b> <code>{float(details.get('extension_atr',0)):.2f} ATR</code>\n"
                 f"⚖️ <b>المخاطرة:</b> <code>{float(details.get('risk_pct',0)):.2f}%</code>\n\n"
                 f"🧠 <b>السبب:</b> {signal.get('reason','')}\n\n"
                 f"🎯 <b>متابعة الزخم:</b>\n{momentum_msg}\n\n"
@@ -668,7 +664,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V127.0 — هدفين)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V128.0 — هدفين)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -720,9 +716,9 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V127.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V128.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🎯 <b>استراتيجية هدفين (TP1 + TP2):</b> أهداف واقعية ومباشرة بدون مطاردة TP3\n"
+    "🎯 <b>نظام هدفين (TP1 + TP2):</b> أهداف واقعية ومباشرة بدون مطاردة هدف تالت\n"
     "🔥 أرسل <code>/gainers</code> لفحص العملات الأعلى ربحاً حالياً.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -779,7 +775,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V127.0-Two-Target-Practical", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V128.0-Clean-Two-Target", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -802,7 +798,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V127.0 bootstrapped: Two-Target Practical Engine (TP1 + TP2) + Guard Alerts.")
+    logger.info("Bot V128.0 bootstrapped: Clean Two-Target Engine (TP1 + TP2) + Guard Alerts.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
