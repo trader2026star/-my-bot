@@ -1,10 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V130.0 Unified Adaptive + Momentum Engine
+# analysis.py — StrategyEngine V131.0 High-Quality Two-Target Engine
 # Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
-# Combines:
-# 1. Bullish/Bearish Momentum Breakout Setup (Key Support + Major Resistance + Volume)
-# 2. Adaptive Market Regime Setup (Bullish / Bearish / Sideways)
-# Focused on realistic TP1 & TP2 completion with structural Stop Loss.
+# Stricter 15M confirmation, anti-chase guard, and realistic TP1 & TP2.
 # ============================================================
 
 import logging
@@ -16,7 +13,7 @@ import pandas as pd
 logger = logging.getLogger("StrategyEngine")
 
 SIGNAL_EXPIRY_SECONDS = 86400
-MIN_SCORE_DEFAULT = 75
+MIN_SCORE_DEFAULT = 78
 
 
 def _now_iso():
@@ -47,8 +44,8 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
 
 
 class StrategyEngine:
-    """Unified engine merging Momentum Breakout Setups (with Key Support/Resistance)
-    and Adaptive Market Regime Setups targeting TP1 & TP2."""
+    """High-quality two-target engine focused on realistic TP1 & TP2 hits
+    with stricter confirmation and anti-chase protection."""
 
     def __init__(self, capital=10000.0, risk_per_trade=0.01,
                  min_score=MIN_SCORE_DEFAULT):
@@ -135,7 +132,6 @@ class StrategyEngine:
             return "SIDEWAYS", 20.0
 
     def _key_levels(self, h4, h1, price, atr):
-        """Computes structural Key Support & Major Resistance zone from 4H and 1H swings."""
         try:
             h1_sub = h1.tail(36)
             h4_sub = h4.tail(24)
@@ -145,11 +141,9 @@ class StrategyEngine:
             lows_4h = h4_sub["low"].to_numpy(dtype=float)
             highs_4h = h4_sub["high"].to_numpy(dtype=float)
 
-            # Key Support: highest significant low below current price (or recent 1H floor)
             below_lows = [v for v in np.concatenate([lows_1h[-18:], lows_4h[-10:]]) if v < price]
             key_support = float(np.percentile(below_lows, 65)) if below_lows else float(price - 1.5 * atr)
 
-            # Major Resistance Zone: cluster of highs above current price (or projected extension)
             above_highs = sorted([v for v in np.concatenate([highs_1h, highs_4h]) if v > price])
             if len(above_highs) >= 2:
                 res_low = float(above_highs[0])
@@ -158,7 +152,6 @@ class StrategyEngine:
                 res_low = float(above_highs[0])
                 res_high = float(res_low + 0.8 * atr)
             else:
-                # Breakout into fresh highs: project resistance zone using ATR
                 res_low = float(price + 1.1 * atr)
                 res_high = float(price + 1.8 * atr)
 
@@ -238,8 +231,8 @@ class StrategyEngine:
             body_ratio = body_last / rng_last
 
             if direction == "LONG":
-                bull_close = c_last > o_last and body_ratio >= 0.35
-                strong_body = body_ratio >= 0.55
+                bull_close = c_last > o_last and body_ratio >= 0.38
+                strong_body = body_ratio >= 0.58
                 score = (12 if bull_close else 0) + (6 if strong_body else 0)
                 return {
                     "ok": bull_close,
@@ -248,8 +241,8 @@ class StrategyEngine:
                     "reason": "Bullish candle close" if bull_close else "Weak bullish close",
                 }
             else:
-                bear_close = c_last < o_last and body_ratio >= 0.35
-                strong_body = body_ratio >= 0.55
+                bear_close = c_last < o_last and body_ratio >= 0.38
+                strong_body = body_ratio >= 0.58
                 score = (12 if bear_close else 0) + (6 if strong_body else 0)
                 return {
                     "ok": bear_close,
@@ -267,7 +260,30 @@ class StrategyEngine:
             sub = df.tail(10)
             hi = float(sub["high"].max())
             lo = float(sub["low"].min())
-            return ((hi - lo) / atr) < 1.6
+            return ((hi - lo) / atr) < 1.65
+        except Exception:
+            return False
+
+    def _is_overextended_move(self, df, atr, direction):
+        """Blocks chasing stretched moves right before a pullback."""
+        try:
+            if df is None or len(df) < 6 or atr <= 0:
+                return False
+            c_now = float(df["close"].iloc[-1])
+            o_now = float(df["open"].iloc[-1])
+            c_prev3 = float(df["close"].iloc[-4])
+            ema20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
+            if direction == "LONG":
+                if abs(c_now - o_now) > 2.1 * atr and c_now > o_now:
+                    return True
+                if (c_now - c_prev3) > 3.2 * atr or (c_now - ema20) > 2.6 * atr:
+                    return True
+            else:
+                if abs(c_now - o_now) > 2.1 * atr and c_now < o_now:
+                    return True
+                if (c_prev3 - c_now) > 3.2 * atr or (ema20 - c_now) > 2.6 * atr:
+                    return True
+            return False
         except Exception:
             return False
 
@@ -418,8 +434,7 @@ class StrategyEngine:
                 "reason": "، ".join(reasons) if reasons else "Neutral bias"}
 
     def _momentum_breakout_detector(self, daily, h4, h1, m15, asset_type, regime):
-        """Detects strong Momentum Breakout setups (like BLESS) with Key Support,
-        Major Resistance, Entry Zone, and structural Stop Loss."""
+        """Detects high-conviction Momentum Breakout setups with mandatory 15M alignment."""
         try:
             if len(h4) < 35 or len(h1) < 30:
                 return None
@@ -438,7 +453,7 @@ class StrategyEngine:
 
             vol_mean = float(h1["volume"].tail(20).mean())
             vol_last = float(h1["volume"].iloc[-1])
-            vol_spike = vol_mean > 0 and vol_last >= (vol_mean * 1.25)
+            vol_spike = vol_mean > 0 and vol_last >= (vol_mean * 1.35)
 
             levels = self._key_levels(h4, h1, price, atr_1h)
             key_sup = levels["key_support"]
@@ -447,34 +462,40 @@ class StrategyEngine:
 
             # 1) Bullish Momentum Breakout Setup
             bull_close = self.has_close_confirmation(h1, "LONG")
+            conf_15m_long = self._entry_confirmation(m15, "LONG")
+            m15_ok_long = True if (m15 is None or m15.empty) else conf_15m_long.get("ok", False)
             prev_hi_1h = float(h1["high"].tail(12).iloc[:-1].max())
-            is_bull_breakout = (price >= prev_hi_1h * 0.996) and (price > ema20_1h) and (ema20_1h >= ema50_1h * 0.995) and (hist_1h > 0)
-            if is_bull_breakout and bull_close.get("ok") and (52 <= rsi_1h <= 80) and (rsi_15m <= 82):
-                # Entry zone sits around support/EMA20 retest up to current price
-                entry_low = max(key_sup, price - 0.85 * atr_1h)
-                entry_high = price + 0.10 * atr_1h
+            is_bull_breakout = (
+                (price >= prev_hi_1h * 0.996)
+                and (price > ema20_1h)
+                and (ema20_1h >= ema50_1h * 0.995)
+                and (hist_1h > 0)
+                and not self._is_overextended_move(h1, atr_1h, "LONG")
+            )
+            if is_bull_breakout and bull_close.get("ok") and m15_ok_long and (54 <= rsi_1h <= 76) and (rsi_15m <= 78):
+                entry_low = max(key_sup, price - 0.70 * atr_1h)
+                entry_high = price + 0.05 * atr_1h
                 if entry_low > entry_high:
-                    entry_low = price - 0.35 * atr_1h
+                    entry_low = price - 0.30 * atr_1h
                 entry_mid = (entry_low + entry_high) / 2.0
 
-                # Structural Stop Loss below Key Support (capped at 5.5% max risk)
-                raw_sl = min(key_sup - 0.55 * atr_1h, entry_mid - 1.85 * atr_1h)
-                max_sl = entry_mid * 0.945
+                raw_sl = min(key_sup - 0.50 * atr_1h, entry_mid - 1.75 * atr_1h)
+                max_sl = entry_mid * 0.95
                 stop_loss = max(raw_sl, max_sl)
                 risk = entry_mid - stop_loss
-                if risk > 0 and (risk / entry_mid * 100) <= 6.0:
+                if risk > 0 and (risk / entry_mid * 100) <= 5.0:
                     tp1 = max(res_low, entry_mid + 0.75 * risk)
-                    tp2 = max(res_high, entry_mid + 1.40 * risk)
-                    tp3 = entry_mid + 2.10 * risk
+                    tp2 = max(res_high, entry_mid + 1.35 * risk)
+                    tp3 = entry_mid + 2.00 * risk
                     if stop_loss < entry_mid < tp1 < tp2:
-                        score = 80 + (6 if vol_spike else 0) + (5 if bull_close.get("body_ratio", 0) >= 0.55 else 0)
+                        score = 78 + (6 if vol_spike else 0) + (5 if bull_close.get("body_ratio", 0) >= 0.58 else 0) + (4 if conf_15m_long.get("ok") else 0)
                         score = min(98, score)
                         quality = "A+" if score >= 88 else "A"
                         decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
                         fib_poc = self.calculate_fib_and_poc(h1, "LONG", lookback=36)
                         bias = self._bias(daily, "LONG")
                         struct = self._structure(h4, "LONG")
-                        reason = f"LONG | V130.0 Bullish Momentum Setup (TP1/TP2): Breakout + Vol({'ON' if vol_spike else 'OK'})"
+                        reason = f"LONG | V131.0 Bullish Momentum (TP1/TP2): Breakout + 15M + Vol({'ON' if vol_spike else 'OK'})"
                         sig = build_signal(
                             "LONG",
                             round(entry_low, decimals),
@@ -494,7 +515,7 @@ class StrategyEngine:
                                 "resistance_low": round(res_low, decimals),
                                 "resistance_high": round(res_high, decimals),
                                 "timeframes": "1D + 4H + 1H + 15M" if (m15 is not None and not m15.empty) else "1D + 4H + 1H",
-                                "position_in_range": 0.72,
+                                "position_in_range": 0.68,
                                 "extension_atr": round(abs(price - ema20_1h) / atr_1h, 2),
                                 "move12": 0.0,
                                 "structure": struct,
@@ -505,39 +526,47 @@ class StrategyEngine:
                                 "ema200_confluence": bias.get("ema200_confluence", False),
                                 "risk_pct": round((risk / entry_mid) * 100, 2),
                                 "asset_type": asset_type,
-                                "entry_timing": "momentum_breakout_confirmed",
+                                "entry_timing": "momentum_breakout_15m_confirmed",
                             },
                         )
                         return "LONG", price, sig
 
             # 2) Bearish Momentum Breakdown Setup
             bear_close = self.has_close_confirmation(h1, "SHORT")
+            conf_15m_short = self._entry_confirmation(m15, "SHORT")
+            m15_ok_short = True if (m15 is None or m15.empty) else conf_15m_short.get("ok", False)
             prev_lo_1h = float(h1["low"].tail(12).iloc[:-1].min())
-            is_bear_breakdown = (price <= prev_lo_1h * 1.004) and (price < ema20_1h) and (ema20_1h <= ema50_1h * 1.005) and (hist_1h < 0)
-            if is_bear_breakdown and bear_close.get("ok") and (20 <= rsi_1h <= 48) and (rsi_15m >= 18):
-                entry_low = price - 0.10 * atr_1h
-                entry_high = min(res_low, price + 0.85 * atr_1h)
+            is_bear_breakdown = (
+                (price <= prev_lo_1h * 1.004)
+                and (price < ema20_1h)
+                and (ema20_1h <= ema50_1h * 1.005)
+                and (hist_1h < 0)
+                and not self._is_overextended_move(h1, atr_1h, "SHORT")
+            )
+            if is_bear_breakdown and bear_close.get("ok") and m15_ok_short and (24 <= rsi_1h <= 46) and (rsi_15m >= 22):
+                entry_low = price - 0.05 * atr_1h
+                entry_high = min(res_low, price + 0.70 * atr_1h)
                 if entry_high < entry_low:
-                    entry_high = price + 0.35 * atr_1h
+                    entry_high = price + 0.30 * atr_1h
                 entry_mid = (entry_low + entry_high) / 2.0
 
-                raw_sl = max(res_low + 0.55 * atr_1h, entry_mid + 1.85 * atr_1h)
-                min_sl = entry_mid * 1.055
+                raw_sl = max(res_low + 0.50 * atr_1h, entry_mid + 1.75 * atr_1h)
+                min_sl = entry_mid * 1.05
                 stop_loss = min(raw_sl, min_sl)
                 risk = stop_loss - entry_mid
-                if risk > 0 and (risk / entry_mid * 100) <= 6.0:
+                if risk > 0 and (risk / entry_mid * 100) <= 5.0:
                     tp1 = min(key_sup, entry_mid - 0.75 * risk)
-                    tp2 = entry_mid - 1.40 * risk
-                    tp3 = entry_mid - 2.10 * risk
+                    tp2 = entry_mid - 1.35 * risk
+                    tp3 = entry_mid - 2.00 * risk
                     if tp2 < tp1 < entry_mid < stop_loss:
-                        score = 80 + (6 if vol_spike else 0) + (5 if bear_close.get("body_ratio", 0) >= 0.55 else 0)
+                        score = 78 + (6 if vol_spike else 0) + (5 if bear_close.get("body_ratio", 0) >= 0.58 else 0) + (4 if conf_15m_short.get("ok") else 0)
                         score = min(98, score)
                         quality = "A+" if score >= 88 else "A"
                         decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
                         fib_poc = self.calculate_fib_and_poc(h1, "SHORT", lookback=36)
                         bias = self._bias(daily, "SHORT")
                         struct = self._structure(h4, "SHORT")
-                        reason = f"SHORT | V130.0 Bearish Momentum Setup (TP1/TP2): Breakdown + Vol({'ON' if vol_spike else 'OK'})"
+                        reason = f"SHORT | V131.0 Bearish Momentum (TP1/TP2): Breakdown + 15M + Vol({'ON' if vol_spike else 'OK'})"
                         sig = build_signal(
                             "SHORT",
                             round(entry_low, decimals),
@@ -557,7 +586,7 @@ class StrategyEngine:
                                 "resistance_low": round(res_low, decimals),
                                 "resistance_high": round(res_high, decimals),
                                 "timeframes": "1D + 4H + 1H + 15M" if (m15 is not None and not m15.empty) else "1D + 4H + 1H",
-                                "position_in_range": 0.28,
+                                "position_in_range": 0.32,
                                 "extension_atr": round(abs(price - ema20_1h) / atr_1h, 2),
                                 "move12": 0.0,
                                 "structure": struct,
@@ -568,7 +597,7 @@ class StrategyEngine:
                                 "ema200_confluence": bias.get("ema200_confluence", False),
                                 "risk_pct": round((risk / entry_mid) * 100, 2),
                                 "asset_type": asset_type,
-                                "entry_timing": "momentum_breakdown_confirmed",
+                                "entry_timing": "momentum_breakdown_15m_confirmed",
                             },
                         )
                         return "SHORT", price, sig
@@ -603,19 +632,19 @@ class StrategyEngine:
                 else:
                     score -= 16; reasons.append("Too high in sideways range")
             else:
-                if position <= 0.72:
+                if position <= 0.70:
                     score += 16; reasons.append("Trend value zone")
                 else:
-                    score -= 12; reasons.append("High range")
+                    score -= 14; reasons.append("High range")
 
-            if 38 <= rsi <= 72:
+            if 40 <= rsi <= 70:
                 score += 12; reasons.append("RSI supportive")
-            elif rsi > 76:
+            elif rsi > 75:
                 score -= 18; reasons.append("Overbought")
-            if extension <= 2.1:
+            if extension <= 2.0:
                 score += 9; reasons.append("Near EMA20")
-            elif extension > 2.9:
-                score -= 14; reasons.append("Extended")
+            elif extension > 2.7:
+                score -= 15; reasons.append("Extended")
         else:
             if regime == "SIDEWAYS":
                 if position >= 0.58:
@@ -625,19 +654,19 @@ class StrategyEngine:
                 else:
                     score -= 16; reasons.append("Too low in sideways range")
             else:
-                if position >= 0.28:
+                if position >= 0.30:
                     score += 16; reasons.append("Trend short zone")
                 else:
-                    score -= 12; reasons.append("Low range")
+                    score -= 14; reasons.append("Low range")
 
-            if 28 <= rsi <= 62:
+            if 30 <= rsi <= 60:
                 score += 12; reasons.append("RSI supportive")
-            elif rsi < 24:
+            elif rsi < 25:
                 score -= 18; reasons.append("Oversold")
-            if extension <= 2.1:
+            if extension <= 2.0:
                 score += 9; reasons.append("Near EMA20")
-            elif extension > 2.9:
-                score -= 14; reasons.append("Extended")
+            elif extension > 2.7:
+                score -= 15; reasons.append("Extended")
 
         fib_poc = self.calculate_fib_and_poc(df, direction, lookback=36)
         engulf = self.has_engulfing(df, direction)
@@ -652,10 +681,10 @@ class StrategyEngine:
 
         look = df.tail(12)
         move = (float(look["close"].iloc[-1]) - float(look["close"].iloc[0])) / max(float(look["close"].iloc[0]), 1e-9) * 100
-        if abs(move) > 14.0:
-            score -= 12; reasons.append("Over-stretched move")
+        if abs(move) > 13.0:
+            score -= 14; reasons.append("Over-stretched move")
 
-        return {"ok": score >= 18, "score": max(-15, score), "rsi": rsi, "atr": atr,
+        return {"ok": score >= 20, "score": max(-15, score), "rsi": rsi, "atr": atr,
                 "position": position, "extension": extension, "move12": move,
                 "range_high": hi, "range_low": lo,
                 "fib_poc": fib_poc, "engulfing": engulf, "close_confirmed": close_conf.get("ok", False),
@@ -681,18 +710,18 @@ class StrategyEngine:
             if close > prev_hi: score += 9; reasons.append("15M breakout")
             if self.has_engulfing(df, "LONG"): score += 7; reasons.append("15M engulfing")
             if close_conf.get("ok"): score += 8; reasons.append("15M close OK")
-            if 38 <= rsi <= 75: score += 5; reasons.append("15M RSI OK")
+            if 40 <= rsi <= 74: score += 5; reasons.append("15M RSI OK")
         else:
             if close < op: score += 8; reasons.append("15M bearish close")
             if hi > prev_hi and close < prev_hi: score += 10; reasons.append("15M sweep reject")
             if close < prev_lo: score += 9; reasons.append("15M breakdown")
             if self.has_engulfing(df, "SHORT"): score += 7; reasons.append("15M engulfing")
             if close_conf.get("ok"): score += 8; reasons.append("15M close OK")
-            if 25 <= rsi <= 62: score += 5; reasons.append("15M RSI OK")
+            if 26 <= rsi <= 60: score += 5; reasons.append("15M RSI OK")
         body = abs(close - op)
-        if atr > 0 and body > 2.2 * atr:
-            score -= 8; reasons.append("15M candle stretched")
-        ok_15m = close_conf.get("ok", False) and (score >= 10)
+        if atr > 0 and body > 2.0 * atr:
+            score -= 10; reasons.append("15M candle stretched")
+        ok_15m = close_conf.get("ok", False) and (score >= 12)
         return {"ok": ok_15m, "score": score, "atr": atr, "rsi": rsi,
                 "close_confirmed": close_conf.get("ok", False),
                 "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
@@ -702,8 +731,8 @@ class StrategyEngine:
             return None
         swing_low = float(structure.get("swing_low", df1h["low"].tail(18).min()))
         swing_high = float(structure.get("swing_high", df1h["high"].tail(18).max()))
-        tp1_r = 0.55 if regime == "SIDEWAYS" else 0.65
-        tp2_r = 1.05 if regime == "SIDEWAYS" else 1.25
+        tp1_r = 0.60 if regime == "SIDEWAYS" else 0.70
+        tp2_r = 1.15 if regime == "SIDEWAYS" else 1.35
 
         if direction == "LONG":
             structural = min(swing_low, levels["key_support"]) - 0.55 * atr
@@ -713,14 +742,14 @@ class StrategyEngine:
             if risk <= 0:
                 return None
             risk_pct = risk / entry_price * 100
-            if risk_pct > 5.5:
+            if risk_pct > 5.0:
                 return None
             if risk_pct < 0.7:
                 stop = entry_price - 1.45 * atr
                 risk = entry_price - stop
             entry_low = max(0.0, entry_price - 0.15 * atr)
             entry_high = entry_price + 0.05 * atr
-            tps = [entry_price + tp1_r * risk, entry_price + tp2_r * risk, entry_price + 1.65 * risk]
+            tps = [entry_price + tp1_r * risk, entry_price + tp2_r * risk, entry_price + 1.85 * risk]
         else:
             structural = max(swing_high, levels["resistance_low"]) + 0.55 * atr
             atr_stop = entry_price + 1.75 * atr
@@ -729,14 +758,14 @@ class StrategyEngine:
             if risk <= 0:
                 return None
             risk_pct = risk / entry_price * 100
-            if risk_pct > 5.5:
+            if risk_pct > 5.0:
                 return None
             if risk_pct < 0.7:
                 stop = entry_price + 1.45 * atr
                 risk = stop - entry_price
             entry_low = entry_price - 0.05 * atr
             entry_high = entry_price + 0.15 * atr
-            tps = [entry_price - tp1_r * risk, entry_price - tp2_r * risk, entry_price - 1.65 * risk]
+            tps = [entry_price - tp1_r * risk, entry_price - tp2_r * risk, entry_price - 1.85 * risk]
 
         return {
             "entry_low": entry_low,
@@ -830,6 +859,8 @@ class StrategyEngine:
                     continue
                 if not value.get("close_confirmed", False):
                     continue
+                if self._is_overextended_move(h1, value["atr"], direction):
+                    continue
                 conf = self._entry_confirmation(m15, direction)
                 if not m15.empty and not conf["ok"]:
                     continue
@@ -851,7 +882,7 @@ class StrategyEngine:
             if candidates:
                 score, direction, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
                 quality = "A+" if score >= 88 else "A" if score >= 82 else "B+"
-                reason = f"{direction} | V130.0 [{regime}] TP1/TP2: {struct['reason']} + close confirmed"
+                reason = f"{direction} | V131.0 [{regime}] TP1/TP2: {struct['reason']} + close confirmed"
                 decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
                 signal = build_signal(
                     direction,
@@ -888,7 +919,6 @@ class StrategyEngine:
                 )
                 return direction, price, signal
 
-            # Fallback/Companion: Strong Momentum Breakout Setup (like BLESS)
             mom_setup = self._momentum_breakout_detector(daily, h4, h1, m15, asset_type, regime)
             if mom_setup is not None:
                 return mom_setup
@@ -902,7 +932,7 @@ class StrategyEngine:
             }
             best_value = long_h1 if long_h1.get("score", -999) >= short_h1.get("score", -999) else short_h1
             return "NEUTRAL", 0.0, self._make_neutral(
-                f"لا توجد صفقة مكتملة في وضع [{regime}] حالياً (TP1/TP2)",
+                f"لا توجد صفقة عالية الجودة في وضع [{regime}] حالياً (TP1/TP2)",
                 max(0, min(100, int(best_value.get("score", 0)))),
                 best_value.get("rsi", 50), best_value.get("atr", 0), diagnostics
             )
