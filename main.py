@@ -1,7 +1,7 @@
 # ============================================================
-# main.py — Bot V130.0 Unified Momentum + Adaptive Engine
+# main.py — Bot V131.0 High-Quality Two-Target Engine
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Includes Key Support & Major Resistance + Active Position Lock.
+# Higher quality thresholds + R:R display + Active Position Lock.
 # ============================================================
 
 import os
@@ -42,8 +42,8 @@ bingx = ccxt.bingx({
     "options": {"defaultType": "swap"},
 })
 
-BASE_MIN_SCORE = 75
-COUNTER_REGIME_MIN_SCORE = 80
+BASE_MIN_SCORE = 78
+COUNTER_REGIME_MIN_SCORE = 84
 engine = StrategyEngine(capital=10000.0, risk_per_trade=0.01, min_score=BASE_MIN_SCORE)
 
 db_lock = threading.RLock()
@@ -56,11 +56,11 @@ _seen_lock = threading.Lock()
 _all_markets_cache = []
 _markets_cache_time = 0
 _sent_signals_cache = {}
-SIGNAL_COOLDOWN_SECONDS = 14400  # 4 hours cooldown per ticker
-MAX_SAME_DIRECTION_PER_SCAN = 4
+SIGNAL_COOLDOWN_SECONDS = 14400
+MAX_SAME_DIRECTION_PER_SCAN = 3
 MAX_TRACKED_POSITIONS = 12
-POSITION_TTL_SECONDS = 86400  # 24 hours max tracking per signal
-SCAN_INTERVAL_SECONDS = 3600  # 1 hour scan cycle
+POSITION_TTL_SECONDS = 86400
+SCAN_INTERVAL_SECONDS = 3600
 
 MARKET_REGIME_CACHE = {"regime": "SIDEWAYS", "summary": "لم يُحدد بعد", "updated_ts": 0.0}
 REGIME_TTL_SECONDS = 1800
@@ -252,7 +252,7 @@ def get_top_gainers(limit=15):
                 pct_val = float(pct)
             except Exception:
                 continue
-            if pct_val > 3.0:
+            if pct_val > 3.5:
                 gainers.append((pct_val, sym))
         gainers.sort(key=lambda x: x[0], reverse=True)
         return gainers[:limit]
@@ -457,6 +457,20 @@ def format_num(value, decimals):
         return "N/A"
 
 
+def _calc_rr_tp2(direction, entry_low, entry_high, stop_loss, tp2):
+    try:
+        entry_mid = (float(entry_low) + float(entry_high)) / 2.0
+        sl = float(stop_loss)
+        t2 = float(tp2)
+        risk = abs(entry_mid - sl)
+        reward = abs(t2 - entry_mid)
+        if risk <= 0:
+            return "N/A"
+        return f"1 : {reward / risk:.2f}"
+    except Exception:
+        return "N/A"
+
+
 def _format_neutral_diagnostics(signal):
     details = (signal or {}).get("details", {}) or {}
     dl = (details.get("daily_long") or {}).get("reason", "N/A")
@@ -497,7 +511,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V130.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V131.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -569,7 +583,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             if not manual:
                 if _is_duplicate_active_position(resolved, direction):
                     return False, signal
-                if counter and not is_momentum_setup and sig_score < COUNTER_REGIME_MIN_SCORE:
+                if counter and sig_score < COUNTER_REGIME_MIN_SCORE:
                     return False, signal
                 if direction_counts is not None and direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
                     return False, signal
@@ -596,9 +610,10 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             key_sup = details.get("key_support", 0)
             res_low = details.get("resistance_low", 0)
             res_high = details.get("resistance_high", 0)
+            rr_tp2 = _calc_rr_tp2(direction, signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
 
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V130.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V131.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"🔥 <b>نوع الإعداد:</b> {setup_label}\n"
@@ -612,7 +627,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
                 f"🥈 TP2 (الهدف الرئيسي): <code>{format_num(tps[1],d)}</code>\n"
                 f"🥉 TP3 (اختياري/إضافي): <code>{format_num(tps[2],d)}</code>\n\n"
                 f"🛑 <b>وقف الخسارة (بإغلاق شمعة):</b> <code>{format_num(signal.get('stop_loss'),d)}</code>\n"
-                f"📊 <b>الدعم الرئيسي:</b> <code>{format_num(key_sup, d)}</code>\n"
+                f"📊 <b>العائد للمخاطرة (TP2):</b> <code>{rr_tp2}</code>\n"
+                f"📉 <b>الدعم الرئيسي:</b> <code>{format_num(key_sup, d)}</code>\n"
                 f"🚧 <b>المقاومة الرئيسية:</b> <code>{format_num(res_low, d)} — {format_num(res_high, d)}</code>\n"
                 f"📈 <b>RSI:</b> <code>{float(signal.get('rsi',50)):.1f}</code>\n"
                 f"🧲 <b>PoC (أعلى حجم):</b> <code>{format_num(fib_poc.get('poc', 0), d)}</code>\n"
@@ -639,7 +655,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             diag_text = _format_neutral_diagnostics(signal)
             tg_send(
                 f"📊 <b>تحليل:</b> <code>{symbol_raw}</code>\n🏷️ <b>السوق:</b> {market_tag}\n━━━━━━━━━━━━━━━━━━\n"
-                "⚪ <b>لا توجد صفقة LONG/SHORT مكتملة حاليًا.</b>\n"
+                "⚪ <b>لا توجد صفقة LONG/SHORT عالية الجودة حاليًا.</b>\n"
                 f"🔎 <b>السبب:</b> {reason}\n\n"
                 f"📋 <b>تفاصيل الفلاتر:</b>\n<code>{diag_text}</code>", chat_id)
         return False, signal
@@ -690,7 +706,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V130.0)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V131.0)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -742,7 +758,7 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V130.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V131.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "⚡ <b>النظام الموحد:</b> صفقات الزخم والاختراق (Momentum Setup) + النظام المتكيف (صعود/هبوط/عرضي)\n"
     "🎯 <b>الأهداف:</b> تركيز عملي على TP1 و TP2 مع تحديد الدعم الرئيسي والمقاومة الرئيسية\n"
@@ -802,7 +818,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V130.0-Unified-Momentum-Adaptive", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V131.0-High-Quality-Two-Target", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -825,7 +841,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V130.0 bootstrapped: Unified Momentum Breakout + Adaptive Regime Engine.")
+    logger.info("Bot V131.0 bootstrapped: High-Quality Momentum + Adaptive Engine.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
