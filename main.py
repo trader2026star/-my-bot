@@ -1,7 +1,8 @@
 # ============================================================
-# main.py — Bot V131.0 High-Quality Two-Target Engine
+# main.py — Bot V132.0 Dual Scalp + Swing Engine
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Higher quality thresholds + R:R display + Active Position Lock.
+# Displays exact trade style (SCALP vs SWING), R:R, Key Levels,
+# and tracks active positions toward TP1 & TP2.
 # ============================================================
 
 import os
@@ -457,13 +458,13 @@ def format_num(value, decimals):
         return "N/A"
 
 
-def _calc_rr_tp2(direction, entry_low, entry_high, stop_loss, tp2):
+def _calc_rr(entry_low, entry_high, stop_loss, target):
     try:
         entry_mid = (float(entry_low) + float(entry_high)) / 2.0
         sl = float(stop_loss)
-        t2 = float(tp2)
+        tgt = float(target)
         risk = abs(entry_mid - sl)
-        reward = abs(t2 - entry_mid)
+        reward = abs(tgt - entry_mid)
         if risk <= 0:
             return "N/A"
         return f"1 : {reward / risk:.2f}"
@@ -511,7 +512,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V131.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V132.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -575,7 +576,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
         regime_info = get_daily_market_regime()
         regime = regime_info.get("regime", "SIDEWAYS")
         details = (signal or {}).get("details", {}) or {}
-        is_momentum_setup = "MOMENTUM_SETUP" in str(details.get("setup_type", ""))
+        trade_style = str(details.get("trade_style", "SCALP")).upper()
+        is_swing = trade_style == "SWING"
         counter = is_counter_regime(regime, direction)
         sig_score = int((signal or {}).get("score", 0))
 
@@ -583,7 +585,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             if not manual:
                 if _is_duplicate_active_position(resolved, direction):
                     return False, signal
-                if counter and sig_score < COUNTER_REGIME_MIN_SCORE:
+                if counter and not is_swing and sig_score < COUNTER_REGIME_MIN_SCORE:
                     return False, signal
                 if direction_counts is not None and direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
                     return False, signal
@@ -604,36 +606,35 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             _, momentum_msg = engine.check_momentum_at_tp1(h1)
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
+            style_badge = "🌊 سوينج قصير (SWING)" if is_swing else "⚡ سكالبنج لحظي (SCALP)"
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
             sig_regime = details.get("regime", regime)
-            setup_label = "⚡ زخم صعودي/هبوطي (Momentum Setup)" if is_momentum_setup else "🧭 إعداد متكيّف (Adaptive Setup)"
             key_sup = details.get("key_support", 0)
             res_low = details.get("resistance_low", 0)
             res_high = details.get("resistance_high", 0)
-            rr_tp2 = _calc_rr_tp2(direction, signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
+            rr_tp1 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[0])
+            rr_tp2 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
 
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V131.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V132.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
-                f"🔥 <b>نوع الإعداد:</b> {setup_label}\n"
+                f"🎛️ <b>تصنيف الصفقة:</b> <b>{style_badge}</b>\n"
                 f"🌐 <b>حالة السوق:</b> <code>{sig_regime}</code>\n"
-                f"{emoji} <b>{side} — توقيت دخول مؤكد بإغلاق الشمعة</b>\n\n"
+                f"{emoji} <b>{side} — تأكيد إغلاق + فلتر زخم وسيولة</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{sig_score}/100</code> ({details.get('quality','A')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
                 "🎯 <b>الأهداف العملية (التركيز على TP1 و TP2):</b>\n"
-                f"🥇 TP1 (تأمين/نقل الوقف): <code>{format_num(tps[0],d)}</code>\n"
-                f"🥈 TP2 (الهدف الرئيسي): <code>{format_num(tps[1],d)}</code>\n"
+                f"🥇 TP1 (تأمين/نقل الوقف): <code>{format_num(tps[0],d)}</code> | R:R <code>{rr_tp1}</code>\n"
+                f"🥈 TP2 (الهدف الأساسي): <code>{format_num(tps[1],d)}</code> | R:R <code>{rr_tp2}</code>\n"
                 f"🥉 TP3 (اختياري/إضافي): <code>{format_num(tps[2],d)}</code>\n\n"
                 f"🛑 <b>وقف الخسارة (بإغلاق شمعة):</b> <code>{format_num(signal.get('stop_loss'),d)}</code>\n"
-                f"📊 <b>العائد للمخاطرة (TP2):</b> <code>{rr_tp2}</code>\n"
                 f"📉 <b>الدعم الرئيسي:</b> <code>{format_num(key_sup, d)}</code>\n"
                 f"🚧 <b>المقاومة الرئيسية:</b> <code>{format_num(res_low, d)} — {format_num(res_high, d)}</code>\n"
-                f"📈 <b>RSI:</b> <code>{float(signal.get('rsi',50)):.1f}</code>\n"
+                f"📈 <b>RSI:</b> <code>{float(signal.get('rsi',50)):.1f}</code> | 📊 <b>ADX:</b> <code>{float(details.get('adx',25)):.1f}</code>\n"
                 f"🧲 <b>PoC (أعلى حجم):</b> <code>{format_num(fib_poc.get('poc', 0), d)}</code>\n"
-                f"🕯️ <b>تأكيد الإغلاق:</b> <code>{close_tag}</code>\n"
-                f"⚖️ <b>المخاطرة:</b> <code>{float(details.get('risk_pct',0)):.2f}%</code>\n\n"
+                f"🕯️ <b>تأكيد الإغلاق:</b> <code>{close_tag}</code> | ⚖️ <b>المخاطرة:</b> <code>{float(details.get('risk_pct',0)):.2f}%</code>\n\n"
                 f"🧠 <b>السبب:</b> {signal.get('reason','')}\n\n"
                 f"🎯 <b>متابعة الزخم:</b>\n{momentum_msg}\n\n"
                 "⚠️ <b>إشارة تحليلية فقط — التزم بإدارة المخاطر ولا تفرط في التعرض.</b>"
@@ -655,7 +656,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             diag_text = _format_neutral_diagnostics(signal)
             tg_send(
                 f"📊 <b>تحليل:</b> <code>{symbol_raw}</code>\n🏷️ <b>السوق:</b> {market_tag}\n━━━━━━━━━━━━━━━━━━\n"
-                "⚪ <b>لا توجد صفقة LONG/SHORT عالية الجودة حاليًا.</b>\n"
+                "⚪ <b>لا توجد صفقة (SCALP/SWING) عالية الجودة حاليًا.</b>\n"
                 f"🔎 <b>السبب:</b> {reason}\n\n"
                 f"📋 <b>تفاصيل الفلاتر:</b>\n<code>{diag_text}</code>", chat_id)
         return False, signal
@@ -680,7 +681,7 @@ def run_gainers_scan(chat_id=None):
             return
         preview = "\n".join([f"• <code>{s.split(':')[0]}</code>: <b>+{p:.1f}%</b>" for p, s in top[:8]])
         if chat_id:
-            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ اكتشاف صفقات الزخم الصعودي (TP1/TP2)...", chat_id)
+            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ فحص فرص السكالبنج والسوينج (TP1/TP2)...", chat_id)
         found = 0
         for _, sym in top:
             try:
@@ -706,7 +707,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V131.0)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V132.0)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -758,13 +759,13 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V131.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V132.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "⚡ <b>النظام الموحد:</b> صفقات الزخم والاختراق (Momentum Setup) + النظام المتكيف (صعود/هبوط/عرضي)\n"
-    "🎯 <b>الأهداف:</b> تركيز عملي على TP1 و TP2 مع تحديد الدعم الرئيسي والمقاومة الرئيسية\n"
-    "🔥 أرسل <code>/gainers</code> لاكتشاف صفقات الزخم الصعودي في الرابحين.\n"
+    "🎛️ <b>النظام المزدوج:</b> يحدد تلقائياً هل الفرصة <b>⚡ سكالبنج (SCALP)</b> أم <b>🌊 سوينج قصير (SWING)</b>\n"
+    "🎯 <b>الأهداف:</b> تركيز عملي على TP1 و TP2 مع عرض R:R والدعم والمقاومة الرئيسية\n"
+    "🔥 أرسل <code>/gainers</code> لاكتشاف فرص الزخم في الرابحين.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
-    "📌 أرسل BLESS أو BTC أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
+    "📌 أرسل BTC أو ETH أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
     "🔍 أرسل <code>/scan</code> للفحص الشامل ومتابعة الصفقات.\n"
     "🛡️ أرسل <code>/positions</code> لعرض الصفقات المتابعة، أو <code>/clearpos</code> لمسحها.\n"
     "⚠️ إشارات تحليلية فقط — لا تنفيذ تلقائي."
@@ -818,7 +819,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V131.0-High-Quality-Two-Target", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V132.0-Dual-Scalp-Swing", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -841,7 +842,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V131.0 bootstrapped: High-Quality Momentum + Adaptive Engine.")
+    logger.info("Bot V132.0 bootstrapped: Dual Scalp + Swing Engine.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
