@@ -1,8 +1,8 @@
 # ============================================================
-# main.py — Bot V132.0 Dual Scalp + Swing Engine
+# main.py — Bot V133.0 Dual Scalp + Swing Engine
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Displays exact trade style (SCALP vs SWING), R:R, Key Levels,
-# and tracks active positions toward TP1 & TP2.
+# Displays exact trade style (SCALP vs SWING), R:R for TP1/TP2,
+# Key Levels, Best Candidate in NEUTRAL, and TP1/TP2 tracking.
 # ============================================================
 
 import os
@@ -480,7 +480,10 @@ def _format_neutral_diagnostics(signal):
     h4s = (details.get("4h_short") or {}).get("reason", "N/A")
     h1l = (details.get("1h_long") or {}).get("reason", "N/A")
     h1s = (details.get("1h_short") or {}).get("reason", "N/A")
+    best_cand = details.get("best_candidate")
+    extra = f"• الأقرب للاكتمال: {best_cand}\n" if best_cand else ""
     return (
+        f"{extra}"
         f"• 1D (LONG/SHORT): {dl} | {ds}\n"
         f"• 4H (LONG/SHORT): {h4l} | {h4s}\n"
         f"• 1H (LONG/SHORT): {h1l} | {h1s}"
@@ -512,7 +515,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V132.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V133.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -616,12 +619,12 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             rr_tp2 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
 
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V132.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V133.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"🎛️ <b>تصنيف الصفقة:</b> <b>{style_badge}</b>\n"
                 f"🌐 <b>حالة السوق:</b> <code>{sig_regime}</code>\n"
-                f"{emoji} <b>{side} — تأكيد إغلاق + فلتر زخم وسيولة</b>\n\n"
+                f"{emoji} <b>{side} — تأكيد إغلاق + فلتر زخم وسيولة وR:R</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{sig_score}/100</code> ({details.get('quality','A')})\n\n"
                 f"📍 <b>منطقة الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -707,7 +710,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V132.0)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V133.0)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -759,10 +762,10 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V132.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V133.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "🎛️ <b>النظام المزدوج:</b> يحدد تلقائياً هل الفرصة <b>⚡ سكالبنج (SCALP)</b> أم <b>🌊 سوينج قصير (SWING)</b>\n"
-    "🎯 <b>الأهداف:</b> تركيز عملي على TP1 و TP2 مع عرض R:R والدعم والمقاومة الرئيسية\n"
+    "🎯 <b>الأهداف:</b> تركيز عملي على TP1 و TP2 مع فحص R:R والمقاومات والدعوم الرئيسية\n"
     "🔥 أرسل <code>/gainers</code> لاكتشاف فرص الزخم في الرابحين.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو ETH أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -819,7 +822,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V132.0-Dual-Scalp-Swing", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V133.0-Dual-Scalp-Swing-RR", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -842,7 +845,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V132.0 bootstrapped: Dual Scalp + Swing Engine.")
+    logger.info("Bot V133.0 bootstrapped: Dual Scalp + Swing + R:R Engine.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
