@@ -1,8 +1,8 @@
 # ============================================================
-# analysis.py — StrategyEngine V134.0
-# Tri-Mode Engine: SCALP (15M/1H) + SWING (4H/1D) + POSITION (1W/1M)
-# Keeps TP1 & TP2 practical execution while supporting long-term
-# weekly/monthly directional bias when available.
+# analysis.py — StrategyEngine V135.0 (Weekly & Monthly Engine)
+# Removes SCALP & 15M momentum logic completely.
+# Focuses on Monthly (1M) + Weekly (1W) macro structure and
+# trend alignment, using Daily (1D) for structural entry timing.
 # ============================================================
 
 import logging
@@ -13,9 +13,9 @@ import pandas as pd
 
 logger = logging.getLogger("StrategyEngine")
 
-SIGNAL_EXPIRY_SECONDS = 86400
-MIN_SCORE_DEFAULT = 78
-MIN_TP2_RR = 1.25
+SIGNAL_EXPIRY_SECONDS = 86400 * 7
+MIN_SCORE_DEFAULT = 75
+MIN_TP2_RR = 1.30
 
 
 def _now_iso():
@@ -46,8 +46,8 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
 
 
 class StrategyEngine:
-    """Tri-mode trading engine supporting SCALP, SWING, and long-term
-    POSITION setups aligned with Weekly (1W) and Monthly (1M) structure."""
+    """Long-term trading engine built on Monthly (1M) and Weekly (1W)
+    trend/structure with Daily (1D) timing and TP1/TP2/TP3 targets."""
 
     def __init__(self, capital=10000.0, risk_per_trade=0.01,
                  min_score=MIN_SCORE_DEFAULT):
@@ -73,10 +73,15 @@ class StrategyEngine:
         return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().replace([np.inf, -np.inf], np.nan).fillna(0)
 
     def calculate_ema(self, series, period):
-        return pd.to_numeric(series, errors="coerce").ewm(span=period, adjust=False, min_periods=period).mean()
+        s = pd.to_numeric(series, errors="coerce")
+        eff_period = min(period, max(2, len(s)))
+        return s.ewm(span=eff_period, adjust=False, min_periods=1).mean()
 
     def calculate_adx(self, df, period=14):
         try:
+            if df is None or len(df) < 8:
+                return pd.Series([25.0] * (len(df) if df is not None else 1), index=df.index if df is not None else None)
+            eff = min(period, max(3, len(df) - 2))
             h = pd.to_numeric(df["high"], errors="coerce")
             l = pd.to_numeric(df["low"], errors="coerce")
             c = pd.to_numeric(df["close"], errors="coerce")
@@ -91,286 +96,26 @@ class StrategyEngine:
                 index=df.index,
             )
             tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
-            atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
-            plus_di = 100 * plus_dm.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
-            minus_di = 100 * minus_dm.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean() / atr.replace(0, 1e-10)
+            atr = tr.ewm(alpha=1.0 / eff, min_periods=1, adjust=False).mean()
+            plus_di = 100 * plus_dm.ewm(alpha=1.0 / eff, min_periods=1, adjust=False).mean() / atr.replace(0, 1e-10)
+            minus_di = 100 * minus_dm.ewm(alpha=1.0 / eff, min_periods=1, adjust=False).mean() / atr.replace(0, 1e-10)
             dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-10)
-            adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+            adx = dx.ewm(alpha=1.0 / eff, min_periods=1, adjust=False).mean()
             return adx.replace([np.inf, -np.inf], np.nan).fillna(25.0)
         except Exception:
             return pd.Series([25.0] * len(df), index=df.index)
 
     def calculate_macd(self, series, fast=12, slow=26, signal=9):
         s = pd.to_numeric(series, errors="coerce")
-        exp1 = s.ewm(span=fast, adjust=False).mean()
-        exp2 = s.ewm(span=slow, adjust=False).mean()
+        f_p = min(fast, max(2, len(s) // 2))
+        s_p = min(slow, max(f_p + 2, len(s)))
+        sig_p = min(signal, max(2, f_p))
+        exp1 = s.ewm(span=f_p, adjust=False).mean()
+        exp2 = s.ewm(span=s_p, adjust=False).mean()
         macd_line = exp1 - exp2
-        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        signal_line = macd_line.ewm(span=sig_p, adjust=False).mean()
         hist = macd_line - signal_line
         return macd_line, signal_line, hist
-
-    def detect_regime_state(self, df_daily, df_h4):
-        try:
-            if df_daily is None or len(df_daily) < 55:
-                return "SIDEWAYS", 20.0
-            close = float(df_daily["close"].iloc[-1])
-            ema20 = float(self.calculate_ema(df_daily["close"], 20).iloc[-1])
-            ema50 = float(self.calculate_ema(df_daily["close"], 50).iloc[-1])
-            adx = float(self.calculate_adx(df_daily).iloc[-1])
-            _, _, hist_s = self.calculate_macd(df_daily["close"])
-            hist = float(hist_s.iloc[-1]) if not hist_s.empty else 0.0
-
-            h4_adx = float(self.calculate_adx(df_h4).iloc[-1]) if (df_h4 is not None and len(df_h4) >= 20) else adx
-            effective_adx = max(adx, h4_adx * 0.85)
-
-            if effective_adx < 16.0:
-                return "SIDEWAYS", effective_adx
-            if close > ema20 and ema20 >= ema50 * 0.992 and hist >= 0:
-                return "BULLISH", effective_adx
-            if close < ema20 and ema20 <= ema50 * 1.008 and hist <= 0:
-                return "BEARISH", effective_adx
-            return "SIDEWAYS", effective_adx
-        except Exception:
-            return "SIDEWAYS", 20.0
-
-    def _macro_bias(self, df_w, df_m, direction):
-        """Evaluates Weekly (1W) and Monthly (1M) directional alignment for POSITION trades."""
-        info = {"ok": False, "aligned": False, "score": 0, "summary": "Macro N/A"}
-        try:
-            w_ok = False
-            m_ok = False
-            parts = []
-
-            if df_w is not None and len(df_w) >= 22:
-                c_w = float(df_w["close"].iloc[-1])
-                ema10_w = float(self.calculate_ema(df_w["close"], 10).iloc[-1])
-                ema20_w = float(self.calculate_ema(df_w["close"], 20).iloc[-1])
-                _, _, h_w_s = self.calculate_macd(df_w["close"])
-                h_w = float(h_w_s.iloc[-1]) if not h_w_s.empty else 0.0
-                if direction == "LONG":
-                    w_ok = (c_w >= ema10_w * 0.985) and (ema10_w >= ema20_w * 0.985) and (h_w >= -1e-9)
-                    parts.append("1W Bullish" if w_ok else "1W Mixed/Bear")
-                else:
-                    w_ok = (c_w <= ema10_w * 1.015) and (ema10_w <= ema20_w * 1.015) and (h_w <= 1e-9)
-                    parts.append("1W Bearish" if w_ok else "1W Mixed/Bull")
-            else:
-                parts.append("1W ShortHist")
-
-            if df_m is not None and len(df_m) >= 12:
-                c_m = float(df_m["close"].iloc[-1])
-                ema6_m = float(self.calculate_ema(df_m["close"], 6).iloc[-1])
-                ema12_m = float(self.calculate_ema(df_m["close"], 12).iloc[-1])
-                if direction == "LONG":
-                    m_ok = (c_m >= ema6_m * 0.98) and (ema6_m >= ema12_m * 0.98)
-                    parts.append("1M Bullish" if m_ok else "1M Mixed/Bear")
-                else:
-                    m_ok = (c_m <= ema6_m * 1.02) and (ema6_m <= ema12_m * 1.02)
-                    parts.append("1M Bearish" if m_ok else "1M Mixed/Bull")
-            else:
-                parts.append("1M ShortHist")
-
-            score = (8 if w_ok else 0) + (8 if m_ok else 0)
-            aligned = bool(w_ok and m_ok)
-            info["ok"] = aligned
-            info["aligned"] = aligned
-            info["score"] = score
-            info["summary"] = " + ".join(parts)
-            return info
-        except Exception:
-            return info
-
-    def _key_levels(self, h4, h1, price, atr):
-        try:
-            h1_sub = h1.tail(36)
-            h4_sub = h4.tail(28)
-
-            lows_1h = h1_sub["low"].to_numpy(dtype=float)
-            highs_1h = h1_sub["high"].to_numpy(dtype=float)
-            lows_4h = h4_sub["low"].to_numpy(dtype=float)
-            highs_4h = h4_sub["high"].to_numpy(dtype=float)
-
-            below_lows = sorted([v for v in np.concatenate([lows_1h[-18:], lows_4h[-12:]]) if v < price], reverse=True)
-            key_support = float(below_lows[0]) if below_lows else float(price - 1.5 * atr)
-            deep_support = float(below_lows[min(len(below_lows) - 1, 2)]) if below_lows else float(price - 2.4 * atr)
-
-            above_highs = sorted([v for v in np.concatenate([highs_1h, highs_4h]) if v > price])
-            if len(above_highs) >= 2:
-                res_low = float(above_highs[0])
-                res_high = float(max(above_highs[min(len(above_highs) - 1, 2)], res_low + 0.65 * atr))
-            elif len(above_highs) == 1:
-                res_low = float(above_highs[0])
-                res_high = float(res_low + 0.85 * atr)
-            else:
-                res_low = float(price + 1.15 * atr)
-                res_high = float(price + 1.85 * atr)
-
-            return {
-                "key_support": key_support,
-                "deep_support": deep_support,
-                "resistance_low": res_low,
-                "resistance_high": res_high,
-            }
-        except Exception:
-            return {
-                "key_support": max(0.0, price - 1.5 * atr),
-                "deep_support": max(0.0, price - 2.4 * atr),
-                "resistance_low": price + 1.15 * atr,
-                "resistance_high": price + 1.85 * atr,
-            }
-
-    def calculate_fib_and_poc(self, df, direction, lookback=36):
-        try:
-            sub = df.tail(lookback)
-            hi = float(sub["high"].max())
-            lo = float(sub["low"].min())
-            rng = max(hi - lo, 1e-9)
-            if direction == "LONG":
-                fib_382 = hi - 0.382 * rng
-                fib_500 = hi - 0.500 * rng
-                fib_618 = hi - 0.618 * rng
-            else:
-                fib_382 = lo + 0.382 * rng
-                fib_500 = lo + 0.500 * rng
-                fib_618 = lo + 0.618 * rng
-
-            bins = 20
-            edges = np.linspace(lo, hi, bins + 1)
-            vol_profile = np.zeros(bins, dtype=float)
-            closes = sub["close"].to_numpy(dtype=float)
-            vols = sub["volume"].to_numpy(dtype=float)
-            for c_val, v_val in zip(closes, vols):
-                idx = min(bins - 1, max(0, int(np.searchsorted(edges, c_val, side="right") - 1)))
-                vol_profile[idx] += max(0.0, float(v_val))
-            poc_idx = int(np.argmax(vol_profile))
-            poc_price = float((edges[poc_idx] + edges[poc_idx + 1]) / 2.0)
-
-            return {
-                "fib_382": fib_382,
-                "fib_500": fib_500,
-                "fib_618": fib_618,
-                "poc": poc_price,
-                "range_high": hi,
-                "range_low": lo,
-            }
-        except Exception:
-            return {"fib_382": 0.0, "fib_500": 0.0, "fib_618": 0.0, "poc": 0.0}
-
-    def has_engulfing(self, df, direction):
-        try:
-            if len(df) < 2:
-                return False
-            prev_o = float(df["open"].iloc[-2])
-            prev_c = float(df["close"].iloc[-2])
-            curr_o = float(df["open"].iloc[-1])
-            curr_c = float(df["close"].iloc[-1])
-            if direction == "LONG":
-                return prev_c < prev_o and curr_c > curr_o and curr_c >= prev_o and curr_o <= prev_c
-            return prev_c > prev_o and curr_c < curr_o and curr_c <= prev_o and curr_o >= prev_c
-        except Exception:
-            return False
-
-    def has_close_confirmation(self, df, direction):
-        try:
-            if df is None or len(df) < 2:
-                return {"ok": False, "score": 0, "body_ratio": 0.0, "reason": "Insufficient candles"}
-            c_last = float(df["close"].iloc[-1])
-            o_last = float(df["open"].iloc[-1])
-            h_last = float(df["high"].iloc[-1])
-            l_last = float(df["low"].iloc[-1])
-            rng_last = max(h_last - l_last, 1e-9)
-            body_last = abs(c_last - o_last)
-            body_ratio = body_last / rng_last
-
-            if direction == "LONG":
-                bull_close = c_last > o_last and body_ratio >= 0.38
-                strong_body = body_ratio >= 0.58
-                score = (12 if bull_close else 0) + (6 if strong_body else 0)
-                return {
-                    "ok": bull_close,
-                    "score": score,
-                    "body_ratio": round(body_ratio, 2),
-                    "reason": "Bullish candle close" if bull_close else "Weak bullish close",
-                }
-            else:
-                bear_close = c_last < o_last and body_ratio >= 0.38
-                strong_body = body_ratio >= 0.58
-                score = (12 if bear_close else 0) + (6 if strong_body else 0)
-                return {
-                    "ok": bear_close,
-                    "score": score,
-                    "body_ratio": round(body_ratio, 2),
-                    "reason": "Bearish candle close" if bear_close else "Weak bearish close",
-                }
-        except Exception:
-            return {"ok": False, "score": 0, "body_ratio": 0.0, "reason": "Close check error"}
-
-    def _has_volume_support(self, df, min_ratio=0.75):
-        try:
-            if df is None or len(df) < 20 or "volume" not in df.columns:
-                return True, 1.0
-            vols = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
-            avg_vol = float(vols.tail(20).mean())
-            last_vol = float(vols.iloc[-1])
-            if avg_vol <= 0:
-                return False, 0.0
-            ratio = last_vol / avg_vol
-            return ratio >= min_ratio, round(ratio, 2)
-        except Exception:
-            return True, 1.0
-
-    def _has_rsi_exhaustion_warning(self, df, direction):
-        try:
-            if df is None or len(df) < 12:
-                return False
-            closes = pd.to_numeric(df["close"], errors="coerce")
-            rsi_s = self.calculate_rsi(closes)
-            if direction == "LONG":
-                c_now = float(closes.iloc[-1])
-                c_prev_hi = float(closes.iloc[-8:-1].max())
-                r_now = float(rsi_s.iloc[-1])
-                r_prev_hi = float(rsi_s.iloc[-8:-1].max())
-                return (c_now > c_prev_hi) and (r_now < r_prev_hi - 2.5)
-            else:
-                c_now = float(closes.iloc[-1])
-                c_prev_lo = float(closes.iloc[-8:-1].min())
-                r_now = float(rsi_s.iloc[-1])
-                r_prev_lo = float(rsi_s.iloc[-8:-1].min())
-                return (c_now < c_prev_lo) and (r_now > r_prev_lo + 2.5)
-        except Exception:
-            return False
-
-    def _is_dead_flat(self, df, atr):
-        try:
-            if df is None or len(df) < 15 or atr <= 0:
-                return False
-            sub = df.tail(10)
-            hi = float(sub["high"].max())
-            lo = float(sub["low"].min())
-            return ((hi - lo) / atr) < 1.65
-        except Exception:
-            return False
-
-    def _is_overextended_move(self, df, atr, direction):
-        try:
-            if df is None or len(df) < 6 or atr <= 0:
-                return False
-            c_now = float(df["close"].iloc[-1])
-            o_now = float(df["open"].iloc[-1])
-            c_prev3 = float(df["close"].iloc[-4])
-            ema20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
-            if direction == "LONG":
-                if abs(c_now - o_now) > 2.1 * atr and c_now > o_now:
-                    return True
-                if (c_now - c_prev3) > 3.2 * atr or (c_now - ema20) > 2.6 * atr:
-                    return True
-            else:
-                if abs(c_now - o_now) > 2.1 * atr and c_now < o_now:
-                    return True
-                if (c_prev3 - c_now) > 3.2 * atr or (ema20 - c_now) > 2.6 * atr:
-                    return True
-            return False
-        except Exception:
-            return False
 
     def prepare_dataframe(self, candles):
         if candles is None or len(candles) == 0:
@@ -386,283 +131,225 @@ class StrategyEngine:
             return pd.DataFrame()
 
     def _swings(self, df, left=2, right=2):
-        if len(df) < left + right + 5:
+        if df is None or len(df) < left + right + 3:
             return [], []
         highs, lows = [], []
         h = df["high"].to_numpy(dtype=float)
         l = df["low"].to_numpy(dtype=float)
         last_confirmed = len(df) - right - 1
         for i in range(left, last_confirmed + 1):
-            if h[i] >= np.max(h[i-left:i+right+1]) and h[i] > np.max(h[i-left:i]):
+            if h[i] >= np.max(h[i-left:i+right+1]) and h[i] >= np.max(h[i-left:i]):
                 highs.append((i, h[i]))
-            if l[i] <= np.min(l[i-left:i+right+1]) and l[i] < np.min(l[i-left:i]):
+            if l[i] <= np.min(l[i-left:i+right+1]) and l[i] <= np.min(l[i-left:i]):
                 lows.append((i, l[i]))
         return highs, lows
 
-    def _structure(self, df, direction):
-        highs, lows = self._swings(df)
+    def _macro_structure(self, df, direction, label):
+        """Evaluates structure & trend on Weekly (1W) or Monthly (1M)."""
+        if df is None or len(df) < 6:
+            return {"ok": False, "score": 0, "rsi": 50.0, "adx": 20.0, "reason": f"{label} data insufficient"}
+
         close = float(df["close"].iloc[-1])
-        if len(highs) < 2 or len(lows) < 2:
-            return {"ok": True, "score": 14, "bos": False, "mss": False, "sweep": False,
-                    "swing_high": float(df["high"].tail(18).max()),
-                    "swing_low": float(df["low"].tail(18).min()), "reason": "Range/swing baseline"}
-
-        prev_h, last_h = highs[-2][1], highs[-1][1]
-        prev_l, last_l = lows[-2][1], lows[-1][1]
-        recent = df.tail(8)
-        sweep = False
-        bos = False
-        mss = False
-
-        if direction == "LONG":
-            higher_structure = last_h >= prev_h * 0.995 and last_l >= prev_l * 0.99
-            bos = close > prev_h or close > last_h
-            sweep = float(recent["low"].min()) < prev_l and close > prev_l
-            mss = sweep and close > float(recent["high"].iloc[:-1].max()) if len(recent) > 2 else False
-            score = (18 if higher_structure else 0) + (16 if bos else 0) + (16 if sweep else 0) + (10 if mss else 0)
-            ok = higher_structure or bos or sweep or mss
-            reason = []
-            if sweep: reason.append("Sell-side sweep")
-            if mss: reason.append("Bullish MSS")
-            if higher_structure: reason.append("HH/HL")
-            if bos: reason.append("Bullish BOS")
-        else:
-            lower_structure = last_h <= prev_h * 1.01 and last_l <= prev_l * 1.005
-            bos = close < prev_l or close < last_l
-            sweep = float(recent["high"].max()) > prev_h and close < prev_h
-            mss = sweep and close < float(recent["low"].iloc[:-1].min()) if len(recent) > 2 else False
-            score = (18 if lower_structure else 0) + (16 if bos else 0) + (16 if sweep else 0) + (10 if mss else 0)
-            ok = lower_structure or bos or sweep or mss
-            reason = []
-            if sweep: reason.append("Buy-side sweep")
-            if mss: reason.append("Bearish MSS")
-            if lower_structure: reason.append("LH/LL")
-            if bos: reason.append("Bearish BOS")
-
-        return {"ok": ok, "score": min(52, max(10, score)), "bos": bos, "mss": mss, "sweep": sweep,
-                "swing_high": last_h, "swing_low": last_l,
-                "reason": "، ".join(reason) if reason else "Directional structure"}
-
-    def _bias(self, df, direction):
-        if len(df) < 55:
-            return {"ok": False, "score": 0, "rsi": 50, "reason": "Bias data insufficient"}
-        close = float(df["close"].iloc[-1])
-        e20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
-        e50 = float(self.calculate_ema(df["close"], 50).iloc[-1])
-        ema200_series = self.calculate_ema(df["close"], 200) if len(df) >= 200 else pd.Series([np.nan])
-        ema200 = float(ema200_series.iloc[-1]) if not ema200_series.empty and pd.notna(ema200_series.iloc[-1]) else 0.0
-        atr_d = float(self.calculate_atr(df).iloc[-1])
+        fast_p = 8 if label == "1W" else 4
+        slow_p = 20 if label == "1W" else 10
+        ema_fast = float(self.calculate_ema(df["close"], fast_p).iloc[-1])
+        ema_slow = float(self.calculate_ema(df["close"], slow_p).iloc[-1])
         rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
-
-        adx_series = self.calculate_adx(df)
-        adx = float(adx_series.iloc[-1]) if not adx_series.empty else 25.0
+        adx = float(self.calculate_adx(df).iloc[-1])
         _, _, macd_hist = self.calculate_macd(df["close"])
-        hist_val = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
+        hist = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
 
-        reasons = []
+        highs, lows = self._swings(df, left=2, right=1 if len(df) < 15 else 2)
+        struct_ok = False
+        struct_tag = ""
+        if len(highs) >= 2 and len(lows) >= 2:
+            prev_h, last_h = highs[-2][1], highs[-1][1]
+            prev_l, last_l = lows[-2][1], lows[-1][1]
+            if direction == "LONG":
+                if last_h >= prev_h * 0.99 and last_l >= prev_l * 0.985:
+                    struct_ok = True
+                    struct_tag = "HH/HL"
+                elif close > prev_h:
+                    struct_ok = True
+                    struct_tag = "Weekly/Monthly BOS Up"
+            else:
+                if last_h <= prev_h * 1.01 and last_l <= prev_l * 1.015:
+                    struct_ok = True
+                    struct_tag = "LH/LL"
+                elif close < prev_l:
+                    struct_ok = True
+                    struct_tag = "Weekly/Monthly BOS Down"
+
         score = 0
-        ema200_support = False
+        reasons = []
+        if direction == "LONG":
+            if close >= ema_fast * 0.97:
+                score += 12; reasons.append(f"{label} > EMA{fast_p}")
+            if ema_fast >= ema_slow * 0.97:
+                score += 10; reasons.append(f"EMA{fast_p}>=EMA{slow_p}")
+            if hist >= 0:
+                score += 8; reasons.append("MACD+")
+            if struct_ok:
+                score += 12; reasons.append(struct_tag)
+            if 38 <= rsi <= 76:
+                score += 4
+            ok = (close >= ema_fast * 0.96) and (struct_ok or (ema_fast >= ema_slow * 0.97 and hist >= 0))
+        else:
+            if close <= ema_fast * 1.03:
+                score += 12; reasons.append(f"{label} < EMA{fast_p}")
+            if ema_fast <= ema_slow * 1.03:
+                score += 10; reasons.append(f"EMA{fast_p}<=EMA{slow_p}")
+            if hist <= 0:
+                score += 8; reasons.append("MACD-")
+            if struct_ok:
+                score += 12; reasons.append(struct_tag)
+            if 24 <= rsi <= 62:
+                score += 4
+            ok = (close <= ema_fast * 1.04) and (struct_ok or (ema_fast <= ema_slow * 1.03 and hist <= 0))
+
+        reasons.append(f"RSI({rsi:.1f})")
+        return {
+            "ok": ok,
+            "score": score,
+            "rsi": rsi,
+            "adx": adx,
+            "ema_fast": ema_fast,
+            "ema_slow": ema_slow,
+            "reason": "، ".join(reasons),
+        }
+
+    def _daily_timing(self, df_daily, direction):
+        """Uses Daily (1D) only for entry timing & avoiding over-extended chase."""
+        if df_daily is None or len(df_daily) < 30:
+            return {"ok": False, "score": 0, "reason": "1D data insufficient"}
+        close = float(df_daily["close"].iloc[-1])
+        op = float(df_daily["open"].iloc[-1])
+        ema20 = float(self.calculate_ema(df_daily["close"], 20).iloc[-1])
+        atr_d = float(self.calculate_atr(df_daily).iloc[-1])
+        rsi_d = float(self.calculate_rsi(df_daily["close"]).iloc[-1])
+
+        score = 0
+        reasons = []
+        if direction == "LONG":
+            bull_d = close >= op * 0.995
+            not_chasing = (close - ema20) <= max(2.4 * atr_d, close * 0.08) and rsi_d <= 76
+            if bull_d:
+                score += 10; reasons.append("1D bullish/reclaim")
+            if close >= ema20 * 0.97:
+                score += 8; reasons.append("1D near/above EMA20")
+            if not_chasing:
+                score += 8; reasons.append("1D timing OK")
+            else:
+                score -= 12; reasons.append("1D over-extended")
+            ok = not_chasing and (bull_d or close >= ema20 * 0.97)
+        else:
+            bear_d = close <= op * 1.005
+            not_chasing = (ema20 - close) <= max(2.4 * atr_d, close * 0.08) and rsi_d >= 24
+            if bear_d:
+                score += 10; reasons.append("1D bearish/reject")
+            if close <= ema20 * 1.03:
+                score += 8; reasons.append("1D near/below EMA20")
+            if not_chasing:
+                score += 8; reasons.append("1D timing OK")
+            else:
+                score -= 12; reasons.append("1D over-extended")
+            ok = not_chasing and (bear_d or close <= ema20 * 1.03)
+
+        return {"ok": ok, "score": score, "rsi": rsi_d, "atr": atr_d, "reason": "، ".join(reasons)}
+
+    def _long_term_levels(self, df_w, df_m, df_d, price, atr_w):
+        """Computes wide structural stop-loss and TP1/TP2/TP3 from 1W & 1M ranges."""
+        try:
+            w_lows = df_w["low"].tail(20).to_numpy(dtype=float) if (df_w is not None and len(df_w) >= 4) else np.array([price - 2 * atr_w])
+            w_highs = df_w["high"].tail(20).to_numpy(dtype=float) if (df_w is not None and len(df_w) >= 4) else np.array([price + 2 * atr_w])
+            m_lows = df_m["low"].tail(12).to_numpy(dtype=float) if (df_m is not None and len(df_m) >= 3) else w_lows
+            m_highs = df_m["high"].tail(12).to_numpy(dtype=float) if (df_m is not None and len(df_m) >= 3) else w_highs
+
+            below_w = sorted([v for v in w_lows if v < price], reverse=True)
+            above_w = sorted([v for v in w_highs if v > price])
+            below_m = sorted([v for v in m_lows if v < price], reverse=True)
+            above_m = sorted([v for v in m_highs if v > price])
+
+            key_sup = float(below_w[0]) if below_w else float(price - 1.6 * atr_w)
+            deep_sup = float(below_m[0]) if below_m else (float(below_w[1]) if len(below_w) > 1 else float(price - 2.8 * atr_w))
+            res_low = float(above_w[0]) if above_w else float(price + 1.6 * atr_w)
+            res_high = float(above_m[0]) if above_m else (float(above_w[1]) if len(above_w) > 1 else float(price + 2.8 * atr_w))
+
+            return {
+                "key_support": key_sup,
+                "deep_support": deep_sup,
+                "resistance_low": res_low,
+                "resistance_high": res_high,
+            }
+        except Exception:
+            return {
+                "key_support": max(0.0, price - 1.6 * atr_w),
+                "deep_support": max(0.0, price - 2.8 * atr_w),
+                "resistance_low": price + 1.6 * atr_w,
+                "resistance_high": price + 2.8 * atr_w,
+            }
+
+    def _build_long_term_plan(self, df_w, entry_price, atr_w, direction, levels):
+        """Builds stop-loss and TP1/TP2/TP3 for Weekly & Monthly position trades."""
+        if entry_price <= 0 or atr_w <= 0:
+            return None
+        max_risk_pct = 16.0
+        min_risk_pct = 2.5
 
         if direction == "LONG":
-            trend_ok = close >= e20 * 0.985 or e20 >= e50 * 0.985
-            if close >= e20 * 0.985: score += 10
-            if e20 >= e50 * 0.985: score += 10
-            if ema200 > 0:
-                if close >= ema200:
-                    score += 6
-                    if abs(close - ema200) <= max(atr_d * 1.5, close * 0.015):
-                        ema200_support = True
-                        score += 4
-                        reasons.append("Daily EMA200 support")
-                    else:
-                        reasons.append("Above Daily EMA200")
-                else:
-                    reasons.append("Below Daily EMA200")
-            if adx >= 20:
-                score += 9; reasons.append(f"ADX({adx:.1f})")
+            structural_sl = min(levels["key_support"], levels["deep_support"]) - 0.35 * atr_w
+            atr_sl = entry_price - 1.85 * atr_w
+            stop = max(min(structural_sl, atr_sl), entry_price * (1.0 - max_risk_pct / 100.0))
+            risk = entry_price - stop
+            if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
+                return None
+            if (risk / entry_price * 100) < min_risk_pct:
+                stop = entry_price * (1.0 - min_risk_pct / 100.0)
+                risk = entry_price - stop
+
+            entry_low = max(0.0, entry_price - 0.25 * atr_w)
+            entry_high = entry_price + 0.05 * atr_w
+
+            tp1_cand = entry_price + 1.00 * risk
+            if levels["resistance_low"] > entry_price * 1.03 and levels["resistance_low"] < entry_price + 1.35 * risk:
+                tp1 = max(tp1_cand, levels["resistance_low"])
             else:
-                score += 5; reasons.append(f"Range ADX({adx:.1f})")
-            if hist_val >= 0:
-                score += 8; reasons.append("MACD Bullish")
+                tp1 = tp1_cand
+
+            tp2_cand = entry_price + 1.95 * risk
+            if levels["resistance_high"] > tp1 * 1.04 and levels["resistance_high"] < entry_price + 2.60 * risk:
+                tp2 = levels["resistance_high"]
             else:
-                reasons.append("MACD soft")
-            if 35 <= rsi <= 75: score += 5
-            ok = trend_ok and (adx >= 12 or hist_val >= 0)
+                tp2 = tp2_cand
+
+            tp3 = max(tp2 + 0.85 * risk, entry_price + 2.95 * risk)
         else:
-            trend_ok = close <= e20 * 1.015 or e20 <= e50 * 1.015
-            if close <= e20 * 1.015: score += 10
-            if e20 <= e50 * 1.015: score += 10
-            if ema200 > 0:
-                if close <= ema200:
-                    score += 6
-                    if abs(close - ema200) <= max(atr_d * 1.5, close * 0.015):
-                        ema200_support = True
-                        score += 4
-                        reasons.append("Daily EMA200 resistance")
-                    else:
-                        reasons.append("Below Daily EMA200")
-                else:
-                    reasons.append("Above Daily EMA200")
-            if adx >= 20:
-                score += 9; reasons.append(f"ADX({adx:.1f})")
-            else:
-                score += 5; reasons.append(f"Range ADX({adx:.1f})")
-            if hist_val <= 0:
-                score += 8; reasons.append("MACD Bearish")
-            else:
-                reasons.append("MACD soft")
-            if 25 <= rsi <= 65: score += 5
-            ok = trend_ok and (adx >= 12 or hist_val <= 0)
-
-        return {"ok": ok, "score": score, "rsi": rsi, "adx": adx, "ema20": e20, "ema50": e50,
-                "ema200": ema200, "ema200_confluence": ema200_support,
-                "reason": "، ".join(reasons) if reasons else "Neutral bias"}
-
-    def _classify_trade_style(self, direction, bias, struct_4h, macro_info, adx_val, is_momentum_breakout):
-        """Classifies trade into 'POSITION' (1W/1M aligned), 'SWING' (1D/4H), or 'SCALP'."""
-        if not is_momentum_breakout and macro_info and macro_info.get("aligned"):
-            return "POSITION"
-
-        h4_aligned = bool(struct_4h.get("ok")) and (
-            bool(struct_4h.get("bos"))
-            or bool(struct_4h.get("mss"))
-            or ("HH/HL" in str(struct_4h.get("reason", "")))
-            or ("LH/LL" in str(struct_4h.get("reason", "")))
-        )
-        daily_ok = bool(bias.get("ok")) and float(bias.get("score", 0)) >= 24
-        strong_trend = float(adx_val) >= 22.0
-
-        if not is_momentum_breakout and daily_ok and h4_aligned and strong_trend:
-            return "SWING"
-        return "SCALP"
-
-    def _build_style_plan(self, style, df1h, entry_price, atr, direction, structure, regime, levels):
-        """Builds stop-loss and TP1/TP2/TP3 tailored to SCALP, SWING, or POSITION."""
-        if entry_price <= 0 or atr <= 0:
-            return None
-        swing_low = float(structure.get("swing_low", df1h["low"].tail(18).min()))
-        swing_high = float(structure.get("swing_high", df1h["high"].tail(18).max()))
-
-        if style == "POSITION":
-            max_risk_pct = 9.0
-            min_risk_pct = 1.6
-            tp1_r = 1.00
-            tp2_r = 1.90
-            tp3_r = 2.85
-            if direction == "LONG":
-                structural = min(swing_low, levels["deep_support"]) - 0.85 * atr
-                atr_stop = entry_price - 2.65 * atr
-                stop = max(min(structural, atr_stop), entry_price * (1.0 - max_risk_pct / 100.0))
-                risk = entry_price - stop
-                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                    return None
-                if (risk / entry_price * 100) < min_risk_pct:
-                    stop = entry_price - 2.10 * atr
-                    risk = entry_price - stop
-                entry_low = max(0.0, entry_price - 0.30 * atr)
-                entry_high = entry_price + 0.05 * atr
-                tp1 = entry_price + tp1_r * risk
-                tp2 = entry_price + tp2_r * risk
-                tp3 = entry_price + tp3_r * risk
-            else:
-                structural = max(swing_high, levels["resistance_high"]) + 0.85 * atr
-                atr_stop = entry_price + 2.65 * atr
-                stop = min(max(structural, atr_stop), entry_price * (1.0 + max_risk_pct / 100.0))
+            structural_sl = max(levels["resistance_low"], levels["resistance_high"]) + 0.35 * atr_w
+            atr_sl = entry_price + 1.85 * atr_w
+            stop = min(max(structural_sl, atr_sl), entry_price * (1.0 + max_risk_pct / 100.0))
+            risk = stop - entry_price
+            if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
+                return None
+            if (risk / entry_price * 100) < min_risk_pct:
+                stop = entry_price * (1.0 + min_risk_pct / 100.0)
                 risk = stop - entry_price
-                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                    return None
-                if (risk / entry_price * 100) < min_risk_pct:
-                    stop = entry_price + 2.10 * atr
-                    risk = stop - entry_price
-                entry_low = entry_price - 0.05 * atr
-                entry_high = entry_price + 0.30 * atr
-                tp1 = entry_price - tp1_r * risk
-                tp2 = entry_price - tp2_r * risk
-                tp3 = entry_price - tp3_r * risk
-        elif style == "SWING":
-            max_risk_pct = 6.5
-            min_risk_pct = 1.1
-            tp1_r = 0.85
-            tp2_r = 1.65
-            tp3_r = 2.40
-            if direction == "LONG":
-                structural = min(swing_low, levels["key_support"]) - 0.65 * atr
-                atr_stop = entry_price - 2.10 * atr
-                stop = min(structural, atr_stop)
-                risk = entry_price - stop
-                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                    return None
-                if (risk / entry_price * 100) < min_risk_pct:
-                    stop = entry_price - 1.70 * atr
-                    risk = entry_price - stop
-                entry_low = max(0.0, entry_price - 0.25 * atr)
-                entry_high = entry_price + 0.05 * atr
-                tp1 = entry_price + tp1_r * risk
-                tp2 = entry_price + tp2_r * risk
-                res_cap = levels["resistance_high"] - 0.15 * atr
-                if res_cap > tp1 * 1.003 and res_cap < tp2:
-                    tp2 = res_cap
-                tp3 = max(tp2 + 0.55 * risk, entry_price + tp3_r * risk)
+
+            entry_low = entry_price - 0.05 * atr_w
+            entry_high = entry_price + 0.25 * atr_w
+
+            tp1_cand = entry_price - 1.00 * risk
+            if levels["key_support"] < entry_price * 0.97 and levels["key_support"] > entry_price - 1.35 * risk:
+                tp1 = min(tp1_cand, levels["key_support"])
             else:
-                structural = max(swing_high, levels["resistance_low"]) + 0.65 * atr
-                atr_stop = entry_price + 2.10 * atr
-                stop = max(structural, atr_stop)
-                risk = stop - entry_price
-                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                    return None
-                if (risk / entry_price * 100) < min_risk_pct:
-                    stop = entry_price + 1.70 * atr
-                    risk = stop - entry_price
-                entry_low = entry_price - 0.05 * atr
-                entry_high = entry_price + 0.25 * atr
-                tp1 = entry_price - tp1_r * risk
-                tp2 = entry_price - tp2_r * risk
-                sup_floor = levels["deep_support"] + 0.15 * atr
-                if sup_floor < tp1 * 0.997 and sup_floor > tp2:
-                    tp2 = sup_floor
-                tp3 = min(tp2 - 0.55 * risk, entry_price - tp3_r * risk)
-        else:
-            max_risk_pct = 4.2
-            min_risk_pct = 0.55
-            tp1_r = 0.65 if regime == "SIDEWAYS" else 0.75
-            tp2_r = 1.30 if regime == "SIDEWAYS" else 1.40
-            tp3_r = 1.90
-            if direction == "LONG":
-                structural = min(swing_low, levels["key_support"]) - 0.45 * atr
-                atr_stop = entry_price - 1.55 * atr
-                stop = max(min(structural, atr_stop), entry_price * (1.0 - max_risk_pct / 100.0))
-                risk = entry_price - stop
-                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                    return None
-                if (risk / entry_price * 100) < min_risk_pct:
-                    stop = entry_price - 1.25 * atr
-                    risk = entry_price - stop
-                entry_low = max(0.0, entry_price - 0.15 * atr)
-                entry_high = entry_price + 0.05 * atr
-                tp1 = entry_price + tp1_r * risk
-                tp2 = entry_price + tp2_r * risk
-                res_cap = levels["resistance_low"] - 0.10 * atr
-                if res_cap > tp1 * 1.002 and res_cap < tp2:
-                    tp2 = res_cap
-                tp3 = max(tp2 + 0.45 * risk, entry_price + tp3_r * risk)
+                tp1 = tp1_cand
+
+            tp2_cand = entry_price - 1.95 * risk
+            if levels["deep_support"] < tp1 * 0.96 and levels["deep_support"] > entry_price - 2.60 * risk:
+                tp2 = levels["deep_support"]
             else:
-                structural = max(swing_high, levels["resistance_low"]) + 0.45 * atr
-                atr_stop = entry_price + 1.55 * atr
-                stop = min(max(structural, atr_stop), entry_price * (1.0 + max_risk_pct / 100.0))
-                risk = stop - entry_price
-                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                    return None
-                if (risk / entry_price * 100) < min_risk_pct:
-                    stop = entry_price + 1.25 * atr
-                    risk = stop - entry_price
-                entry_low = entry_price - 0.05 * atr
-                entry_high = entry_price + 0.15 * atr
-                tp1 = entry_price - tp1_r * risk
-                tp2 = entry_price - tp2_r * risk
-                sup_floor = levels["key_support"] + 0.10 * atr
-                if sup_floor < tp1 * 0.998 and sup_floor > tp2:
-                    tp2 = sup_floor
-                tp3 = min(tp2 - 0.45 * risk, entry_price - tp3_r * risk)
+                tp2 = tp2_cand
+
+            tp3 = min(tp2 - 0.85 * risk, entry_price - 2.95 * risk)
 
         tp2_rr = abs(tp2 - entry_price) / max(risk, 1e-12)
         if tp2_rr < MIN_TP2_RR:
@@ -675,302 +362,9 @@ class StrategyEngine:
             "tp1": tp1,
             "tp2": tp2,
             "tp3": tp3,
-            "risk_pct": risk / entry_price * 100,
+            "risk_pct": round(risk / entry_price * 100, 2),
             "tp2_rr": round(tp2_rr, 2),
         }
-
-    def _momentum_breakout_detector(self, daily, h4, h1, m15, asset_type, regime, adx_val):
-        try:
-            if len(h4) < 35 or len(h1) < 30:
-                return None
-
-            price = float(h1["close"].iloc[-1])
-            atr_1h = float(self.calculate_atr(h1).iloc[-1])
-            rsi_1h = float(self.calculate_rsi(h1["close"]).iloc[-1])
-            rsi_15m = float(self.calculate_rsi(m15["close"]).iloc[-1]) if (m15 is not None and len(m15) >= 15) else rsi_1h
-            if price <= 0 or atr_1h <= 0:
-                return None
-
-            vol_ok, vol_ratio = self._has_volume_support(h1, min_ratio=0.80)
-            if not vol_ok:
-                return None
-            vol_spike = vol_ratio >= 1.35
-
-            ema20_1h = float(self.calculate_ema(h1["close"], 20).iloc[-1])
-            ema50_1h = float(self.calculate_ema(h1["close"], 50).iloc[-1]) if len(h1) >= 50 else ema20_1h
-            _, _, macd_h1 = self.calculate_macd(h1["close"])
-            hist_1h = float(macd_h1.iloc[-1]) if not macd_h1.empty else 0.0
-
-            levels = self._key_levels(h4, h1, price, atr_1h)
-            key_sup = levels["key_support"]
-            res_low = levels["resistance_low"]
-            res_high = levels["resistance_high"]
-
-            bull_close = self.has_close_confirmation(h1, "LONG")
-            conf_15m_long = self._entry_confirmation(m15, "LONG")
-            m15_ok_long = True if (m15 is None or m15.empty) else conf_15m_long.get("ok", False)
-            prev_hi_1h = float(h1["high"].tail(12).iloc[:-1].max())
-            exhaustion_long = self._has_rsi_exhaustion_warning(h1, "LONG")
-
-            is_bull_breakout = (
-                (price >= prev_hi_1h * 0.996)
-                and (price > ema20_1h)
-                and (ema20_1h >= ema50_1h * 0.995)
-                and (hist_1h > 0)
-                and not exhaustion_long
-                and not self._is_overextended_move(h1, atr_1h, "LONG")
-            )
-            if is_bull_breakout and bull_close.get("ok") and m15_ok_long and (54 <= rsi_1h <= 75) and (rsi_15m <= 77):
-                struct = self._structure(h4, "LONG")
-                plan = self._build_style_plan("SCALP", h1, price, atr_1h, "LONG", struct, regime, levels)
-                if plan and (plan["stop_loss"] < price < plan["tp1"]):
-                    score = 78 + (6 if vol_spike else 0) + (5 if bull_close.get("body_ratio", 0) >= 0.58 else 0) + (4 if conf_15m_long.get("ok") else 0)
-                    score = min(98, score)
-                    quality = "A+" if score >= 88 else "A"
-                    decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
-                    fib_poc = self.calculate_fib_and_poc(h1, "LONG", lookback=36)
-                    bias = self._bias(daily, "LONG")
-                    reason = f"LONG [SCALP] | V134.0 Momentum Breakout + R:R({plan['tp2_rr']}) + Vol({vol_ratio}x)"
-                    sig = build_signal(
-                        "LONG",
-                        round(plan["entry_low"], decimals),
-                        round(plan["entry_high"], decimals),
-                        round(plan["stop_loss"], decimals),
-                        [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
-                        score,
-                        rsi_1h,
-                        atr_1h,
-                        reason,
-                        {
-                            "quality": quality,
-                            "trade_style": "SCALP",
-                            "macro_summary": "1W/1M N/A (Scalp)",
-                            "setup_type": "BULLISH_MOMENTUM_SETUP",
-                            "target_focus": "TP1 + TP2",
-                            "regime": regime,
-                            "adx": round(adx_val, 1),
-                            "vol_ratio": vol_ratio,
-                            "tp2_rr": plan["tp2_rr"],
-                            "key_support": round(key_sup, decimals),
-                            "resistance_low": round(res_low, decimals),
-                            "resistance_high": round(res_high, decimals),
-                            "timeframes": "1D + 4H + 1H + 15M" if (m15 is not None and not m15.empty) else "1D + 4H + 1H",
-                            "position_in_range": 0.68,
-                            "extension_atr": round(abs(price - ema20_1h) / atr_1h, 2),
-                            "move12": 0.0,
-                            "structure": struct,
-                            "fib_poc": fib_poc,
-                            "engulfing": self.has_engulfing(h1, "LONG"),
-                            "close_confirmed": True,
-                            "ema200": round(bias.get("ema200", 0.0), decimals),
-                            "ema200_confluence": bias.get("ema200_confluence", False),
-                            "risk_pct": round(plan["risk_pct"], 2),
-                            "asset_type": asset_type,
-                            "entry_timing": "scalp_momentum_15m_confirmed",
-                        },
-                    )
-                    return "LONG", price, sig
-
-            bear_close = self.has_close_confirmation(h1, "SHORT")
-            conf_15m_short = self._entry_confirmation(m15, "SHORT")
-            m15_ok_short = True if (m15 is None or m15.empty) else conf_15m_short.get("ok", False)
-            prev_lo_1h = float(h1["low"].tail(12).iloc[:-1].min())
-            exhaustion_short = self._has_rsi_exhaustion_warning(h1, "SHORT")
-
-            is_bear_breakdown = (
-                (price <= prev_lo_1h * 1.004)
-                and (price < ema20_1h)
-                and (ema20_1h <= ema50_1h * 1.005)
-                and (hist_1h < 0)
-                and not exhaustion_short
-                and not self._is_overextended_move(h1, atr_1h, "SHORT")
-            )
-            if is_bear_breakdown and bear_close.get("ok") and m15_ok_short and (25 <= rsi_1h <= 46) and (rsi_15m >= 23):
-                struct = self._structure(h4, "SHORT")
-                plan = self._build_style_plan("SCALP", h1, price, atr_1h, "SHORT", struct, regime, levels)
-                if plan and (plan["tp1"] < price < plan["stop_loss"]):
-                    score = 78 + (6 if vol_spike else 0) + (5 if bear_close.get("body_ratio", 0) >= 0.58 else 0) + (4 if conf_15m_short.get("ok") else 0)
-                    score = min(98, score)
-                    quality = "A+" if score >= 88 else "A"
-                    decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
-                    fib_poc = self.calculate_fib_and_poc(h1, "SHORT", lookback=36)
-                    bias = self._bias(daily, "SHORT")
-                    reason = f"SHORT [SCALP] | V134.0 Momentum Breakdown + R:R({plan['tp2_rr']}) + Vol({vol_ratio}x)"
-                    sig = build_signal(
-                        "SHORT",
-                        round(plan["entry_low"], decimals),
-                        round(plan["entry_high"], decimals),
-                        round(plan["stop_loss"], decimals),
-                        [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
-                        score,
-                        rsi_1h,
-                        atr_1h,
-                        reason,
-                        {
-                            "quality": quality,
-                            "trade_style": "SCALP",
-                            "macro_summary": "1W/1M N/A (Scalp)",
-                            "setup_type": "BEARISH_MOMENTUM_SETUP",
-                            "target_focus": "TP1 + TP2",
-                            "regime": regime,
-                            "adx": round(adx_val, 1),
-                            "vol_ratio": vol_ratio,
-                            "tp2_rr": plan["tp2_rr"],
-                            "key_support": round(key_sup, decimals),
-                            "resistance_low": round(res_low, decimals),
-                            "resistance_high": round(res_high, decimals),
-                            "timeframes": "1D + 4H + 1H + 15M" if (m15 is not None and not m15.empty) else "1D + 4H + 1H",
-                            "position_in_range": 0.32,
-                            "extension_atr": round(abs(price - ema20_1h) / atr_1h, 2),
-                            "move12": 0.0,
-                            "structure": struct,
-                            "fib_poc": fib_poc,
-                            "engulfing": self.has_engulfing(h1, "SHORT"),
-                            "close_confirmed": True,
-                            "ema200": round(bias.get("ema200", 0.0), decimals),
-                            "ema200_confluence": bias.get("ema200_confluence", False),
-                            "risk_pct": round(plan["risk_pct"], 2),
-                            "asset_type": asset_type,
-                            "entry_timing": "scalp_breakdown_15m_confirmed",
-                        },
-                    )
-                    return "SHORT", price, sig
-
-            return None
-        except Exception as exc:
-            logger.debug("Momentum breakout detector warning: %s", exc)
-            return None
-
-    def _value_entry(self, df, direction, regime="SIDEWAYS"):
-        if len(df) < 30:
-            return {"ok": False, "score": 0, "rsi": 50, "atr": 0, "position": 0.5,
-                    "extension": 0, "reason": "Entry timeframe insufficient"}
-        atr = float(self.calculate_atr(df).iloc[-1])
-        rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
-        close = float(df["close"].iloc[-1])
-        hi = float(df["high"].tail(36).max())
-        lo = float(df["low"].tail(36).min())
-        rng = max(hi - lo, atr, close * 1e-9)
-        position = (close - lo) / rng
-        ema20 = float(self.calculate_ema(df["close"], 20).iloc[-1])
-        extension = abs(close - ema20) / max(atr, close * 1e-9)
-        score = 0
-        reasons = []
-
-        if direction == "LONG":
-            if regime == "SIDEWAYS":
-                if position <= 0.42:
-                    score += 18; reasons.append("Range bottom edge")
-                elif position <= 0.58:
-                    score += 8; reasons.append("Mid-low range")
-                else:
-                    score -= 16; reasons.append("Too high in sideways range")
-            else:
-                if position <= 0.70:
-                    score += 16; reasons.append("Trend value zone")
-                else:
-                    score -= 14; reasons.append("High range")
-
-            if 40 <= rsi <= 70:
-                score += 12; reasons.append("RSI supportive")
-            elif rsi > 75:
-                score -= 18; reasons.append("Overbought")
-            if extension <= 2.0:
-                score += 9; reasons.append("Near EMA20")
-            elif extension > 2.7:
-                score -= 15; reasons.append("Extended")
-        else:
-            if regime == "SIDEWAYS":
-                if position >= 0.58:
-                    score += 18; reasons.append("Range top edge")
-                elif position >= 0.42:
-                    score += 8; reasons.append("Mid-high range")
-                else:
-                    score -= 16; reasons.append("Too low in sideways range")
-            else:
-                if position >= 0.30:
-                    score += 16; reasons.append("Trend short zone")
-                else:
-                    score -= 14; reasons.append("Low range")
-
-            if 30 <= rsi <= 60:
-                score += 12; reasons.append("RSI supportive")
-            elif rsi < 25:
-                score -= 18; reasons.append("Oversold")
-            if extension <= 2.0:
-                score += 9; reasons.append("Near EMA20")
-            elif extension > 2.7:
-                score -= 15; reasons.append("Extended")
-
-        fib_poc = self.calculate_fib_and_poc(df, direction, lookback=36)
-        engulf = self.has_engulfing(df, direction)
-        close_conf = self.has_close_confirmation(df, direction)
-
-        if engulf:
-            score += 8; reasons.append("Engulfing")
-        if close_conf.get("ok"):
-            score += close_conf.get("score", 0); reasons.append("1H close OK")
-        else:
-            score -= 6; reasons.append("Weak 1H close")
-
-        look = df.tail(12)
-        move = (float(look["close"].iloc[-1]) - float(look["close"].iloc[0])) / max(float(look["close"].iloc[0]), 1e-9) * 100
-        if abs(move) > 13.0:
-            score -= 14; reasons.append("Over-stretched move")
-
-        return {"ok": score >= 20, "score": max(-15, score), "rsi": rsi, "atr": atr,
-                "position": position, "extension": extension, "move12": move,
-                "range_high": hi, "range_low": lo,
-                "fib_poc": fib_poc, "engulfing": engulf, "close_confirmed": close_conf.get("ok", False),
-                "reason": "، ".join(reasons)}
-
-    def _entry_confirmation(self, df, direction):
-        if df is None or len(df) < 15:
-            return {"ok": True, "score": 0, "close_confirmed": False, "reason": "15M unavailable"}
-        close = float(df["close"].iloc[-1])
-        op = float(df["open"].iloc[-1])
-        hi = float(df["high"].iloc[-1])
-        lo = float(df["low"].iloc[-1])
-        atr = float(self.calculate_atr(df).iloc[-1])
-        rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
-        prev_hi = float(df["high"].tail(8).iloc[:-1].max())
-        prev_lo = float(df["low"].tail(8).iloc[:-1].min())
-        close_conf = self.has_close_confirmation(df, direction)
-        score = 0
-        reasons = []
-        if direction == "LONG":
-            if close > op: score += 8; reasons.append("15M bullish close")
-            if lo < prev_lo and close > prev_lo: score += 10; reasons.append("15M sweep reclaim")
-            if close > prev_hi: score += 9; reasons.append("15M breakout")
-            if self.has_engulfing(df, "LONG"): score += 7; reasons.append("15M engulfing")
-            if close_conf.get("ok"): score += 8; reasons.append("15M close OK")
-            if 40 <= rsi <= 74: score += 5; reasons.append("15M RSI OK")
-        else:
-            if close < op: score += 8; reasons.append("15M bearish close")
-            if hi > prev_hi and close < prev_hi: score += 10; reasons.append("15M sweep reject")
-            if close < prev_lo: score += 9; reasons.append("15M breakdown")
-            if self.has_engulfing(df, "SHORT"): score += 7; reasons.append("15M engulfing")
-            if close_conf.get("ok"): score += 8; reasons.append("15M close OK")
-            if 26 <= rsi <= 60: score += 5; reasons.append("15M RSI OK")
-        body = abs(close - op)
-        if atr > 0 and body > 2.0 * atr:
-            score -= 10; reasons.append("15M candle stretched")
-        ok_15m = close_conf.get("ok", False) and (score >= 12)
-        return {"ok": ok_15m, "score": score, "atr": atr, "rsi": rsi,
-                "close_confirmed": close_conf.get("ok", False),
-                "reason": "، ".join(reasons) if reasons else "15M confirmation weak"}
-
-    def check_momentum_at_tp1(self, candles1h):
-        try:
-            df = self.prepare_dataframe(candles1h)
-            if df.empty or len(df) < 10:
-                return "NEUTRAL", "بيانات غير كافية لفحص الزخم"
-            rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
-            if rsi > 70 or rsi < 30:
-                return "EXTREME", "⚠️ وصلت لـ TP1 والزخم مرتفع؛ انقل الوقف للدخول وخذ ربحك عند TP2."
-            return "NORMAL", "⚖️ وصلت لـ TP1؛ انقل الوقف للدخول واستهدف TP2 كهدف أساسي."
-        except Exception:
-            return "NORMAL", "⚖️ انقل الوقف للدخول واستهدف TP2."
 
     def evaluate_open_position(self, direction, entry_price, stop_loss, take_profits,
                                current_price, candles_15m=None):
@@ -984,165 +378,127 @@ class StrategyEngine:
 
             if direction == "LONG":
                 if curr <= sl:
-                    return {"action": "STOP_HIT", "message": "🛑 ضرب وقف الخسارة؛ إغلاق الصفقة والتركيز على الفرصة التالية."}
+                    return {"action": "STOP_HIT", "message": "🛑 تم كسر وقف الخسارة؛ إغلاق الصفقة الطويلة والتركيز على الفرصة التالية."}
                 if tp2 is not None and curr >= tp2:
-                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الصفقة واحجز ربحك."}
+                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الجزء الأساسي واحجز ربحك."}
                 if tp1 is not None and curr >= tp1:
-                    return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وانتظر TP2."}
+                    return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وتابع نحو TP2."}
             else:
                 if curr >= sl:
-                    return {"action": "STOP_HIT", "message": "🛑 ضرب وقف الخسارة؛ إغلاق الصفقة والتركيز على الفرصة التالية."}
+                    return {"action": "STOP_HIT", "message": "🛑 تم اختراق وقف الخسارة؛ إغلاق الصفقة الطويلة والتركيز على الفرصة التالية."}
                 if tp2 is not None and curr <= tp2:
-                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الصفقة واحجز ربحك."}
+                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الجزء الأساسي واحجز ربحك."}
                 if tp1 is not None and curr <= tp1:
-                    return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وانتظر TP2."}
+                    return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وتابع نحو TP2."}
 
-            return {"action": "HOLD", "message": "⏳ الصفقة في طريقها نحو TP1 ثم TP2."}
+            return {"action": "HOLD", "message": "⏳ الصفقة طويلة المدى (1W/1M) قيد المتابعة نحو TP1 ثم TP2."}
         except Exception:
             return {"action": "HOLD", "message": "⏳ الصفقة قيد المتابعة."}
 
-    def _make_neutral(self, reason="لا توجد فرصة مكتملة حالياً", score=0, rsi=50, atr=0, details=None):
+    def _make_neutral(self, reason="لا توجد فرصة أسبوعية/شهرية مكتملة حالياً", score=0, rsi=50, atr=0, details=None):
         return build_signal("NEUTRAL", 0, 0, 0, [], score, rsi, atr, reason, details or {})
 
     def analyze_market_structure(self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None,
                                  asset_type="crypto", ohlcv_15m=None,
                                  ohlcv_1w=None, ohlcv_1m=None):
+        """Analyzes strictly on Monthly (1M) + Weekly (1W) with Daily (1D) timing."""
         neutral = self._make_neutral()
         try:
             daily = self.prepare_dataframe(ohlcv_daily)
-            h4 = self.prepare_dataframe(ohlcv_4h)
-            h1 = self.prepare_dataframe(ohlcv_1h)
-            m15 = self.prepare_dataframe(ohlcv_15m)
             w1 = self.prepare_dataframe(ohlcv_1w)
             mn1 = self.prepare_dataframe(ohlcv_1m)
-            if len(daily) < 55 or len(h4) < 35 or len(h1) < 30:
-                return "NEUTRAL", 0.0, self._make_neutral("بيانات غير كافية")
 
-            regime, adx_val = self.detect_regime_state(daily, h4)
-            regime_min_score = (self.min_score + 4) if regime == "SIDEWAYS" else self.min_score
+            if len(w1) < 8:
+                return "NEUTRAL", 0.0, self._make_neutral("بيانات الفريم الأسبوعي (1W) غير كافية")
 
-            long_d = self._bias(daily, "LONG")
-            short_d = self._bias(daily, "SHORT")
-            long_h4 = self._structure(h4, "LONG")
-            short_h4 = self._structure(h4, "SHORT")
-            long_h1 = self._value_entry(h1, "LONG", regime=regime)
-            short_h1 = self._value_entry(h1, "SHORT", regime=regime)
+            price = float(w1["close"].iloc[-1])
+            atr_w = float(self.calculate_atr(w1).iloc[-1])
+            if price <= 0 or atr_w <= 0:
+                return "NEUTRAL", 0.0, self._make_neutral("بيانات السعر أو التذبذب الأسبوعي غير صالحة")
 
-            price = float(h1["close"].iloc[-1])
-            atr_1h = float(self.calculate_atr(h1).iloc[-1])
-            levels = self._key_levels(h4, h1, price, atr_1h)
-            vol_ok, vol_ratio = self._has_volume_support(h1, min_ratio=0.75)
-
+            levels = self._long_term_levels(w1, mn1, daily, price, atr_w)
             candidates = []
-            near_misses = []
-            for direction, bias, struct, value in [
-                ("LONG", long_d, long_h4, long_h1),
-                ("SHORT", short_d, short_h4, short_h1),
-            ]:
-                macro_info = self._macro_bias(w1, mn1, direction)
-                conf = self._entry_confirmation(m15, direction)
-                approx_score = int(round(min(100, max(0, (bias["score"] if bias["ok"] else 8) + struct["score"] + value["score"] + conf["score"] + macro_info["score"]))))
-                near_misses.append((approx_score, direction))
+            diag_map = {}
 
-                if not vol_ok:
-                    continue
-                if regime == "BULLISH" and direction == "SHORT":
-                    continue
-                if regime == "BEARISH" and direction == "LONG":
-                    continue
-                if not struct["ok"] or not value["ok"]:
-                    continue
-                if not value.get("close_confirmed", False):
-                    continue
-                if self._has_rsi_exhaustion_warning(h1, direction):
-                    continue
-                if self._is_overextended_move(h1, value["atr"], direction):
-                    continue
-                if not m15.empty and not conf["ok"]:
-                    continue
+            for direction in ("LONG", "SHORT"):
+                m_info = self._macro_structure(mn1, direction, "1M")
+                w_info = self._macro_structure(w1, direction, "1W")
+                d_info = self._daily_timing(daily, direction) if len(daily) >= 30 else {"ok": True, "score": 6, "reason": "1D N/A"}
 
-                trade_style = self._classify_trade_style(direction, bias, struct, macro_info, adx_val, False)
-                vol_bonus = 4 if vol_ratio >= 1.25 else 0
-                bias_pts = bias["score"] if bias["ok"] else 8
-                score = int(round(min(100, max(0, bias_pts + struct["score"] + value["score"] + conf["score"] + macro_info["score"] + vol_bonus))))
-                if score < regime_min_score:
+                has_monthly = len(mn1) >= 6
+                if has_monthly:
+                    macro_ok = (m_info["ok"] and w_info["ok"]) or (m_info["score"] >= 20 and w_info["ok"] and w_info["score"] >= 26)
+                else:
+                    macro_ok = w_info["ok"] and w_info["score"] >= 26
+
+                total_score = int(round(min(100, max(0, m_info["score"] + w_info["score"] + d_info["score"]))))
+                diag_map[direction] = {
+                    "score": total_score,
+                    "1m": m_info["reason"],
+                    "1w": w_info["reason"],
+                    "1d": d_info["reason"],
+                }
+
+                if not macro_ok:
                     continue
-                if trade_style == "SCALP" and self._is_dead_flat(h1, value["atr"]):
+                if total_score < self.min_score:
                     continue
 
-                plan = self._build_style_plan(trade_style, h1, price, value["atr"], direction, struct, regime, levels)
+                plan = self._build_long_term_plan(w1, price, atr_w, direction, levels)
                 if not plan:
                     continue
                 if direction == "LONG" and not (plan["stop_loss"] < price < plan["tp1"]):
                     continue
                 if direction == "SHORT" and not (plan["tp1"] < price < plan["stop_loss"]):
                     continue
-                candidates.append((score, direction, trade_style, bias, struct, value, conf, plan, price, macro_info))
+
+                candidates.append((total_score, direction, m_info, w_info, d_info, plan))
 
             if candidates:
-                score, direction, trade_style, bias, struct, value, conf, plan, price, macro_info = max(candidates, key=lambda x: x[0])
-                quality = "A+" if score >= 88 else "A" if score >= 82 else "B+"
-                reason = f"{direction} [{trade_style}] | V134.0 [{regime}] ({macro_info['summary']}) R:R({plan['tp2_rr']}) + Vol({vol_ratio}x)"
+                total_score, direction, m_info, w_info, d_info, plan = max(candidates, key=lambda x: x[0])
+                quality = "A+" if total_score >= 88 else "A" if total_score >= 80 else "B+"
+                regime_label = "BULLISH_MACRO" if direction == "LONG" else "BEARISH_MACRO"
+                reason = f"{direction} [1W/1M] | V135.0 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
                 decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
+
                 signal = build_signal(
                     direction,
                     round(plan["entry_low"], decimals),
                     round(plan["entry_high"], decimals),
                     round(plan["stop_loss"], decimals),
                     [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
-                    score,
-                    value["rsi"], value["atr"], reason,
+                    total_score,
+                    w_info["rsi"],
+                    atr_w,
+                    reason,
                     {
                         "quality": quality,
-                        "trade_style": trade_style,
-                        "macro_summary": macro_info["summary"],
-                        "setup_type": f"{trade_style}_ADAPTIVE_TWO_TARGET",
-                        "target_focus": "TP1 + TP2",
-                        "regime": regime,
-                        "adx": round(adx_val, 1),
-                        "vol_ratio": vol_ratio,
+                        "trade_style": "WEEKLY_MONTHLY",
+                        "regime": regime_label,
+                        "adx": round(w_info["adx"], 1),
                         "tp2_rr": plan["tp2_rr"],
                         "key_support": round(levels["key_support"], decimals),
+                        "deep_support": round(levels["deep_support"], decimals),
                         "resistance_low": round(levels["resistance_low"], decimals),
                         "resistance_high": round(levels["resistance_high"], decimals),
-                        "timeframes": "1M + 1W + 1D + 4H + 1H + 15M",
-                        "position_in_range": round(value["position"], 3),
-                        "extension_atr": round(value["extension"], 2),
-                        "move12": round(value["move12"], 2),
-                        "structure": struct,
-                        "confirmation_15m": conf,
-                        "fib_poc": value.get("fib_poc", {}),
-                        "engulfing": value.get("engulfing", False),
-                        "close_confirmed": value.get("close_confirmed", False),
-                        "ema200": round(bias.get("ema200", 0.0), decimals),
-                        "ema200_confluence": bias.get("ema200_confluence", False),
-                        "risk_pct": round(plan["risk_pct"], 2),
+                        "timeframes": "1M + 1W + 1D",
+                        "risk_pct": plan["risk_pct"],
                         "asset_type": asset_type,
-                        "entry_timing": f"{trade_style.lower()}_confirmed",
+                        "1m_summary": m_info["reason"],
+                        "1w_summary": w_info["reason"],
+                        "1d_summary": d_info["reason"],
                     },
                 )
                 return direction, price, signal
 
-            mom_setup = self._momentum_breakout_detector(daily, h4, h1, m15, asset_type, regime, adx_val)
-            if mom_setup is not None:
-                return mom_setup
-
-            best_nm_score, best_nm_dir = max(near_misses, key=lambda x: x[0]) if near_misses else (0, "NONE")
-            macro_diag = f"LONG: {self._macro_bias(w1, mn1, 'LONG')['summary']} | SHORT: {self._macro_bias(w1, mn1, 'SHORT')['summary']}"
-            diagnostics = {
-                "1w_1m": macro_diag,
-                "daily_long": long_d, "daily_short": short_d,
-                "4h_long": long_h4, "4h_short": short_h4,
-                "1h_long": long_h1, "1h_short": short_h1,
-                "15m": "available" if not m15.empty else "unavailable",
-                "regime": regime,
-                "best_candidate": f"{best_nm_dir} ({best_nm_score}/{regime_min_score})",
-            }
-            best_value = long_h1 if long_h1.get("score", -999) >= short_h1.get("score", -999) else short_h1
+            best_dir = "LONG" if diag_map["LONG"]["score"] >= diag_map["SHORT"]["score"] else "SHORT"
+            best_sc = diag_map[best_dir]["score"]
             return "NEUTRAL", 0.0, self._make_neutral(
-                f"لا توجد صفقة (SCALP/SWING/POSITION) عالية الجودة في وضع [{regime}] حالياً | الأقرب: {best_nm_dir} ({best_nm_score}/{regime_min_score})",
-                max(0, min(100, int(best_value.get("score", 0)))),
-                best_value.get("rsi", 50), best_value.get("atr", 0), diagnostics
+                f"لا توجد صفقة أسبوعية/شهرية مكتملة حالياً | الأقرب: {best_dir} ({best_sc}/{self.min_score})",
+                best_sc,
+                float(self.calculate_rsi(w1["close"]).iloc[-1]),
+                atr_w,
+                {"diagnostics": diag_map, "best_candidate": f"{best_dir} ({best_sc}/{self.min_score})"},
             )
         except Exception as exc:
             logger.exception("Analysis error: %s", exc)
