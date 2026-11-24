@@ -1,9 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V132.0 Dual Scalp + Swing Engine
-# Multi-Market: Crypto + Stocks/ETFs + Forex + Metals
-# Classifies every valid trade into SCALP or SWING automatically,
-# enforces liquidity/volume + anti-chase + 15M confirmation,
-# and keeps practical TP1 & TP2 execution (plus optional TP3).
+# analysis.py — StrategyEngine V133.0 Dual Scalp + Swing Engine
+# Adds target room / R:R validation for TP1 & TP2, stronger
+# structural confirmation, and best-candidate diagnostics.
 # ============================================================
 
 import logging
@@ -16,6 +14,7 @@ logger = logging.getLogger("StrategyEngine")
 
 SIGNAL_EXPIRY_SECONDS = 86400
 MIN_SCORE_DEFAULT = 78
+MIN_TP2_RR = 1.25
 
 
 def _now_iso():
@@ -47,7 +46,7 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
 
 class StrategyEngine:
     """Dual-mode trading engine that detects and classifies SCALP vs SWING
-    setups across 1D / 4H / 1H / 15M with structural risk control."""
+    setups across 1D / 4H / 1H / 15M with structural risk & R:R control."""
 
     def __init__(self, capital=10000.0, risk_per_trade=0.01,
                  min_score=MIN_SCORE_DEFAULT):
@@ -143,8 +142,9 @@ class StrategyEngine:
             lows_4h = h4_sub["low"].to_numpy(dtype=float)
             highs_4h = h4_sub["high"].to_numpy(dtype=float)
 
-            below_lows = [v for v in np.concatenate([lows_1h[-18:], lows_4h[-12:]]) if v < price]
-            key_support = float(np.percentile(below_lows, 65)) if below_lows else float(price - 1.5 * atr)
+            below_lows = sorted([v for v in np.concatenate([lows_1h[-18:], lows_4h[-12:]]) if v < price], reverse=True)
+            key_support = float(below_lows[0]) if below_lows else float(price - 1.5 * atr)
+            deep_support = float(below_lows[min(len(below_lows) - 1, 2)]) if below_lows else float(price - 2.4 * atr)
 
             above_highs = sorted([v for v in np.concatenate([highs_1h, highs_4h]) if v > price])
             if len(above_highs) >= 2:
@@ -159,12 +159,14 @@ class StrategyEngine:
 
             return {
                 "key_support": key_support,
+                "deep_support": deep_support,
                 "resistance_low": res_low,
                 "resistance_high": res_high,
             }
         except Exception:
             return {
                 "key_support": max(0.0, price - 1.5 * atr),
+                "deep_support": max(0.0, price - 2.4 * atr),
                 "resistance_low": price + 1.15 * atr,
                 "resistance_high": price + 1.85 * atr,
             }
@@ -256,7 +258,6 @@ class StrategyEngine:
             return {"ok": False, "score": 0, "body_ratio": 0.0, "reason": "Close check error"}
 
     def _has_volume_support(self, df, min_ratio=0.75):
-        """Ensures volume is not dead/illiquid."""
         try:
             if df is None or len(df) < 20 or "volume" not in df.columns:
                 return True, 1.0
@@ -271,7 +272,6 @@ class StrategyEngine:
             return True, 1.0
 
     def _has_rsi_exhaustion_warning(self, df, direction):
-        """Detects price pushing to a new local extreme while RSI fails to confirm."""
         try:
             if df is None or len(df) < 12:
                 return False
@@ -372,7 +372,7 @@ class StrategyEngine:
             bos = close > prev_h or close > last_h
             sweep = float(recent["low"].min()) < prev_l and close > prev_l
             mss = sweep and close > float(recent["high"].iloc[:-1].max()) if len(recent) > 2 else False
-            score = (18 if higher_structure else 0) + (14 if bos else 0) + (15 if sweep else 0) + (10 if mss else 0)
+            score = (18 if higher_structure else 0) + (16 if bos else 0) + (16 if sweep else 0) + (10 if mss else 0)
             ok = higher_structure or bos or sweep or mss
             reason = []
             if sweep: reason.append("Sell-side sweep")
@@ -384,7 +384,7 @@ class StrategyEngine:
             bos = close < prev_l or close < last_l
             sweep = float(recent["high"].max()) > prev_h and close < prev_h
             mss = sweep and close < float(recent["low"].iloc[:-1].min()) if len(recent) > 2 else False
-            score = (18 if lower_structure else 0) + (14 if bos else 0) + (15 if sweep else 0) + (10 if mss else 0)
+            score = (18 if lower_structure else 0) + (16 if bos else 0) + (16 if sweep else 0) + (10 if mss else 0)
             ok = lower_structure or bos or sweep or mss
             reason = []
             if sweep: reason.append("Buy-side sweep")
@@ -392,7 +392,7 @@ class StrategyEngine:
             if lower_structure: reason.append("LH/LL")
             if bos: reason.append("Bearish BOS")
 
-        return {"ok": ok, "score": min(50, max(10, score)), "bos": bos, "mss": mss, "sweep": sweep,
+        return {"ok": ok, "score": min(52, max(10, score)), "bos": bos, "mss": mss, "sweep": sweep,
                 "swing_high": last_h, "swing_low": last_l,
                 "reason": "، ".join(reason) if reason else "Directional structure"}
 
@@ -472,7 +472,6 @@ class StrategyEngine:
                 "reason": "، ".join(reasons) if reasons else "Neutral bias"}
 
     def _classify_trade_style(self, direction, bias, struct_4h, value_1h, adx_val, is_momentum_breakout):
-        """Classifies a trade cleanly into 'SWING' or 'SCALP'."""
         h4_aligned = bool(struct_4h.get("ok")) and (
             bool(struct_4h.get("bos"))
             or bool(struct_4h.get("mss"))
@@ -487,7 +486,7 @@ class StrategyEngine:
         return "SCALP"
 
     def _build_style_plan(self, style, df1h, entry_price, atr, direction, structure, regime, levels):
-        """Builds stop-loss and TP1/TP2/TP3 tailored to SCALP or SWING."""
+        """Builds stop-loss and TP1/TP2/TP3 with obstacle room and R:R validation."""
         if entry_price <= 0 or atr <= 0:
             return None
         swing_low = float(structure.get("swing_low", df1h["low"].tail(18).min()))
@@ -504,38 +503,44 @@ class StrategyEngine:
                 atr_stop = entry_price - 2.10 * atr
                 stop = min(structural, atr_stop)
                 risk = entry_price - stop
-                if risk <= 0:
-                    return None
-                if (risk / entry_price * 100) > max_risk_pct:
+                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
                     return None
                 if (risk / entry_price * 100) < min_risk_pct:
                     stop = entry_price - 1.70 * atr
                     risk = entry_price - stop
                 entry_low = max(0.0, entry_price - 0.25 * atr)
                 entry_high = entry_price + 0.05 * atr
-                tps = [entry_price + tp1_r * risk, entry_price + tp2_r * risk, entry_price + tp3_r * risk]
+                tp1 = entry_price + tp1_r * risk
+                tp2 = entry_price + tp2_r * risk
+                # Check if resistance_high caps TP2 slightly while keeping healthy R:R
+                res_cap = levels["resistance_high"] - 0.15 * atr
+                if res_cap > tp1 * 1.003 and res_cap < tp2:
+                    tp2 = res_cap
+                tp3 = max(tp2 + 0.55 * risk, entry_price + tp3_r * risk)
             else:
                 structural = max(swing_high, levels["resistance_low"]) + 0.65 * atr
                 atr_stop = entry_price + 2.10 * atr
                 stop = max(structural, atr_stop)
                 risk = stop - entry_price
-                if risk <= 0:
-                    return None
-                if (risk / entry_price * 100) > max_risk_pct:
+                if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
                     return None
                 if (risk / entry_price * 100) < min_risk_pct:
                     stop = entry_price + 1.70 * atr
                     risk = stop - entry_price
                 entry_low = entry_price - 0.05 * atr
                 entry_high = entry_price + 0.25 * atr
-                tps = [entry_price - tp1_r * risk, entry_price - tp2_r * risk, entry_price - tp3_r * risk]
+                tp1 = entry_price - tp1_r * risk
+                tp2 = entry_price - tp2_r * risk
+                sup_floor = levels["deep_support"] + 0.15 * atr
+                if sup_floor < tp1 * 0.997 and sup_floor > tp2:
+                    tp2 = sup_floor
+                tp3 = min(tp2 - 0.55 * risk, entry_price - tp3_r * risk)
         else:
-            # SCALP / Intraday Momentum
             max_risk_pct = 4.2
             min_risk_pct = 0.55
-            tp1_r = 0.60 if regime == "SIDEWAYS" else 0.70
-            tp2_r = 1.15 if regime == "SIDEWAYS" else 1.30
-            tp3_r = 1.75
+            tp1_r = 0.65 if regime == "SIDEWAYS" else 0.75
+            tp2_r = 1.30 if regime == "SIDEWAYS" else 1.40
+            tp3_r = 1.90
             if direction == "LONG":
                 structural = min(swing_low, levels["key_support"]) - 0.45 * atr
                 atr_stop = entry_price - 1.55 * atr
@@ -548,7 +553,12 @@ class StrategyEngine:
                     risk = entry_price - stop
                 entry_low = max(0.0, entry_price - 0.15 * atr)
                 entry_high = entry_price + 0.05 * atr
-                tps = [entry_price + tp1_r * risk, entry_price + tp2_r * risk, entry_price + tp3_r * risk]
+                tp1 = entry_price + tp1_r * risk
+                tp2 = entry_price + tp2_r * risk
+                res_cap = levels["resistance_low"] - 0.10 * atr
+                if res_cap > tp1 * 1.002 and res_cap < tp2:
+                    tp2 = res_cap
+                tp3 = max(tp2 + 0.45 * risk, entry_price + tp3_r * risk)
             else:
                 structural = max(swing_high, levels["resistance_low"]) + 0.45 * atr
                 atr_stop = entry_price + 1.55 * atr
@@ -561,20 +571,29 @@ class StrategyEngine:
                     risk = stop - entry_price
                 entry_low = entry_price - 0.05 * atr
                 entry_high = entry_price + 0.15 * atr
-                tps = [entry_price - tp1_r * risk, entry_price - tp2_r * risk, entry_price - tp3_r * risk]
+                tp1 = entry_price - tp1_r * risk
+                tp2 = entry_price - tp2_r * risk
+                sup_floor = levels["key_support"] + 0.10 * atr
+                if sup_floor < tp1 * 0.998 and sup_floor > tp2:
+                    tp2 = sup_floor
+                tp3 = min(tp2 - 0.45 * risk, entry_price - tp3_r * risk)
+
+        tp2_rr = abs(tp2 - entry_price) / max(risk, 1e-12)
+        if tp2_rr < MIN_TP2_RR:
+            return None
 
         return {
             "entry_low": entry_low,
             "entry_high": entry_high,
             "stop_loss": stop,
-            "tp1": tps[0],
-            "tp2": tps[1],
-            "tp3": tps[2],
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
             "risk_pct": risk / entry_price * 100,
+            "tp2_rr": round(tp2_rr, 2),
         }
 
     def _momentum_breakout_detector(self, daily, h4, h1, m15, asset_type, regime, adx_val):
-        """Detects high-conviction SCALP momentum breakouts with mandatory 15M & volume check."""
         try:
             if len(h4) < 35 or len(h1) < 30:
                 return None
@@ -601,7 +620,6 @@ class StrategyEngine:
             res_low = levels["resistance_low"]
             res_high = levels["resistance_high"]
 
-            # 1) Bullish Momentum Scalp
             bull_close = self.has_close_confirmation(h1, "LONG")
             conf_15m_long = self._entry_confirmation(m15, "LONG")
             m15_ok_long = True if (m15 is None or m15.empty) else conf_15m_long.get("ok", False)
@@ -626,7 +644,7 @@ class StrategyEngine:
                     decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
                     fib_poc = self.calculate_fib_and_poc(h1, "LONG", lookback=36)
                     bias = self._bias(daily, "LONG")
-                    reason = f"LONG [SCALP] | V132.0 Momentum Breakout + 15M + Vol({vol_ratio}x)"
+                    reason = f"LONG [SCALP] | V133.0 Momentum Breakout + R:R({plan['tp2_rr']}) + Vol({vol_ratio}x)"
                     sig = build_signal(
                         "LONG",
                         round(plan["entry_low"], decimals),
@@ -645,6 +663,7 @@ class StrategyEngine:
                             "regime": regime,
                             "adx": round(adx_val, 1),
                             "vol_ratio": vol_ratio,
+                            "tp2_rr": plan["tp2_rr"],
                             "key_support": round(key_sup, decimals),
                             "resistance_low": round(res_low, decimals),
                             "resistance_high": round(res_high, decimals),
@@ -665,7 +684,6 @@ class StrategyEngine:
                     )
                     return "LONG", price, sig
 
-            # 2) Bearish Momentum Breakdown Scalp
             bear_close = self.has_close_confirmation(h1, "SHORT")
             conf_15m_short = self._entry_confirmation(m15, "SHORT")
             m15_ok_short = True if (m15 is None or m15.empty) else conf_15m_short.get("ok", False)
@@ -690,7 +708,7 @@ class StrategyEngine:
                     decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
                     fib_poc = self.calculate_fib_and_poc(h1, "SHORT", lookback=36)
                     bias = self._bias(daily, "SHORT")
-                    reason = f"SHORT [SCALP] | V132.0 Momentum Breakdown + 15M + Vol({vol_ratio}x)"
+                    reason = f"SHORT [SCALP] | V133.0 Momentum Breakdown + R:R({plan['tp2_rr']}) + Vol({vol_ratio}x)"
                     sig = build_signal(
                         "SHORT",
                         round(plan["entry_low"], decimals),
@@ -709,6 +727,7 @@ class StrategyEngine:
                             "regime": regime,
                             "adx": round(adx_val, 1),
                             "vol_ratio": vol_ratio,
+                            "tp2_rr": plan["tp2_rr"],
                             "key_support": round(key_sup, decimals),
                             "resistance_low": round(res_low, decimals),
                             "resistance_high": round(res_high, decimals),
@@ -924,10 +943,15 @@ class StrategyEngine:
             vol_ok, vol_ratio = self._has_volume_support(h1, min_ratio=0.75)
 
             candidates = []
+            near_misses = []
             for direction, bias, struct, value in [
                 ("LONG", long_d, long_h4, long_h1),
                 ("SHORT", short_d, short_h4, short_h1),
             ]:
+                conf = self._entry_confirmation(m15, direction)
+                approx_score = int(round(min(100, max(0, (bias["score"] if bias["ok"] else 8) + struct["score"] + value["score"] + conf["score"]))))
+                near_misses.append((approx_score, direction))
+
                 if not vol_ok:
                     continue
                 if regime == "BULLISH" and direction == "SHORT":
@@ -942,7 +966,6 @@ class StrategyEngine:
                     continue
                 if self._is_overextended_move(h1, value["atr"], direction):
                     continue
-                conf = self._entry_confirmation(m15, direction)
                 if not m15.empty and not conf["ok"]:
                     continue
 
@@ -967,7 +990,7 @@ class StrategyEngine:
             if candidates:
                 score, direction, trade_style, bias, struct, value, conf, plan, price = max(candidates, key=lambda x: x[0])
                 quality = "A+" if score >= 88 else "A" if score >= 82 else "B+"
-                reason = f"{direction} [{trade_style}] | V132.0 [{regime}] TP1/TP2: {struct['reason']} + Vol({vol_ratio}x)"
+                reason = f"{direction} [{trade_style}] | V133.0 [{regime}] R:R({plan['tp2_rr']}) {struct['reason']} + Vol({vol_ratio}x)"
                 decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
                 signal = build_signal(
                     direction,
@@ -985,6 +1008,7 @@ class StrategyEngine:
                         "regime": regime,
                         "adx": round(adx_val, 1),
                         "vol_ratio": vol_ratio,
+                        "tp2_rr": plan["tp2_rr"],
                         "key_support": round(levels["key_support"], decimals),
                         "resistance_low": round(levels["resistance_low"], decimals),
                         "resistance_high": round(levels["resistance_high"], decimals),
@@ -1010,16 +1034,18 @@ class StrategyEngine:
             if mom_setup is not None:
                 return mom_setup
 
+            best_nm_score, best_nm_dir = max(near_misses, key=lambda x: x[0]) if near_misses else (0, "NONE")
             diagnostics = {
                 "daily_long": long_d, "daily_short": short_d,
                 "4h_long": long_h4, "4h_short": short_h4,
                 "1h_long": long_h1, "1h_short": short_h1,
                 "15m": "available" if not m15.empty else "unavailable",
                 "regime": regime,
+                "best_candidate": f"{best_nm_dir} ({best_nm_score}/{regime_min_score})",
             }
             best_value = long_h1 if long_h1.get("score", -999) >= short_h1.get("score", -999) else short_h1
             return "NEUTRAL", 0.0, self._make_neutral(
-                f"لا توجد صفقة (SCALP/SWING) عالية الجودة في وضع [{regime}] حالياً",
+                f"لا توجد صفقة (SCALP/SWING) عالية الجودة في وضع [{regime}] حالياً | الأقرب: {best_nm_dir} ({best_nm_score}/{regime_min_score})",
                 max(0, min(100, int(best_value.get("score", 0)))),
                 best_value.get("rsi", 50), best_value.get("atr", 0), diagnostics
             )
