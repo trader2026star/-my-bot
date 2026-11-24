@@ -1,8 +1,7 @@
 # ============================================================
-# main.py — Bot V133.0 Dual Scalp + Swing Engine
+# main.py — Bot V134.0 Tri-Mode Engine
+# SCALP (15M/1H) + SWING (4H/1D) + POSITION (1W/1M)
 # Crypto + Stocks/ETFs + Forex + Metals | LONG + SHORT
-# Displays exact trade style (SCALP vs SWING), R:R for TP1/TP2,
-# Key Levels, Best Candidate in NEUTRAL, and TP1/TP2 tracking.
 # ============================================================
 
 import os
@@ -268,7 +267,14 @@ def clean_symbol_input(raw):
 
 
 def _yf_interval(timeframe):
-    return {"1d": ("6mo", "1d"), "4h": ("60d", "1h"), "1h": ("30d", "1h"), "15m": ("30d", "15m")}.get(timeframe)
+    return {
+        "1m": ("5y", "1mo"),
+        "1w": ("5y", "1wk"),
+        "1d": ("6mo", "1d"),
+        "4h": ("60d", "1h"),
+        "1h": ("30d", "1h"),
+        "15m": ("30d", "15m"),
+    }.get(timeframe)
 
 
 def _fetch_yfinance_ohlcv(ticker, timeframe):
@@ -295,7 +301,7 @@ def _fetch_yfinance_ohlcv(ticker, timeframe):
                 bars.append([ts, float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), vol])
             except Exception:
                 continue
-        return bars if len(bars) > 10 else None
+        return bars if len(bars) >= 6 else None
     except Exception as exc:
         logger.debug("yfinance fetch failed for %s %s: %s", ticker, timeframe, exc)
         return None
@@ -324,10 +330,11 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=100):
         base = sym.split(":")[0].split("/")[0]
         if base.endswith("USDT") and len(base) > 4:
             base = base[:-4]
+        min_bars = 6 if timeframe in ("1w", "1m") else 11
         for c_sym in (f"{base}/USDT:USDT", f"{base}/USDT"):
             try:
                 bars = ex_call(bingx.fetch_ohlcv, c_sym, timeframe=timeframe, limit=limit)
-                if bars and len(bars) > 10:
+                if bars and len(bars) >= min_bars:
                     return c_sym, bars, "crypto"
             except Exception as exc:
                 logger.debug("BingX OHLCV %s %s: %s", c_sym, timeframe, exc)
@@ -474,6 +481,7 @@ def _calc_rr(entry_low, entry_high, stop_loss, target):
 
 def _format_neutral_diagnostics(signal):
     details = (signal or {}).get("details", {}) or {}
+    macro_d = details.get("1w_1m")
     dl = (details.get("daily_long") or {}).get("reason", "N/A")
     ds = (details.get("daily_short") or {}).get("reason", "N/A")
     h4l = (details.get("4h_long") or {}).get("reason", "N/A")
@@ -481,13 +489,15 @@ def _format_neutral_diagnostics(signal):
     h1l = (details.get("1h_long") or {}).get("reason", "N/A")
     h1s = (details.get("1h_short") or {}).get("reason", "N/A")
     best_cand = details.get("best_candidate")
-    extra = f"• الأقرب للاكتمال: {best_cand}\n" if best_cand else ""
-    return (
-        f"{extra}"
-        f"• 1D (LONG/SHORT): {dl} | {ds}\n"
-        f"• 4H (LONG/SHORT): {h4l} | {h4s}\n"
-        f"• 1H (LONG/SHORT): {h1l} | {h1s}"
-    )
+    lines = []
+    if best_cand:
+        lines.append(f"• الأقرب للاكتمال: {best_cand}")
+    if macro_d:
+        lines.append(f"• 1W/1M: {macro_d}")
+    lines.append(f"• 1D (LONG/SHORT): {dl} | {ds}")
+    lines.append(f"• 4H (LONG/SHORT): {h4l} | {h4s}")
+    lines.append(f"• 1H (LONG/SHORT): {h1l} | {h1s}")
+    return "\n".join(lines)
 
 
 def monitor_tracked_positions(chat_id=None):
@@ -515,7 +525,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V133.0</b>\n"
+                "🛡️ <b>متابعة صفقة نشطة (TP1/TP2) — V134.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -548,6 +558,8 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
         _, h4, _ = fetch_ohlcv(symbol_raw, "4h", 100)
         _, h1, _ = fetch_ohlcv(symbol_raw, "1h", 100)
         _, m15, _ = fetch_ohlcv(symbol_raw, "15m", 120)
+        _, w1, _ = fetch_ohlcv(symbol_raw, "1w", 60)
+        _, mn1, _ = fetch_ohlcv(symbol_raw, "1m", 36)
         if len(h4 or []) < 35 or len(h1 or []) < 30:
             if manual:
                 tg_send(f"❌ <code>{resolved}</code> بيانات 4H/1H غير كافية.", chat_id)
@@ -572,7 +584,9 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
                 return True, None
 
         scan_stats["scanned_pairs"] += 1
-        direction, price, signal = engine.analyze_market_structure(daily, h4, h1, asset_type=asset_type, ohlcv_15m=m15)
+        direction, price, signal = engine.analyze_market_structure(
+            daily, h4, h1, asset_type=asset_type, ohlcv_15m=m15, ohlcv_1w=w1, ohlcv_1m=mn1
+        )
         if prefer_long and direction == "SHORT":
             direction = "NEUTRAL"
         market_tag = {"crypto": "🪙 Crypto", "stock": "📈 Stocks / ETFs", "forex": "💱 Forex / Metals"}.get(asset_type, "📊 Market")
@@ -580,6 +594,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
         regime = regime_info.get("regime", "SIDEWAYS")
         details = (signal or {}).get("details", {}) or {}
         trade_style = str(details.get("trade_style", "SCALP")).upper()
+        is_long_term = trade_style == "POSITION"
         is_swing = trade_style == "SWING"
         counter = is_counter_regime(regime, direction)
         sig_score = int((signal or {}).get("score", 0))
@@ -588,7 +603,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             if not manual:
                 if _is_duplicate_active_position(resolved, direction):
                     return False, signal
-                if counter and not is_swing and sig_score < COUNTER_REGIME_MIN_SCORE:
+                if counter and trade_style == "SCALP" and sig_score < COUNTER_REGIME_MIN_SCORE:
                     return False, signal
                 if direction_counts is not None and direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
                     return False, signal
@@ -609,7 +624,13 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             _, momentum_msg = engine.check_momentum_at_tp1(h1)
             emoji = "🟢" if direction == "LONG" else "🔴"
             side = "شراء LONG" if direction == "LONG" else "بيع SHORT"
-            style_badge = "🌊 سوينج قصير (SWING)" if is_swing else "⚡ سكالبنج لحظي (SCALP)"
+            if is_long_term:
+                style_badge = "🏛️ طويلة المدى (POSITION — 1W/1M)"
+            elif is_swing:
+                style_badge = "🌊 سوينج (SWING — 1D/4H)"
+            else:
+                style_badge = "⚡ سكالبنج لحظي (SCALP — 15M/1H)"
+
             close_tag = "✅ مؤكد" if details.get("close_confirmed") else "⚖️ جزئي"
             sig_regime = details.get("regime", regime)
             key_sup = details.get("key_support", 0)
@@ -619,7 +640,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             rr_tp2 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
 
             msg = (
-                "🚀 <b>MY EXPERT MULTI-MARKET BOT V133.0</b>\n"
+                "🚀 <b>MY EXPERT MULTI-MARKET BOT V134.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 f"🎛️ <b>تصنيف الصفقة:</b> <b>{style_badge}</b>\n"
@@ -659,7 +680,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             diag_text = _format_neutral_diagnostics(signal)
             tg_send(
                 f"📊 <b>تحليل:</b> <code>{symbol_raw}</code>\n🏷️ <b>السوق:</b> {market_tag}\n━━━━━━━━━━━━━━━━━━\n"
-                "⚪ <b>لا توجد صفقة (SCALP/SWING) عالية الجودة حاليًا.</b>\n"
+                "⚪ <b>لا توجد صفقة (SCALP/SWING/POSITION) عالية الجودة حاليًا.</b>\n"
                 f"🔎 <b>السبب:</b> {reason}\n\n"
                 f"📋 <b>تفاصيل الفلاتر:</b>\n<code>{diag_text}</code>", chat_id)
         return False, signal
@@ -684,7 +705,7 @@ def run_gainers_scan(chat_id=None):
             return
         preview = "\n".join([f"• <code>{s.split(':')[0]}</code>: <b>+{p:.1f}%</b>" for p, s in top[:8]])
         if chat_id:
-            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ فحص فرص السكالبنج والسوينج (TP1/TP2)...", chat_id)
+            tg_send(f"🔥 <b>فحص الأعلى ربحاً (Top Gainers — 24h):</b>\n{preview}\n\n⏳ جارٍ فحص فرص السكالبنج والسوينج والطويلة (TP1/TP2)...", chat_id)
         found = 0
         for _, sym in top:
             try:
@@ -710,7 +731,7 @@ def run_full_scan(chat_id=None):
         regime_info = get_daily_market_regime(force=True)
         if chat_id:
             tg_send(
-                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V133.0)...</b>\n"
+                "🔍 <b>جارٍ فحص Crypto + Stocks/ETFs + Forex/Metals (نسخة V134.0)...</b>\n"
                 f"{regime_info.get('summary', '')}",
                 chat_id,
             )
@@ -762,10 +783,10 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🤖 <b>MY EXPERT MULTI-MARKET BOT V133.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🤖 <b>MY EXPERT MULTI-MARKET BOT V134.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
-    "🎛️ <b>النظام المزدوج:</b> يحدد تلقائياً هل الفرصة <b>⚡ سكالبنج (SCALP)</b> أم <b>🌊 سوينج قصير (SWING)</b>\n"
-    "🎯 <b>الأهداف:</b> تركيز عملي على TP1 و TP2 مع فحص R:R والمقاومات والدعوم الرئيسية\n"
+    "🎛️ <b>النظام الثلاثي:</b> يحدد تلقائياً هل الفرصة <b>⚡ سكالبنج (SCALP)</b> أو <b>🌊 سوينج (SWING)</b> أو <b>🏛️ طويلة المدى (POSITION — 1W/1M)</b>\n"
+    "🎯 <b>الأهداف:</b> تركيز عملي على TP1 و TP2 مع عرض R:R والدعم والمقاومة الرئيسية\n"
     "🔥 أرسل <code>/gainers</code> لاكتشاف فرص الزخم في الرابحين.\n"
     "🌐 أرسل <code>/regime</code> لمعرفة اتجاه السوق اليومي.\n"
     "📌 أرسل BTC أو ETH أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -822,7 +843,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V133.0-Dual-Scalp-Swing-RR", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V134.0-Scalp-Swing-Position", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -845,7 +866,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V133.0 bootstrapped: Dual Scalp + Swing + R:R Engine.")
+    logger.info("Bot V134.0 bootstrapped: Scalp + Swing + Weekly/Monthly Position Engine.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
