@@ -1,11 +1,12 @@
 # ============================================================
-# main.py — Bot V135.0 (Weekly & Monthly Position Engine)
-# Removes SCALP & 15M/1H/4H scalping logic.
-# Scans & analyzes strictly on Weekly (1W) and Monthly (1M)
-# with Daily (1D) timing and TP1/TP2/TP3 tracking.
+# main.py — Bot V136.0 (LONG Only — Weekly & Monthly)
+# Long-only position engine on Weekly (1W) and Monthly (1M)
+# with Daily (1D) timing, TP1/TP2/TP3 tracking, and safe
+# Telegram HTML/plain-text fallback sender.
 # ============================================================
 
 import os
+import re
 import time
 import warnings
 import threading
@@ -56,7 +57,7 @@ _all_markets_cache = []
 _markets_cache_time = 0
 _sent_signals_cache = {}
 SIGNAL_COOLDOWN_SECONDS = 86400 * 3
-MAX_SAME_DIRECTION_PER_SCAN = 4
+MAX_SAME_DIRECTION_PER_SCAN = 5
 MAX_TRACKED_POSITIONS = 15
 POSITION_TTL_SECONDS = 86400 * 30
 SCAN_INTERVAL_SECONDS = 21600
@@ -126,13 +127,12 @@ def save_tracked_position(signal, symbol_raw, resolved):
             """
             INSERT OR REPLACE INTO tracked_positions
             (signal_id, symbol_raw, resolved, direction, entry_price, stop_loss, tp1, tp2, tp3, last_action, created_ts, updated_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?)
+            VALUES (?, ?, ?, 'LONG', ?, ?, ?, ?, ?, 'NEW', ?, ?)
             """,
             (
                 signal.get("signal_id"),
                 symbol_raw,
                 resolved,
-                signal.get("direction"),
                 entry_mid,
                 float(signal.get("stop_loss") or 0.0),
                 float(tps[0]),
@@ -183,12 +183,12 @@ def _find_active_position(resolved):
         return None
 
 
-def _is_duplicate_active_position(resolved, direction):
+def _is_duplicate_active_position(resolved):
     try:
         base_sym = str(resolved or "").split("/")[0].upper()
         for pos in get_active_positions():
             pos_base = str(pos.get("resolved") or "").split("/")[0].upper()
-            if pos_base == base_sym and pos.get("direction") == direction:
+            if pos_base == base_sym:
                 return True
         return False
     except Exception:
@@ -317,19 +317,65 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=120):
     return None, None, "unknown"
 
 
+def _sanitize_for_telegram(text):
+    s = str(text or "").replace("\\", "")
+    # Escape stray angle brackets that are not valid <b>, </b>, <code>, </code> tags
+    allowed_tags = {"<b>", "</b>", "<code>", "</code>"}
+    tokens = re.split(r"(</?(?:b|code)>)", s)
+    out = []
+    for tok in tokens:
+        if tok in allowed_tags:
+            out.append(tok)
+        else:
+            out.append(tok.replace("<", "&lt;").replace(">", "&gt;"))
+    return "".join(out)
+
+
 def tg_send(message, chat_id=None):
     target = chat_id or TELEGRAM_CHAT_ID
     if not TELEGRAM_BOT_TOKEN or not target:
         return False
+    clean_msg = _sanitize_for_telegram(message)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         response = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": target, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True},
+            url,
+            json={
+                "chat_id": target,
+                "text": clean_msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
             timeout=15,
         )
-        if not response.ok:
-            logger.error("Telegram send failed: %s %s", response.status_code, response.text[:300])
-        return response.ok
+        if response.ok:
+            return True
+
+        if response.status_code == 400:
+            plain_msg = (
+                clean_msg.replace("<b>", "")
+                .replace("</b>", "")
+                .replace("<code>", "")
+                .replace("</code>", "")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+            )
+            fallback = requests.post(
+                url,
+                json={
+                    "chat_id": target,
+                    "text": plain_msg,
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
+            if fallback.ok:
+                return True
+            logger.error("Telegram fallback failed: %s %s", fallback.status_code, fallback.text[:300])
+            return False
+
+        logger.error("Telegram send failed: %s %s", response.status_code, response.text[:300])
+        return False
     except Exception as exc:
         logger.error("Telegram send error: %s", exc)
         return False
@@ -350,11 +396,10 @@ def configure_webhook():
         logger.error("Webhook setup error: %s", exc)
 
 
-def get_macro_market_regime(force=False):
-    """Evaluates Weekly (1W) & Monthly (1M) market regime on BTC and ETH."""
+def get_macro_long_regime(force=False):
+    """Evaluates Weekly (1W) & Monthly (1M) LONG readiness on BTC and ETH."""
     leaders = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
-    bull_votes = 0
-    bear_votes = 0
+    ready_count = 0
     lines = []
 
     for sym in leaders:
@@ -364,30 +409,19 @@ def get_macro_market_regime(force=False):
             continue
         df_w = engine.prepare_dataframe(w1)
         df_m = engine.prepare_dataframe(mn1)
-        m_l = engine._macro_structure(df_m, "LONG", "1M")
-        w_l = engine._macro_structure(df_w, "LONG", "1W")
-        m_s = engine._macro_structure(df_m, "SHORT", "1M")
-        w_s = engine._macro_structure(df_w, "SHORT", "1W")
+        m_l = engine._macro_long_structure(df_m, "1M")
+        w_l = engine._macro_long_structure(df_w, "1W")
 
         base_name = resolved.split("/")[0]
         if w_l["ok"] and (m_l["ok"] or len(df_m) < 6):
-            bull_votes += 1
-            lines.append(f"🟢 {base_name} (1W/1M): صاعد طويل المدى")
-        elif w_s["ok"] and (m_s["ok"] or len(df_m) < 6):
-            bear_votes += 1
-            lines.append(f"🔴 {base_name} (1W/1M): هابط طويل المدى")
+            ready_count += 1
+            lines.append(f"🟢 {base_name} (1W/1M): جاهز للشراء LONG")
         else:
-            lines.append(f"⚖️ {base_name} (1W/1M): مختلط / انتقالي")
+            lines.append(f"⚪ {base_name} (1W/1M): غير مكتمل للشراء حالياً")
 
-    if bull_votes >= 2 or (bull_votes == 1 and bear_votes == 0):
-        title = "🟢 اتجاه السوق طويل المدى (1W/1M): صاعد"
-    elif bear_votes >= 2 or (bear_votes == 1 and bull_votes == 0):
-        title = "🔴 اتجاه السوق طويل المدى (1W/1M): هابط"
-    else:
-        title = "⚖️ اتجاه السوق طويل المدى (1W/1M): مختلط"
-
-    summary = f"{title}\n" + "\n".join(lines) if lines else f"{title}\nبيانات القيادات الأسبوعية/الشهرية غير كافية"
-    return {"summary": summary}
+    title = "🟢 رادار الشراء طويل المدى (LONG ONLY — 1W/1M)"
+    summary = f"{title}\n" + "\n".join(lines) if lines else f"{title}\nبيانات القيادات غير كافية"
+    return {"summary": summary, "ready_count": ready_count}
 
 
 def decimals_for(price):
@@ -442,7 +476,7 @@ def monitor_tracked_positions(chat_id=None):
             current_price = float(daily[-1][4])
             tps = [pos["tp1"], pos["tp2"], pos["tp3"]]
             res = engine.evaluate_open_position(
-                direction=pos["direction"],
+                direction="LONG",
                 entry_price=pos["entry_price"],
                 stop_loss=pos["stop_loss"],
                 take_profits=tps,
@@ -454,9 +488,9 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🏛️ <b>متابعة صفقة طويلة المدى (1W/1M) — V135.0</b>\n"
+                "🟢 <b>متابعة صفقة شراء طويلة المدى (LONG — 1W/1M) — V136.0</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> ({pos['direction']})\n"
+                f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> (LONG)\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
                 f"📍 <b>الدخول المرجعي:</b> <code>{format_num(pos['entry_price'], d)}</code>\n"
                 f"🥇 <b>TP1:</b> <code>{format_num(pos['tp1'], d)}</code>\n"
@@ -494,7 +528,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
                 d_pos = decimals_for(active_pos["entry_price"])
                 curr_p = float(daily[-1][4]) if daily else float(w1[-1][4])
                 tg_send(
-                    f"📌 <b>صفقة طويلة المدى (1W/1M) نشطة:</b> <code>{active_pos['resolved']}</code> ({active_pos['direction']})\n"
+                    f"📌 <b>صفقة شراء (LONG — 1W/1M) نشطة:</b> <code>{active_pos['resolved']}</code>\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     f"💵 <b>السعر الحالي:</b> <code>{format_num(curr_p, d_pos)}</code>\n"
                     f"📍 <b>الدخول:</b> <code>{format_num(active_pos['entry_price'], d_pos)}</code>\n"
@@ -514,11 +548,11 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
         details = (signal or {}).get("details", {}) or {}
         sig_score = int((signal or {}).get("score", 0))
 
-        if direction in ("LONG", "SHORT"):
+        if direction == "LONG":
             if not manual:
-                if _is_duplicate_active_position(resolved, direction):
+                if _is_duplicate_active_position(resolved):
                     return False, signal
-                if direction_counts is not None and direction_counts.get(direction, 0) >= MAX_SAME_DIRECTION_PER_SCAN:
+                if direction_counts is not None and direction_counts.get("LONG", 0) >= MAX_SAME_DIRECTION_PER_SCAN:
                     return False, signal
 
             key = resolved.split("/")[0]
@@ -534,17 +568,15 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             while len(tps) < 3:
                 tps.append(0)
 
-            emoji = "🟢" if direction == "LONG" else "🔴"
-            side = "شراء طويل المدى LONG" if direction == "LONG" else "بيع طويل المدى SHORT"
             rr_tp1 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[0])
             rr_tp2 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
 
             msg = (
-                "🏛️ <b>MY EXPERT LONG-TERM BOT V135.0 (1W / 1M)</b>\n"
+                "🟢 <b>MY EXPERT LONG-ONLY BOT V136.0 (1W / 1M)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 "🕰️ <b>الفريمات:</b> <b>أسبوعي (1W) + شهري (1M)</b> + توقيت يومي (1D)\n"
-                f"{emoji} <b>{side}</b>\n\n"
+                "🟢 <b>شراء طويل المدى LONG فقط</b>\n\n"
                 f"💎 <b>الأصل:</b> <code>{resolved}</code>\n"
                 f"⭐ <b>التقييم:</b> <code>{sig_score}/100</code> ({details.get('quality','A')})\n\n"
                 f"📍 <b>منطقة التمركز / الدخول:</b> <code>{format_num(signal.get('entry_low'),d)} — {format_num(signal.get('entry_high'),d)}</code>\n\n"
@@ -560,14 +592,14 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
                 f"🗓️ <b>الشهري (1M):</b> <code>{details.get('1m_summary', 'N/A')}</code>\n"
                 f"📅 <b>الأسبوعي (1W):</b> <code>{details.get('1w_summary', 'N/A')}</code>\n"
                 f"🕒 <b>اليومي (1D):</b> <code>{details.get('1d_summary', 'N/A')}</code>\n\n"
-                "⚠️ <b>إشارة تحليلية طويلة المدى — التزم بحجم عقد مناسب لمدى الفريمات الكبيرة.</b>"
+                "⚠️ <b>إشارة شراء طويلة المدى فقط — التزم بحجم عقد مناسب لمدى الفريمات الكبيرة.</b>"
             )
             sent = tg_send(msg, chat_id)
             if sent:
                 scan_stats["signals_sent"] += 1
                 save_tracked_position(signal, symbol_raw, resolved)
                 if not manual and direction_counts is not None:
-                    direction_counts[direction] = direction_counts.get(direction, 0) + 1
+                    direction_counts["LONG"] = direction_counts.get("LONG", 0) + 1
             else:
                 with cache_lock:
                     if not manual:
@@ -575,20 +607,19 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             return sent, signal
 
         if manual:
-            reason = signal.get("reason", "الشروط الأسبوعية/الشهرية غير مكتملة") if signal else "الشروط غير مكتملة"
-            diag = (details.get("diagnostics") or {})
-            l_d = diag.get("LONG") or {}
-            s_d = diag.get("SHORT") or {}
+            reason = signal.get("reason", "شروط الشراء الأسبوعية/الشهرية غير مكتملة") if signal else "الشروط غير مكتملة"
+            l_d = ((details.get("diagnostics") or {}).get("LONG") or {})
             diag_text = (
-                f"• الأقرب: {details.get('best_candidate', 'N/A')}\n"
-                f"• LONG  -> 1M: {l_d.get('1m','N/A')} | 1W: {l_d.get('1w','N/A')} | 1D: {l_d.get('1d','N/A')}\n"
-                f"• SHORT -> 1M: {s_d.get('1m','N/A')} | 1W: {s_d.get('1w','N/A')} | 1D: {s_d.get('1d','N/A')}"
+                f"• جاهزية الشراء LONG: {details.get('best_candidate', 'N/A')}\n"
+                f"• 1M: {l_d.get('1m','N/A')}\n"
+                f"• 1W: {l_d.get('1w','N/A')}\n"
+                f"• 1D: {l_d.get('1d','N/A')}"
             )
             tg_send(
-                f"📊 <b>تحليل طويل المدى (1W/1M):</b> <code>{symbol_raw}</code>\n🏷️ <b>السوق:</b> {market_tag}\n━━━━━━━━━━━━━━━━━━\n"
-                "⚪ <b>لا توجد صفقة أسبوعية/شهرية عالية الجودة حاليًا.</b>\n"
+                f"📊 <b>تحليل شراء طويل المدى (LONG — 1W/1M):</b> <code>{symbol_raw}</code>\n🏷️ <b>السوق:</b> {market_tag}\n━━━━━━━━━━━━━━━━━━\n"
+                "⚪ <b>لا توجد فرصة شراء (LONG) أسبوعية/شهرية مكتملة حاليًا.</b>\n"
                 f"🔎 <b>السبب:</b> {reason}\n\n"
-                f"📋 <b>تفاصيل الفريمات الكبيرة:</b>\n<code>{diag_text}</code>", chat_id)
+                f"📋 <b>تفاصيل فحص الشراء (LONG):</b>\n<code>{diag_text}</code>", chat_id)
         return False, signal
     except Exception as exc:
         scan_stats["errors"] += 1
@@ -601,20 +632,20 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
 def run_full_scan(chat_id=None):
     if not scan_lock.acquire(blocking=False):
         if chat_id:
-            tg_send("⏳ يوجد فحص طويل المدى قيد التشغيل حاليًا.", chat_id)
+            tg_send("⏳ يوجد فحص شراء طويل المدى قيد التشغيل حاليًا.", chat_id)
         return
     try:
         monitor_tracked_positions(chat_id=chat_id)
-        macro_info = get_macro_market_regime(force=True)
+        macro_info = get_macro_long_regime(force=True)
         if chat_id:
             tg_send(
-                "🏛️ <b>جارٍ فحص الفريم الأسبوعي والشهري (1W / 1M — V135.0)...</b>\n"
+                "🟢 <b>جارٍ فحص فرص الشراء (LONG ONLY) على الفريم الأسبوعي والشهري (1W / 1M — V136.0)...</b>\n"
                 f"{macro_info.get('summary', '')}",
                 chat_id,
             )
         symbols = get_full_market_universe()
         found = 0
-        direction_counts = {"LONG": 0, "SHORT": 0}
+        direction_counts = {"LONG": 0}
         for sym in symbols:
             try:
                 ok, _ = analyze_symbol(sym, chat_id=None, manual=False, direction_counts=direction_counts)
@@ -624,14 +655,14 @@ def run_full_scan(chat_id=None):
                 scan_stats["errors"] += 1
                 logger.debug("Scan skip %s: %s", sym, exc)
             time.sleep(0.12)
-        logger.info("Weekly/Monthly scan complete: total=%s, found=%s, stats=%s", len(symbols), found, scan_stats)
+        logger.info("LONG-only scan complete: total=%s, found=%s, stats=%s", len(symbols), found, scan_stats)
         if chat_id:
-            tg_send(f"✅ <b>انتهى الفحص الأسبوعي/الشهري.</b>\n\n🔎 الأصول المفحوصة: <code>{len(symbols)}</code>\n🏛️ الفرص: <code>{found}</code>", chat_id)
+            tg_send(f"✅ <b>انتهى فحص الشراء (LONG ONLY).</b>\n\n🔎 الأصول المفحوصة: <code>{len(symbols)}</code>\n🟢 فرص LONG: <code>{found}</code>", chat_id)
     except Exception as exc:
         scan_stats["errors"] += 1
         logger.exception("Full scan error: %s", exc)
         if chat_id:
-            tg_send("❌ حدث خطأ أثناء الفحص الأسبوعي/الشهري.", chat_id)
+            tg_send("❌ حدث خطأ أثناء الفحص طويل المدى.", chat_id)
     finally:
         scan_lock.release()
 
@@ -641,25 +672,25 @@ def background_auto_scheduler():
     while True:
         try:
             if TELEGRAM_CHAT_ID:
-                logger.info("Weekly/Monthly scheduler starting cycle (stats=%s)", scan_stats)
+                logger.info("LONG-only scheduler starting cycle (stats=%s)", scan_stats)
                 run_full_scan()
-                logger.info("Weekly/Monthly scheduler finished cycle (stats=%s)", scan_stats)
+                logger.info("LONG-only scheduler finished cycle (stats=%s)", scan_stats)
             else:
-                logger.warning("Weekly/Monthly scheduler skipped: TELEGRAM_CHAT_ID is empty")
+                logger.warning("LONG-only scheduler skipped: TELEGRAM_CHAT_ID is empty")
         except Exception as exc:
             logger.exception("Scheduler error: %s", exc)
         time.sleep(SCAN_INTERVAL_SECONDS)
 
 
 HELP_TEXT = (
-    "🏛️ <b>MY EXPERT LONG-TERM BOT V135.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-    "🕰️ <b>النظام:</b> فريم <b>أسبوعي (1W) + شهري (1M)</b> فقط (بدون سكالبنج أو فريمات لحظية)\n"
+    "🟢 <b>MY EXPERT LONG-ONLY BOT V136.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "📈 <b>الاتجاه:</b> شراء (<b>LONG</b>) فقط على الفريم <b>الأسبوعي (1W) + الشهري (1M)</b>\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "📌 أرسل BTC أو ETH أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
-    "🔍 أرسل <code>/scan</code> لفحص السوق أسبوعياً/شهرياً ومتابعة الصفقات.\n"
-    "🌐 أرسل <code>/regime</code> لملخص الاتجاه الأسبوعي/الشهري للقيادات.\n"
+    "🔍 أرسل <code>/scan</code> لفحص فرص الشراء (LONG) ومتابعة الصفقات.\n"
+    "🌐 أرسل <code>/regime</code> لملخص جاهزية الشراء للقيادات.\n"
     "🛡️ أرسل <code>/positions</code> لعرض الصفقات المتابعة، أو <code>/clearpos</code> لمسحها.\n"
-    "⚠️ إشارات تحليلية طويلة المدى — راعِ حجم العقد."
+    "⚠️ إشارات شراء طويلة المدى فقط — راعِ حجم العقد."
 )
 
 
@@ -679,27 +710,27 @@ def handle_update(data):
         if cmd in ("/start", "/help"):
             tg_send(HELP_TEXT, chat_id)
         elif cmd == "/regime":
-            info = get_macro_market_regime(force=True)
-            tg_send(f"🧭 <b>اتجاه السوق طويل المدى (1W/1M)</b>\n━━━━━━━━━━━━━━━━━━\n{info['summary']}", chat_id)
+            info = get_macro_long_regime(force=True)
+            tg_send(f"🟢 <b>جاهزية الشراء طويل المدى (LONG — 1W/1M)</b>\n━━━━━━━━━━━━━━━━━━\n{info['summary']}", chat_id)
         elif cmd in ("/scan", "/gainers"):
             threading.Thread(target=run_full_scan, args=(chat_id,), daemon=True).start()
         elif cmd == "/positions":
             pos_list = get_active_positions()
             if not pos_list:
-                tg_send("📭 لا توجد صفقات طويلة المدى نشطة حالياً.", chat_id)
+                tg_send("📭 لا توجد صفقات شراء طويلة المدى نشطة حالياً.", chat_id)
             else:
-                lines = ["🏛️ <b>الصفقات طويلة المدى النشطة (1W/1M):</b>\n"]
+                lines = ["🟢 <b>صفقات الشراء طويلة المدى النشطة (LONG — 1W/1M):</b>\n"]
                 for p in pos_list:
                     d = decimals_for(p["entry_price"])
                     lines.append(
-                        f"• <code>{p['resolved']}</code> ({p['direction']}) | دخول: <code>{format_num(p['entry_price'], d)}</code> | "
+                        f"• <code>{p['resolved']}</code> (LONG) | دخول: <code>{format_num(p['entry_price'], d)}</code> | "
                         f"TP1: <code>{format_num(p['tp1'], d)}</code> | TP2: <code>{format_num(p['tp2'], d)}</code> | "
                         f"حالة: <code>{p['last_action']}</code>"
                     )
                 tg_send("\n".join(lines), chat_id)
         elif cmd == "/clearpos":
             clear_tracked_positions()
-            tg_send("🧹 تم مسح قائمة الصفقات طويلة المدى.", chat_id)
+            tg_send("🧹 تم مسح قائمة الصفقات المتابعة.", chat_id)
         else:
             analyze_symbol(parts[0], chat_id=chat_id, manual=True)
     except Exception:
@@ -708,7 +739,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V135.0-Weekly-Monthly-Only", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V136.0-LONG-Only-1W-1M", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -731,7 +762,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V135.0 bootstrapped: Weekly & Monthly Engine Only.")
+    logger.info("Bot V136.0 bootstrapped: LONG Only on Weekly & Monthly.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
