@@ -1,8 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V135.0 (Weekly & Monthly Engine)
-# Removes SCALP & 15M momentum logic completely.
-# Focuses on Monthly (1M) + Weekly (1W) macro structure and
-# trend alignment, using Daily (1D) for structural entry timing.
+# analysis.py — StrategyEngine V136.0 (LONG Only — 1W / 1M)
+# Long-only position engine built on Monthly (1M) + Weekly (1W)
+# bullish structure/trend with Daily (1D) timing.
 # ============================================================
 
 import logging
@@ -46,8 +45,8 @@ def build_signal(direction, entry_low, entry_high, stop_loss, take_profits,
 
 
 class StrategyEngine:
-    """Long-term trading engine built on Monthly (1M) and Weekly (1W)
-    trend/structure with Daily (1D) timing and TP1/TP2/TP3 targets."""
+    """Long-only position engine on Monthly (1M) and Weekly (1W)
+    with Daily (1D) timing and TP1/TP2/TP3 targets."""
 
     def __init__(self, capital=10000.0, risk_per_trade=0.01,
                  min_score=MIN_SCORE_DEFAULT):
@@ -144,8 +143,8 @@ class StrategyEngine:
                 lows.append((i, l[i]))
         return highs, lows
 
-    def _macro_structure(self, df, direction, label):
-        """Evaluates structure & trend on Weekly (1W) or Monthly (1M)."""
+    def _macro_long_structure(self, df, label):
+        """Evaluates bullish structure & trend on Weekly (1W) or Monthly (1M)."""
         if df is None or len(df) < 6:
             return {"ok": False, "score": 0, "rsi": 50.0, "adx": 20.0, "reason": f"{label} data insufficient"}
 
@@ -165,48 +164,30 @@ class StrategyEngine:
         if len(highs) >= 2 and len(lows) >= 2:
             prev_h, last_h = highs[-2][1], highs[-1][1]
             prev_l, last_l = lows[-2][1], lows[-1][1]
-            if direction == "LONG":
-                if last_h >= prev_h * 0.99 and last_l >= prev_l * 0.985:
-                    struct_ok = True
-                    struct_tag = "HH/HL"
-                elif close > prev_h:
-                    struct_ok = True
-                    struct_tag = "Weekly/Monthly BOS Up"
-            else:
-                if last_h <= prev_h * 1.01 and last_l <= prev_l * 1.015:
-                    struct_ok = True
-                    struct_tag = "LH/LL"
-                elif close < prev_l:
-                    struct_ok = True
-                    struct_tag = "Weekly/Monthly BOS Down"
+            if last_h >= prev_h * 0.99 and last_l >= prev_l * 0.985:
+                struct_ok = True
+                struct_tag = "HH/HL"
+            elif close > prev_h:
+                struct_ok = True
+                struct_tag = "Bullish BOS"
 
         score = 0
         reasons = []
-        if direction == "LONG":
-            if close >= ema_fast * 0.97:
-                score += 12; reasons.append(f"{label} > EMA{fast_p}")
-            if ema_fast >= ema_slow * 0.97:
-                score += 10; reasons.append(f"EMA{fast_p}>=EMA{slow_p}")
-            if hist >= 0:
-                score += 8; reasons.append("MACD+")
-            if struct_ok:
-                score += 12; reasons.append(struct_tag)
-            if 38 <= rsi <= 76:
-                score += 4
-            ok = (close >= ema_fast * 0.96) and (struct_ok or (ema_fast >= ema_slow * 0.97 and hist >= 0))
-        else:
-            if close <= ema_fast * 1.03:
-                score += 12; reasons.append(f"{label} < EMA{fast_p}")
-            if ema_fast <= ema_slow * 1.03:
-                score += 10; reasons.append(f"EMA{fast_p}<=EMA{slow_p}")
-            if hist <= 0:
-                score += 8; reasons.append("MACD-")
-            if struct_ok:
-                score += 12; reasons.append(struct_tag)
-            if 24 <= rsi <= 62:
-                score += 4
-            ok = (close <= ema_fast * 1.04) and (struct_ok or (ema_fast <= ema_slow * 1.03 and hist <= 0))
-
+        if close >= ema_fast * 0.97:
+            score += 12
+            reasons.append(f"{label} > EMA{fast_p}")
+        if ema_fast >= ema_slow * 0.97:
+            score += 10
+            reasons.append(f"EMA{fast_p}>=EMA{slow_p}")
+        if hist >= 0:
+            score += 8
+            reasons.append("MACD+")
+        if struct_ok:
+            score += 12
+            reasons.append(struct_tag)
+        if 38 <= rsi <= 76:
+            score += 4
+        ok = (close >= ema_fast * 0.96) and (struct_ok or (ema_fast >= ema_slow * 0.97 and hist >= 0))
         reasons.append(f"RSI({rsi:.1f})")
         return {
             "ok": ok,
@@ -218,8 +199,8 @@ class StrategyEngine:
             "reason": "، ".join(reasons),
         }
 
-    def _daily_timing(self, df_daily, direction):
-        """Uses Daily (1D) only for entry timing & avoiding over-extended chase."""
+    def _daily_long_timing(self, df_daily):
+        """Uses Daily (1D) only for LONG timing & avoiding over-extended chase."""
         if df_daily is None or len(df_daily) < 30:
             return {"ok": False, "score": 0, "reason": "1D data insufficient"}
         close = float(df_daily["close"].iloc[-1])
@@ -230,35 +211,25 @@ class StrategyEngine:
 
         score = 0
         reasons = []
-        if direction == "LONG":
-            bull_d = close >= op * 0.995
-            not_chasing = (close - ema20) <= max(2.4 * atr_d, close * 0.08) and rsi_d <= 76
-            if bull_d:
-                score += 10; reasons.append("1D bullish/reclaim")
-            if close >= ema20 * 0.97:
-                score += 8; reasons.append("1D near/above EMA20")
-            if not_chasing:
-                score += 8; reasons.append("1D timing OK")
-            else:
-                score -= 12; reasons.append("1D over-extended")
-            ok = not_chasing and (bull_d or close >= ema20 * 0.97)
+        bull_d = close >= op * 0.995
+        not_chasing = (close - ema20) <= max(2.4 * atr_d, close * 0.08) and rsi_d <= 76
+        if bull_d:
+            score += 10
+            reasons.append("1D bullish/reclaim")
+        if close >= ema20 * 0.97:
+            score += 8
+            reasons.append("1D near/above EMA20")
+        if not_chasing:
+            score += 8
+            reasons.append("1D timing OK")
         else:
-            bear_d = close <= op * 1.005
-            not_chasing = (ema20 - close) <= max(2.4 * atr_d, close * 0.08) and rsi_d >= 24
-            if bear_d:
-                score += 10; reasons.append("1D bearish/reject")
-            if close <= ema20 * 1.03:
-                score += 8; reasons.append("1D near/below EMA20")
-            if not_chasing:
-                score += 8; reasons.append("1D timing OK")
-            else:
-                score -= 12; reasons.append("1D over-extended")
-            ok = not_chasing and (bear_d or close <= ema20 * 1.03)
-
+            score -= 12
+            reasons.append("1D over-extended")
+        ok = not_chasing and (bull_d or close >= ema20 * 0.97)
         return {"ok": ok, "score": score, "rsi": rsi_d, "atr": atr_d, "reason": "، ".join(reasons)}
 
-    def _long_term_levels(self, df_w, df_m, df_d, price, atr_w):
-        """Computes wide structural stop-loss and TP1/TP2/TP3 from 1W & 1M ranges."""
+    def _long_levels(self, df_w, df_m, price, atr_w):
+        """Computes long-term support/resistance and TP1/TP2/TP3 from 1W & 1M."""
         try:
             w_lows = df_w["low"].tail(20).to_numpy(dtype=float) if (df_w is not None and len(df_w) >= 4) else np.array([price - 2 * atr_w])
             w_highs = df_w["high"].tail(20).to_numpy(dtype=float) if (df_w is not None and len(df_w) >= 4) else np.array([price + 2 * atr_w])
@@ -289,68 +260,39 @@ class StrategyEngine:
                 "resistance_high": price + 2.8 * atr_w,
             }
 
-    def _build_long_term_plan(self, df_w, entry_price, atr_w, direction, levels):
-        """Builds stop-loss and TP1/TP2/TP3 for Weekly & Monthly position trades."""
+    def _build_long_plan(self, entry_price, atr_w, levels):
+        """Builds stop-loss and TP1/TP2/TP3 for LONG 1W/1M position trades."""
         if entry_price <= 0 or atr_w <= 0:
             return None
         max_risk_pct = 16.0
         min_risk_pct = 2.5
 
-        if direction == "LONG":
-            structural_sl = min(levels["key_support"], levels["deep_support"]) - 0.35 * atr_w
-            atr_sl = entry_price - 1.85 * atr_w
-            stop = max(min(structural_sl, atr_sl), entry_price * (1.0 - max_risk_pct / 100.0))
+        structural_sl = min(levels["key_support"], levels["deep_support"]) - 0.35 * atr_w
+        atr_sl = entry_price - 1.85 * atr_w
+        stop = max(min(structural_sl, atr_sl), entry_price * (1.0 - max_risk_pct / 100.0))
+        risk = entry_price - stop
+        if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
+            return None
+        if (risk / entry_price * 100) < min_risk_pct:
+            stop = entry_price * (1.0 - min_risk_pct / 100.0)
             risk = entry_price - stop
-            if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                return None
-            if (risk / entry_price * 100) < min_risk_pct:
-                stop = entry_price * (1.0 - min_risk_pct / 100.0)
-                risk = entry_price - stop
 
-            entry_low = max(0.0, entry_price - 0.25 * atr_w)
-            entry_high = entry_price + 0.05 * atr_w
+        entry_low = max(0.0, entry_price - 0.25 * atr_w)
+        entry_high = entry_price + 0.05 * atr_w
 
-            tp1_cand = entry_price + 1.00 * risk
-            if levels["resistance_low"] > entry_price * 1.03 and levels["resistance_low"] < entry_price + 1.35 * risk:
-                tp1 = max(tp1_cand, levels["resistance_low"])
-            else:
-                tp1 = tp1_cand
-
-            tp2_cand = entry_price + 1.95 * risk
-            if levels["resistance_high"] > tp1 * 1.04 and levels["resistance_high"] < entry_price + 2.60 * risk:
-                tp2 = levels["resistance_high"]
-            else:
-                tp2 = tp2_cand
-
-            tp3 = max(tp2 + 0.85 * risk, entry_price + 2.95 * risk)
+        tp1_cand = entry_price + 1.00 * risk
+        if levels["resistance_low"] > entry_price * 1.03 and levels["resistance_low"] < entry_price + 1.35 * risk:
+            tp1 = max(tp1_cand, levels["resistance_low"])
         else:
-            structural_sl = max(levels["resistance_low"], levels["resistance_high"]) + 0.35 * atr_w
-            atr_sl = entry_price + 1.85 * atr_w
-            stop = min(max(structural_sl, atr_sl), entry_price * (1.0 + max_risk_pct / 100.0))
-            risk = stop - entry_price
-            if risk <= 0 or (risk / entry_price * 100) > max_risk_pct:
-                return None
-            if (risk / entry_price * 100) < min_risk_pct:
-                stop = entry_price * (1.0 + min_risk_pct / 100.0)
-                risk = stop - entry_price
+            tp1 = tp1_cand
 
-            entry_low = entry_price - 0.05 * atr_w
-            entry_high = entry_price + 0.25 * atr_w
+        tp2_cand = entry_price + 1.95 * risk
+        if levels["resistance_high"] > tp1 * 1.04 and levels["resistance_high"] < entry_price + 2.60 * risk:
+            tp2 = levels["resistance_high"]
+        else:
+            tp2 = tp2_cand
 
-            tp1_cand = entry_price - 1.00 * risk
-            if levels["key_support"] < entry_price * 0.97 and levels["key_support"] > entry_price - 1.35 * risk:
-                tp1 = min(tp1_cand, levels["key_support"])
-            else:
-                tp1 = tp1_cand
-
-            tp2_cand = entry_price - 1.95 * risk
-            if levels["deep_support"] < tp1 * 0.96 and levels["deep_support"] > entry_price - 2.60 * risk:
-                tp2 = levels["deep_support"]
-            else:
-                tp2 = tp2_cand
-
-            tp3 = min(tp2 - 0.85 * risk, entry_price - 2.95 * risk)
-
+        tp3 = max(tp2 + 0.85 * risk, entry_price + 2.95 * risk)
         tp2_rr = abs(tp2 - entry_price) / max(risk, 1e-12)
         if tp2_rr < MIN_TP2_RR:
             return None
@@ -376,32 +318,23 @@ class StrategyEngine:
             tp1 = tps[0] if len(tps) > 0 else None
             tp2 = tps[1] if len(tps) > 1 else None
 
-            if direction == "LONG":
-                if curr <= sl:
-                    return {"action": "STOP_HIT", "message": "🛑 تم كسر وقف الخسارة؛ إغلاق الصفقة الطويلة والتركيز على الفرصة التالية."}
-                if tp2 is not None and curr >= tp2:
-                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الجزء الأساسي واحجز ربحك."}
-                if tp1 is not None and curr >= tp1:
-                    return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وتابع نحو TP2."}
-            else:
-                if curr >= sl:
-                    return {"action": "STOP_HIT", "message": "🛑 تم اختراق وقف الخسارة؛ إغلاق الصفقة الطويلة والتركيز على الفرصة التالية."}
-                if tp2 is not None and curr <= tp2:
-                    return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الجزء الأساسي واحجز ربحك."}
-                if tp1 is not None and curr <= tp1:
-                    return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وتابع نحو TP2."}
-
-            return {"action": "HOLD", "message": "⏳ الصفقة طويلة المدى (1W/1M) قيد المتابعة نحو TP1 ثم TP2."}
+            if curr <= sl:
+                return {"action": "STOP_HIT", "message": "🛑 تم كسر وقف الخسارة؛ إغلاق صفقة الشراء والتركيز على الفرصة التالية."}
+            if tp2 is not None and curr >= tp2:
+                return {"action": "TP2_REACHED", "message": "🎯 تم الوصول للهدف الثاني (TP2)؛ أقفل الجزء الأساسي واحجز ربحك."}
+            if tp1 is not None and curr >= tp1:
+                return {"action": "TP1_REACHED", "message": "🥇 تم الوصول للهدف الأول (TP1)؛ انقل الوقف للدخول (Break-Even) وتابع نحو TP2."}
+            return {"action": "HOLD", "message": "⏳ صفقة الشراء طويلة المدى (1W/1M) قيد المتابعة نحو TP1 ثم TP2."}
         except Exception:
             return {"action": "HOLD", "message": "⏳ الصفقة قيد المتابعة."}
 
-    def _make_neutral(self, reason="لا توجد فرصة أسبوعية/شهرية مكتملة حالياً", score=0, rsi=50, atr=0, details=None):
+    def _make_neutral(self, reason="لا توجد فرصة شراء (LONG) أسبوعية/شهرية مكتملة حالياً", score=0, rsi=50, atr=0, details=None):
         return build_signal("NEUTRAL", 0, 0, 0, [], score, rsi, atr, reason, details or {})
 
     def analyze_market_structure(self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None,
                                  asset_type="crypto", ohlcv_15m=None,
                                  ohlcv_1w=None, ohlcv_1m=None):
-        """Analyzes strictly on Monthly (1M) + Weekly (1W) with Daily (1D) timing."""
+        """LONG-only analysis on Monthly (1M) + Weekly (1W) with Daily (1D) timing."""
         neutral = self._make_neutral()
         try:
             daily = self.prepare_dataframe(ohlcv_daily)
@@ -416,89 +349,68 @@ class StrategyEngine:
             if price <= 0 or atr_w <= 0:
                 return "NEUTRAL", 0.0, self._make_neutral("بيانات السعر أو التذبذب الأسبوعي غير صالحة")
 
-            levels = self._long_term_levels(w1, mn1, daily, price, atr_w)
-            candidates = []
-            diag_map = {}
+            levels = self._long_levels(w1, mn1, price, atr_w)
+            m_info = self._macro_long_structure(mn1, "1M")
+            w_info = self._macro_long_structure(w1, "1W")
+            d_info = self._daily_long_timing(daily) if len(daily) >= 30 else {"ok": True, "score": 6, "reason": "1D N/A"}
 
-            for direction in ("LONG", "SHORT"):
-                m_info = self._macro_structure(mn1, direction, "1M")
-                w_info = self._macro_structure(w1, direction, "1W")
-                d_info = self._daily_timing(daily, direction) if len(daily) >= 30 else {"ok": True, "score": 6, "reason": "1D N/A"}
+            has_monthly = len(mn1) >= 6
+            if has_monthly:
+                macro_ok = (m_info["ok"] and w_info["ok"]) or (m_info["score"] >= 20 and w_info["ok"] and w_info["score"] >= 26)
+            else:
+                macro_ok = w_info["ok"] and w_info["score"] >= 26
 
-                has_monthly = len(mn1) >= 6
-                if has_monthly:
-                    macro_ok = (m_info["ok"] and w_info["ok"]) or (m_info["score"] >= 20 and w_info["ok"] and w_info["score"] >= 26)
-                else:
-                    macro_ok = w_info["ok"] and w_info["score"] >= 26
+            total_score = int(round(min(100, max(0, m_info["score"] + w_info["score"] + d_info["score"]))))
+            diag_long = {
+                "score": total_score,
+                "1m": m_info["reason"],
+                "1w": w_info["reason"],
+                "1d": d_info["reason"],
+            }
 
-                total_score = int(round(min(100, max(0, m_info["score"] + w_info["score"] + d_info["score"]))))
-                diag_map[direction] = {
-                    "score": total_score,
-                    "1m": m_info["reason"],
-                    "1w": w_info["reason"],
-                    "1d": d_info["reason"],
-                }
+            if macro_ok and total_score >= self.min_score:
+                plan = self._build_long_plan(price, atr_w, levels)
+                if plan and (plan["stop_loss"] < price < plan["tp1"]):
+                    quality = "A+" if total_score >= 88 else "A" if total_score >= 80 else "B+"
+                    reason = f"LONG ONLY [1W/1M] | V136.0 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
+                    decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
 
-                if not macro_ok:
-                    continue
-                if total_score < self.min_score:
-                    continue
+                    signal = build_signal(
+                        "LONG",
+                        round(plan["entry_low"], decimals),
+                        round(plan["entry_high"], decimals),
+                        round(plan["stop_loss"], decimals),
+                        [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
+                        total_score,
+                        w_info["rsi"],
+                        atr_w,
+                        reason,
+                        {
+                            "quality": quality,
+                            "trade_style": "LONG_ONLY_1W_1M",
+                            "regime": "BULLISH_MACRO",
+                            "adx": round(w_info["adx"], 1),
+                            "tp2_rr": plan["tp2_rr"],
+                            "key_support": round(levels["key_support"], decimals),
+                            "deep_support": round(levels["deep_support"], decimals),
+                            "resistance_low": round(levels["resistance_low"], decimals),
+                            "resistance_high": round(levels["resistance_high"], decimals),
+                            "timeframes": "1M + 1W + 1D (LONG ONLY)",
+                            "risk_pct": plan["risk_pct"],
+                            "asset_type": asset_type,
+                            "1m_summary": m_info["reason"],
+                            "1w_summary": w_info["reason"],
+                            "1d_summary": d_info["reason"],
+                        },
+                    )
+                    return "LONG", price, signal
 
-                plan = self._build_long_term_plan(w1, price, atr_w, direction, levels)
-                if not plan:
-                    continue
-                if direction == "LONG" and not (plan["stop_loss"] < price < plan["tp1"]):
-                    continue
-                if direction == "SHORT" and not (plan["tp1"] < price < plan["stop_loss"]):
-                    continue
-
-                candidates.append((total_score, direction, m_info, w_info, d_info, plan))
-
-            if candidates:
-                total_score, direction, m_info, w_info, d_info, plan = max(candidates, key=lambda x: x[0])
-                quality = "A+" if total_score >= 88 else "A" if total_score >= 80 else "B+"
-                regime_label = "BULLISH_MACRO" if direction == "LONG" else "BEARISH_MACRO"
-                reason = f"{direction} [1W/1M] | V135.0 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
-                decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
-
-                signal = build_signal(
-                    direction,
-                    round(plan["entry_low"], decimals),
-                    round(plan["entry_high"], decimals),
-                    round(plan["stop_loss"], decimals),
-                    [round(plan["tp1"], decimals), round(plan["tp2"], decimals), round(plan["tp3"], decimals)],
-                    total_score,
-                    w_info["rsi"],
-                    atr_w,
-                    reason,
-                    {
-                        "quality": quality,
-                        "trade_style": "WEEKLY_MONTHLY",
-                        "regime": regime_label,
-                        "adx": round(w_info["adx"], 1),
-                        "tp2_rr": plan["tp2_rr"],
-                        "key_support": round(levels["key_support"], decimals),
-                        "deep_support": round(levels["deep_support"], decimals),
-                        "resistance_low": round(levels["resistance_low"], decimals),
-                        "resistance_high": round(levels["resistance_high"], decimals),
-                        "timeframes": "1M + 1W + 1D",
-                        "risk_pct": plan["risk_pct"],
-                        "asset_type": asset_type,
-                        "1m_summary": m_info["reason"],
-                        "1w_summary": w_info["reason"],
-                        "1d_summary": d_info["reason"],
-                    },
-                )
-                return direction, price, signal
-
-            best_dir = "LONG" if diag_map["LONG"]["score"] >= diag_map["SHORT"]["score"] else "SHORT"
-            best_sc = diag_map[best_dir]["score"]
             return "NEUTRAL", 0.0, self._make_neutral(
-                f"لا توجد صفقة أسبوعية/شهرية مكتملة حالياً | الأقرب: {best_dir} ({best_sc}/{self.min_score})",
-                best_sc,
+                f"لا توجد فرصة شراء (LONG) أسبوعية/شهرية مكتملة حالياً ({total_score}/{self.min_score})",
+                total_score,
                 float(self.calculate_rsi(w1["close"]).iloc[-1]),
                 atr_w,
-                {"diagnostics": diag_map, "best_candidate": f"{best_dir} ({best_sc}/{self.min_score})"},
+                {"diagnostics": {"LONG": diag_long}, "best_candidate": f"LONG ({total_score}/{self.min_score})"},
             )
         except Exception as exc:
             logger.exception("Analysis error: %s", exc)
