@@ -1,7 +1,7 @@
 # ============================================================
-# analysis.py — StrategyEngine V136.1 (LONG Only — 1W / 1M)
+# analysis.py — StrategyEngine V136.2 (LONG Only — 1W / 1M)
 # Long-only position engine built on Monthly (1M) + Weekly (1W)
-# bullish structure/trend with Daily (1D) timing.
+# bullish structure/trend with Daily (1D) timing & volume check.
 # ============================================================
 
 import logging
@@ -128,6 +128,28 @@ class StrategyEngine:
         except Exception as exc:
             logger.error("prepare_dataframe error: %s", exc)
             return pd.DataFrame()
+
+    def _check_volume_ok(self, df_w, df_daily, price, asset_type):
+        """Checks basic volume/dollar liquidity to avoid dead or illiquid pairs."""
+        try:
+            if asset_type != "crypto":
+                return True
+            if df_w is None or len(df_w) < 4:
+                return False
+            avg_vol_w = float(df_w["volume"].tail(6).mean())
+            if avg_vol_w <= 0:
+                return False
+            # Approximate weekly dollar turnover using price * weekly base volume
+            est_weekly_usd = avg_vol_w * float(price)
+            if est_weekly_usd < 250000:
+                return False
+            if df_daily is not None and len(df_daily) >= 10:
+                avg_vol_d = float(df_daily["volume"].tail(14).mean())
+                if avg_vol_d * float(price) < 50000:
+                    return False
+            return True
+        except Exception:
+            return True
 
     def _swings(self, df, left=2, right=2):
         if df is None or len(df) < left + right + 3:
@@ -351,6 +373,9 @@ class StrategyEngine:
             if ref_price <= 0 or atr_w <= 0:
                 return "NEUTRAL", 0.0, self._make_neutral("بيانات السعر أو التذبذب الأسبوعي غير صالحة")
 
+            if not self._check_volume_ok(w1, daily, ref_price, asset_type):
+                return "NEUTRAL", 0.0, self._make_neutral("السيولة أو حجم التداول غير كافٍ")
+
             levels = self._long_levels(w1, mn1, ref_price, atr_w)
             m_info = self._macro_long_structure(mn1, "1M", boost_without_monthly=False)
             w_info = self._macro_long_structure(w1, "1W", boost_without_monthly=not has_monthly)
@@ -359,7 +384,7 @@ class StrategyEngine:
             if has_monthly:
                 macro_ok = (m_info["ok"] and w_info["ok"]) or (m_info["score"] >= 20 and w_info["ok"] and w_info["score"] >= 26)
             else:
-                macro_ok = w_info["ok"] and w_info["score"] >= 32
+                macro_ok = w_info["ok"] and w_info["score"] >= 34
 
             total_score = int(round(min(100, max(0, m_info["score"] + w_info["score"] + d_info["score"]))))
             diag_long = {
@@ -373,7 +398,7 @@ class StrategyEngine:
                 plan = self._build_long_plan(ref_price, atr_w, levels)
                 if plan and (plan["stop_loss"] < ref_price < plan["tp1"]):
                     quality = "A+" if total_score >= 88 else "A" if total_score >= 80 else "B+"
-                    reason = f"LONG ONLY [1W/1M] | V136.1 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
+                    reason = f"LONG ONLY [1W/1M] | V136.2 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
                     decimals = 10 if ref_price < 0.0001 else 8 if ref_price < 0.01 else 7 if ref_price < 0.1 else 6 if ref_price < 1 else 4 if ref_price < 100 else 2
 
                     signal = build_signal(
