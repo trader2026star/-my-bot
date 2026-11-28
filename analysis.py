@@ -1,5 +1,5 @@
 # ============================================================
-# analysis.py — StrategyEngine V136.0 (LONG Only — 1W / 1M)
+# analysis.py — StrategyEngine V136.1 (LONG Only — 1W / 1M)
 # Long-only position engine built on Monthly (1M) + Weekly (1W)
 # bullish structure/trend with Daily (1D) timing.
 # ============================================================
@@ -85,7 +85,7 @@ class StrategyEngine:
             l = pd.to_numeric(df["low"], errors="coerce")
             c = pd.to_numeric(df["close"], errors="coerce")
             plus_dm_raw = h.diff()
-            minus_dm_raw = l.diff()
+            minus_dm_raw = -l.diff()
             plus_dm = pd.Series(
                 np.where((plus_dm_raw > minus_dm_raw) & (plus_dm_raw > 0), plus_dm_raw, 0.0),
                 index=df.index,
@@ -143,7 +143,7 @@ class StrategyEngine:
                 lows.append((i, l[i]))
         return highs, lows
 
-    def _macro_long_structure(self, df, label):
+    def _macro_long_structure(self, df, label, boost_without_monthly=False):
         """Evaluates bullish structure & trend on Weekly (1W) or Monthly (1M)."""
         if df is None or len(df) < 6:
             return {"ok": False, "score": 0, "rsi": 50.0, "adx": 20.0, "reason": f"{label} data insufficient"}
@@ -171,27 +171,28 @@ class StrategyEngine:
                 struct_ok = True
                 struct_tag = "Bullish BOS"
 
+        mult = 1.35 if (label == "1W" and boost_without_monthly) else 1.0
         score = 0
         reasons = []
         if close >= ema_fast * 0.97:
-            score += 12
+            score += 12 * mult
             reasons.append(f"{label} > EMA{fast_p}")
         if ema_fast >= ema_slow * 0.97:
-            score += 10
+            score += 10 * mult
             reasons.append(f"EMA{fast_p}>=EMA{slow_p}")
         if hist >= 0:
-            score += 8
+            score += 8 * mult
             reasons.append("MACD+")
         if struct_ok:
-            score += 12
+            score += 12 * mult
             reasons.append(struct_tag)
         if 38 <= rsi <= 76:
-            score += 4
+            score += 4 * mult
         ok = (close >= ema_fast * 0.96) and (struct_ok or (ema_fast >= ema_slow * 0.97 and hist >= 0))
         reasons.append(f"RSI({rsi:.1f})")
         return {
             "ok": ok,
-            "score": score,
+            "score": round(score, 2),
             "rsi": rsi,
             "adx": adx,
             "ema_fast": ema_fast,
@@ -344,21 +345,21 @@ class StrategyEngine:
             if len(w1) < 8:
                 return "NEUTRAL", 0.0, self._make_neutral("بيانات الفريم الأسبوعي (1W) غير كافية")
 
-            price = float(w1["close"].iloc[-1])
+            has_monthly = len(mn1) >= 6
+            ref_price = float(daily["close"].iloc[-1]) if len(daily) > 0 else float(w1["close"].iloc[-1])
             atr_w = float(self.calculate_atr(w1).iloc[-1])
-            if price <= 0 or atr_w <= 0:
+            if ref_price <= 0 or atr_w <= 0:
                 return "NEUTRAL", 0.0, self._make_neutral("بيانات السعر أو التذبذب الأسبوعي غير صالحة")
 
-            levels = self._long_levels(w1, mn1, price, atr_w)
-            m_info = self._macro_long_structure(mn1, "1M")
-            w_info = self._macro_long_structure(w1, "1W")
-            d_info = self._daily_long_timing(daily) if len(daily) >= 30 else {"ok": True, "score": 6, "reason": "1D N/A"}
+            levels = self._long_levels(w1, mn1, ref_price, atr_w)
+            m_info = self._macro_long_structure(mn1, "1M", boost_without_monthly=False)
+            w_info = self._macro_long_structure(w1, "1W", boost_without_monthly=not has_monthly)
+            d_info = self._daily_long_timing(daily) if len(daily) >= 30 else {"ok": True, "score": 8, "reason": "1D N/A"}
 
-            has_monthly = len(mn1) >= 6
             if has_monthly:
                 macro_ok = (m_info["ok"] and w_info["ok"]) or (m_info["score"] >= 20 and w_info["ok"] and w_info["score"] >= 26)
             else:
-                macro_ok = w_info["ok"] and w_info["score"] >= 26
+                macro_ok = w_info["ok"] and w_info["score"] >= 32
 
             total_score = int(round(min(100, max(0, m_info["score"] + w_info["score"] + d_info["score"]))))
             diag_long = {
@@ -369,11 +370,11 @@ class StrategyEngine:
             }
 
             if macro_ok and total_score >= self.min_score:
-                plan = self._build_long_plan(price, atr_w, levels)
-                if plan and (plan["stop_loss"] < price < plan["tp1"]):
+                plan = self._build_long_plan(ref_price, atr_w, levels)
+                if plan and (plan["stop_loss"] < ref_price < plan["tp1"]):
                     quality = "A+" if total_score >= 88 else "A" if total_score >= 80 else "B+"
-                    reason = f"LONG ONLY [1W/1M] | V136.0 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
-                    decimals = 10 if price < 0.0001 else 8 if price < 0.01 else 7 if price < 0.1 else 6 if price < 1 else 4 if price < 100 else 2
+                    reason = f"LONG ONLY [1W/1M] | V136.1 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
+                    decimals = 10 if ref_price < 0.0001 else 8 if ref_price < 0.01 else 7 if ref_price < 0.1 else 6 if ref_price < 1 else 4 if ref_price < 100 else 2
 
                     signal = build_signal(
                         "LONG",
@@ -403,7 +404,7 @@ class StrategyEngine:
                             "1d_summary": d_info["reason"],
                         },
                     )
-                    return "LONG", price, signal
+                    return "LONG", ref_price, signal
 
             return "NEUTRAL", 0.0, self._make_neutral(
                 f"لا توجد فرصة شراء (LONG) أسبوعية/شهرية مكتملة حالياً ({total_score}/{self.min_score})",
