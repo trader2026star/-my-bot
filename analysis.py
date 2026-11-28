@@ -1,7 +1,8 @@
 # ============================================================
-# analysis.py — StrategyEngine V136.2 (LONG Only — 1W / 1M)
+# analysis.py — StrategyEngine V136.3 (LONG Only — 1W / 1M)
 # Long-only position engine built on Monthly (1M) + Weekly (1W)
-# bullish structure/trend with Daily (1D) timing & volume check.
+# bullish structure/trend using confirmed closed candles with
+# Daily (1D) timing & volume check.
 # ============================================================
 
 import logging
@@ -129,6 +130,14 @@ class StrategyEngine:
             logger.error("prepare_dataframe error: %s", exc)
             return pd.DataFrame()
 
+    def _closed_slice(self, df, min_remaining=6):
+        """Returns dataframe excluding the live unclosed candle when enough bars exist."""
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if len(df) > min_remaining:
+            return df.iloc[:-1].reset_index(drop=True)
+        return df.reset_index(drop=True)
+
     def _check_volume_ok(self, df_w, df_daily, price, asset_type):
         """Checks basic volume/dollar liquidity to avoid dead or illiquid pairs."""
         try:
@@ -139,7 +148,6 @@ class StrategyEngine:
             avg_vol_w = float(df_w["volume"].tail(6).mean())
             if avg_vol_w <= 0:
                 return False
-            # Approximate weekly dollar turnover using price * weekly base volume
             est_weekly_usd = avg_vol_w * float(price)
             if est_weekly_usd < 250000:
                 return False
@@ -166,21 +174,22 @@ class StrategyEngine:
         return highs, lows
 
     def _macro_long_structure(self, df, label, boost_without_monthly=False):
-        """Evaluates bullish structure & trend on Weekly (1W) or Monthly (1M)."""
-        if df is None or len(df) < 6:
-            return {"ok": False, "score": 0, "rsi": 50.0, "adx": 20.0, "reason": f"{label} data insufficient"}
+        """Evaluates bullish structure & trend on confirmed closed Weekly (1W) or Monthly (1M) candles."""
+        closed_df = self._closed_slice(df, min_remaining=6)
+        if closed_df is None or len(closed_df) < 6:
+            return {"ok": False, "score": 0, "rsi": 50.0, "adx": 20.0, "reason": f"{label} closed data insufficient"}
 
-        close = float(df["close"].iloc[-1])
+        close = float(closed_df["close"].iloc[-1])
         fast_p = 8 if label == "1W" else 4
         slow_p = 20 if label == "1W" else 10
-        ema_fast = float(self.calculate_ema(df["close"], fast_p).iloc[-1])
-        ema_slow = float(self.calculate_ema(df["close"], slow_p).iloc[-1])
-        rsi = float(self.calculate_rsi(df["close"]).iloc[-1])
-        adx = float(self.calculate_adx(df).iloc[-1])
-        _, _, macd_hist = self.calculate_macd(df["close"])
+        ema_fast = float(self.calculate_ema(closed_df["close"], fast_p).iloc[-1])
+        ema_slow = float(self.calculate_ema(closed_df["close"], slow_p).iloc[-1])
+        rsi = float(self.calculate_rsi(closed_df["close"]).iloc[-1])
+        adx = float(self.calculate_adx(closed_df).iloc[-1])
+        _, _, macd_hist = self.calculate_macd(closed_df["close"])
         hist = float(macd_hist.iloc[-1]) if not macd_hist.empty else 0.0
 
-        highs, lows = self._swings(df, left=2, right=1 if len(df) < 15 else 2)
+        highs, lows = self._swings(closed_df, left=2, right=1 if len(closed_df) < 15 else 2)
         struct_ok = False
         struct_tag = ""
         if len(highs) >= 2 and len(lows) >= 2:
@@ -188,17 +197,17 @@ class StrategyEngine:
             prev_l, last_l = lows[-2][1], lows[-1][1]
             if last_h >= prev_h * 0.99 and last_l >= prev_l * 0.985:
                 struct_ok = True
-                struct_tag = "HH/HL"
+                struct_tag = "HH/HL (Closed)"
             elif close > prev_h:
                 struct_ok = True
-                struct_tag = "Bullish BOS"
+                struct_tag = "Bullish BOS (Closed)"
 
         mult = 1.35 if (label == "1W" and boost_without_monthly) else 1.0
         score = 0
         reasons = []
         if close >= ema_fast * 0.97:
             score += 12 * mult
-            reasons.append(f"{label} > EMA{fast_p}")
+            reasons.append(f"{label} closed > EMA{fast_p}")
         if ema_fast >= ema_slow * 0.97:
             score += 10 * mult
             reasons.append(f"EMA{fast_p}>=EMA{slow_p}")
@@ -223,14 +232,15 @@ class StrategyEngine:
         }
 
     def _daily_long_timing(self, df_daily):
-        """Uses Daily (1D) only for LONG timing & avoiding over-extended chase."""
-        if df_daily is None or len(df_daily) < 30:
-            return {"ok": False, "score": 0, "reason": "1D data insufficient"}
-        close = float(df_daily["close"].iloc[-1])
-        op = float(df_daily["open"].iloc[-1])
-        ema20 = float(self.calculate_ema(df_daily["close"], 20).iloc[-1])
-        atr_d = float(self.calculate_atr(df_daily).iloc[-1])
-        rsi_d = float(self.calculate_rsi(df_daily["close"]).iloc[-1])
+        """Uses confirmed closed Daily (1D) candles for LONG timing & avoiding over-extended chase."""
+        closed_d = self._closed_slice(df_daily, min_remaining=30)
+        if closed_d is None or len(closed_d) < 30:
+            return {"ok": False, "score": 0, "reason": "1D closed data insufficient"}
+        close = float(closed_d["close"].iloc[-1])
+        op = float(closed_d["open"].iloc[-1])
+        ema20 = float(self.calculate_ema(closed_d["close"], 20).iloc[-1])
+        atr_d = float(self.calculate_atr(closed_d).iloc[-1])
+        rsi_d = float(self.calculate_rsi(closed_d["close"]).iloc[-1])
 
         score = 0
         reasons = []
@@ -238,7 +248,7 @@ class StrategyEngine:
         not_chasing = (close - ema20) <= max(2.4 * atr_d, close * 0.08) and rsi_d <= 76
         if bull_d:
             score += 10
-            reasons.append("1D bullish/reclaim")
+            reasons.append("1D closed bullish")
         if close >= ema20 * 0.97:
             score += 8
             reasons.append("1D near/above EMA20")
@@ -254,10 +264,12 @@ class StrategyEngine:
     def _long_levels(self, df_w, df_m, price, atr_w):
         """Computes long-term support/resistance and TP1/TP2/TP3 from 1W & 1M."""
         try:
-            w_lows = df_w["low"].tail(20).to_numpy(dtype=float) if (df_w is not None and len(df_w) >= 4) else np.array([price - 2 * atr_w])
-            w_highs = df_w["high"].tail(20).to_numpy(dtype=float) if (df_w is not None and len(df_w) >= 4) else np.array([price + 2 * atr_w])
-            m_lows = df_m["low"].tail(12).to_numpy(dtype=float) if (df_m is not None and len(df_m) >= 3) else w_lows
-            m_highs = df_m["high"].tail(12).to_numpy(dtype=float) if (df_m is not None and len(df_m) >= 3) else w_highs
+            w_closed = self._closed_slice(df_w, min_remaining=4)
+            m_closed = self._closed_slice(df_m, min_remaining=3)
+            w_lows = w_closed["low"].tail(20).to_numpy(dtype=float) if (w_closed is not None and len(w_closed) >= 4) else np.array([price - 2 * atr_w])
+            w_highs = w_closed["high"].tail(20).to_numpy(dtype=float) if (w_closed is not None and len(w_closed) >= 4) else np.array([price + 2 * atr_w])
+            m_lows = m_closed["low"].tail(12).to_numpy(dtype=float) if (m_closed is not None and len(m_closed) >= 3) else w_lows
+            m_highs = m_closed["high"].tail(12).to_numpy(dtype=float) if (m_closed is not None and len(m_closed) >= 3) else w_highs
 
             below_w = sorted([v for v in w_lows if v < price], reverse=True)
             above_w = sorted([v for v in w_highs if v > price])
@@ -357,29 +369,32 @@ class StrategyEngine:
     def analyze_market_structure(self, ohlcv_daily, ohlcv_4h=None, ohlcv_1h=None,
                                  asset_type="crypto", ohlcv_15m=None,
                                  ohlcv_1w=None, ohlcv_1m=None):
-        """LONG-only analysis on Monthly (1M) + Weekly (1W) with Daily (1D) timing."""
+        """LONG-only analysis on Monthly (1M) + Weekly (1W) closed candles with Daily (1D) timing."""
         neutral = self._make_neutral()
         try:
             daily = self.prepare_dataframe(ohlcv_daily)
             w1 = self.prepare_dataframe(ohlcv_1w)
             mn1 = self.prepare_dataframe(ohlcv_1m)
 
-            if len(w1) < 8:
-                return "NEUTRAL", 0.0, self._make_neutral("بيانات الفريم الأسبوعي (1W) غير كافية")
+            if len(w1) < 9:
+                return "NEUTRAL", 0.0, self._make_neutral("بيانات الفريم الأسبوعي (1W) المغلقة غير كافية")
 
-            has_monthly = len(mn1) >= 6
+            w1_closed = self._closed_slice(w1, min_remaining=6)
+            mn1_closed = self._closed_slice(mn1, min_remaining=6) if len(mn1) > 0 else pd.DataFrame()
+            has_monthly = len(mn1_closed) >= 6
+
             ref_price = float(daily["close"].iloc[-1]) if len(daily) > 0 else float(w1["close"].iloc[-1])
-            atr_w = float(self.calculate_atr(w1).iloc[-1])
+            atr_w = float(self.calculate_atr(w1_closed).iloc[-1])
             if ref_price <= 0 or atr_w <= 0:
                 return "NEUTRAL", 0.0, self._make_neutral("بيانات السعر أو التذبذب الأسبوعي غير صالحة")
 
-            if not self._check_volume_ok(w1, daily, ref_price, asset_type):
+            if not self._check_volume_ok(w1_closed, daily, ref_price, asset_type):
                 return "NEUTRAL", 0.0, self._make_neutral("السيولة أو حجم التداول غير كافٍ")
 
             levels = self._long_levels(w1, mn1, ref_price, atr_w)
             m_info = self._macro_long_structure(mn1, "1M", boost_without_monthly=False)
             w_info = self._macro_long_structure(w1, "1W", boost_without_monthly=not has_monthly)
-            d_info = self._daily_long_timing(daily) if len(daily) >= 30 else {"ok": True, "score": 8, "reason": "1D N/A"}
+            d_info = self._daily_long_timing(daily) if len(daily) >= 31 else {"ok": True, "score": 8, "reason": "1D N/A"}
 
             if has_monthly:
                 macro_ok = (m_info["ok"] and w_info["ok"]) or (m_info["score"] >= 20 and w_info["ok"] and w_info["score"] >= 26)
@@ -398,7 +413,7 @@ class StrategyEngine:
                 plan = self._build_long_plan(ref_price, atr_w, levels)
                 if plan and (plan["stop_loss"] < ref_price < plan["tp1"]):
                     quality = "A+" if total_score >= 88 else "A" if total_score >= 80 else "B+"
-                    reason = f"LONG ONLY [1W/1M] | V136.2 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
+                    reason = f"LONG ONLY [1W/1M Closed] | V136.3 | 1W: {w_info['reason']} | 1M: {m_info['reason']}"
                     decimals = 10 if ref_price < 0.0001 else 8 if ref_price < 0.01 else 7 if ref_price < 0.1 else 6 if ref_price < 1 else 4 if ref_price < 100 else 2
 
                     signal = build_signal(
@@ -413,7 +428,7 @@ class StrategyEngine:
                         reason,
                         {
                             "quality": quality,
-                            "trade_style": "LONG_ONLY_1W_1M",
+                            "trade_style": "LONG_ONLY_1W_1M_CLOSED",
                             "regime": "BULLISH_MACRO",
                             "adx": round(w_info["adx"], 1),
                             "tp2_rr": plan["tp2_rr"],
@@ -421,7 +436,7 @@ class StrategyEngine:
                             "deep_support": round(levels["deep_support"], decimals),
                             "resistance_low": round(levels["resistance_low"], decimals),
                             "resistance_high": round(levels["resistance_high"], decimals),
-                            "timeframes": "1M + 1W + 1D (LONG ONLY)",
+                            "timeframes": "1M + 1W + 1D Closed (LONG ONLY)",
                             "risk_pct": plan["risk_pct"],
                             "asset_type": asset_type,
                             "1m_summary": m_info["reason"],
@@ -432,9 +447,9 @@ class StrategyEngine:
                     return "LONG", ref_price, signal
 
             return "NEUTRAL", 0.0, self._make_neutral(
-                f"لا توجد فرصة شراء (LONG) أسبوعية/شهرية مكتملة حالياً ({total_score}/{self.min_score})",
+                f"لا توجد فرصة شراء (LONG) أسبوعية/شهرية مغلقة مكتملة حالياً ({total_score}/{self.min_score})",
                 total_score,
-                float(self.calculate_rsi(w1["close"]).iloc[-1]),
+                float(self.calculate_rsi(w1_closed["close"]).iloc[-1]),
                 atr_w,
                 {"diagnostics": {"LONG": diag_long}, "best_candidate": f"LONG ({total_score}/{self.min_score})"},
             )
