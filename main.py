@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V136.1 (LONG Only — Weekly & Monthly)
+# main.py — Bot V136.2 (LONG Only — Weekly & Monthly)
 # Long-only position engine on Weekly (1W) and Monthly (1M)
 # with Daily (1D) timing, TP1/TP2/TP3 tracking, and safe
 # Telegram HTML/plain-text fallback sender.
@@ -502,7 +502,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🟢 <b>متابعة صفقة شراء طويلة المدى (LONG — 1W/1M) — V136.1</b>\n"
+                "🟢 <b>متابعة صفقة شراء طويلة المدى (LONG — 1W/1M) — V136.2</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> (LONG)\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -535,9 +535,9 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             return False, None
 
         _, mn1, _ = fetch_ohlcv(symbol_raw, "1m", 60)
-        daily = None
+        _, daily, _ = fetch_ohlcv(symbol_raw, "1d", 60)
+
         if manual:
-            _, daily, _ = fetch_ohlcv(symbol_raw, "1d", 120)
             active_pos = _find_active_position(resolved)
             if active_pos:
                 d_pos = decimals_for(active_pos["entry_price"])
@@ -587,7 +587,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             rr_tp2 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
 
             msg = (
-                "🟢 <b>MY EXPERT LONG-ONLY BOT V136.1 (1W / 1M)</b>\n"
+                "🟢 <b>MY EXPERT LONG-ONLY BOT V136.2 (1W / 1M)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 "🕰️ <b>الفريمات:</b> <b>أسبوعي (1W) + شهري (1M)</b> + توقيت يومي (1D)\n"
@@ -654,7 +654,7 @@ def run_full_scan(chat_id=None):
         macro_info = get_macro_long_regime(force=True)
         if chat_id:
             tg_send(
-                "🟢 <b>جارٍ فحص فرص الشراء (LONG ONLY) على الفريم الأسبوعي والشهري (1W / 1M — V136.1)...</b>\n"
+                "🟢 <b>جارٍ فحص فرص الشراء (LONG ONLY) على الفريم الأسبوعي والشهري (1W / 1M — V136.2)...</b>\n"
                 f"{macro_info.get('summary', '')}",
                 chat_id,
             )
@@ -698,7 +698,7 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🟢 <b>MY EXPERT LONG-ONLY BOT V136.1</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🟢 <b>MY EXPERT LONG-ONLY BOT V136.2</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "📈 <b>الاتجاه:</b> شراء (<b>LONG</b>) فقط على الفريم <b>الأسبوعي (1W) + الشهري (1M)</b>\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "📌 أرسل BTC أو ETH أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -754,7 +754,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V136.1-LONG-Only-1W-1M", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V136.2-LONG-Only-1W-1M", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -777,7 +777,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V136.1 bootstrapped: LONG Only on Weekly & Monthly.")
+    logger.info("Bot V136.2 bootstrapped: LONG Only on Weekly & Monthly.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
