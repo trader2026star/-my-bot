@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Bot V136.0 (LONG Only — Weekly & Monthly)
+# main.py — Bot V136.1 (LONG Only — Weekly & Monthly)
 # Long-only position engine on Weekly (1W) and Monthly (1M)
 # with Daily (1D) timing, TP1/TP2/TP3 tracking, and safe
 # Telegram HTML/plain-text fallback sender.
@@ -56,6 +56,7 @@ _seen_lock = threading.Lock()
 _all_markets_cache = []
 _markets_cache_time = 0
 _sent_signals_cache = {}
+_active_pos_cache = {"items": [], "ts": 0.0}
 SIGNAL_COOLDOWN_SECONDS = 86400 * 3
 MAX_SAME_DIRECTION_PER_SCAN = 5
 MAX_TRACKED_POSITIONS = 15
@@ -114,6 +115,11 @@ def db_init():
         logger.error("DB init error: %s", exc)
 
 
+def _invalidate_positions_cache():
+    with cache_lock:
+        _active_pos_cache["ts"] = 0.0
+
+
 def save_tracked_position(signal, symbol_raw, resolved):
     try:
         tps = list(signal.get("take_profits") or [])
@@ -147,6 +153,7 @@ def save_tracked_position(signal, symbol_raw, resolved):
             stale = [r["signal_id"] for r in rows[MAX_TRACKED_POSITIONS:]]
             for sid in stale:
                 db_query("DELETE FROM tracked_positions WHERE signal_id = ?", (sid,))
+        _invalidate_positions_cache()
     except Exception as exc:
         logger.error("save_tracked_position error: %s", exc)
 
@@ -154,18 +161,26 @@ def save_tracked_position(signal, symbol_raw, resolved):
 def clear_tracked_positions():
     try:
         db_query("DELETE FROM tracked_positions")
+        _invalidate_positions_cache()
         return True
     except Exception as exc:
         logger.error("clear_tracked_positions error: %s", exc)
         return False
 
 
-def get_active_positions():
+def get_active_positions(force_refresh=False):
     try:
         now_ts = time.time()
+        with cache_lock:
+            if not force_refresh and (now_ts - _active_pos_cache["ts"]) < 5.0:
+                return list(_active_pos_cache["items"])
         db_query("DELETE FROM tracked_positions WHERE (? - created_ts) > ?", (now_ts, POSITION_TTL_SECONDS))
         rows = db_query("SELECT * FROM tracked_positions ORDER BY created_ts DESC")
-        return [dict(r) for r in rows]
+        items = [dict(r) for r in rows]
+        with cache_lock:
+            _active_pos_cache["items"] = items
+            _active_pos_cache["ts"] = now_ts
+        return items
     except Exception as exc:
         logger.error("get_active_positions error: %s", exc)
         return []
@@ -319,7 +334,6 @@ def fetch_ohlcv(symbol_raw, timeframe, limit=120):
 
 def _sanitize_for_telegram(text):
     s = str(text or "").replace("\\", "")
-    # Escape stray angle brackets that are not valid <b>, </b>, <code>, </code> tags
     allowed_tags = {"<b>", "</b>", "<code>", "</code>"}
     tokens = re.split(r"(</?(?:b|code)>)", s)
     out = []
@@ -410,7 +424,7 @@ def get_macro_long_regime(force=False):
         df_w = engine.prepare_dataframe(w1)
         df_m = engine.prepare_dataframe(mn1)
         m_l = engine._macro_long_structure(df_m, "1M")
-        w_l = engine._macro_long_structure(df_w, "1W")
+        w_l = engine._macro_long_structure(df_w, "1W", boost_without_monthly=len(df_m) < 6)
 
         base_name = resolved.split("/")[0]
         if w_l["ok"] and (m_l["ok"] or len(df_m) < 6):
@@ -465,7 +479,7 @@ def _calc_rr(entry_low, entry_high, stop_loss, target):
 
 
 def monitor_tracked_positions(chat_id=None):
-    positions = get_active_positions()
+    positions = get_active_positions(force_refresh=True)
     if not positions:
         return
     for pos in positions:
@@ -488,7 +502,7 @@ def monitor_tracked_positions(chat_id=None):
 
             d = decimals_for(current_price)
             msg = (
-                "🟢 <b>متابعة صفقة شراء طويلة المدى (LONG — 1W/1M) — V136.0</b>\n"
+                "🟢 <b>متابعة صفقة شراء طويلة المدى (LONG — 1W/1M) — V136.1</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"💎 <b>الأصل:</b> <code>{pos['resolved']}</code> (LONG)\n"
                 f"💵 <b>السعر الحالي:</b> <code>{format_num(current_price, d)}</code>\n"
@@ -506,6 +520,7 @@ def monitor_tracked_positions(chat_id=None):
                         "UPDATE tracked_positions SET last_action = ?, updated_ts = ? WHERE signal_id = ?",
                         (action, time.time(), pos["signal_id"]),
                     )
+                _invalidate_positions_cache()
             time.sleep(0.1)
         except Exception as exc:
             logger.debug("Monitor position error for %s: %s", pos.get("resolved"), exc)
@@ -520,9 +535,9 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             return False, None
 
         _, mn1, _ = fetch_ohlcv(symbol_raw, "1m", 60)
-        _, daily, _ = fetch_ohlcv(symbol_raw, "1d", 120)
-
+        daily = None
         if manual:
+            _, daily, _ = fetch_ohlcv(symbol_raw, "1d", 120)
             active_pos = _find_active_position(resolved)
             if active_pos:
                 d_pos = decimals_for(active_pos["entry_price"])
@@ -572,7 +587,7 @@ def analyze_symbol(symbol_raw, chat_id=None, manual=False, direction_counts=None
             rr_tp2 = _calc_rr(signal.get("entry_low"), signal.get("entry_high"), signal.get("stop_loss"), tps[1])
 
             msg = (
-                "🟢 <b>MY EXPERT LONG-ONLY BOT V136.0 (1W / 1M)</b>\n"
+                "🟢 <b>MY EXPERT LONG-ONLY BOT V136.1 (1W / 1M)</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🏷️ <b>السوق:</b> {market_tag}\n"
                 "🕰️ <b>الفريمات:</b> <b>أسبوعي (1W) + شهري (1M)</b> + توقيت يومي (1D)\n"
@@ -639,7 +654,7 @@ def run_full_scan(chat_id=None):
         macro_info = get_macro_long_regime(force=True)
         if chat_id:
             tg_send(
-                "🟢 <b>جارٍ فحص فرص الشراء (LONG ONLY) على الفريم الأسبوعي والشهري (1W / 1M — V136.0)...</b>\n"
+                "🟢 <b>جارٍ فحص فرص الشراء (LONG ONLY) على الفريم الأسبوعي والشهري (1W / 1M — V136.1)...</b>\n"
                 f"{macro_info.get('summary', '')}",
                 chat_id,
             )
@@ -683,7 +698,7 @@ def background_auto_scheduler():
 
 
 HELP_TEXT = (
-    "🟢 <b>MY EXPERT LONG-ONLY BOT V136.0</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    "🟢 <b>MY EXPERT LONG-ONLY BOT V136.1</b>\n━━━━━━━━━━━━━━━━━━\n\n"
     "📈 <b>الاتجاه:</b> شراء (<b>LONG</b>) فقط على الفريم <b>الأسبوعي (1W) + الشهري (1M)</b>\n"
     "🧭 <b>الأسواق:</b> Crypto + Stocks/ETFs + Forex/Metals\n"
     "📌 أرسل BTC أو ETH أو SOXS أو XAUUSD أو أي رمز مدعوم\n"
@@ -739,7 +754,7 @@ def handle_update(data):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "version": "V136.0-LONG-Only-1W-1M", "stats": scan_stats})
+    return jsonify({"status": "running", "version": "V136.1-LONG-Only-1W-1M", "stats": scan_stats})
 
 
 @app.route("/health")
@@ -762,7 +777,7 @@ def telegram_webhook():
 
 def bootstrap():
     db_init()
-    logger.info("Bot V136.0 bootstrapped: LONG Only on Weekly & Monthly.")
+    logger.info("Bot V136.1 bootstrapped: LONG Only on Weekly & Monthly.")
     threading.Thread(target=configure_webhook, daemon=True).start()
     threading.Thread(target=background_auto_scheduler, daemon=True).start()
 
